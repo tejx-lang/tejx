@@ -1,0 +1,11 @@
+// Rest Arguments Test
+function sum(...nums: number[]): number {
+    let total = 0;
+    for (let i = 0; i < nums.length; i = i + 1) {
+        total = total + nums[i];
+    }
+    return total;
+}
+
+console.log("Sum 1,2,3: " + sum(1, 2, 3));
+console.log("Sum 10,20: " + sum(10, 20));

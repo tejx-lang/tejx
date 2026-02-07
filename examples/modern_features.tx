@@ -1,0 +1,42 @@
+// TejX Modern Features Showcase
+
+enum Status {
+    Pending,
+    Active,
+    Closed
+}
+
+function getSystemInfo() {
+    return {
+        name: "TejXOS",
+        version: "1.0.0",
+        stats: {
+            uptime: 3600,
+            status: Status.Active
+        },
+        tags: ["native", "fast", "soul"]
+    };
+}
+
+// 1. Destructuring with Nesting & Aliasing
+let { name, stats: { status: s, uptime }, tags: [firstTag] } = getSystemInfo();
+
+console.log("System: " + name);
+console.log("Status: " + s); // Uses Enum value
+console.log("Uptime: " + uptime + "s");
+console.log("Primary Tag: " + firstTag);
+
+// 2. Optional Chaining & Nullish Coalescing
+let config = undefined;
+let theme = config?.theme ?? "Dark Mode (Default)";
+console.log("Theme: " + theme);
+
+// 3. Strict Boolean Verification
+let isActive = (s == Status.Active);
+if (isActive) {
+    console.log("The system is running with Native Soul.");
+}
+
+// 4. Multi-type Array (Automatic Var Promotion)
+let mixed = ["Version", 1, true];
+console.log("Mixed Data: " + mixed);

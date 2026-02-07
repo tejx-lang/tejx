@@ -1,0 +1,18 @@
+# Build Artifacts
+tejxc
+program
+*.out
+*.o
+*.dSYM/
+out.cpp
+
+# Intermediate generated files
+examples/*.cpp
+examples/hello
+
+# OS & Editor
+.DS_Store
+.vscode/
+.idea/
+build/
+cmake-build-debug/

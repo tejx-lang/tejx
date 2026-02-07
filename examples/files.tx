@@ -1,0 +1,16 @@
+let path = "test_file.txt";
+let content = "Hello from TejXFS!";
+
+console.log("--- File I/O Test ---");
+console.log("Writing to " + path);
+fs.writeFile(path, content);
+
+console.log("Reading from " + path);
+let readBack = fs.readFile(path);
+console.log("Content: " + readBack);
+
+if (readBack == content) {
+    console.log("SUCCESS: Content matches!");
+} else {
+    console.log("FAILURE: Content mismatch.");
+}

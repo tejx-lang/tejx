@@ -1,0 +1,31 @@
+// typeof Operator Test
+
+let n = 42;
+let s = "hello";
+let b = true;
+let obj = { x: 1 };
+let arr = [1, 2, 3];
+
+console.log("Testing typeof operator...");
+
+console.log("typeof 42: " + (typeof n));
+console.log("typeof 'hello': " + (typeof s));
+console.log("typeof true: " + (typeof b));
+console.log("typeof {x:1}: " + (typeof obj));
+console.log("typeof [1,2,3]: " + (typeof arr));
+
+function testFunc() { return 1; }
+// Function types are currently tricky in our C++ mapping, 
+// let's see what typeof says for an identifier that is a function.
+// For now, it will likely be an error or "undefined" if not specifically handled.
+
+// Verification with conditionals
+if (typeof n === "number") {
+    console.log("Verified: n is a number");
+}
+
+if (typeof s === "string") {
+    console.log("Verified: s is a string");
+}
+
+console.log("typeof operator test complete!");

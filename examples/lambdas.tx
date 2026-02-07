@@ -1,0 +1,14 @@
+let add = (x: number, y: number) => {
+    return x + y;
+};
+console.log("Add(5,3):");
+console.log(add(5, 3));
+
+let square = (x) => x * x;
+console.log("Square(4):");
+console.log(square(4));
+
+let greet = () => {
+    console.log("Hello Lambda!");
+};
+greet();

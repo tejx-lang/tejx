@@ -1,0 +1,45 @@
+protocol Printable {
+    toString(): string;
+    print(prefix: string): void;
+}
+
+class User implements Printable {
+    name: string;
+    constructor(n: string) {
+        this.name = n;
+    }
+    
+    toString(): string {
+        return "User: " + this.name;
+    }
+    
+    print(prefix: string): void {
+        console.log(prefix + this.toString());
+    }
+}
+
+class Document implements Printable {
+    content: string;
+    constructor(c: string) {
+        this.content = c;
+    }
+    
+    toString(): string {
+        return "Doc: " + this.content;
+    }
+    
+    print(prefix: string): void {
+        console.log(prefix + this.toString());
+    }
+}
+
+// Function accepting Protocol
+function printAny(p: Printable) {
+    p.print(">> ");
+}
+
+let u = new User("TejX");
+let d = new Document("Hello World");
+
+printAny(u);
+printAny(d);

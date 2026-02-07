@@ -1,0 +1,73 @@
+// TejX Feature Showcase
+// ======================
+
+// 1. Basic Functions & Recursion
+function factorial(n: number): number {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+
+// 2. Arrays and Mutation
+function arrayDemo(): void {
+    console.log("--- Array Demo ---");
+    let nums: number[] = [10, 20, 30];
+    console.log("Initial length: " + nums.length);
+    console.log("Element at 1: " + nums[1]);
+
+    // Push
+    nums.push(40);
+    console.log("Length after push: " + nums.length);
+
+    // Mutation
+    nums[0] = 99;
+    console.log("Mutated index 0: " + nums[0]);
+
+    // Loop
+    let sum: number = 0;
+    let i: number = 0;
+    while (i < nums.length) {
+        sum = sum + nums[i];
+        i = i + 1;
+    }
+    console.log("Sum of array: " + sum);
+}
+
+// 3. String Operations
+function stringDemo(): void {
+    console.log("--- String Demo ---");
+    let name: string = "TejX";
+    let version: number = 1.0;
+    
+    // Concatenation
+    let msg: string = "Language: " + name + "JS v" + version;
+    console.log(msg);
+}
+
+// 4. Control Flow & Modulo
+function logicDemo(limit: number): void {
+    console.log("--- Logic Demo (limit " + limit + ") ---");
+    for (let i: number = 1; i <= limit; i = i + 1) {
+        if (i % 2 == 0) {
+            console.log(i + " is Even");
+        } else {
+            console.log(i + " is Odd");
+        }
+    }
+}
+
+// Main Execution Entry
+function run(): void {
+    console.log(">>> Starting TejX Feature Tests <<<");
+    
+    // Test Factorial
+    let f: number = 5;
+    console.log("Factorial of " + f + " is: " + factorial(f));
+    
+    arrayDemo();
+    stringDemo();
+    logicDemo(4);
+    
+    console.log(">>> All Tests Completed Successfully <<<");
+}
+
+run();

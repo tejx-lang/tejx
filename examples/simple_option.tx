@@ -1,0 +1,12 @@
+function test() {
+    let x: Option<number> = Some(10);
+    match (x) {
+        Some(v) => {
+            let y = v;
+        },
+        None => {
+            let z = 0;
+        }
+    };
+}
+test();

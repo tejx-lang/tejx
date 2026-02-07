@@ -1,0 +1,28 @@
+// Try/Catch/Finally Test
+
+function riskyOp(x: number): number {
+    if (x < 0) {
+        throw "Error: negative value";
+    }
+    return x * 2;
+}
+
+console.log("Testing try/catch...");
+
+try {
+    let result = riskyOp(5);
+    console.log("Result: " + result);
+} catch (e) {
+    console.log("Caught: " + e);
+}
+
+try {
+    let result = riskyOp(-1);
+    console.log("This should not print");
+} catch (e) {
+    console.log("Caught error as expected");
+} finally {
+    console.log("Finally block executed");
+}
+
+console.log("Try/catch test complete!");

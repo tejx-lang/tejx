@@ -1,0 +1,10 @@
+// Async/Await Test
+
+async function compute(x: number): Promise<number> {
+    return x * 2;
+}
+
+console.log("Starting async test...");
+let result = await compute(21);
+console.log("Result: " + result);
+console.log("Async test complete!");

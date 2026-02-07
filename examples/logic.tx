@@ -1,0 +1,39 @@
+// examples/logic.tx
+
+let a = true;
+let b = false;
+let c = true;
+
+// AND
+if (a && c) {
+    console.log("a && c is true");
+} else {
+    console.log("a && c is false");
+}
+
+// OR
+if (a || b) {
+    console.log("a || b is true");
+}
+
+if (b || b) {
+    console.log("b || b is true");
+} else {
+    console.log("b || b is false");
+}
+
+// Complex
+if ((a && b) || c) {
+    console.log("(a && b) || c is true");
+}
+
+// Not Equal
+let x = 10;
+if (x != 20) {
+    console.log("x != 20");
+}
+
+// Short-circuit Test
+if (true || (1/0 == 0)) {
+   console.log("Short-circuit works (no crash)");
+}

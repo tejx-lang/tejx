@@ -1,0 +1,25 @@
+class Point {
+    x: number;
+    y: number;
+
+    constructor(x: number, y: number) {
+        this.x = x;
+        this.y = y;
+    }
+
+    print(): void {
+        console.log("Point: " + this.x + ", " + this.y);
+    }
+}
+
+function run(): void {
+    console.log("--- Memory Safety Demo ---");
+    console.log("Entering block...");
+    {
+        let p: Point = new Point(10, 20);
+        p.print();
+        console.log("Exiting block...");
+    }
+    console.log("Block exited. Point should be freed.");
+}
+run();

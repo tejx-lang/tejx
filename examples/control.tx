@@ -1,0 +1,51 @@
+// examples/control.tx
+
+let sum = 0;
+// Test +=
+sum += 10;
+console.log("Sum should be 10: " + sum);
+
+sum -= 5;
+console.log("Sum should be 5: " + sum);
+
+sum *= 2;
+console.log("Sum should be 10: " + sum);
+
+sum /= 2;
+console.log("Sum should be 5: " + sum);
+
+// Test ++ / --
+let x = 0;
+++x;
+console.log("x should be 1: " + x);
+--x;
+console.log("x should be 0: " + x);
+
+// Test Break
+console.log("--- Break Test ---");
+for (let i = 0; i < 10; i = i + 1) {
+    if (i == 5) {
+        break;
+    }
+    console.log("i: " + i);
+}
+
+// Test Continue
+console.log("--- Continue Test ---");
+for (let j = 0; j < 5; j = j + 1) {
+    if (j == 2) {
+        continue;
+    }
+    console.log("j: " + j);
+}
+
+// Test While Break
+console.log("--- While Break Test ---");
+let k = 0;
+while (k < 10) {
+    if (k == 3) {
+        break;
+    }
+    console.log("k: " + k);
+    k = k + 1;
+}

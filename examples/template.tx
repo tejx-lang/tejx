@@ -1,0 +1,24 @@
+// Template Literals Test
+
+let name = "TejX";
+let version = 1.0;
+
+console.log("Testing template literals...");
+
+// Basic interpolation
+let greeting = `Hello, ${name}!`;
+console.log(greeting);
+
+// Multiple interpolations
+let info = `Language: ${name}, Version: ${version}`;
+console.log(info);
+
+// Expressions inside interpolation
+let calc = `One plus one is ${1 + 1}`;
+console.log(calc);
+
+// Nested template literals (if supported by parser logic)
+let complex = `Value: ${`inner ${name}`}`;
+console.log(complex);
+
+console.log("Template literals test complete!");

@@ -1,0 +1,24 @@
+// Enum Test
+
+enum Direction {
+  Up,
+  Down,
+  Left = 10,
+  Right
+}
+
+console.log("Testing Enums...");
+console.log("Direction.Up: " + Direction.Up);
+console.log("Direction.Down: " + Direction.Down);
+console.log("Direction.Left: " + Direction.Left);
+console.log("Direction.Right: " + Direction.Right);
+
+if (Direction.Left == 10) {
+  console.log("Verified: Direction.Left is 10");
+}
+
+if (Direction.Right == 11) {
+  console.log("Verified: Direction.Right is 11 (auto-incremented)");
+}
+
+console.log("Enum test complete!");

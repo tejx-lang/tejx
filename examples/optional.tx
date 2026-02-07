@@ -1,0 +1,43 @@
+function findUser(id: number): Option<string> {
+    if (id == 1) {
+        return Some("Alice");
+    }
+    return None;
+}
+
+function greet(user: Option<string>) {
+    match (user) {
+        Some(name) => {
+            console.log("Hello, " + name + "!");
+        },
+        None => {
+            console.log("Hello, stranger!");
+        }
+    }
+}
+
+console.log("Testing Option Types...");
+
+const user1 = findUser(1);
+const user2 = findUser(2);
+
+greet(user1);
+greet(user2);
+
+// Nested matching
+const item: Option<number[]> = Some([1, 2, 3]);
+
+match (item) {
+    Some([x, ...rest]) => {
+        console.log("Found some array starting with " + x);
+    },
+    Some([]) => {
+        console.log("Found some empty array");
+    },
+    None => {
+        console.log("Found nothing");
+    }
+}
+
+// Result type simulation? No, let's stick to Option for now.
+console.log("Option tests completed.");

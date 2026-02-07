@@ -1,0 +1,15 @@
+// Date Test
+let d = new Date();
+console.log("Current Time (ISO): " + d.toISOString());
+
+let t = d.getTime();
+console.log("Timestamp: " + t);
+
+let now = Date.now();
+console.log("Now (static): " + now);
+
+if (now >= t) {
+    console.log("Time flows forward");
+} else {
+    console.log("Time broken?");
+}

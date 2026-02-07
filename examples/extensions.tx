@@ -1,0 +1,28 @@
+// Extensions Feature Test
+
+class User {
+    name: string;
+    constructor(n: string) {
+        this.name = n;
+    }
+}
+
+extension User {
+    sayHello() {
+        console.log("Hello, " + this.name);
+    }
+    
+    greet(times: number) {
+        let i = 0;
+        while (i < times) {
+            console.log("Greeting " + (i + 1) + ": " + this.name);
+            i = i + 1;
+        }
+    }
+}
+
+let u = new User("Tej");
+u.sayHello();
+u.greet(3);
+
+console.log("Extensions test complete!");

@@ -1,0 +1,13 @@
+function greet(name: string = "Guest") {
+    console.log("Hello, " + name);
+}
+
+function power(base: number, exp: number = 2) {
+    console.log(base + "^" + exp + " = " + Math.pow(base, exp));
+}
+
+console.log("--- Default Args Test ---");
+greet();
+greet("TejX");
+power(5);
+power(2, 3);
