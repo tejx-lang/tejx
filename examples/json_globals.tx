@@ -1,0 +1,24 @@
+
+// JSON & Globals Verification
+
+let obj = {
+    x: 10,
+    y: "hello",
+    z: [1, 2, 3],
+    w: { nested: true }
+};
+
+let json = JSON.stringify(obj);
+console.log("JSON: " + json);
+
+// Test parsing
+let parsed = JSON.parse(json);
+console.log("Parsed x: " + parsed["x"]);
+console.log("Parsed y: " + parsed["y"]);
+console.log("Parsed z length: " + parsed["z"].length);
+console.log("Parsed w.nested: " + parsed["w"]["nested"]);
+
+// Test Globals
+console.log("parseInt: " + (parseInt("123") + 1));
+console.log("parseFloat: " + (parseFloat("12.34") + 1));
+console.log("parseInt (invalid): " + parseInt("abc"));

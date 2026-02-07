@@ -150,6 +150,7 @@ TejX is built on the belief that code should be as expressive as JavaScript but 
 - [ ] **Interfaces**: `interface` (Planned).
 - [x] **Access Modifiers**: `public`, `private` (Implemented).
 - [x] **Static Members**: `static` (Implemented).
+- [x] **Extensions**: Add methods to existing types (`extension User { ... }`).
 
 ### 9. Standard Library
 
@@ -200,10 +201,9 @@ The ultimate goal is to provide a safety model that prevents entire categories o
 
 - [x] **Exhaustive Match Expressions**: Replaces `switch` with powerful nested pattern matching, guards, and rest patterns.
 - [x] **Native Option<T> & Result<T, E>**: Eliminates the "Billion Dollar Mistake" by making absence and errors explicit members of the type system.
-- [ ] **Protocols & Extensions**: A powerful system for adding behavior to existing types without inheritance chains.
+- [x] **Protocols & Extensions**: A powerful system for adding behavior to existing types without inheritance chains.
 - [ ] **Structured Concurrency (Actors)**: Isolated state management with high-performance native thread utilization. No data races.
 - [ ] **Generics & Variance**: Type-safe reuse for advanced data structures.
-- [ ] **Union & Intersection Types**: Advanced type composition with compile-time narrowing.
 
 ### 🟠 Phase 4: Modern Ergonomics (Syntax Excellence)
 
@@ -215,7 +215,16 @@ Borrowing the most productive syntaxes from the modern world.
 - [ ] **Tuple Types**: Fixed-size heterogeneous collections.
 - [ ] **Iterators & Generators**: Native protocol-backed iteration.
 
-### 🟡 Phase 5: Ecosystem & Tooling (The Muscle)
+### � Phase 4.5: Daily Driver Utilities (StdLib Expansion)
+
+Essential tools for comfortable daily development.
+
+- [x] **Rich String API**: `split`, `trim`, `replace`, `up/down case`, `search`.
+- [x] **Array Power**: `reduce`, `find`, `slice`, `sort`, `reverse`, `forEach`, `map`, `filter`.
+- [x] **JSON Integration**: Native `parse` and `stringify`.
+- [x] **FileSystem++**: `exists`, `remove`, `mkdir`.
+
+### �🟡 Phase 5: Ecosystem & Tooling (The Muscle)
 
 A language is only as good as its tools.
 
@@ -243,17 +252,18 @@ A language is only as good as its tools.
 
 ### 🟣 Concurrency & I/O
 
-| Feature              | Description                            | Status          |
-| -------------------- | -------------------------------------- | --------------- |
-| **Async/Await**      | `async function`, `await promise`      | **Implemented** |
-| **Promise Chaining** | `.then()`, `.catch()`, `.finally()`    | Planned         |
-| **Promise.all**      | `await Promise.all([p1, p2])`          | Planned         |
-| **Promise.race**     | First to resolve wins                  | Planned         |
-| **HTTP Client**      | `http.get()`, `http.post()`, `fetch()` | Planned         |
-| **TCP/UDP Sockets**  | Network programming                    | Planned         |
-| **WebSockets**       | Real-time communication                | Planned         |
-| **Worker Threads**   | True parallelism                       | Planned         |
-| **Event Emitter**    | Pub/sub pattern                        | Planned         |
+| Feature              | Description                         | Status          |
+| -------------------- | ----------------------------------- | --------------- |
+| **Async/Await**      | `async function`, `await promise`   | **Implemented** |
+| **Promise Chaining** | `.then()`, `.catch()`, `.finally()` | Planned         |
+
+| **Promise.all** | `await Promise.all([p1, p2])` | **Implemented** |
+| **Promise.race** | First to resolve wins | **Implemented** |
+| **HTTP Client** | `http.get()`, `http.post()`, `fetch()` | **Basic Impl** |
+| **TCP/UDP Sockets** | Network programming | Planned |
+| **WebSockets** | Real-time communication | Planned |
+| **Threads** | True parallelism | Planned |
+| **Event Emitter** | Pub/sub pattern | Planned |
 
 ### ⚙️ Compiler & Tooling
 

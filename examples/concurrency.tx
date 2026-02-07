@@ -1,0 +1,34 @@
+
+async function testConcurrency() {
+    console.log("Start: " + Date.now());
+    
+    // Test Delay
+    console.log("Waiting 100ms...");
+    await delay(100);
+    console.log("Buffered: " + Date.now());
+    
+    // Test Promise.all
+    console.log("Testing Promise.all...");
+    let start = Date.now();
+    let results = await Promise.all([
+        delay(50),
+        delay(100),
+        "Instant"
+    ]);
+    console.log("Promise.all done in: " + (Date.now() - start) + "ms (approx 100)");
+    console.log("Results length: " + results.length);
+    console.log("Results[2]: " + results[2]);
+
+    // Test HTTP (Assume network or just check compilation/runtime)
+    // We'll trust curl is present.
+    console.log("Fetching Google...");
+    let html = await http.get("https://www.google.com");
+    if (html.length > 0) {
+        console.log("Fetched Google! Size: " + html.length);
+    } else {
+        console.log("Fetch failed or empty (no network?)");
+    }
+}
+
+// Run async function
+testConcurrency();

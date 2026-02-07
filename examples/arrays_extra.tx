@@ -1,0 +1,36 @@
+
+// Array Utilities Verification
+
+let nums = [1, 2, 3, 4, 5];
+console.log("Original: " + nums);
+
+// Reduce
+let sum = nums.reduce((acc, x) => acc + x, 0);
+console.log("Sum: " + sum);
+
+// Find
+let found = nums.find((x) => x > 3);
+console.log("Found (>3): " + found);
+
+let notFound = nums.find((x) => x > 10);
+if (typeof(notFound) == "undefined") {
+    console.log("Not Found >10 correctly returned undefined");
+}
+
+// Includes
+if (nums.includes(3)) console.log("Includes 3: Yes");
+if (!nums.includes(99)) console.log("Includes 99: No");
+
+// Reverse
+nums.reverse();
+console.log("Reversed: " + nums);
+
+// Sort
+let mixed = [3, 1, 4, 1, 5, 9, 2];
+mixed.sort();
+console.log("Sorted: " + mixed);
+
+// Strings sort
+let words = ["banana", "apple", "cherry"];
+words.sort();
+console.log("Sorted Words: " + words);
