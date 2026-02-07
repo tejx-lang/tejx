@@ -511,6 +511,26 @@ std::shared_ptr<Statement> Parser::parseForStatement() {
     consume(TokenType::For, "Expected 'for'");
     consume(TokenType::OpenParen, "Expected '('");
     
+    // Check for for-of loop: for (let x of arr)
+    if (check(TokenType::Let) || check(TokenType::Const)) {
+        size_t savedPos = current;
+        advance(); // skip let/const
+        if (check(TokenType::Identifier)) {
+            std::string varName = advance().value;
+            // Check if next token is 'of' (as identifier)
+            if (check(TokenType::Identifier) && peek().value == "of") {
+                advance(); // skip 'of'
+                auto iterable = parseExpression();
+                consume(TokenType::CloseParen, "Expected ')'");
+                auto body = parseStatement();
+                return std::make_shared<ForOfStmt>(varName, iterable, body);
+            }
+        }
+        // Not a for-of loop, restore position
+        current = savedPos;
+    }
+    
+    // C-style for loop
     std::shared_ptr<Statement> initializer;
     if (check(TokenType::Semicolon)) {
         advance();

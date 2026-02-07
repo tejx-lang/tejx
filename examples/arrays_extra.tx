@@ -1,36 +1,36 @@
+// Array Utilities Test
 
-// Array Utilities Verification
+console.log("Testing array utilities...");
 
-let nums = [1, 2, 3, 4, 5];
-console.log("Original: " + nums);
+let arr = [1, 2, 3];
+console.log("Initial array: " + arr.join(", "));
 
-// Reduce
-let sum = nums.reduce((acc, x) => acc + x, 0);
-console.log("Sum: " + sum);
+// push and pop
+arr.push(4);
+console.log("After push(4): " + arr.join(", "));
 
-// Find
-let found = nums.find((x) => x > 3);
-console.log("Found (>3): " + found);
+let popped = arr.pop();
+console.log("Popped: " + popped);
+console.log("After pop: " + arr.join(", "));
 
-let notFound = nums.find((x) => x > 10);
-if (typeof(notFound) == "undefined") {
-    console.log("Not Found >10 correctly returned undefined");
-}
+// shift and unshift
+arr.unshift(0);
+console.log("After unshift(0): " + arr.join(", "));
 
-// Includes
-if (nums.includes(3)) console.log("Includes 3: Yes");
-if (!nums.includes(99)) console.log("Includes 99: No");
+let shifted = arr.shift();
+console.log("Shifted: " + shifted);
+console.log("After shift: " + arr.join(", "));
 
-// Reverse
-nums.reverse();
-console.log("Reversed: " + nums);
+// concat
+let arr2 = [4, 5, 6];
+let merged = arr.concat(arr2);
+console.log("Concatenated: " + merged.join(", "));
 
-// Sort
-let mixed = [3, 1, 4, 1, 5, 9, 2];
-mixed.sort();
-console.log("Sorted: " + mixed);
+// indexOf
+console.log("indexOf(2): " + arr.indexOf(2));
+console.log("indexOf(99): " + arr.indexOf(99));
 
-// Strings sort
-let words = ["banana", "apple", "cherry"];
-words.sort();
-console.log("Sorted Words: " + words);
+// join with custom separator
+console.log("Joined with ' - ': " + arr.join(" - "));
+
+console.log("Array utilities test complete!");

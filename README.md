@@ -220,7 +220,9 @@ Borrowing the most productive syntaxes from the modern world.
 Essential tools for comfortable daily development.
 
 - [x] **Rich String API**: `split`, `trim`, `replace`, `up/down case`, `search`.
-- [x] **Array Power**: `reduce`, `find`, `slice`, `sort`, `reverse`, `forEach`, `map`, `filter`.
+- [x] **Array Power**: `reduce`, `find`, `slice`, `sort`, `reverse`, `forEach`, `map`, `filter`, `concat`, `join`, `indexOf`, `push`, `pop`, `shift`, `unshift`.
+- [x] **Console Enhancements**: `console.log`, `console.error`, `console.warn`.
+- [x] **Iteration**: `for...of` loop for typed arrays.
 - [x] **JSON Integration**: Native `parse` and `stringify`.
 - [x] **FileSystem++**: `exists`, `remove`, `mkdir`.
 
@@ -262,7 +264,7 @@ A language is only as good as its tools.
 | **HTTP Client** | `http.get()`, `http.post()`, `fetch()` | **Basic Impl** |
 | **TCP/UDP Sockets** | Network programming | Planned |
 | **WebSockets** | Real-time communication | Planned |
-| **Threads** | True parallelism | Planned |
+| **Threads** | True parallelism (`Thread`, `Mutex`) | **Implemented** |
 | **Event Emitter** | Pub/sub pattern | Planned |
 
 ### ⚙️ Compiler & Tooling

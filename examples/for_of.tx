@@ -1,0 +1,15 @@
+// For-Of Loop Test (typed arrays)
+
+console.log("Testing for-of loop...");
+
+let numbers: number[] = [1, 2, 3, 4, 5];
+let sum = 0;
+
+for (let n of numbers) {
+    console.log("Number: " + n);
+    sum = sum + n;
+}
+
+console.log("Sum: " + sum);
+
+console.log("For-of loop test complete!");

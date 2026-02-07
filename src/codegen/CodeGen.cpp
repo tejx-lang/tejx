@@ -88,6 +88,8 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("#include <chrono>");
     emitLine("#include <ctime>");
     emitLine("#include <iomanip>");
+    emitLine("#include <thread>");
+    emitLine("#include <mutex>");
     emitLine("#include <future>"); // For async/await
     emitLine("#include <optional>"); // For Option<T>
     emitLine("#include <filesystem>");
@@ -186,12 +188,14 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("    struct Object;");
     emitLine("    struct Var; // Forward decl");
     emitLine("    struct PromiseWrapper; // Forward decl for Async");
+    emitLine("    struct ThreadWrapper;");
+    emitLine("    struct MutexWrapper;");
     emitLine("    ");
     emitLine("    // Use struct inheritance data member for recursion support if needed, but inheritance is cleaner");
     emitLine("    // std::variant requires complete types usually, but shared_ptr<vector<Var>> might be tolerant.");
     emitLine("    // Safest: Use a wrapper if inheritance fails, but let's try inheritance with forward declaration.");
     emitLine("    ");
-    emitLine("    using VarBase = std::variant<std::monostate, double, std::string, bool, std::shared_ptr<Object>, std::shared_ptr<std::vector<Var>>, std::shared_ptr<PromiseWrapper>>;");
+    emitLine("    using VarBase = std::variant<std::monostate, double, std::string, bool, std::shared_ptr<Object>, std::shared_ptr<std::vector<Var>>, std::shared_ptr<PromiseWrapper>, std::shared_ptr<ThreadWrapper>, std::shared_ptr<MutexWrapper>>;");
     emitLine("    ");
     emitLine("    struct Var : VarBase {");
     emitLine("        using VarBase::VarBase;");
@@ -210,6 +214,12 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("        bool is_promise() const {");
     emitLine("            return std::holds_alternative<std::shared_ptr<PromiseWrapper>>(*this);");
     emitLine("        }");
+    emitLine("        bool is_thread() const {");
+    emitLine("            return std::holds_alternative<std::shared_ptr<ThreadWrapper>>(*this);");
+    emitLine("        }");
+    emitLine("        bool is_mutex() const {");
+    emitLine("            return std::holds_alternative<std::shared_ptr<MutexWrapper>>(*this);");
+    emitLine("        }");
     emitLine("    };");
     emitLine("    ");
     emitLine("    struct Object {");
@@ -223,11 +233,23 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("        PromiseWrapper(std::shared_future<Var> f) : future(f) {}");
     emitLine("    };");
     emitLine("");
+    emitLine("    struct ThreadWrapper {");
+    emitLine("        std::thread t;");
+    emitLine("        ThreadWrapper(std::thread&& th) : t(std::move(th)) {}");
+    emitLine("        ~ThreadWrapper() { if(t.joinable()) t.join(); }");
+    emitLine("    };");
+    emitLine("");
+    emitLine("    struct MutexWrapper {");
+    emitLine("        std::mutex m;");
+    emitLine("    };");
+    emitLine("");
     emitLine("    std::string toString(const Var& v) {");
     emitLine("        if (std::holds_alternative<double>(v)) return toString(std::get<double>(v));");
     emitLine("        if (std::holds_alternative<std::string>(v)) return std::get<std::string>(v);");
     emitLine("        if (std::holds_alternative<bool>(v)) return std::get<bool>(v) ? \"true\" : \"false\";");
     emitLine("        if (std::holds_alternative<std::shared_ptr<PromiseWrapper>>(v)) return \"[Promise]\";");
+    emitLine("        if (std::holds_alternative<std::shared_ptr<ThreadWrapper>>(v)) return \"[Thread]\";");
+    emitLine("        if (std::holds_alternative<std::shared_ptr<MutexWrapper>>(v)) return \"[Mutex]\";");
     emitLine("        if (std::holds_alternative<std::shared_ptr<Object>>(v)) {");
     emitLine("            auto obj = std::get<std::shared_ptr<Object>>(v);");
     emitLine("            std::stringstream ss;");
@@ -268,6 +290,14 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("    bool has_key(const Var& v, const std::string& key) {");
     emitLine("        if (is_map(v)) return std::get<std::shared_ptr<Object>>(v)->members.count(key) > 0;");
     emitLine("        return false;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    bool equals(const Var& a, const Var& b) {");
+    emitLine("        if (a.index() != b.index()) return false;");
+    emitLine("        if (std::holds_alternative<double>(a)) return std::get<double>(a) == std::get<double>(b);");
+    emitLine("        if (std::holds_alternative<std::string>(a)) return std::get<std::string>(a) == std::get<std::string>(b);");
+    emitLine("        if (std::holds_alternative<bool>(a)) return std::get<bool>(a) == std::get<bool>(b);");
+    emitLine("        return false; // Objects/arrays not deeply compared for now");
     emitLine("    }");
     emitLine("");
     emitLine("    // Stream operator for Var");
@@ -638,6 +668,120 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("        return v;");
     emitLine("    }");
     emitLine("");
+    emitLine("    // Array Utilities");
+    emitLine("    Var concat(const Var& a, const Var& b) {");
+    emitLine("        auto result = std::make_shared<std::vector<Var>>();");
+    emitLine("        if (auto va = std::get_if<std::shared_ptr<std::vector<Var>>>(&a)) {");
+    emitLine("            for (auto& item : **va) result->push_back(item);");
+    emitLine("        }");
+    emitLine("        if (auto vb = std::get_if<std::shared_ptr<std::vector<Var>>>(&b)) {");
+    emitLine("            for (auto& item : **vb) result->push_back(item);");
+    emitLine("        }");
+    emitLine("        return lift(result);");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    std::string join(const Var& v, std::string sep = \",\") {");
+    emitLine("        std::string result;");
+    emitLine("        if (auto vec = std::get_if<std::shared_ptr<std::vector<Var>>>(&v)) {");
+    emitLine("            for (size_t i = 0; i < (*vec)->size(); ++i) {");
+    emitLine("                if (i > 0) result += sep;");
+    emitLine("                result += toString((**vec)[i]);");
+    emitLine("            }");
+    emitLine("        }");
+    emitLine("        return result;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    double indexOf(const Var& v, const Var& target) {");
+    emitLine("        if (auto vec = std::get_if<std::shared_ptr<std::vector<Var>>>(&v)) {");
+    emitLine("            for (size_t i = 0; i < (*vec)->size(); ++i) {");
+    emitLine("                if (equals((**vec)[i], target)) return (double)i;");
+    emitLine("            }");
+    emitLine("        }");
+    emitLine("        return -1;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    void push(Var& v, const Var& item) {");
+    emitLine("        if (auto vec = std::get_if<std::shared_ptr<std::vector<Var>>>(&v)) {");
+    emitLine("            (*vec)->push_back(item);");
+    emitLine("        }");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    Var pop(Var& v) {");
+    emitLine("        if (auto vec = std::get_if<std::shared_ptr<std::vector<Var>>>(&v)) {");
+    emitLine("            if (!(*vec)->empty()) {");
+    emitLine("                Var last = (*vec)->back();");
+    emitLine("                (*vec)->pop_back();");
+    emitLine("                return last;");
+    emitLine("            }");
+    emitLine("        }");
+    emitLine("        return Var();");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    Var shift(Var& v) {");
+    emitLine("        if (auto vec = std::get_if<std::shared_ptr<std::vector<Var>>>(&v)) {");
+    emitLine("            if (!(*vec)->empty()) {");
+    emitLine("                Var first = (*vec)->front();");
+    emitLine("                (*vec)->erase((*vec)->begin());");
+    emitLine("                return first;");
+    emitLine("            }");
+    emitLine("        }");
+    emitLine("        return Var();");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    void unshift(Var& v, const Var& item) {");
+    emitLine("        if (auto vec = std::get_if<std::shared_ptr<std::vector<Var>>>(&v)) {");
+    emitLine("            (*vec)->insert((*vec)->begin(), item);");
+    emitLine("        }");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    // Template overloads for raw vectors");
+    emitLine("    template<typename T>");
+    emitLine("    void push(std::vector<T>& v, const T& item) { v.push_back(item); }");
+    emitLine("");
+    emitLine("    template<typename T>");
+    emitLine("    T pop(std::vector<T>& v) {");
+    emitLine("        if (v.empty()) return T{};");
+    emitLine("        T last = v.back();");
+    emitLine("        v.pop_back();");
+    emitLine("        return last;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    template<typename T>");
+    emitLine("    T shift(std::vector<T>& v) {");
+    emitLine("        if (v.empty()) return T{};");
+    emitLine("        T first = v.front();");
+    emitLine("        v.erase(v.begin());");
+    emitLine("        return first;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    template<typename T>");
+    emitLine("    void unshift(std::vector<T>& v, const T& item) { v.insert(v.begin(), item); }");
+    emitLine("");
+    emitLine("    template<typename T>");
+    emitLine("    std::string join(const std::vector<T>& v, std::string sep = \",\") {");
+    emitLine("        std::string result;");
+    emitLine("        for (size_t i = 0; i < v.size(); ++i) {");
+    emitLine("            if (i > 0) result += sep;");
+    emitLine("            result += toString(v[i]);");
+    emitLine("        }");
+    emitLine("        return result;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    template<typename T>");
+    emitLine("    double indexOf(const std::vector<T>& v, const T& target) {");
+    emitLine("        for (size_t i = 0; i < v.size(); ++i) {");
+    emitLine("            if (v[i] == target) return (double)i;");
+    emitLine("        }");
+    emitLine("        return -1;");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    template<typename T>");
+    emitLine("    std::vector<T> concat(const std::vector<T>& a, const std::vector<T>& b) {");
+    emitLine("        std::vector<T> result = a;");
+    emitLine("        result.insert(result.end(), b.begin(), b.end());");
+    emitLine("        return result;");
+    emitLine("    }");
+    emitLine("");
     emitLine("    Var delay(double ms) {");
     emitLine("        auto fut = std::async(std::launch::async, [ms]() -> Var {");
     emitLine("            std::this_thread::sleep_for(std::chrono::milliseconds((long long)ms));");
@@ -702,6 +846,35 @@ std::string CodeGen::generate(std::shared_ptr<Program> program) {
     emitLine("             return Var();");
     emitLine("        });");
     emitLine("        return std::make_shared<PromiseWrapper>(fut.share());");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    // Multithreading Helpers");
+    emitLine("    template<typename F>");
+    emitLine("    Var create_thread(F&& f) {");
+    emitLine("        return std::make_shared<ThreadWrapper>(std::thread(std::forward<F>(f)));");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    void join_thread(const Var& v) {");
+    emitLine("        if (std::holds_alternative<std::shared_ptr<ThreadWrapper>>(v)) {");
+    emitLine("            auto& t = std::get<std::shared_ptr<ThreadWrapper>>(v)->t;");
+    emitLine("            if (t.joinable()) t.join();");
+    emitLine("        }");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    Var create_mutex() {");
+    emitLine("        return std::make_shared<MutexWrapper>();");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    void lock_mutex(const Var& v) {");
+    emitLine("        if (std::holds_alternative<std::shared_ptr<MutexWrapper>>(v)) {");
+    emitLine("            std::get<std::shared_ptr<MutexWrapper>>(v)->m.lock();");
+    emitLine("        }");
+    emitLine("    }");
+    emitLine("");
+    emitLine("    void unlock_mutex(const Var& v) {");
+    emitLine("        if (std::holds_alternative<std::shared_ptr<MutexWrapper>>(v)) {");
+    emitLine("            std::get<std::shared_ptr<MutexWrapper>>(v)->m.unlock();");
+    emitLine("        }");
     emitLine("    }");
     emitLine("");
     emitLine("    Var await_op(const Var& v) {");
@@ -1219,6 +1392,8 @@ void CodeGen::genStatement(std::shared_ptr<Statement> stmt) {
                 return;
             }
 
+            // Add const for const variables
+            if (varDecl->isConst) emit("const ");
             emit(type + " " + id->name);
             if (varDecl->initializer) {
                 emit(" = ");
@@ -1400,7 +1575,19 @@ void CodeGen::genStatement(std::shared_ptr<Statement> stmt) {
          emitLine("}");
          
          dedent();
-         emitLine("}"); // Close outer block (though for loop has its own scope iirc)
+        emitLine("}"); // Close outer block (though for loop has its own scope iirc)
+    }
+    else if (auto forOf = std::dynamic_pointer_cast<ForOfStmt>(stmt)) {
+        // Range-based for loop - works with native typed arrays directly
+        emit("for (auto ");
+        emit(forOf->variable);
+        emit(" : ");
+        genExpression(forOf->iterable);
+        emitLine(") {");
+        indent();
+        genStatement(forOf->body);
+        dedent();
+        emitLine("}");
     }
     else if (auto returnStmt = std::dynamic_pointer_cast<ReturnStmt>(stmt)) {
         emit("return ");
@@ -1584,12 +1771,22 @@ void CodeGen::genExpression(std::shared_ptr<Expression> expr) {
         buffer << ")";
     }
     else if (auto newExpr = std::dynamic_pointer_cast<NewExpr>(expr)) {
-        buffer << "std::make_shared<" << newExpr->className << ">(";
-        for (size_t i = 0; i < newExpr->args.size(); ++i) {
-            genExpression(newExpr->args[i]);
-            if (i < newExpr->args.size() - 1) buffer << ", ";
+        if (newExpr->className == "Thread") {
+            // Thread takes a lambda/function
+            buffer << "tejx_runtime::create_thread(";
+            if (!newExpr->args.empty()) genExpression(newExpr->args[0]);
+            else buffer << "[](){}";
+            buffer << ")";
+        } else if (newExpr->className == "Mutex") {
+            buffer << "tejx_runtime::create_mutex()";
+        } else {
+            buffer << "std::make_shared<" << newExpr->className << ">(";
+            for (size_t i = 0; i < newExpr->args.size(); ++i) {
+                genExpression(newExpr->args[i]);
+                if (i < newExpr->args.size() - 1) buffer << ", ";
+            }
+            buffer << ")";
         }
-        buffer << ")";
     }
     else if (auto mem = std::dynamic_pointer_cast<MemberAccessExpr>(expr)) {
         if (mem->member == "length") {
@@ -1677,6 +1874,20 @@ void CodeGen::genExpression(std::shared_ptr<Expression> expr) {
                 genExpression(arg);
             }
             buffer << " << std::endl)"; // console.log output void
+        } else if (call->callee == "console.error") {
+            buffer << "(void)(std::cerr";
+            for (auto& arg : call->args) {
+                buffer << " << ";
+                genExpression(arg);
+            }
+            buffer << " << std::endl)";
+        } else if (call->callee == "console.warn") {
+            buffer << "(void)(std::cout << \"[WARN] \"";
+            for (auto& arg : call->args) {
+                buffer << " << ";
+                genExpression(arg);
+            }
+            buffer << " << std::endl)";
         } else if (call->callee.find("Math.") == 0) {
             // Math library support
             std::string method = call->callee.substr(5);
@@ -1753,6 +1964,44 @@ void CodeGen::genExpression(std::shared_ptr<Expression> expr) {
             } else if (callee.find(".reverse") != std::string::npos) {
                  std::string obj = callee.substr(0, callee.find(".reverse"));
                  buffer << "tejx_runtime::reverse(" << obj << ")";
+            } else if (callee.find(".concat") != std::string::npos) {
+                 std::string obj = callee.substr(0, callee.find(".concat"));
+                 buffer << "tejx_runtime::concat(" << obj << ", ";
+                 if (!call->args.empty()) genExpression(call->args[0]);
+                 else buffer << "tejx_runtime::Var()";
+                 buffer << ")";
+            } else if (callee.find(".join") != std::string::npos) {
+                 std::string obj = callee.substr(0, callee.find(".join"));
+                 buffer << "tejx_runtime::join(" << obj;
+                 if (!call->args.empty()) {
+                     buffer << ", ";
+                     genExpression(call->args[0]);
+                 }
+                 buffer << ")";
+            } else if (callee.find(".indexOf") != std::string::npos) {
+                 std::string obj = callee.substr(0, callee.find(".indexOf"));
+                 buffer << "tejx_runtime::indexOf(" << obj << ", ";
+                 if (!call->args.empty()) genExpression(call->args[0]);
+                 else buffer << "tejx_runtime::Var()";
+                 buffer << ")";
+            } else if (callee.find(".push") != std::string::npos) {
+                 std::string obj = callee.substr(0, callee.find(".push"));
+                 buffer << "tejx_runtime::push(" << obj << ", ";
+                 if (!call->args.empty()) genExpression(call->args[0]);
+                 else buffer << "tejx_runtime::Var()";
+                 buffer << ")";
+            } else if (callee.find(".pop") != std::string::npos && callee.find(".pop") == callee.length() - 4) {
+                 std::string obj = callee.substr(0, callee.find(".pop"));
+                 buffer << "tejx_runtime::pop(" << obj << ")";
+            } else if (callee.find(".shift") != std::string::npos && callee.find(".shift") == callee.length() - 6) {
+                 std::string obj = callee.substr(0, callee.find(".shift"));
+                 buffer << "tejx_runtime::shift(" << obj << ")";
+            } else if (callee.find(".unshift") != std::string::npos) {
+                 std::string obj = callee.substr(0, callee.find(".unshift"));
+                 buffer << "tejx_runtime::unshift(" << obj << ", ";
+                 if (!call->args.empty()) genExpression(call->args[0]);
+                 else buffer << "tejx_runtime::Var()";
+                 buffer << ")";
             } else if (callee.find(".trim") != std::string::npos) {
                  std::string obj = callee.substr(0, callee.find(".trim"));
                  buffer << "tejx_runtime::trim(" << obj << ")";
@@ -1840,6 +2089,15 @@ void CodeGen::genExpression(std::shared_ptr<Expression> expr) {
                     if (i < call->args.size() - 1) buffer << ", ";
                  }
                  buffer << ")";
+            } else if (callee.find(".join") != std::string::npos && callee.find(".join") == callee.length() - 5) {
+                 std::string obj = callee.substr(0, callee.find(".join"));
+                 buffer << "tejx_runtime::join_thread(" << obj << ")";
+            } else if (callee.find(".lock") != std::string::npos && callee.find(".lock") == callee.length() - 5) {
+                 std::string obj = callee.substr(0, callee.find(".lock"));
+                 buffer << "tejx_runtime::lock_mutex(" << obj << ")";
+            } else if (callee.find(".unlock") != std::string::npos && callee.find(".unlock") == callee.length() - 7) {
+                 std::string obj = callee.substr(0, callee.find(".unlock"));
+                 buffer << "tejx_runtime::unlock_mutex(" << obj << ")";
             } else {
                 // Check for method call (obj.method -> obj->method)
                 size_t dotPos = callee.find('.');

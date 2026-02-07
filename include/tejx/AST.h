@@ -262,6 +262,16 @@ struct ForStmt : Statement {
         : init(i), condition(c), increment(inc), body(b) {}
 };
 
+// For-of loop: for (let x of arr) { ... }
+struct ForOfStmt : Statement {
+    std::string variable;
+    std::shared_ptr<Expression> iterable;
+    std::shared_ptr<Statement> body;
+    
+    ForOfStmt(const std::string& v, std::shared_ptr<Expression> i, std::shared_ptr<Statement> b)
+        : variable(v), iterable(i), body(b) {}
+};
+
 struct Case {
     std::shared_ptr<Expression> value; // nullptr for default
     std::vector<std::shared_ptr<Statement>> statements;
