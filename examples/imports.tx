@@ -1,0 +1,8 @@
+// Import Test - imports from utils module (stub test)
+// Note: Full multi-file compilation TBD - this tests parsing only
+
+import { add, multiply } from "./utils.tx";
+
+console.log("Import syntax parsed successfully!");
+console.log("This test verifies import parsing works.");
+console.log("Full multi-file compilation coming soon.");

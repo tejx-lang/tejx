@@ -1,0 +1,20 @@
+// Spread Operator Test
+
+console.log("Testing spread operator...");
+
+let arr1 = [1, 2, 3];
+let arr2 = [4, 5, 6];
+
+// Spread to combine arrays
+let combined = [...arr1, ...arr2];
+console.log("Combined: " + combined.join(", "));
+
+// Spread with additional elements
+let withExtra = [0, ...arr1, 4, 5];
+console.log("With extra: " + withExtra.join(", "));
+
+// Spread to copy
+let copy = [...arr1];
+console.log("Copy: " + copy.join(", "));
+
+console.log("Spread operator test complete!");

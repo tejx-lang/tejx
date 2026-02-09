@@ -1,0 +1,28 @@
+// Map and Set Test
+
+console.log("Testing Map and Set types...");
+
+// Test Map
+let m = new Map();
+m.set("name", "TejX");
+m.set("version", 1);
+
+console.log("Map has 'name': " + m.has("name"));
+console.log("Map get 'name': " + m.get("name"));
+console.log("Map size: " + m.size());
+
+m.del("version");
+console.log("After del, size: " + m.size());
+
+// Test Set
+let s = new Set();
+s.add(1);
+s.add(2);
+s.add(2);  // Duplicate, should not increase size
+s.add(3);
+
+console.log("Set has 1: " + s.has(1));
+console.log("Set has 99: " + s.has(99));
+console.log("Set size: " + s.size());
+
+console.log("Map and Set test complete!");

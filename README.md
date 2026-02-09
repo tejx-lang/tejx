@@ -209,7 +209,7 @@ The ultimate goal is to provide a safety model that prevents entire categories o
 
 Borrowing the most productive syntaxes from the modern world.
 
-- [ ] **Spread/Rest for Objects & Arrays**: High-performance native implementation using stack-allocated fragments where possible.
+- [x] **Spread for Arrays**: `[...arr]` - High-performance native implementation for array spreading.
 - [ ] **Template Literals (Tagged)**: Efficient string interpolation with zero runtime overhead via comptime parsing.
 - [ ] **Decorators & Macros**: metaprogramming capabilities inspired by Rust/Scala for high-level abstractions.
 - [ ] **Tuple Types**: Fixed-size heterogeneous collections.
@@ -239,25 +239,26 @@ A language is only as good as its tools.
 
 ### 🔵 Advanced Features
 
-| Feature              | Description                                         | Status  |
-| -------------------- | --------------------------------------------------- | ------- |
-| **Modules**          | `import`/`export` for code organization             | Planned |
-| **Abstract Classes** | `abstract class Shape { abstract area(): number }`  | Planned |
-| **Decorators**       | `@deprecated`, `@readonly` annotations              | Planned |
-| **Getter/Setter**    | `get name() { }`, `set name(v) { }`                 | Planned |
-| **Symbol Type**      | Unique identifiers                                  | Planned |
-| **Map/Set Types**    | `Map<K,V>`, `Set<T>` built-in types                 | Planned |
-| **WeakMap/WeakRef**  | Weak references for GC                              | Planned |
-| **Proxy/Reflect**    | Metaprogramming (Evaluating for performance/safety) | Planned |
-| **Iterators**        | `for...of`, `Symbol.iterator`                       | Planned |
-| **Generators**       | `function* gen() { yield 1; }`                      | Planned |
+| Feature              | Description                                         | Status          |
+| -------------------- | --------------------------------------------------- | --------------- |
+| **Modules**          | `import`/`export` for code organization             | **Implemented** |
+| **Abstract Classes** | `abstract class Shape { abstract area(): number }`  | Planned         |
+| **Decorators**       | `@deprecated`, `@readonly` annotations              | Planned         |
+| **Getter/Setter**    | `get name() { }`, `set name(v) { }`                 | **Implemented** |
+| **Symbol Type**      | Unique identifiers                                  | Planned         |
+| **Map/Set Types**    | `Map<K,V>`, `Set<T>` built-in types                 | **Implemented** |
+| **WeakMap/WeakRef**  | Weak references for GC                              | Planned         |
+| **Proxy/Reflect**    | Metaprogramming (Evaluating for performance/safety) | Planned         |
+| **Iterators**        | `for...of`, `Symbol.iterator`                       | Planned         |
+| **Generators**       | `function* gen() { yield 1; }`                      | Planned         |
 
 ### 🟣 Concurrency & I/O
 
-| Feature              | Description                         | Status          |
-| -------------------- | ----------------------------------- | --------------- |
-| **Async/Await**      | `async function`, `await promise`   | **Implemented** |
-| **Promise Chaining** | `.then()`, `.catch()`, `.finally()` | Planned         |
+| Feature                 | Description                         | Status          |
+| ----------------------- | ----------------------------------- | --------------- |
+| **Async/Await**         | `async function`, `await promise`   | **Implemented** |
+| **Promise Constructor** | `new Promise((resolve) => {...})`   | **Implemented** |
+| **Promise Chaining**    | `.then()`, `.catch()`, `.finally()` | Planned         |
 
 | **Promise.all** | `await Promise.all([p1, p2])` | **Implemented** |
 | **Promise.race** | First to resolve wins | **Implemented** |

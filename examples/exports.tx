@@ -1,0 +1,17 @@
+// Export Test - utils.tx module
+
+export const VERSION = "1.0.0";
+
+export function add(a: number, b: number): number {
+    return a + b;
+}
+
+export function multiply(a: number, b: number): number {
+    return a * b;
+}
+
+// Also test in main file
+console.log("Utils module: Version " + VERSION);
+console.log("add(2, 3) = " + add(2, 3));
+console.log("multiply(4, 5) = " + multiply(4, 5));
+console.log("Export test complete!");

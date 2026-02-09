@@ -11,7 +11,7 @@ namespace tejx {
 
 class CodeGen {
 public:
-    std::string generate(std::shared_ptr<Program> program);
+    std::string generate(const std::vector<std::pair<std::string, std::shared_ptr<Program>>>& modules);
 
 private:
     std::stringstream buffer;

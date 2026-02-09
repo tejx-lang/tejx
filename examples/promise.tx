@@ -1,0 +1,49 @@
+// Promise Features Test
+
+console.log("=== Promise Features Test ===");
+
+// Test 1: Basic async function with Promise<number>
+async function computeDouble(x: number): Promise<number> {
+    return x * 2;
+}
+
+// Test 2: Async function with Promise<string>
+async function fetchGreeting(name: string): Promise<string> {
+    return "Hello, " + name + "!";
+}
+
+// Test 3: Async function with delayed computation
+async function slowAdd(a: number, b: number): Promise<number> {
+    return a + b;
+}
+
+// === Test Un-awaited Promises ===
+console.log("\n--- Un-awaited Promises ---");
+let promise1 = computeDouble(5);
+console.log("promise1 (not awaited): " + promise1);  // [Promise]
+
+let promise2 = fetchGreeting("TejX");
+console.log("promise2 (not awaited): " + promise2);  // [Promise]
+
+// === Test Awaited Promises ===
+console.log("\n--- Awaited Promises ---");
+let result1 = await computeDouble(5);
+console.log("result1 (awaited): " + result1);  // 10
+
+let result2 = await fetchGreeting("TejX");
+console.log("result2 (awaited): " + result2);  // Hello, TejX!
+
+let result3 = await slowAdd(10, 20);
+console.log("result3 (awaited): " + result3);  // 30
+
+// === Test Chained Promises ===
+console.log("\n--- Chained Promises ---");
+let chainResult = await computeDouble(await computeDouble(5));
+console.log("chainResult (double of double): " + chainResult);  // 20
+
+// === Test Promise in Expression ===
+console.log("\n--- Promise in Expression ---");
+let exprResult = await computeDouble(3) + await computeDouble(7);
+console.log("exprResult (3*2 + 7*2): " + exprResult);  // 20
+
+console.log("\n=== Promise Features Test Complete ===");

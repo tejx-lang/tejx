@@ -8,7 +8,26 @@ Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens) {}
 std::shared_ptr<Program> Parser::parse() {
     auto program = std::make_shared<Program>();
     while (!isAtEnd()) {
-        program->globals.push_back(parseDeclaration());
+        if (auto decl = parseDeclaration()) {
+             // Cast to Statement because that's what we store now
+             if (auto stmt = std::dynamic_pointer_cast<tejx::Statement>(decl)) {
+                 program->statements.push_back(stmt);
+             } else {
+                 if (auto func = std::dynamic_pointer_cast<tejx::FunctionDeclaration>(decl)) {
+                    // FunctionDeclaration inherits ASTNode, but we need Statement wrapper or change Program to hold ASTNode
+                    // AST.h says: struct Program : ASTNode { std::vector<std::shared_ptr<ASTNode>> statements; ... }
+                    program->statements.push_back(decl);
+                 } else if (auto cls = std::dynamic_pointer_cast<tejx::ClassDeclaration>(decl)) {
+                    program->statements.push_back(decl);
+                 } else if (auto ext = std::dynamic_pointer_cast<tejx::ExtensionDeclaration>(decl)) {
+                    program->statements.push_back(decl);
+                 } else if (auto proto = std::dynamic_pointer_cast<tejx::ProtocolDeclaration>(decl)) {
+                    program->statements.push_back(decl);
+                 } else {
+                    program->statements.push_back(decl);
+                 }
+             }
+        }
     }
     return program;
 }
@@ -40,7 +59,59 @@ Token Parser::consume(TokenType type, std::string message) {
 }
 
 // Declarations
-std::shared_ptr<ASTNode> Parser::parseDeclaration() {
+std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
+    // Handle import: import { x, y } from "./file.tx" or import x from "./file.tx"
+    if (check(TokenType::Import)) {
+        advance(); // consume 'import'
+        std::vector<std::string> names;
+        bool isDefault = false;
+        
+        if (check(TokenType::OpenBrace)) {
+            // Named imports: import { x, y } from "..."
+            advance(); // consume '{'
+            do {
+                names.push_back(consume(TokenType::Identifier, "Expected import name").value);
+            } while (check(TokenType::Comma) && advance().type == TokenType::Comma);
+            consume(TokenType::CloseBrace, "Expected '}'");
+        } else if (check(TokenType::Identifier)) {
+            // Default import: import x from "..."
+            names.push_back(advance().value);
+            isDefault = true;
+        }
+        
+        consume(TokenType::From, "Expected 'from'");
+        std::string source = consume(TokenType::String, "Expected module path").value;
+        consume(TokenType::Semicolon, "Expected ';'");
+        return std::make_shared<ImportDecl>(names, source, isDefault);
+    }
+    
+    // Handle export: export function/const/default
+    if (check(TokenType::Export)) {
+        advance(); // consume 'export'
+        bool isDefault = false;
+        
+        // Check for: export default ...
+        if (check(TokenType::Default)) {
+            advance();
+            isDefault = true;
+        }
+        
+        // Parse the declaration being exported
+        std::shared_ptr<ASTNode> decl;
+        if (check(TokenType::Function) || check(TokenType::Async)) {
+            decl = parseDeclaration();
+        } else if (check(TokenType::Let) || check(TokenType::Const)) {
+            decl = parseVarDeclaration();
+        } else if (check(TokenType::Class)) {
+            decl = parseClassDeclaration();
+        } else {
+            std::cerr << "Error: Expected function, const, let, or class after export." << std::endl;
+            exit(1);
+        }
+        
+        return std::make_shared<ExportDecl>(decl, isDefault);
+    }
+    
     // Check for async function
     if (check(TokenType::Async)) {
         advance(); // consume 'async'
@@ -81,6 +152,8 @@ std::shared_ptr<ASTNode> Parser::parseDeclaration() {
     
     std::vector<ClassDeclaration::Member> members;
     std::vector<ClassDeclaration::Method> methods; // Updated to use Method struct
+    std::vector<ClassDeclaration::Getter> getters;
+    std::vector<ClassDeclaration::Setter> setters;
     std::shared_ptr<FunctionDeclaration> constructor = nullptr;
     
     while (!check(TokenType::CloseBrace) && !isAtEnd()) {
@@ -119,6 +192,48 @@ std::shared_ptr<ASTNode> Parser::parseDeclaration() {
             else if (check(TokenType::Protected)) { access = ClassDeclaration::AccessModifier::Protected; advance(); }
             
             if (check(TokenType::Static)) { isStatic = true; advance(); }
+            
+            // Getter: get name() { ... }
+            if (check(TokenType::Identifier) && peek().value == "get" && peek(1).type == TokenType::Identifier) {
+                advance(); // consume 'get'
+                std::string gName = consume(TokenType::Identifier, "Expected getter name.").value;
+                consume(TokenType::OpenParen, "Expected '('");
+                consume(TokenType::CloseParen, "Expected ')'");
+                
+                std::string retType = "any";
+                if (check(TokenType::Colon)) {
+                    advance();
+                    if (check(TokenType::TypeNumber)) { retType = "number"; advance(); }
+                    else if (check(TokenType::TypeString)) { retType = "string"; advance(); }
+                    else if (check(TokenType::TypeBoolean)) { retType = "boolean"; advance(); }
+                    else { retType = consume(TokenType::Identifier, "RetType").value; }
+                }
+                
+                auto body = std::dynamic_pointer_cast<BlockStmt>(parseBlock());
+                getters.push_back({gName, retType, body, access});
+                continue;
+            }
+            
+            // Setter: set name(value) { ... }
+            if (check(TokenType::Identifier) && peek().value == "set" && peek(1).type == TokenType::Identifier) {
+                advance(); // consume 'set'
+                std::string sName = consume(TokenType::Identifier, "Expected setter name.").value;
+                consume(TokenType::OpenParen, "Expected '('");
+                std::string paramName = consume(TokenType::Identifier, "Expected param name.").value;
+                std::string paramType = "any";
+                if (check(TokenType::Colon)) {
+                    advance();
+                    if (check(TokenType::TypeNumber)) { paramType = "number"; advance(); }
+                    else if (check(TokenType::TypeString)) { paramType = "string"; advance(); }
+                    else if (check(TokenType::TypeBoolean)) { paramType = "boolean"; advance(); }
+                    else { paramType = consume(TokenType::Identifier, "ParamType").value; }
+                }
+                consume(TokenType::CloseParen, "Expected ')'");
+                
+                auto body = std::dynamic_pointer_cast<BlockStmt>(parseBlock());
+                setters.push_back({sName, paramName, paramType, body, access});
+                continue;
+            }
             
             // Method or Field?
             // Methods start with function name + (
@@ -199,7 +314,7 @@ std::shared_ptr<ASTNode> Parser::parseDeclaration() {
         }
     }
     consume(TokenType::CloseBrace, "Expected '}' after class body.");
-    return std::make_shared<ClassDeclaration>(name, members, methods, constructor, parentName, implementedProtocols);
+    return std::make_shared<ClassDeclaration>(name, members, methods, constructor, parentName, implementedProtocols, getters, setters);
 }
 
 std::shared_ptr<EnumDeclaration> Parser::parseEnumDeclaration() {
@@ -228,17 +343,25 @@ std::shared_ptr<EnumDeclaration> Parser::parseEnumDeclaration() {
 std::shared_ptr<Expression> Parser::parseObjectLiteral() {
     consume(TokenType::OpenBrace, "Expected '{'");
     std::vector<std::pair<std::string, std::shared_ptr<Expression>>> entries;
+    std::vector<std::shared_ptr<Expression>> spreads;
     
     if (!check(TokenType::CloseBrace)) {
         do {
-            std::string key = consume(TokenType::Identifier, "Expected key name.").value;
-            consume(TokenType::Colon, "Expected ':' after key.");
-            auto value = parseExpression();
-            entries.push_back({key, value});
+            // Check for spread operator
+            if (check(TokenType::Ellipsis)) {
+                advance(); // consume '...'
+                auto spreadExpr = parseExpression();
+                spreads.push_back(spreadExpr);
+            } else {
+                std::string key = consume(TokenType::Identifier, "Expected key name.").value;
+                consume(TokenType::Colon, "Expected ':' after key.");
+                auto value = parseExpression();
+                entries.push_back({key, value});
+            }
         } while (check(TokenType::Comma) && advance().type == TokenType::Comma);
     }
     consume(TokenType::CloseBrace, "Expected '}' after object literal.");
-    return std::make_shared<ObjectLiteralExpr>(entries);
+    return std::make_shared<ObjectLiteralExpr>(entries, spreads);
 }
 
 std::shared_ptr<FunctionDeclaration> Parser::parseFunctionDeclaration(bool isAsync) {
@@ -907,7 +1030,14 @@ std::shared_ptr<Expression> Parser::parsePrimary() {
         std::vector<std::shared_ptr<Expression>> elements;
         if (!check(TokenType::CloseBracket)) {
             do {
-                elements.push_back(parseExpression());
+                // Check for spread operator
+                if (check(TokenType::Ellipsis)) {
+                    advance(); // consume ...
+                    auto expr = parseExpression();
+                    elements.push_back(std::make_shared<SpreadExpr>(expr));
+                } else {
+                    elements.push_back(parseExpression());
+                }
             } while (check(TokenType::Comma) && advance().type == TokenType::Comma);
         }
         consume(TokenType::CloseBracket, "Expected ']' after array elements.");

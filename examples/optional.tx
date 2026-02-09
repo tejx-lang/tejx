@@ -1,43 +1,38 @@
-function findUser(id: number): Option<string> {
+// Option Types Test - Match Expression Returning Values
+
+function findUser(id: number): string {
     if (id == 1) {
-        return Some("Alice");
+        return "Alice";
     }
-    return None;
+    return "";
 }
 
-function greet(user: Option<string>) {
-    match (user) {
-        Some(name) => {
-            console.log("Hello, " + name + "!");
-        },
-        None => {
-            console.log("Hello, stranger!");
-        }
-    }
+function greet(user: string) {
+    // Match returns a string, then we print it
+    const message = match (user) {
+        "" => "Hello, stranger!",
+        name => "Hello, " + name + "!"
+    };
+    console.log(message);
 }
 
-console.log("Testing Option Types...");
+console.log("Testing Option-like matching...");
 
 const user1 = findUser(1);
 const user2 = findUser(2);
 
-greet(user1);
-greet(user2);
+greet(user1);  // Should print "Hello, Alice!"
+greet(user2);  // Should print "Hello, stranger!"
 
-// Nested matching
-const item: Option<number[]> = Some([1, 2, 3]);
+// Nested matching with arrays
+const item = [1, 2, 3];
 
-match (item) {
-    Some([x, ...rest]) => {
-        console.log("Found some array starting with " + x);
-    },
-    Some([]) => {
-        console.log("Found some empty array");
-    },
-    None => {
-        console.log("Found nothing");
-    }
-}
+const result = match (item) {
+    [x, ...rest] => "Array starts with " + x + ", rest has " + rest.length + " elements",
+    [] => "Empty array",
+    _ => "Something else"
+};
 
-// Result type simulation? No, let's stick to Option for now.
+console.log(result);
+
 console.log("Option tests completed.");

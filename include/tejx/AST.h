@@ -105,6 +105,12 @@ struct ArrayLiteral : Expression {
     ArrayLiteral(const std::vector<std::shared_ptr<Expression>>& e) : elements(e) {}
 };
 
+// Spread expression: ...arr
+struct SpreadExpr : Expression {
+    std::shared_ptr<Expression> expr;
+    SpreadExpr(std::shared_ptr<Expression> e) : expr(e) {}
+};
+
 struct ArrayAccessExpr : Expression {
     std::shared_ptr<Expression> target;
     std::shared_ptr<Expression> index;
@@ -113,7 +119,10 @@ struct ArrayAccessExpr : Expression {
 
 struct ObjectLiteralExpr : Expression {
     std::vector<std::pair<std::string, std::shared_ptr<Expression>>> entries;
-    ObjectLiteralExpr(const std::vector<std::pair<std::string, std::shared_ptr<Expression>>>& e) : entries(e) {}
+    std::vector<std::shared_ptr<Expression>> spreads; // For ...obj syntax
+    ObjectLiteralExpr(const std::vector<std::pair<std::string, std::shared_ptr<Expression>>>& e, 
+                      const std::vector<std::shared_ptr<Expression>>& s = {}) 
+        : entries(e), spreads(s) {}
 };
 
 struct LambdaExpr : Expression {
@@ -358,20 +367,40 @@ struct ClassDeclaration : ASTNode {
         AccessModifier access = AccessModifier::Public;
         bool isStatic = false;
     };
+    
+    struct Getter {
+        std::string name;
+        std::string returnType;
+        std::shared_ptr<BlockStmt> body;
+        AccessModifier access = AccessModifier::Public;
+    };
+    
+    struct Setter {
+        std::string name;
+        std::string paramName;
+        std::string paramType;
+        std::shared_ptr<BlockStmt> body;
+        AccessModifier access = AccessModifier::Public;
+    };
 
     std::string name;
     std::string parentName;
     std::vector<std::string> implementedProtocols; // Interfaces
     std::vector<Member> members;
     std::vector<Method> methods;
+    std::vector<Getter> getters;
+    std::vector<Setter> setters;
     std::shared_ptr<FunctionDeclaration> constructor;
 
     ClassDeclaration(const std::string& n, const std::vector<Member>& mems, 
                      const std::vector<Method>& meths,
                      std::shared_ptr<FunctionDeclaration> ctor,
                      const std::string& parent = "",
-                     const std::vector<std::string>& impls = {}) 
-        : name(n), members(mems), methods(meths), constructor(ctor), parentName(parent), implementedProtocols(impls) {}
+                     const std::vector<std::string>& impls = {},
+                     const std::vector<Getter>& gets = {},
+                     const std::vector<Setter>& sets = {}) 
+        : name(n), members(mems), methods(meths), constructor(ctor), parentName(parent), 
+          implementedProtocols(impls), getters(gets), setters(sets) {}
 };
 
 struct EnumMember {
@@ -385,8 +414,29 @@ struct EnumDeclaration : Statement {
     EnumDeclaration(const std::string& n, const std::vector<EnumMember>& m) : name(n), members(m) {}
 };
 
+// Module system: import { x, y } from "./file.tx" or import x from "./file.tx"
+struct ImportDecl : Statement {
+    std::vector<std::string> names;  // Named imports, or single for default
+    std::string source;              // Module path
+    bool isDefault;                  // true for: import x from "..."
+    
+    ImportDecl(const std::vector<std::string>& n, const std::string& s, bool def = false)
+        : names(n), source(s), isDefault(def) {}
+};
+
+// Module system: export function/const/default
+struct ExportDecl : Statement {
+    std::shared_ptr<ASTNode> declaration;  // The exported declaration (function, var, class)
+    bool isDefault;                         // true for: export default ...
+    
+    ExportDecl(std::shared_ptr<ASTNode> decl, bool def = false)
+        : declaration(decl), isDefault(def) {}
+};
+
 struct Program : ASTNode {
-    std::vector<std::shared_ptr<ASTNode>> globals; 
+    std::vector<std::shared_ptr<ASTNode>> statements; // Renamed from globals but type is ASTNode
+    Program() = default;
+    Program(const std::vector<std::shared_ptr<ASTNode>>& s) : statements(s) {}
 };
 
 } // namespace tejx

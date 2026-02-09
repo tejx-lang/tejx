@@ -98,7 +98,10 @@ Token Lexer::readIdentifier() {
         {"null", TokenType::Undefined},
         {"Some", TokenType::Some},
         {"None", TokenType::None},
-        {"Option", TokenType::Option}
+        {"Option", TokenType::Option},
+        {"import", TokenType::Import},
+        {"export", TokenType::Export},
+        {"from", TokenType::From}
     };
 
     if (keywords.count(value)) {

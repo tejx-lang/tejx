@@ -1,0 +1,38 @@
+// Promise Constructor Test - JS-style new Promise((resolve) => {...})
+
+console.log("=== Promise Constructor Test ===");
+
+// Test 1: Basic Promise with immediate resolve
+console.log("\n--- Test 1: Immediate resolve ---");
+let p1 = new Promise((resolve) => {
+    resolve(42);
+});
+let r1 = await p1;
+console.log("Resolved: " + r1);  // 42
+
+// Test 2: Promise with computation before resolve
+console.log("\n--- Test 2: Computed resolve ---");
+let p2 = new Promise((resolve) => {
+    let x = 10;
+    let y = 20;
+    resolve(x + y);
+});
+let r2 = await p2;
+console.log("Computed result: " + r2);  // 30
+
+// Test 3: Promise with string
+console.log("\n--- Test 3: String resolve ---");
+let p3 = new Promise((resolve) => {
+    resolve("Hello from Promise!");
+});
+let r3 = await p3;
+console.log("String: " + r3);
+
+// Test 4: Un-awaited promise shows [Promise]
+console.log("\n--- Test 4: Un-awaited shows [Promise] ---");
+let p4 = new Promise((resolve) => {
+    resolve(100);
+});
+console.log("Un-awaited: " + p4);  // [Promise]
+
+console.log("\n=== Promise Constructor Test Complete ===");
