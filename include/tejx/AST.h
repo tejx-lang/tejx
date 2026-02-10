@@ -63,6 +63,14 @@ struct BinaryExpr : Expression {
         : left(l), op(o), right(r) {}
 };
 
+struct InstanceofExpr : Expression {
+    std::shared_ptr<Expression> left;
+    std::string className;
+
+    InstanceofExpr(std::shared_ptr<Expression> l, const std::string& c)
+        : left(l), className(c) {}
+};
+
 struct CallExpr : Expression {
     std::string callee; 
     std::vector<std::shared_ptr<Expression>> args;

@@ -19,7 +19,7 @@ echo ""
 echo ">>> Running All Examples..."
 echo "----------------------------------------"
 
-for FILE in examples/*.tx; do
+for FILE in tests/*.tx; do
     echo "Processing: $FILE"
     
     # Run TejX Compiler
@@ -29,16 +29,18 @@ for FILE in examples/*.tx; do
         # Determine output binary name
         FILENAME=$(basename "${FILE%.*}")
         OLD_BINARY="${FILE%.*}"
-        NEW_BINARY="build/examples/$FILENAME"
+        NEW_BINARY="build/tests/$FILENAME"
         
         # Move binary to build folder
         if [ -f "$OLD_BINARY" ]; then
+            mkdir -p build/tests
             mv "$OLD_BINARY" "$NEW_BINARY"
         fi
         
         # Move .cpp file to build folder
         if [ -f "${OLD_BINARY}.cpp" ]; then
-            mv "${OLD_BINARY}.cpp" "build/examples/${FILENAME}.cpp"
+            mkdir -p build/tests
+            mv "${OLD_BINARY}.cpp" "build/tests/${FILENAME}.cpp"
         fi
         
         if [ -f "$NEW_BINARY" ]; then

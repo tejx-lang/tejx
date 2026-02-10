@@ -1,6 +1,0 @@
-import hello from "./export_default.tx";
-
-function app_main() {
-    console.log(hello("World"));
-}
-app_main();

@@ -108,7 +108,8 @@ Token Lexer::readIdentifier() {
         {"Option", TokenType::Option},
         {"import", TokenType::Import},
         {"export", TokenType::Export},
-        {"from", TokenType::From}
+        {"from", TokenType::From},
+        {"instanceof", TokenType::Instanceof}
     };
 
     if (keywords.count(value)) {
@@ -348,6 +349,7 @@ std::string tokenTypeToString(TokenType type) {
         case TokenType::Async: return "Async";
         case TokenType::Await: return "Await";
         case TokenType::Match: return "Match";
+        case TokenType::Instanceof: return "Instanceof";
         case TokenType::Unknown: return "Unknown";
         default: return "Token";
     }

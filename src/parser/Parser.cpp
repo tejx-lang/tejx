@@ -898,10 +898,16 @@ std::shared_ptr<Expression> Parser::parseEquality() {
 std::shared_ptr<Expression> Parser::parseComparison() {
     auto expr = parseTerm();
     while (check(TokenType::Greater) || check(TokenType::GreaterEqual) ||
-           check(TokenType::Less) || check(TokenType::LessEqual)) {
+           check(TokenType::Less) || check(TokenType::LessEqual) ||
+           check(TokenType::Instanceof)) {
         Token op = advance();
-        auto right = parseTerm();
-        expr = std::make_shared<BinaryExpr>(expr, op.type, right);
+        if (op.type == TokenType::Instanceof) {
+            std::string className = consume(TokenType::Identifier, "Expected class name after 'instanceof'.").value;
+            expr = std::make_shared<InstanceofExpr>(expr, className);
+        } else {
+            auto right = parseTerm();
+            expr = std::make_shared<BinaryExpr>(expr, op.type, right);
+        }
     }
     return expr;
 }

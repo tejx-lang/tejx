@@ -1,0 +1,21 @@
+export const VERSION = "1.0.0";
+
+export function add(a: number, b: number): number {
+    return a + b;
+}
+
+export function multiply(a: number, b: number): number {
+    return a * b;
+}
+
+export class Calculator {
+    value: number = 0;
+    
+    add(n: number) {
+        this.value = this.value + n;
+    }
+    
+    getValue(): number {
+        return this.value;
+    }
+}

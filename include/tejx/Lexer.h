@@ -9,7 +9,7 @@ namespace tejx {
 enum class TokenType {
     // Keywords
     Function, Return, Var, Let, Const, If, Else, While, For, Break, Continue,
-    Class, New, This, Super, Constructor, Extends, Abstract, Switch, Case, Default, Import, Export, From,
+    Class, New, This, Super, Constructor, Extends, Abstract, Switch, Case, Default, Import, Export, From, Instanceof,
     Public, Private, Protected, Static, Async, Await, // OOP Modifiers
     Protocol, Implements, Extension, // Interfaces
     Try, Catch, Finally, Throw, Match, Undefined, // Error handling & Types

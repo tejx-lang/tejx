@@ -1,9 +1,0 @@
-import { add } from "./math.tx";
-
-function app_main() {
-    let sum = add(10, 5);
-    // Should fail compilation if module system is correct
-    // But might succeed if implementation is "using namespace"
-    let diff = subtract(10, 5); 
-}
-app_main();

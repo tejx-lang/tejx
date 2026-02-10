@@ -1,9 +1,0 @@
-import { add, subtract } from "./math.tx";
-
-function app_main() {
-    let sum = add(10, 5);
-    let diff = subtract(10, 5);
-    console.log("Sum: " + sum);
-    console.log("Diff: " + diff);
-}
-app_main();

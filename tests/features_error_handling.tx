@@ -1,0 +1,62 @@
+// Comprehensive Error Handling Test
+// =====================================
+
+class CustomError extends Error {
+    code: number;
+    constructor(m: string, c: number) {
+        super(m);
+        this.code = c;
+    }
+}
+
+function process(x: number) {
+    if (x < 0) {
+        throw new CustomError("Negative input", 400);
+    }
+    if (x == 0) {
+        throw "Zero is not allowed";
+    }
+    return 100 / x;
+}
+
+console.log("Testing Proper Error Handling...");
+
+// Scenario 1: Throwing a string
+try {
+    process(0);
+} catch (e) {
+    console.log("Caught string: " + e);
+} finally {
+    console.log("Cleanup 1 (String test)");
+}
+
+// Scenario 2: Throwing an object (CustomError)
+try {
+    process(-5);
+} catch (e) {
+    console.log("Caught object: " + e.message + " (Code: " + e.code + ")");
+    console.log("ToString: " + e.toString());
+} finally {
+    console.log("Cleanup 2 (Object test)");
+}
+
+// Scenario 3: Nested try/catch and RAII finally
+function nestedTest() {
+    try {
+        console.log("Entering outer try");
+        try {
+            console.log("Entering inner try");
+            process(-1);
+        } finally {
+            console.log("Inner finally executed");
+        }
+    } catch (err) {
+        console.log("Outer catch caught: " + err.message);
+    } finally {
+        console.log("Outer finally executed");
+    }
+}
+
+nestedTest();
+
+console.log("Error handling test complete!");

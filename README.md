@@ -17,12 +17,12 @@ TejX is designed to be the ultimate sweet spot between productivity and performa
 Compile a TejX file:
 
 ```bash
-./build/tejxc examples/hello.tx
+./build/tejxc tests/hello.tx
 ```
 
 ## Examples
 
-Check out `examples/` for more `.tx` files.
+Check out `tests/` for more `.tx` files.
 
 ### 🌓 The Hybrid Strategy: Total Evolution
 
@@ -44,7 +44,7 @@ TejX is built on the belief that code should be as expressive as JavaScript but 
 ### Build & Run Single File
 
 ```bash
-./build.sh examples/logic.tejx
+./build.sh tests/logic.tejx
 ```
 
 ### Build & Run ALL Examples
@@ -59,26 +59,25 @@ TejX is built on the belief that code should be as expressive as JavaScript but 
 
 ### 1. Variables & Data Types
 
-| Feature          | Granularity          | Status | Notes                                                  |
-| :--------------- | :------------------- | :----: | :----------------------------------------------------- |
-| **Declarations** | `let` (Mutable)      |   ✅   | Block-scoped, stack-allocated by default.              |
-|                  | `const` (Immutable)  |   ✅   | Compile-time enforcement of immutability.              |
-|                  | `var`                |   ⛔   | **Removed** to prevent hoisting bugs.                  |
-| **Primitives**   | `number` (f64)       |   ✅   | High-precision double by default.                      |
-|                  | `int` / `i32`        |   🔮   | Planned for low-level optimization.                    |
-|                  | `boolean`            |   ✅   | Strict true/false. No truthy/falsy coercion.           |
-|                  | `string`             |   ✅   | Immutable, UTF-8 aware (wraps `std::string`).          |
-|                  | `void`               |   ✅   | Represents absence of return value.                    |
-| **Composite**    | `Tuple`              |   🔮   | Fixed-size, heterogeneous collections `[i32, string]`. |
-|                  | `Enum`               |   ✅   | Strong C++-style scoped enums.                         |
-|                  | `Option<T>`          |   🔮   | Safe handling of absence (replaces null).              |
-|                  | `Result<T,E>`        |   🔮   | Explicit error handling type.                          |
-| **Inference**    | Local Type Inference |   ✅   | `let x = 10` automatically infers `number`.            |
+| Feature          | Granularity          | Status | Notes                                        |
+| :--------------- | :------------------- | :----: | :------------------------------------------- |
+| **Declarations** | `let` (Mutable)      |   ✅   | Block-scoped, stack-allocated by default.    |
+|                  | `const` (Immutable)  |   ✅   | Compile-time enforcement of immutability.    |
+|                  | `var`                |   ⛔   | **Removed** to prevent hoisting bugs.        |
+| **Primitives**   | `int` / `bigInt`     |   ✅   | Explicit 32/64-bit integers.                 |
+|                  | `float` / `bigfloat` |   ✅   | Explicit 32/128-bit(quad) floats.            |
+|                  | `number` (f64)       |   ✅   | Standard double-precision floating point.    |
+|                  | `boolean`            |   ✅   | Strict true/false. No truthy/falsy coercion. |
+|                  | `string`             |   ✅   | Immutable, UTF-8 aware.                      |
+|                  | `void`               |   ✅   | Represents absence of return value.          |
+| **Composite**    | `Option<T>`          |   ✅   | Type-safe null handling (replaces null).     |
+|                  | `Result<T,E>`        |   🔮   | Planned explicit error wrapping type.        |
+| **Inference**    | Local Type Inference |   ✅   | `let x = 10` automatically infers `number`.  |
 
 ### 2. Operators & Expressions
 
 | Feature        | Granularity             | Status | Notes                                 |
-| :------------- | :---------------------- | :----: | :------------------------------------ |
+| :------------- | :---------------------- | :----: | :------------------------------------ | ------------------------- |
 | **Arithmetic** | `+`, `-`, `*`, `/`      |   ✅   | Standard arithmetic.                  |
 |                | `%` (Modulo)            |   ✅   | Supports floating point modulo.       |
 |                | `**` (Exponentiation)   |   🔮   | Planned syntax sugar for `pow()`.     |
@@ -93,9 +92,10 @@ TejX is built on the belief that code should be as expressive as JavaScript but 
 |                | `?.` (Optional Chain)   |   ✅   | Safe navigation for nullable objects. |
 |                | `[]` (Index)            |   ✅   | Array/Map access.                     |
 | **Other**      | `typeof`                |   ✅   | Runtime type inspection string.       |
+|                | `instanceof`            |   ✅   | Inheritance-aware runtime type check. |
 |                | Ternary `? :`           |   ✅   | Conditional expression.               |
 |                | Spread `...`            |   ✅   | Array/Object expansion.               |
-|                | Pipeline `\|>`          |   🔮   | Function chaining syntax.             |
+|                | Pipeline `              |   >`   | 🔮                                    | Function chaining syntax. |
 
 ### 3. Control Flow
 
@@ -150,8 +150,8 @@ TejX is built on the belief that code should be as expressive as JavaScript but 
 |                   | `super`                |   ✅   | Call parent methods.                             |
 |                   | `abstract`             |   ✅   | Abstract base classes.                           |
 | **Polymorphism**  | Extensions             |   ✅   | Swift-like `extension Class {}`.                 |
-|                   | Protocols / Interfaces |   🔮   | Contract-based polymorphism.                     |
-|                   | Generic Classes        |   🔮   | `class Box<T>`.                                  |
+|                   | Protocols              |   ✅   | Contract-based polymorphism.                     |
+|                   | Generic Classes        |   🔮   | Blocked on full generic parser.                  |
 |                   | Mixins                 |   🔮   | Composition over inheritance.                    |
 
 ### 6. Data Structures
