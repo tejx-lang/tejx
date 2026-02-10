@@ -3,7 +3,7 @@
 
 // 1. If / Else
 function checkValue(n: number): void {
-    console.log("Checking " + n);
+    console.log("Checking ", n);
     if (n > 10) {
         console.log("  Big");
     } else if (n > 5) {
@@ -23,7 +23,7 @@ console.log("\n--- Loops ---");
 console.log("While Loop:");
 let idx = 0;
 while (idx < 3) {
-    console.log("  idx = " + idx);
+    console.log("  idx = ", idx);
     idx = idx + 1;
 }
 
@@ -31,14 +31,14 @@ while (idx < 3) {
 console.log("For Loop:");
 for (let j = 0; j < 3; j = j + 1) {
     if (j == 1) continue; // Test continue
-    console.log("  j = " + j);
+    console.log("  j = ", j);
 }
 
 // For-Of Loop (using forEach as for-of on Var (inferred) is currently limited)
 console.log("For-Of Loop:");
 let items = ["A", "B", "C"];
 items.forEach(item => {
-    console.log("  Item: " + item);
+    console.log("  Item: ", item);
 });
 
 // Break Statement
@@ -46,7 +46,7 @@ console.log("Break Test:");
 let k1 = 0;
 while (true) {
     if (k1 >= 3) break;
-    console.log("  k1 = " + k1);
+    console.log("  k1 = ", k1);
     k1 = k1 + 1;
 }
 
@@ -65,31 +65,31 @@ function getFruitColor(fruit: string): string {
     }
 }
 
-console.log("Apple is " + getFruitColor("Apple"));
-console.log("Banana is " + getFruitColor("Banana"));
-console.log("Kiwi is " + getFruitColor("Kiwi"));
+console.log("Apple is ", getFruitColor("Apple"));
+console.log("Banana is ", getFruitColor("Banana"));
+console.log("Kiwi is ", getFruitColor("Kiwi"));
 // examples/control.tx
 
 let sumVal = 0;
 // Test +=
 sumVal += 10;
-console.log("Sum should be 10: " + sumVal);
+console.log("Sum should be 10: ", sumVal);
 
 sumVal -= 5;
-console.log("Sum should be 5: " + sumVal);
+console.log("Sum should be 5: ", sumVal);
 
 sumVal *= 2;
-console.log("Sum should be 10: " + sumVal);
+console.log("Sum should be 10: ", sumVal);
 
 sumVal /= 2;
-console.log("Sum should be 5: " + sumVal);
+console.log("Sum should be 5: ", sumVal);
 
 // Test ++ / --
 let xVal = 0;
 ++xVal;
-console.log("x should be 1: " + xVal);
+console.log("x should be 1: ", xVal);
 --xVal;
-console.log("x should be 0: " + xVal);
+console.log("x should be 0: ", xVal);
 
 // Test Break
 console.log("--- Break Test ---");
@@ -97,7 +97,7 @@ for (let i = 0; i < 10; i = i + 1) {
     if (i == 5) {
         break;
     }
-    console.log("i: " + i);
+    console.log("i: ", i);
 }
 
 // Test Continue
@@ -106,7 +106,7 @@ for (let j = 0; j < 5; j = j + 1) {
     if (j == 2) {
         continue;
     }
-    console.log("j: " + j);
+    console.log("j: ", j);
 }
 
 // Test While Break
@@ -116,7 +116,7 @@ while (k < 10) {
     if (k == 3) {
         break;
     }
-    console.log("k: " + k);
+    console.log("k: ", k);
     k = k + 1;
 }
 // For-Of Loop Test (typed arrays)
@@ -127,11 +127,11 @@ let numbers = [1, 2, 3, 4, 5];
 let sum = 0;
 
 numbers.forEach(n => {
-    console.log("Number: " + n);
+    console.log("Number: ", n);
     sum = sum + n;
 });
 
-console.log("Sum: " + sum);
+console.log("Sum: ", sum);
 
 console.log("For-of loop test complete!");
 // examples/logic.tx
@@ -182,7 +182,7 @@ function describe(val: any) {
         undefined => "nothing",
         _ => "something else"
     };
-    console.log("Input: " + val + " => Result: " + result);
+    console.log("Input: ", val, " => Result: ", result);
 }
 
 function processArray(arr: any) {
@@ -193,7 +193,7 @@ function processArray(arr: any) {
         [a, b, c] => "Three elements: " + a + ", " + b + ", " + c,
         _ => "Unknown array pattern"
     };
-    console.log("Array: " + arr + " => " + result);
+    console.log("Array: ", arr, " => ", result);
 }
 
 function processObject(obj: any) {
@@ -202,7 +202,7 @@ function processObject(obj: any) {
         { status: s } => "Status is " + s,
         _ => "Unknown object"
     };
-    console.log("Object: " + obj + " => " + result);
+    console.log("Object: ", obj, " => ", result);
 }
 
 function processComplex(val: any) {
@@ -213,7 +213,7 @@ function processComplex(val: any) {
         [first, ...rest] if (rest.length == 0) => "Single element array: " + first,
         _ => "Other complex case"
     };
-    console.log("Complex: " + val + " => " + result);
+    console.log("Complex: ", val, " => ", result);
 }
 
 console.log("--- Match Expression Test ---");

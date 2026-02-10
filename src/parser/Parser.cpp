@@ -3,30 +3,22 @@
 
 namespace tejx {
 
-Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens) {}
+Parser::Parser(const std::vector<Token>& tokens, const std::string& filename) : tokens(tokens), filename(filename) {}
 
 std::shared_ptr<Program> Parser::parse() {
     auto program = std::make_shared<Program>();
     while (!isAtEnd()) {
-        if (auto decl = parseDeclaration()) {
-             // Cast to Statement because that's what we store now
-             if (auto stmt = std::dynamic_pointer_cast<tejx::Statement>(decl)) {
-                 program->statements.push_back(stmt);
-             } else {
-                 if (auto func = std::dynamic_pointer_cast<tejx::FunctionDeclaration>(decl)) {
-                    // FunctionDeclaration inherits ASTNode, but we need Statement wrapper or change Program to hold ASTNode
-                    // AST.h says: struct Program : ASTNode { std::vector<std::shared_ptr<ASTNode>> statements; ... }
-                    program->statements.push_back(decl);
-                 } else if (auto cls = std::dynamic_pointer_cast<tejx::ClassDeclaration>(decl)) {
-                    program->statements.push_back(decl);
-                 } else if (auto ext = std::dynamic_pointer_cast<tejx::ExtensionDeclaration>(decl)) {
-                    program->statements.push_back(decl);
-                 } else if (auto proto = std::dynamic_pointer_cast<tejx::ProtocolDeclaration>(decl)) {
-                    program->statements.push_back(decl);
+        try {
+            if (auto decl = parseDeclaration()) {
+                 // Cast to Statement because that's what we store now
+                 if (auto stmt = std::dynamic_pointer_cast<tejx::Statement>(decl)) {
+                     program->statements.push_back(stmt);
                  } else {
-                    program->statements.push_back(decl);
+                     program->statements.push_back(decl);
                  }
-             }
+            }
+        } catch (const std::runtime_error& e) {
+            synchronize();
         }
     }
     return program;
@@ -51,11 +43,47 @@ bool Parser::check(TokenType type) {
     return peek().type == type;
 }
 
+// Error handling
+void Parser::error(Token token, const std::string& message) {
+    std::string err = "[Line " + std::to_string(token.line) + "] Error at '";
+    if (token.type == TokenType::EndOfFile) {
+        err += "end";
+    } else {
+        err += token.value;
+    }
+    err += "': " + message;
+    errors.push_back(err);
+    // std::cerr << err << std::endl; 
+}
+
+void Parser::synchronize() {
+    advance();
+
+    while (!isAtEnd()) {
+        if (previous().type == TokenType::Semicolon) return;
+
+        switch (peek().type) {
+            case TokenType::Class:
+            case TokenType::Function:
+            case TokenType::Var:
+            case TokenType::For:
+            case TokenType::If:
+            case TokenType::While:
+            case TokenType::Return:
+            case TokenType::Switch:
+                return;
+            default:
+                ;
+        }
+
+        advance();
+    }
+}
+
 Token Parser::consume(TokenType type, std::string message) {
     if (check(type)) return advance();
-    std::cerr << "Error at token " << previous().value << ": " << message << std::endl;
-    exit(1);
-    throw std::runtime_error(message);
+    error(peek(), message);
+    throw std::runtime_error(message); // Throw to unwind to synchronization point
 }
 
 // Declarations
@@ -618,7 +646,8 @@ std::shared_ptr<Statement> Parser::parseVarDeclaration() {
         initializer = parseExpression();
     }
     consume(TokenType::Semicolon, "Expected ';' after variable declaration.");
-    return std::make_shared<VarDeclaration>(pattern, type, initializer, isConst);
+    Token startToken = previous(); // let/var/const
+    return makeNode<VarDeclaration>(startToken, pattern, type, initializer, isConst);
 }
 
 std::shared_ptr<Statement> Parser::parseStatement() {
@@ -740,31 +769,36 @@ std::shared_ptr<Statement> Parser::parseSwitchStatement() {
     
     std::vector<Case> cases;
     while (!check(TokenType::CloseBrace) && !isAtEnd()) {
-        std::shared_ptr<Expression> value = nullptr;
-        if (check(TokenType::Case)) {
-            advance();
-            value = parseExpression();
-            consume(TokenType::Colon, "Expected ':' after case value");
-        } else if (check(TokenType::Default)) {
-            advance();
-            consume(TokenType::Colon, "Expected ':' after default");
-        } else {
-             // Maybe comments or empty lines? Or error.
-             throw std::runtime_error("Expected 'case' or 'default' inside switch.");
-        }
-        
-        std::vector<std::shared_ptr<Statement>> stmts;
-        // Parse statements until next Case, Default, or CloseBrace
-        while (!check(TokenType::Case) && !check(TokenType::Default) && !check(TokenType::CloseBrace) && !isAtEnd()) {
-            auto decl = parseDeclaration();
-            if (auto stmt = std::dynamic_pointer_cast<Statement>(decl)) {
-                stmts.push_back(stmt);
+        try {
+            std::shared_ptr<Expression> value = nullptr;
+            if (check(TokenType::Case)) {
+                advance();
+                value = parseExpression();
+                consume(TokenType::Colon, "Expected ':' after case value");
+            } else if (check(TokenType::Default)) {
+                advance();
+                consume(TokenType::Colon, "Expected ':' after default");
             } else {
-                throw std::runtime_error("Declaration is not a statement inside switch.");
+                 // Maybe comments or empty lines? Or error.
+                 error(peek(), "Expected 'case' or 'default' inside switch.");
+                 synchronize(); // Try to recover
+                 continue;
             }
+            
+            std::vector<std::shared_ptr<Statement>> stmts;
+            // Parse statements until next Case, Default, or CloseBrace
+            while (!check(TokenType::Case) && !check(TokenType::Default) && !check(TokenType::CloseBrace) && !isAtEnd()) {
+                auto decl = parseDeclaration();
+                if (auto stmt = std::dynamic_pointer_cast<Statement>(decl)) {
+                    stmts.push_back(stmt);
+                } else {
+                    // Should theoretically catch earlier, but safety first
+                }
+            }
+            cases.push_back({value, stmts});
+        } catch (const std::runtime_error& e) {
+            synchronize();
         }
-        
-        cases.push_back({value, stmts});
     }
     consume(TokenType::CloseBrace, "Expected '}'");
     return std::make_shared<SwitchStmt>(condition, cases);
@@ -777,7 +811,8 @@ std::shared_ptr<Statement> Parser::parseReturnStatement() {
         value = parseExpression();
     }
     consume(TokenType::Semicolon, "Expected ';'");
-    return std::make_shared<ReturnStmt>(value);
+    Token retToken = previous(); // return
+    return makeNode<ReturnStmt>(retToken, value);
 }
 
 std::shared_ptr<Statement> Parser::parseTryStatement() {
@@ -808,13 +843,15 @@ std::shared_ptr<Statement> Parser::parseThrowStatement() {
     consume(TokenType::Throw, "Expected 'throw'");
     auto expr = parseExpression();
     consume(TokenType::Semicolon, "Expected ';' after throw");
-    return std::make_shared<ThrowStmt>(expr);
+    Token throwToken = previous(); // throw
+    return makeNode<ThrowStmt>(throwToken, expr);
 }
 
 std::shared_ptr<Statement> Parser::parseExpressionStatement() {
     auto expr = parseExpression();
     consume(TokenType::Semicolon, "Expected ';'");
-    return std::make_shared<ExpressionStmt>(expr);
+    // expression statement
+    return makeNode<ExpressionStmt>(peek(), expr);
 }
 
 // Expressions
@@ -831,7 +868,7 @@ std::shared_ptr<Expression> Parser::parseAssignment() {
         auto trueBranch = parseAssignment(); // Recursive for nested ternary
         consume(TokenType::Colon, "Expected ':' in ternary operator.");
         auto falseBranch = parseAssignment();
-        return std::make_shared<TernaryExpr>(expr, trueBranch, falseBranch);
+        return makeNode<TernaryExpr>(peek(), expr, trueBranch, falseBranch);
     }
     
     if (check(TokenType::Equals) || check(TokenType::PlusEquals) || 
@@ -843,7 +880,7 @@ std::shared_ptr<Expression> Parser::parseAssignment() {
         if (std::dynamic_pointer_cast<Identifier>(expr) || 
             std::dynamic_pointer_cast<ArrayAccessExpr>(expr) ||
             std::dynamic_pointer_cast<MemberAccessExpr>(expr)) {
-            return std::make_shared<AssignmentExpr>(expr, value, op.type);
+            return makeNode<AssignmentExpr>(peek(), expr, value, op.type);
         }
         
         std::cerr << "Invalid assignment target." << std::endl;
@@ -858,7 +895,7 @@ std::shared_ptr<Expression> Parser::parseNullishCoalescing() {
     while (check(TokenType::QuestionQuestion)) {
         advance();
         auto right = parseLogicalOr();
-        expr = std::make_shared<NullishCoalescingExpr>(expr, right);
+        expr = makeNode<NullishCoalescingExpr>(peek(), expr, right);
     }
     return expr;
 }
@@ -906,7 +943,7 @@ std::shared_ptr<Expression> Parser::parseComparison() {
             expr = std::make_shared<InstanceofExpr>(expr, className);
         } else {
             auto right = parseTerm();
-            expr = std::make_shared<BinaryExpr>(expr, op.type, right);
+            expr = makeNode<BinaryExpr>(op, expr, op.type, right);
         }
     }
     return expr;

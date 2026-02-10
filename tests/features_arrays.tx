@@ -3,34 +3,34 @@
 
 console.log("--- Array Creation & Access ---");
 let numbers: number[] = [10, 20, 30, 40, 50];
-console.log("Original Array: " + numbers); // Assuming string conversion works
-console.log("First Element: " + numbers[0]);
-console.log("Length: " + numbers.length);
+console.log("Original Array: ", numbers); // Assuming string conversion works
+console.log("First Element: ", numbers[0]);
+console.log("Length: ", numbers.length);
 
 // Mutation
 numbers[1] = 99;
-console.log("Modified Element at 1: " + numbers[1]);
+console.log("Modified Element at 1: ", numbers[1]);
 
 // Push
 numbers.push(60);
-console.log("New Length after push: " + numbers.length);
+console.log("New Length after push: ", numbers.length);
 
 // Spread Operator
 console.log("\n--- Spread Operator ---");
 let moreNumbers = [0, ...numbers, 70];
-console.log("Combined Array Length: " + moreNumbers.length); // 0 + 6 items + 70 = 8 items
+console.log("Combined Array Length: ", moreNumbers.length); // 0 + 6 items + 70 = 8 items
 
 // Array Destructuring
 console.log("\n--- Array Destructuring ---");
 let point: number[] = [100, 200];
 let [x, y] = point;
-console.log("Destructured X: " + x);
-console.log("Destructured Y: " + y);
+console.log("Destructured X: ", x);
+console.log("Destructured Y: ", y);
 
 // Rest Pattern in Destructuring
 let [head, ...tail] = [1, 2, 3, 4];
-console.log("Head: " + head); // 1
-// console.log("Tail: " + tail); // [2, 3, 4]
+console.log("Head: ", head); // 1
+// console.log("Tail: ", tail); // [2, 3, 4]
 let nums = [1, 2, 3, 4, 5];
 
 console.log("Original Numbers:");
@@ -48,60 +48,60 @@ evens.forEach(x => console.log(x));
 console.log("Testing array utilities...");
 
 let arrUtil = [1, 2, 3];
-console.log("Initial array: " + arrUtil.join(", "));
+console.log("Initial array: ", arrUtil.join(", "));
 
 // push and pop
 arrUtil.push(4);
-console.log("After push(4): " + arrUtil.join(", "));
+console.log("After push(4): ", arrUtil.join(", "));
 
 let popped = arrUtil.pop();
-console.log("Popped: " + popped);
-console.log("After pop: " + arrUtil.join(", "));
+console.log("Popped: ", popped);
+console.log("After pop: ", arrUtil.join(", "));
 
 // shift and unshift
 arrUtil.unshift(0);
-console.log("After unshift(0): " + arrUtil.join(", "));
+console.log("After unshift(0): ", arrUtil.join(", "));
 
 let shifted = arrUtil.shift();
-console.log("Shifted: " + shifted);
-console.log("After shift: " + arrUtil.join(", "));
+console.log("Shifted: ", shifted);
+console.log("After shift: ", arrUtil.join(", "));
 
 // concat
 let arrSpread2 = [4, 5, 6];
 let merged = arrUtil.concat(arrSpread2);
-console.log("Concatenated: " + merged.join(", "));
+console.log("Concatenated: ", merged.join(", "));
 
 // indexOf
-console.log("indexOf(2): " + arrUtil.indexOf(2));
-console.log("indexOf(99): " + arrUtil.indexOf(99));
+console.log("indexOf(2): ", arrUtil.indexOf(2));
+console.log("indexOf(99): ", arrUtil.indexOf(99));
 
 // join with custom separator
-console.log("Joined with ' - ': " + arrUtil.join(" - "));
+console.log("Joined with ' - ': ", arrUtil.join(" - "));
 
 console.log("Array utilities test complete!");
 // Array Destructuring
 let [a1, b1] = [1, 2];
-console.log("a: " + a1);
-console.log("b: " + b1);
+console.log("a: ", a1);
+console.log("b: ", b1);
 
 // Object Destructuring
 let {name, age} = {name: "TejX", age: 1};
-console.log("Name: " + name);
-console.log("Age: " + age);
+console.log("Name: ", name);
+console.log("Age: ", age);
 
 // Custom target names
 let {name: n, age: g} = {name: "Antigravity", age: 0};
-console.log("n: " + n);
-console.log("g: " + g);
+console.log("n: ", n);
+console.log("g: ", g);
 
 // Nested Destructuring
 let [x2, {y: y2}] = [10, {y: 20}];
-console.log("x: " + x2);
-console.log("y: " + y2);
+console.log("x: ", x2);
+console.log("y: ", y2);
 
 // Deeper Nesting
 let {user: {profile: {firstName}}} = {user: {profile: {firstName: "John"}}};
-console.log("First Name: " + firstName);
+console.log("First Name: ", firstName);
 // Spread Operator Test
 
 console.log("Testing spread operator...");
@@ -111,15 +111,15 @@ let arr2Spread = [4, 5, 6];
 
 // Spread to combine arrays
 let combined = [...arr1, ...arr2Spread];
-console.log("Combined: " + combined.join(", "));
+console.log("Combined: ", combined.join(", "));
 
 // Spread with additional elements
 let withExtra = [0, ...arr1, 4, 5];
-console.log("With extra: " + withExtra.join(", "));
+console.log("With extra: ", withExtra.join(", "));
 
 // Spread to copy
 let copy = [...arr1];
-console.log("Copy: " + copy.join(", "));
+console.log("Copy: ", copy.join(", "));
 
 console.log("Spread operator test complete!");
 // Rest Arguments Test
@@ -131,5 +131,5 @@ function sum(...nums: number[]): number {
     return total;
 }
 
-console.log("Sum 1,2,3: " + sum(1, 2, 3));
-console.log("Sum 10,20: " + sum(10, 20));
+console.log("Sum 1,2,3: ", sum(1, 2, 3));
+console.log("Sum 10,20: ", sum(10, 20));

@@ -7,11 +7,11 @@ function run(): void {
         y: 20
     };
     
-    console.log("Point: " + point.x + ", " + point.y);
+    console.log("Point: ", point.x, ", ", point.y);
     
     // Modify
     // point.x = 50; // TODO: Check if assignment works with default genExpression
-    // console.log("New X: " + point.x);
+    // console.log("New X: ", point.x);
 
     console.log("--- End Test ---");
 }

@@ -9,12 +9,17 @@ namespace tejx {
 
 class Parser {
 public:
-    Parser(const std::vector<Token>& tokens);
+    Parser(const std::vector<Token>& tokens, const std::string& filename = "");
     std::shared_ptr<Program> parse();
+    std::vector<std::string> errors;
 
 private:
     std::vector<Token> tokens;
     size_t current = 0;
+
+    // Error handling
+    void synchronize();
+    void error(Token token, const std::string& message);
 
     // Helper methods
     Token peek(int offset = 0);
@@ -63,6 +68,19 @@ private:
     std::shared_ptr<Expression> parsePrimary();
     std::shared_ptr<Expression> parseLambda(); // New
     std::shared_ptr<Expression> parseMatchExpression(); // New Match
+
+private:
+    std::string filename;
+    
+    // Helper to create AST node with location info
+    template<typename T, typename... Args>
+    std::shared_ptr<T> makeNode(Token token, Args&&... args) {
+        auto node = std::make_shared<T>(std::forward<Args>(args)...);
+        node->line = token.line;
+        node->col = token.column;
+        node->file = this->filename;
+        return node;
+    }
 };
 
 } // namespace tejx

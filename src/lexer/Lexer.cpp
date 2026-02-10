@@ -4,7 +4,7 @@
 
 namespace tejx {
 
-Lexer::Lexer(const std::string& source) : source(source) {}
+Lexer::Lexer(std::string_view source) : source(source) {}
 
 char Lexer::peek(int offset) const {
     if (position + offset >= source.length()) return '\0';
@@ -46,14 +46,16 @@ void Lexer::skipWhitespace() {
 }
 
 Token Lexer::readIdentifier() {
-    std::string value;
+    int startPos = position;
     int startCol = column;
     while (!isAtEnd() && (isalnum(peek()) || peek() == '_')) {
-        value += advance();
+        advance();
     }
 
+    std::string_view text = source.substr(startPos, position - startPos);
+
     TokenType type = TokenType::Identifier;
-    static const std::unordered_map<std::string, TokenType> keywords = {
+    static const std::unordered_map<std::string_view, TokenType> keywords = {
         {"function", TokenType::Function},
         {"let", TokenType::Let},
         {"const", TokenType::Const},
@@ -112,11 +114,11 @@ Token Lexer::readIdentifier() {
         {"instanceof", TokenType::Instanceof}
     };
 
-    if (keywords.count(value)) {
-        type = keywords.at(value);
+    if (keywords.count(text)) {
+        type = keywords.at(text);
     }
 
-    return {type, value, line, startCol};
+    return {type, std::string(text), line, startCol};
 }
 
 Token Lexer::readNumber() {

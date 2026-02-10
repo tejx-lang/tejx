@@ -9,12 +9,12 @@ function run(): void {
     };
     
     // Access Properties
-    console.log("Name: " + user["name"]);
-    console.log("Age: " + user["age"]);
+    console.log("Name: ", user["name"]);
+    console.log("Age: ", user["age"]);
     
     // Dynamic Access
     let key: string = "active";
-    // console.log("Active: " + user[key]); // Need to verify if this works with Variant logic
+    // console.log("Active: ", user[key]); // Need to verify if this works with Variant logic
 
     console.log("--- End Test ---");
 }
@@ -31,10 +31,10 @@ let o = {
 };
 
 console.log(o);
-// console.log("Inner Val: " + o.inner.val); // Dot access on dynamic objects requires type checking or different CodeGen
+// console.log("Inner Val: ", o.inner.val); // Dot access on dynamic objects requires type checking or different CodeGen
 // Used bracket notation which is guaranteed for maps
-console.log("Inner Name: " + o["inner"]["name"]);
-console.log("List[1]: " + o["list"][1]);
+console.log("Inner Name: ", o["inner"]["name"]);
+console.log("List[1]: ", o["list"][1]);
 
 // Mixed types in array? Not supported by ArrayLiteral yet unless typed as []
 // let mixed = [1, "a"]; // This would fail in ArrayLiteral generation
@@ -47,9 +47,9 @@ function runProfile(): void {
         id: 101
     };
     
-    console.log("User: " + profile.username);
-    console.log("Active: " + profile.active); // Tests string + bool
-    console.log("ID: " + profile.id);
+    console.log("User: ", profile.username);
+    console.log("Active: ", profile.active); // Tests string + bool
+    console.log("ID: ", profile.id);
     console.log("--- End Profile Test ---");
 }
 runProfile();

@@ -21,11 +21,11 @@ async function runAsyncDemo(): Promise<void> {
     
     // Await expression
     let data = await fetchData(42);
-    console.log("Received: " + data);
+    console.log("Received: ", data);
 
     // Chaining awaits
     let result = await formatData(await fetchData(100));
-    console.log("Chained Result: " + result);
+    console.log("Chained Result: ", result);
 
     // Concurrent-like execution (sequentially awaited here)
     let p1 = fetchData(1);
@@ -36,8 +36,8 @@ async function runAsyncDemo(): Promise<void> {
     let r1 = await p1;
     let r2 = await p2;
     
-    console.log("R1: " + r1);
-    console.log("R2: " + r2);
+    console.log("R1: ", r1);
+    console.log("R2: ", r2);
 }
 
 // Execute
@@ -58,19 +58,19 @@ console.log("=== Async/Await Tests ===");
 
 // Test 1: Un-awaited promise (should show [Promise])
 let unawaitedResult = compute(21);
-console.log("Un-awaited result: " + unawaitedResult);  // Should print [Promise]
+console.log("Un-awaited result: ", unawaitedResult);  // Should print [Promise]
 
 // Test 2: Awaited promise (should show actual value)
 let awaitedResult = await compute(21);
-console.log("Awaited result: " + awaitedResult);  // Should print 42
+console.log("Awaited result: ", awaitedResult);  // Should print 42
 
 // Test 3: String promise un-awaited
 let unawaitedStr = delayedHello();
-console.log("Un-awaited string: " + unawaitedStr);  // Should print [Promise]
+console.log("Un-awaited string: ", unawaitedStr);  // Should print [Promise]
 
 // Test 4: String promise awaited
 let awaitedStr = await delayedHello();
-console.log("Awaited string: " + awaitedStr);  // Should print "Hello from async!"
+console.log("Awaited string: ", awaitedStr);  // Should print "Hello from async!"
 
 console.log("=== Async Tests Complete ===");
 // Promise Features Test
@@ -95,31 +95,31 @@ async function slowAdd(a: number, b: number): Promise<number> {
 // === Test Un-awaited Promises ===
 console.log("\n--- Un-awaited Promises ---");
 let promise1 = computeDouble(5);
-console.log("promise1 (not awaited): " + promise1);  // [Promise]
+console.log("promise1 (not awaited): ", promise1);  // [Promise]
 
 let promise2 = fetchGreeting("TejX");
-console.log("promise2 (not awaited): " + promise2);  // [Promise]
+console.log("promise2 (not awaited): ", promise2);  // [Promise]
 
 // === Test Awaited Promises ===
 console.log("\n--- Awaited Promises ---");
 let result1 = await computeDouble(5);
-console.log("result1 (awaited): " + result1);  // 10
+console.log("result1 (awaited): ", result1);  // 10
 
 let result2 = await fetchGreeting("TejX");
-console.log("result2 (awaited): " + result2);  // Hello, TejX!
+console.log("result2 (awaited): ", result2);  // Hello, TejX!
 
 let result3 = await slowAdd(10, 20);
-console.log("result3 (awaited): " + result3);  // 30
+console.log("result3 (awaited): ", result3);  // 30
 
 // === Test Chained Promises ===
 console.log("\n--- Chained Promises ---");
 let chainResult = await computeDouble(await computeDouble(5));
-console.log("chainResult (double of double): " + chainResult);  // 20
+console.log("chainResult (double of double): ", chainResult);  // 20
 
 // === Test Promise in Expression ===
 console.log("\n--- Promise in Expression ---");
 let exprResult = await computeDouble(3) + await computeDouble(7);
-console.log("exprResult (3*2 + 7*2): " + exprResult);  // 20
+console.log("exprResult (3*2 + 7*2): ", exprResult);  // 20
 
 console.log("\n=== Promise Features Test Complete ===");
 // Promise Constructor Test - JS-style new Promise((resolve) => {...})
@@ -132,7 +132,7 @@ let p1 = new Promise((resolve) => {
     resolve(42);
 });
 let r1 = await p1;
-console.log("Resolved: " + r1);  // 42
+console.log("Resolved: ", r1);  // 42
 
 // Test 2: Promise with computation before resolve
 console.log("\n--- Test 2: Computed resolve ---");
@@ -142,7 +142,7 @@ let p2 = new Promise((resolve) => {
     resolve(x + y);
 });
 let r2 = await p2;
-console.log("Computed result: " + r2);  // 30
+console.log("Computed result: ", r2);  // 30
 
 // Test 3: Promise with string
 console.log("\n--- Test 3: String resolve ---");
@@ -150,24 +150,24 @@ let p3 = new Promise((resolve) => {
     resolve("Hello from Promise!");
 });
 let r3 = await p3;
-console.log("String: " + r3);
+console.log("String: ", r3);
 
 // Test 4: Un-awaited promise shows [Promise]
 console.log("\n--- Test 4: Un-awaited shows [Promise] ---");
 let p4 = new Promise((resolve) => {
     resolve(100);
 });
-console.log("Un-awaited: " + p4);  // [Promise]
+console.log("Un-awaited: ", p4);  // [Promise]
 
 console.log("\n=== Promise Constructor Test Complete ===");
 
 async function testConcurrency() {
-    console.log("Start: " + Date.now());
+    console.log("Start: ", Date.now());
     
     // Test Delay
     console.log("Waiting 100ms...");
     await delay(100);
-    console.log("Buffered: " + Date.now());
+    console.log("Buffered: ", Date.now());
     
     // Test Promise.all
     console.log("Testing Promise.all...");
@@ -177,16 +177,16 @@ async function testConcurrency() {
         delay(100),
         "Instant"
     ]);
-    console.log("Promise.all done in: " + (Date.now() - start) + "ms (approx 100)");
-    console.log("Results length: " + results.length);
-    console.log("Results[2]: " + results[2]);
+    console.log("Promise.all done in: ", (Date.now() - start), "ms (approx 100)");
+    console.log("Results length: ", results.length);
+    console.log("Results[2]: ", results[2]);
 
     // Test HTTP (Assume network or just check compilation/runtime)
     // We'll trust curl is present.
     console.log("Fetching Google...");
     let html = await http.get("https://www.google.com");
     if (html.length > 0) {
-        console.log("Fetched Google! Size: " + html.length);
+        console.log("Fetched Google! Size: ", html.length);
     } else {
         console.log("Fetch failed or empty (no network?)");
     }

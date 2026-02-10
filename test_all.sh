@@ -5,7 +5,7 @@ mkdir -p build/examples
 
 # 1. Compile the Compiler
 echo ">>> Compiling TejX Compiler (tejxc)..."
-SOURCES="src/main.cpp src/lexer/Lexer.cpp src/parser/Parser.cpp src/codegen/CodeGen.cpp"
+SOURCES="src/main.cpp src/lexer/Lexer.cpp src/parser/Parser.cpp src/hir/Lowering.cpp src/hir/TypeChecker.cpp src/mir/MIRLowering.cpp src/mir/BorrowChecker.cpp src/codegen/MIRCodeGen.cpp"
 clang++ -std=c++17 -Iinclude $SOURCES -o build/tejxc
 
 if [ $? -ne 0 ]; then

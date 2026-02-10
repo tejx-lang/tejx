@@ -3,16 +3,16 @@ function run(): void {
     
     // Trigonometry
     let angle: number = 3.14159 / 2; // PI/2
-    console.log("sin(PI/2): " + Math.sin(angle));
-    console.log("cos(0): " + Math.cos(0));
+    console.log("sin(PI/2): ", Math.sin(angle));
+    console.log("cos(0): ", Math.cos(0));
     
     // Min/Max/Rounding
-    console.log("max(10, 20): " + Math.max(10, 20));
-    console.log("min(10, 20): " + Math.min(10, 20));
-    console.log("floor(3.9): " + Math.floor(3.9));
+    console.log("max(10, 20): ", Math.max(10, 20));
+    console.log("min(10, 20): ", Math.min(10, 20));
+    console.log("floor(3.9): ", Math.floor(3.9));
 
     // Random Simulation
-    console.log("Random number (0-1): " + Math.random());
+    console.log("Random number (0-1): ", Math.random());
     
     // Physics Simulation (Bouncing Ball)
     console.log("--- Physics Sim ---");
@@ -29,7 +29,7 @@ function run(): void {
             velocity = -velocity * 0.8; // Bounce with energy loss
         }
         
-        console.log("Step " + i + ": Height = " + Math.round(y));
+        console.log("Step ", i, ": Height = ", Math.round(y));
         i = i + 1;
     }
 }
@@ -44,26 +44,26 @@ console.warn("This is a warning");
 console.error("This is an error");
 
 // Math API
-console.log("Math.min(5, 3): " + Math.min(5, 3));
-console.log("Math.max(5, 3): " + Math.max(5, 3));
-console.log("Math.abs(-10): " + Math.abs(-10));
-console.log("Math.sqrt(16): " + Math.sqrt(16));
-console.log("Math.pow(2, 8): " + Math.pow(2, 8));
-console.log("Math.floor(4.7): " + Math.floor(4.7));
-console.log("Math.ceil(4.2): " + Math.ceil(4.2));
-console.log("Math.round(4.5): " + Math.round(4.5));
-console.log("Math.round(4.4): " + Math.round(4.4));
+console.log("Math.min(5, 3): ", Math.min(5, 3));
+console.log("Math.max(5, 3): ", Math.max(5, 3));
+console.log("Math.abs(-10): ", Math.abs(-10));
+console.log("Math.sqrt(16): ", Math.sqrt(16));
+console.log("Math.pow(2, 8): ", Math.pow(2, 8));
+console.log("Math.floor(4.7): ", Math.floor(4.7));
+console.log("Math.ceil(4.2): ", Math.ceil(4.2));
+console.log("Math.round(4.5): ", Math.round(4.5));
+console.log("Math.round(4.4): ", Math.round(4.4));
 
 console.log("Console and Math test complete!");
 // Date Test
 let d = new Date();
-console.log("Current Time (ISO): " + d.toISOString());
+console.log("Current Time (ISO): ", d.toISOString());
 
 let t = d.getTime();
-console.log("Timestamp: " + t);
+console.log("Timestamp: ", t);
 
 let now = Date.now();
-console.log("Now (static): " + now);
+console.log("Now (static): ", now);
 
 if (now >= t) {
     console.log("Time flows forward");
@@ -81,19 +81,19 @@ let obj = {
 };
 
 let json = JSON.stringify(obj);
-console.log("JSON: " + json);
+console.log("JSON: ", json);
 
 // Test parsing
 let parsed = JSON.parse(json);
-console.log("Parsed x: " + parsed["x"]);
-console.log("Parsed y: " + parsed["y"]);
-console.log("Parsed z length: " + parsed["z"].length);
-console.log("Parsed w.nested: " + parsed["w"]["nested"]);
+console.log("Parsed x: ", parsed["x"]);
+console.log("Parsed y: ", parsed["y"]);
+console.log("Parsed z length: ", parsed["z"].length);
+console.log("Parsed w.nested: ", parsed["w"]["nested"]);
 
 // Test Globals
-console.log("parseInt: " + (parseInt("123") + 1));
-console.log("parseFloat: " + (parseFloat("12.34") + 1));
-console.log("parseInt (invalid): " + parseInt("abc"));
+console.log("parseInt: ", (parseInt("123") + 1));
+console.log("parseFloat: ", (parseFloat("12.34") + 1));
+console.log("parseInt (invalid): ", parseInt("abc"));
 // Map and Set Test
 
 console.log("Testing Map and Set types...");
@@ -103,12 +103,12 @@ let m = new Map();
 m.set("name", "TejX");
 m.set("version", 1);
 
-console.log("Map has 'name': " + m.has("name"));
-console.log("Map get 'name': " + m.get("name"));
-console.log("Map size: " + m.size());
+console.log("Map has 'name': ", m.has("name"));
+console.log("Map get 'name': ", m.get("name"));
+console.log("Map size: ", m.size());
 
 m.del("version");
-console.log("After del, size: " + m.size());
+console.log("After del, size: ", m.size());
 
 // Test Set
 let s = new Set();
@@ -117,25 +117,25 @@ s.add(2);
 s.add(2);  // Duplicate, should not increase size
 s.add(3);
 
-console.log("Set has 1: " + s.has(1));
-console.log("Set has 99: " + s.has(99));
-console.log("Set size: " + s.size());
+console.log("Set has 1: ", s.has(1));
+console.log("Set has 99: ", s.has(99));
+console.log("Set size: ", s.size());
 
 console.log("Map and Set test complete!");
 
 // String Utilities Verification
 
 let strVal = "  Hello, TejX!  ";
-console.log("Original: '" + strVal + "'");
+console.log("Original: '", strVal, "'");
 
 let trimmed = strVal.trim();
-console.log("Trimmed: '" + trimmed + "'");
+console.log("Trimmed: '", trimmed, "'");
 
 let lower = trimmed.toLowerCase();
-console.log("Lower: " + lower);
+console.log("Lower: ", lower);
 
 let upper = trimmed.toUpperCase();
-console.log("Upper: " + upper);
+console.log("Upper: ", upper);
 
 if (trimmed.startsWith("Hello")) {
     console.log("Starts with Hello: Yes");
@@ -146,4 +146,4 @@ if (trimmed.endsWith("!")) {
 }
 
 let replaced = trimmed.replace("TejX", "World");
-console.log("Replaced: " + replaced);
+console.log("Replaced: ", replaced);

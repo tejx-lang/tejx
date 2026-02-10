@@ -25,7 +25,7 @@ console.log("Testing Proper Error Handling...");
 try {
     process(0);
 } catch (e) {
-    console.log("Caught string: " + e);
+    console.log("Caught string: ", e);
 } finally {
     console.log("Cleanup 1 (String test)");
 }
@@ -34,8 +34,8 @@ try {
 try {
     process(-5);
 } catch (e) {
-    console.log("Caught object: " + e.message + " (Code: " + e.code + ")");
-    console.log("ToString: " + e.toString());
+    console.log("Caught object: ", e.message, " (Code: ", e.code, ")");
+    console.log("ToString: ", e.toString());
 } finally {
     console.log("Cleanup 2 (Object test)");
 }
@@ -51,7 +51,7 @@ function nestedTest() {
             console.log("Inner finally executed");
         }
     } catch (err) {
-        console.log("Outer catch caught: " + err.message);
+        console.log("Outer catch caught: ", err.message);
     } finally {
         console.log("Outer finally executed");
     }

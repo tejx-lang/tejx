@@ -11,8 +11,12 @@
 
 #include "tejx/Lexer.h"
 #include "tejx/Parser.h"
-#include "tejx/CodeGen.h"
 #include "tejx/AST.h"
+#include "tejx/Lowering.h"
+#include "tejx/TypeChecker.h"
+#include "tejx/MIRLowering.h"
+#include "tejx/BorrowChecker.h"
+#include "tejx/MIRCodeGen.h"
 
 namespace fs = std::filesystem;
 
@@ -31,60 +35,6 @@ std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
-// Module System State
-std::set<std::string> visitedModules;
-std::vector<std::pair<std::string, std::shared_ptr<tejx::Program>>> modules; // Ordered list of modules
-
-void compileModule(const std::string& path) {
-    std::string canonicalPath;
-    try {
-        if (!fs::exists(path)) {
-            std::cerr << "Error: Module not found: " << path << std::endl;
-            exit(1);
-        }
-        canonicalPath = fs::canonical(path).string();
-    } catch (const std::exception& e) {
-        std::cerr << "Error resolving path " << path << ": " << e.what() << std::endl;
-        exit(1);
-    }
-
-    if (visitedModules.count(canonicalPath)) return; // Already processed
-    visitedModules.insert(canonicalPath);
-
-    std::string source = readFile(canonicalPath);
-    
-    // 1. Lexing
-    tejx::Lexer lexer(source);
-    std::vector<tejx::Token> tokens = lexer.tokenize();
-
-    // 2. Parsing
-    tejx::Parser parser(tokens);
-    auto program = parser.parse();
-    
-    // 3. Recursive Import Scanning
-    std::string baseDir = fs::path(path).parent_path().string();
-    if (baseDir.empty()) baseDir = ".";
-
-    for (const auto& stmt : program->statements) {
-        if (auto importDecl = std::dynamic_pointer_cast<tejx::ImportDecl>(stmt)) {
-            std::string importPath = importDecl->source;
-            // Handle relative paths
-            if (importPath.find("./") == 0 || importPath.find("../") == 0) {
-                 importPath = baseDir + "/" + importPath;
-            }
-            if (importPath.find(".tx") == std::string::npos) {
-                importPath += ".tx";
-            }
-            compileModule(importPath);
-        }
-    }
-    
-    // Add to modules list (post-order traversal ensures imports are compiled before importers)
-    // Actually, for C++ generation w/ forward decls, order matters less for types, but matters for 'using'
-    // Let's store in the order we finished parsing them (dependencies first)
-    modules.push_back({canonicalPath, program});
-}
-
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printUsage();
@@ -92,36 +42,91 @@ int main(int argc, char* argv[]) {
     }
 
     std::string filename = argv[1];
+    std::string source = readFile(filename);
+    
+    // 1. Lexing
+    // std::cout << "[1] Lexing..." << std::endl;
+    tejx::Lexer lexer(source);
+    std::vector<tejx::Token> tokens = lexer.tokenize();
+
+    // 2. Parsing
+    // std::cout << "[2] Parsing..." << std::endl;
+    tejx::Parser parser(tokens);
+    auto program = parser.parse();
+    
+    if (!parser.errors.empty()) {
+        for (const auto& err : parser.errors) {
+            std::cerr << err << std::endl;
+        }
+        return 1;
+    }
+
+    // 3. Lowering to HIR
+    // std::cout << "[3] Lowering to HIR..." << std::endl;
+    tejx::Lowering lowering;
+    auto hir = lowering.lower(program);
+
+    // 4. Semantic Analysis
+    // std::cout << "[4] Semantic Analysis..." << std::endl;
+    tejx::TypeChecker typeChecker;
+    typeChecker.check(hir);
+    if (!typeChecker.errors.empty()) {
+        for (const auto& err : typeChecker.errors) {
+            std::cerr << err << std::endl;
+        }
+        return 1;
+    }
+
+    // 5. Lowering to MIR
+    // std::cout << "[5] Lowering to MIR..." << std::endl;
+    tejx::MIRLowering mirLowering;
+    auto mir = mirLowering.lower(hir);
+
+    // 6. Borrow Checking
+    // std::cout << "[6] Borrow Checking..." << std::endl;
+    tejx::BorrowChecker borrowChecker;
+    borrowChecker.check(mir);
+    if (!borrowChecker.errors.empty()) {
+        std::cerr << "Borrow Checker Found Errors!" << std::endl;
+        return 1;
+    }
+    
+    // 7. LLVM IR Generation
+    // std::cout << "[7] LLVM IR Generation..." << std::endl;
+    tejx::MIRCodeGen codeGen;
+    std::vector<std::shared_ptr<tejx::MIRFunction>> funcs;
+    funcs.push_back(mir);
+    std::string llvmCode = codeGen.generate(funcs);
     
     // Determine output name
     std::string outputName = "a.out";
+    std::string baseName = filename;
     size_t lastDot = filename.find_last_of(".");
     if (lastDot != std::string::npos) {
-        outputName = filename.substr(0, lastDot);
-    } else {
-        outputName = filename + ".out";
+        baseName = filename.substr(0, lastDot);
+        outputName = baseName;
     }
 
-    // Start recursive compilation
-    compileModule(filename);
-    
-    // 3. Code Generation (Pass all modules)
-    tejx::CodeGen codegen;
-    std::string cppCode = codegen.generate(modules);
-    
-    // 4. Output Code
-    std::string tempFile = outputName + ".cpp";
+    std::string tempFile = baseName + ".ll";
     std::ofstream outFile(tempFile);
-    outFile << cppCode;
+    outFile << llvmCode;
     outFile.close();
     
-    // 5. Compile with Clang++
-    std::string compileCmd = "clang++ -std=c++17 " + tempFile + " -o " + outputName;
+    // 8. Optimization
+    // std::cout << "[8] Optimization (LLVM Passes)..." << std::endl;
+
+    // 9. Backend Compile & Link (Clang)
+    // Helper to find runtime.c (assuming absolute path for now or relative to current dir)
+    std::string runtimePath = "/Users/praveenyadav/Desktop/My Projects/NovaJs/src/runtime/runtime.c"; 
+    
+    // std::cout << "[9] Machine Code Generation & Linking..." << std::endl;
+    std::string compileCmd = "clang++ -O3 -Wno-deprecated -Wno-override-module " + tempFile + " \"" + runtimePath + "\" -o " + outputName;
+    // std::cout << "Compiling: " << compileCmd << std::endl;
     int result = system(compileCmd.c_str());
     
     if (result == 0) {
-        std::cerr << "Compiler Build successful! Binary located at: " << outputName << std::endl;
-        // remove(tempFile.c_str()); 
+        // std::cout << "Build successful! Binary: " << outputName << std::endl;
+        remove(tempFile.c_str()); 
     } else {
         std::cerr << "Compilation failed." << std::endl;
         return 1;

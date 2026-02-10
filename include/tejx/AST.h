@@ -11,6 +11,9 @@ struct Statement;
 
 // Base class for all AST nodes
 struct ASTNode {
+    int line = 0;
+    int col = 0;
+    std::string file;
     virtual ~ASTNode() = default;
 };
 

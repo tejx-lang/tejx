@@ -26,7 +26,7 @@ class Robot extends Entity {
     }
 
     identify(): void {
-        console.log("Robot Model: " + this.model + " (ID: " + this.id + ")");
+        console.log("Robot Model: ", this.model, " (ID: ", this.id, ")");
     }
 }
 
@@ -34,7 +34,7 @@ class Robot extends Entity {
 // ----------------------------------
 extension Robot {
     greet(name: string): void {
-        console.log("BEEP BOOP. Hello " + name + ".");
+        console.log("BEEP BOOP. Hello ", name, ".");
     }
     
     // Additional method in extension
@@ -50,7 +50,7 @@ let r = new Robot(101, "T-800");
 
 r.identify();       // Class method
 r.greet("Human");   // Protocol method via Extension
-console.log("Status: " + r.status()); // Extension method
+console.log("Status: ", r.status()); // Extension method
 class Point {
     x: number;
     y: number;
@@ -61,7 +61,7 @@ class Point {
     }
 
     print(): void {
-        console.log("Point: " + this.x + ", " + this.y);
+        console.log("Point: ", this.x, ", ", this.y);
     }
 }
 
@@ -132,13 +132,13 @@ class ExtensibleUser {
 
 extension ExtensibleUser {
     sayHello() {
-        console.log("Hello, " + this.name);
+        console.log("Hello, ", this.name);
     }
     
     greet(times: number) {
         let i = 0;
         while (i < times) {
-            console.log("Greeting " + (i + 1) + ": " + this.name);
+            console.log("Greeting ", (i + 1), ": ", this.name);
             i = i + 1;
         }
     }
@@ -162,7 +162,7 @@ class BankAccount {
 
     public deposit(amount: number): void {
         this.balance += amount;
-        console.log("Deposited: " + amount);
+        console.log("Deposited: ", amount);
     }
 
     public getBalance(): number {
@@ -174,12 +174,12 @@ class BankAccount {
     }
 }
 
-console.log("Bank: " + BankAccount.getBankName());
+console.log("Bank: ", BankAccount.getBankName());
 
 let acc = new BankAccount("Alice", 100);
-console.log("Owner: " + acc.owner);
+console.log("Owner: ", acc.owner);
 acc.deposit(50);
-console.log("Balance: " + acc.getBalance());
+console.log("Balance: ", acc.getBalance());
 
 // Uncompiled check: acc.balance should fail if we tried to access it directly in C++ 
 // (though our parser allows it, C++ compiler will error if private works)
@@ -227,15 +227,15 @@ console.log("=== Getter/Setter Test ===");
 let p = new Person("Alice", 30);
 
 // Test getters
-console.log("Name: " + p.get_name());
-console.log("Age: " + p.get_age());
-console.log("Info: " + p.get_info());
+console.log("Name: ", p.get_name());
+console.log("Age: ", p.get_age());
+console.log("Info: ", p.get_info());
 
 // Test setters
 p.set_name("Bob");
 p.set_age(25);
-console.log("After update - Name: " + p.get_name());
-console.log("After update - Age: " + p.get_age());
+console.log("After update - Name: ", p.get_name());
+console.log("After update - Age: ", p.get_age());
 
 console.log("=== Getter/Setter Test Complete ===");
 // examples/advanced.tx
@@ -243,7 +243,7 @@ console.log("=== Getter/Setter Test Complete ===");
 console.log("--- Ternary Operator ---");
 let age = 18;
 let status = age >= 18 ? "Adult" : "Minor";
-console.log("Status: " + status);
+console.log("Status: ", status);
 console.log(10 > 5 ? "10 is bigger" : "5 is bigger");
 
 console.log("--- Switch (Desugared) ---");
@@ -267,7 +267,7 @@ class Animal {
         this.name = n;
     }
     speak(): void {
-        console.log(this.name + " makes a noise.");
+        console.log(this.name, " makes a noise.");
     }
 }
 
@@ -281,14 +281,14 @@ class Dog extends Animal {
     
     // Shadowing/Overriding method (non-virtual in C++ unless marked virtual)
     bark(): void {
-        console.log(this.name + " barks!");
+        console.log(this.name, " barks!");
     }
 }
 
 let dDog = new Dog("Rex");
 dDog.speak(); // Should call Animal method
 dDog.bark();  // Should call Dog method
-console.log("Dog Name: " + dDog.name);
+console.log("Dog Name: ", dDog.name);
 abstract class Shape {
     protected name: string;
     
@@ -299,7 +299,7 @@ abstract class Shape {
     abstract area(): number;
     
     describe(): void {
-        console.log("I am a " + this.name);
+        console.log("I am a ", this.name);
     }
 }
 
@@ -317,7 +317,7 @@ class Circle extends Shape {
     
     printDetails(): void {
         super.describe(); // Call base method
-        console.log("My area is: " + this.area());
+        console.log("My area is: ", this.area());
     }
 }
 
@@ -334,9 +334,9 @@ class Cat extends Animal {
 let d = new Dog("Buddy");
 let c = new Cat("Whiskers");
 
-console.log("d is Dog: " + (d instanceof Dog));      // true
-console.log("d is Animal: " + (d instanceof Animal)); // true
-console.log("d is Cat: " + (d instanceof Cat));       // false
+console.log("d is Dog: ", (d instanceof Dog));      // true
+console.log("d is Animal: ", (d instanceof Animal)); // true
+console.log("d is Cat: ", (d instanceof Cat));       // false
 
 if (d instanceof Dog) {
     console.log("Verified: d is a Dog");
