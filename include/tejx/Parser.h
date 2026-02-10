@@ -26,7 +26,7 @@ private:
 
     // Parse methods
     std::shared_ptr<ASTNode> parseDeclaration();
-    std::shared_ptr<ClassDeclaration> parseClassDeclaration();
+    std::shared_ptr<ClassDeclaration> parseClassDeclaration(bool isAbstract = false);
     std::shared_ptr<ProtocolDeclaration> parseProtocolDeclaration(); // New
     std::shared_ptr<ExtensionDeclaration> parseExtensionDeclaration(); // New
     std::shared_ptr<EnumDeclaration> parseEnumDeclaration();

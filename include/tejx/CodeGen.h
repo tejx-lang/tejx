@@ -22,6 +22,7 @@ private:
     std::unordered_set<std::string> knownEnums;   // For enum vs class member access
     std::unordered_set<std::string> extensionMethodNames; // Names of methods defined in extensions
     std::string currentSelfVar; // For mapping 'this' to 'self' in extensions
+    std::shared_ptr<ClassDeclaration> currentClass;
     std::unordered_map<std::string, std::string> restFunctions; // funcName -> restParamElementType
     int indentLevel = 0;
 

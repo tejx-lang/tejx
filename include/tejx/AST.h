@@ -366,6 +366,7 @@ struct ClassDeclaration : ASTNode {
         std::shared_ptr<FunctionDeclaration> func;
         AccessModifier access = AccessModifier::Public;
         bool isStatic = false;
+        bool isAbstract = false;
     };
     
     struct Getter {
@@ -385,6 +386,7 @@ struct ClassDeclaration : ASTNode {
 
     std::string name;
     std::string parentName;
+    bool isAbstract = false;
     std::vector<std::string> implementedProtocols; // Interfaces
     std::vector<Member> members;
     std::vector<Method> methods;
@@ -398,10 +400,13 @@ struct ClassDeclaration : ASTNode {
                      const std::string& parent = "",
                      const std::vector<std::string>& impls = {},
                      const std::vector<Getter>& gets = {},
-                     const std::vector<Setter>& sets = {}) 
+                     const std::vector<Setter>& sets = {},
+                     bool abstract = false) 
         : name(n), members(mems), methods(meths), constructor(ctor), parentName(parent), 
-          implementedProtocols(impls), getters(gets), setters(sets) {}
+          implementedProtocols(impls), getters(gets), setters(sets), isAbstract(abstract) {}
 };
+
+struct SuperExpr : Expression {};
 
 struct EnumMember {
     std::string name;

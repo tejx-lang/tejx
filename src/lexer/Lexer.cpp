@@ -72,15 +72,22 @@ Token Lexer::readIdentifier() {
         {"string", TokenType::TypeString},
         {"boolean", TokenType::TypeBoolean},
         {"void", TokenType::TypeVoid},
+        {"any", TokenType::TypeAny},
+        {"int", TokenType::TypeInt},
+        {"float", TokenType::TypeFloat},
+        {"bigInt", TokenType::TypeBigInt},
+        {"bigfloat", TokenType::TypeBigFloat},
         {"true", TokenType::True},
         {"false", TokenType::False},
         {"class", TokenType::Class},
         {"new", TokenType::New},
         {"this", TokenType::This},
         {"constructor", TokenType::Constructor},
+        {"super", TokenType::Super},
         {"public", TokenType::Public},
         {"private", TokenType::Private},
         {"protected", TokenType::Protected},
+        {"abstract", TokenType::Abstract},
         {"protocol", TokenType::Protocol},
         {"implements", TokenType::Implements},
         {"extension", TokenType::Extension},
@@ -299,6 +306,7 @@ std::string tokenTypeToString(TokenType type) {
         case TokenType::Public: return "Public";
         case TokenType::Private: return "Private";
         case TokenType::Protected: return "Protected";
+        case TokenType::Abstract: return "Abstract";
         case TokenType::Static: return "Static";
         case TokenType::Identifier: return "Identifier";
         case TokenType::Number: return "NumberLiteral";
@@ -330,6 +338,7 @@ std::string tokenTypeToString(TokenType type) {
         case TokenType::Class: return "Class";
         case TokenType::New: return "New";
         case TokenType::This: return "This";
+        case TokenType::Super: return "Super";
         case TokenType::Constructor: return "Constructor";
         case TokenType::Protocol: return "Protocol";
         case TokenType::Implements: return "Implements";

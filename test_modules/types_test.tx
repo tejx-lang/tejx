@@ -1,0 +1,37 @@
+function main() {
+    let i: int = 42;
+    let f: float = 3.14;
+    let bi: bigInt = 9007199254740991; // MAX_SAFE_INTEGER
+    let bf: bigfloat = 1.234567890123456789;
+
+    let opt: Option<int> = Some(100);
+    let optNone: Option<int> = None;
+
+    console.log("Int:", i);
+    console.log("Float:", f);
+    console.log("BigInt:", bi);
+    console.log("BigFloat:", bf);
+    
+    let sum: bigInt = bi - 100;
+    console.log("BigInt - 100:", sum);
+
+    if (opt != None) {
+        console.log("Opt has value");
+         // Unwrapping is not yet syntax-supported as .value(), but we can ensure it exists.
+         // In C++, std::optional has operator-> and * and .value().
+         // CodeGen for member access to optional? 
+         // OptionalMemberAccessExpr uses optional_at which handles Var. 
+         // But strict optional?
+         // opt.value() in TejX? 
+         // If I write opt.value() in TejX, Parser sees member access "value".
+         // CodeGen emits opt->value if generic MemberAccess handles strict types?
+         // CodeGen MemberAccessExpr:
+         // buffer << "->" << mem->member;
+         // So opt->value works if "value" is a member of std::optional? No, std::optional has .value().
+         // But "->" operator in C++ on optional accesses the contained value's members!
+         // So opt->val works if int has val. But int doesn't.
+         // Users might expect opt.unwrap() or something.
+         // For now, I just verify compilation of assignment and check.
+    }
+}
+main();

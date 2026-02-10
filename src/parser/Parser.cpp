@@ -104,6 +104,14 @@ std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
             decl = parseVarDeclaration();
         } else if (check(TokenType::Class)) {
             decl = parseClassDeclaration();
+        } else if (check(TokenType::Abstract)) {
+            advance();
+            if (check(TokenType::Class)) {
+                decl = parseClassDeclaration(true); 
+            } else {
+                 std::cerr << "Error: 'abstract' must be followed by 'class'." << std::endl;
+                 exit(1);
+            }
         } else {
             std::cerr << "Error: Expected function, const, let, or class after export." << std::endl;
             exit(1);
@@ -123,6 +131,14 @@ std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
     }
     if (check(TokenType::Function)) return parseFunctionDeclaration(false);
     if (check(TokenType::Class)) return parseClassDeclaration();
+    if (check(TokenType::Abstract)) {
+        advance();
+        if (check(TokenType::Class)) {
+            return parseClassDeclaration(true);
+        }
+        std::cerr << "Error: 'abstract' must be followed by 'class'." << std::endl;
+        exit(1);
+    }
     if (check(TokenType::Protocol)) return parseProtocolDeclaration();
     if (check(TokenType::Extension)) return parseExtensionDeclaration();
     if (check(TokenType::Enum)) return parseEnumDeclaration();
@@ -130,7 +146,7 @@ std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
     return parseStatement();
 }
 
-    std::shared_ptr<ClassDeclaration> Parser::parseClassDeclaration() {
+std::shared_ptr<ClassDeclaration> Parser::parseClassDeclaration(bool isAbstract) {
     consume(TokenType::Class, "Expected 'class'.");
     std::string name = consume(TokenType::Identifier, "Expected class name.").value;
     
@@ -186,12 +202,14 @@ std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
             // Check for Access Modifiers and Static
             ClassDeclaration::AccessModifier access = ClassDeclaration::AccessModifier::Public;
             bool isStatic = false;
-            
+            bool isAbstractMethod = false;
+
             if (check(TokenType::Public)) { access = ClassDeclaration::AccessModifier::Public; advance(); }
             else if (check(TokenType::Private)) { access = ClassDeclaration::AccessModifier::Private; advance(); }
             else if (check(TokenType::Protected)) { access = ClassDeclaration::AccessModifier::Protected; advance(); }
             
             if (check(TokenType::Static)) { isStatic = true; advance(); }
+            if (check(TokenType::Abstract)) { isAbstractMethod = true; advance(); }
             
             // Getter: get name() { ... }
             if (check(TokenType::Identifier) && peek().value == "get" && peek(1).type == TokenType::Identifier) {
@@ -279,9 +297,15 @@ std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
                     }
                 }
                 
-                auto body = std::dynamic_pointer_cast<BlockStmt>(parseBlock());
+                std::shared_ptr<BlockStmt> body = nullptr;
+                if (isAbstractMethod) {
+                    consume(TokenType::Semicolon, "Expected ';' after abstract method declaration.");
+                } else {
+                    body = std::dynamic_pointer_cast<BlockStmt>(parseBlock());
+                }
+                
                 auto funcDecl = std::make_shared<FunctionDeclaration>(mName, params, retType, body);
-                methods.push_back({funcDecl, access, isStatic});
+                methods.push_back({funcDecl, access, isStatic, isAbstractMethod});
                 
             } else if (check(TokenType::Identifier)) {
                 // Member variable
@@ -314,7 +338,7 @@ std::shared_ptr<tejx::ASTNode> Parser::parseDeclaration() {
         }
     }
     consume(TokenType::CloseBrace, "Expected '}' after class body.");
-    return std::make_shared<ClassDeclaration>(name, members, methods, constructor, parentName, implementedProtocols, getters, setters);
+    return std::make_shared<ClassDeclaration>(name, members, methods, constructor, parentName, implementedProtocols, getters, setters, isAbstract);
 }
 
 std::shared_ptr<EnumDeclaration> Parser::parseEnumDeclaration() {
@@ -525,6 +549,25 @@ std::string Parser::parseType() {
         }
         consume(TokenType::CloseBrace, "Expected '}'");
         type += "}";
+    } else if (check(TokenType::OpenParen)) {
+        // Function Type: (p: type) => type
+        advance();
+        type = "(";
+        bool first = true;
+        while (!check(TokenType::CloseParen) && !isAtEnd()) {
+            if (!first) {
+                consume(TokenType::Comma, "Expected ','");
+                if (check(TokenType::CloseParen)) break;
+                type += ", ";
+            }
+            std::string pName = consume(TokenType::Identifier, "Expected param name").value;
+            consume(TokenType::Colon, "Expected ':'");
+            type += pName + ":" + parseType();
+            first = false;
+        }
+        consume(TokenType::CloseParen, "Expected ')'");
+        consume(TokenType::Arrow, "Expected '=>'");
+        type += ") => " + parseType();
     } else {
         // Standard Type
         Token typeToken = advance();
@@ -532,6 +575,11 @@ std::string Parser::parseType() {
         else if (typeToken.type == TokenType::TypeString) type = "string";
         else if (typeToken.type == TokenType::TypeBoolean) type = "boolean";
         else if (typeToken.type == TokenType::TypeVoid) type = "void";
+        else if (typeToken.type == TokenType::TypeInt) type = "int";
+        else if (typeToken.type == TokenType::TypeFloat) type = "float";
+        else if (typeToken.type == TokenType::TypeBigInt) type = "bigInt";
+        else if (typeToken.type == TokenType::TypeBigFloat) type = "bigfloat";
+        else if (typeToken.type == TokenType::TypeAny) type = "any";
         else if (typeToken.type == TokenType::Option) {
             consume(TokenType::Less, "Expected '<' after Option.");
             type = "Option<" + parseType() + ">";
@@ -927,7 +975,11 @@ std::shared_ptr<Expression> Parser::parseCall() {
                      expr = std::make_shared<CallExpr>(innerId->name + "." + mem->member, args);
                  } else if (std::dynamic_pointer_cast<ThisExpr>(mem->object)) {
                      expr = std::make_shared<CallExpr>("this." + mem->member, args);
+                 } else if (std::dynamic_pointer_cast<SuperExpr>(mem->object)) {
+                     expr = std::make_shared<CallExpr>("super." + mem->member, args);
                  }
+            } else if (std::dynamic_pointer_cast<SuperExpr>(expr)) {
+                expr = std::make_shared<CallExpr>("super", args);
             }
         } else if (check(TokenType::Dot)) {
              advance();
@@ -1008,6 +1060,10 @@ std::shared_ptr<Expression> Parser::parsePrimary() {
     if (check(TokenType::This)) {
         advance();
         return std::make_shared<ThisExpr>();
+    }
+    if (check(TokenType::Super)) {
+        advance();
+        return std::make_shared<SuperExpr>();
     }
     if (check(TokenType::OpenParen)) {
         // Lambda Check: (args) => ...
