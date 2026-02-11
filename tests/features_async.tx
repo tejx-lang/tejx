@@ -93,7 +93,7 @@ async function slowAdd(a: number, b: number): Promise<number> {
 }
 
 // === Test Un-awaited Promises ===
-console.log("\n--- Un-awaited Promises ---");
+console.log("--- Un-awaited Promises ---");
 let promise1 = computeDouble(5);
 console.log("promise1 (not awaited): ", promise1);  // [Promise]
 
@@ -101,7 +101,7 @@ let promise2 = fetchGreeting("TejX");
 console.log("promise2 (not awaited): ", promise2);  // [Promise]
 
 // === Test Awaited Promises ===
-console.log("\n--- Awaited Promises ---");
+console.log("--- Awaited Promises ---");
 let result1 = await computeDouble(5);
 console.log("result1 (awaited): ", result1);  // 10
 
@@ -112,22 +112,22 @@ let result3 = await slowAdd(10, 20);
 console.log("result3 (awaited): ", result3);  // 30
 
 // === Test Chained Promises ===
-console.log("\n--- Chained Promises ---");
+console.log("--- Chained Promises ---");
 let chainResult = await computeDouble(await computeDouble(5));
 console.log("chainResult (double of double): ", chainResult);  // 20
 
 // === Test Promise in Expression ===
-console.log("\n--- Promise in Expression ---");
+console.log("--- Promise in Expression ---");
 let exprResult = await computeDouble(3) + await computeDouble(7);
 console.log("exprResult (3*2 + 7*2): ", exprResult);  // 20
 
-console.log("\n=== Promise Features Test Complete ===");
+console.log("=== Promise Features Test Complete ===");
 // Promise Constructor Test - JS-style new Promise((resolve) => {...})
 
 console.log("=== Promise Constructor Test ===");
 
 // Test 1: Basic Promise with immediate resolve
-console.log("\n--- Test 1: Immediate resolve ---");
+console.log("--- Test 1: Immediate resolve ---");
 let p1 = new Promise((resolve) => {
     resolve(42);
 });
@@ -135,7 +135,7 @@ let r1 = await p1;
 console.log("Resolved: ", r1);  // 42
 
 // Test 2: Promise with computation before resolve
-console.log("\n--- Test 2: Computed resolve ---");
+console.log("--- Test 2: Computed resolve ---");
 let p2 = new Promise((resolve) => {
     let x = 10;
     let y = 20;
@@ -145,7 +145,7 @@ let r2 = await p2;
 console.log("Computed result: ", r2);  // 30
 
 // Test 3: Promise with string
-console.log("\n--- Test 3: String resolve ---");
+console.log("--- Test 3: String resolve ---");
 let p3 = new Promise((resolve) => {
     resolve("Hello from Promise!");
 });
@@ -153,13 +153,13 @@ let r3 = await p3;
 console.log("String: ", r3);
 
 // Test 4: Un-awaited promise shows [Promise]
-console.log("\n--- Test 4: Un-awaited shows [Promise] ---");
+console.log("--- Test 4: Un-awaited shows [Promise] ---");
 let p4 = new Promise((resolve) => {
     resolve(100);
 });
 console.log("Un-awaited: ", p4);  // [Promise]
 
-console.log("\n=== Promise Constructor Test Complete ===");
+console.log("=== Promise Constructor Test Complete ===");
 
 async function testConcurrency() {
     console.log("Start: ", Date.now());

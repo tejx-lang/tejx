@@ -1,0 +1,383 @@
+use crate::token::TokenType;
+
+#[derive(Debug, Clone)]
+pub struct Program {
+    pub statements: Vec<Statement>, // In C++ this was vector<shared_ptr<ASTNode>>, but mostly statements
+}
+
+#[derive(Debug, Clone)]
+pub enum Statement {
+    VarDeclaration {
+        pattern: BindingNode,
+        type_annotation: String,
+        initializer: Option<Box<Expression>>,
+        is_const: bool,
+        line: usize,
+        _col: usize,
+    },
+    FunctionDeclaration(FunctionDeclaration),
+    ClassDeclaration(ClassDeclaration),
+    #[allow(dead_code)]
+    ProtocolDeclaration(ProtocolDeclaration), // If needed
+    #[allow(dead_code)]
+    ExtensionDeclaration(ExtensionDeclaration), // If needed
+    EnumDeclaration(EnumDeclaration),
+    TypeAliasDeclaration {
+        name: String,
+        _type_def: String, 
+        _line: usize, 
+        _col: usize 
+    },
+    InterfaceDeclaration {
+        name: String,
+        _methods: Vec<ProtocolMethod>,
+        _line: usize, 
+        _col: usize
+    },
+    ReturnStmt {
+        value: Option<Box<Expression>>,
+        _line: usize,
+        _col: usize,
+    },
+    BreakStmt { _line: usize, _col: usize },
+    ContinueStmt { _line: usize, _col: usize },
+    BlockStmt {
+        statements: Vec<Statement>,
+        _line: usize,
+        _col: usize,
+    },
+    IfStmt {
+        condition: Box<Expression>,
+        then_branch: Box<Statement>,
+        else_branch: Option<Box<Statement>>,
+        _line: usize,
+        _col: usize,
+    },
+    WhileStmt {
+        condition: Box<Expression>,
+        body: Box<Statement>,
+        _line: usize,
+        _col: usize,
+    },
+    ForStmt {
+        init: Option<Box<Statement>>, // Can be VarDecl or ExpressionStmt
+        condition: Option<Box<Expression>>,
+        increment: Option<Box<Expression>>,
+        body: Box<Statement>,
+        _line: usize,
+        _col: usize,
+    },
+    // ForOfStmt removed (unused)
+    SwitchStmt {
+        condition: Box<Expression>,
+        cases: Vec<Case>,
+        _line: usize,
+        _col: usize,
+    },
+    ExpressionStmt {
+        _expression: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    TryStmt {
+        _try_block: Box<Statement>, // BlockStmt
+        _catch_var: String,
+        _catch_block: Box<Statement>, // BlockStmt
+        _finally_block: Option<Box<Statement>>, // BlockStmt
+        _line: usize,
+        _col: usize,
+    },
+    ThrowStmt {
+        _expression: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    ImportDecl {
+        _names: Vec<String>,
+        source: String,
+        _is_default: bool,
+        _line: usize,
+        _col: usize,
+    },
+    ExportDecl {
+        declaration: Box<Statement>, // Can be Function/Class/VarDecl
+        _is_default: bool,
+        _line: usize,
+        _col: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum Expression {
+    NumberLiteral { value: f64, _line: usize, _col: usize },
+    StringLiteral { value: String, _line: usize, _col: usize },
+    BooleanLiteral { value: bool, _line: usize, _col: usize },
+    Identifier { name: String, _line: usize, _col: usize },
+    BinaryExpr {
+        left: Box<Expression>,
+        op: TokenType,
+        right: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    UnaryExpr {
+        op: TokenType,
+        right: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    AssignmentExpr {
+        target: Box<Expression>,
+        value: Box<Expression>,
+        _op: TokenType,
+        _line: usize,
+        _col: usize,
+    },
+    CallExpr {
+        callee: String, // TODO: This should probably be an Expression in a real compiler, but C++ used string
+        args: Vec<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    MemberAccessExpr {
+        object: Box<Expression>,
+        member: String,
+        _line: usize,
+        _col: usize,
+    },
+    ArrayAccessExpr {
+        target: Box<Expression>,
+        index: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    ObjectLiteralExpr {
+        entries: Vec<(String, Expression)>,
+        _spreads: Vec<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    ArrayLiteral {
+        elements: Vec<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    NewExpr {
+         class_name: String,
+         args: Vec<Expression>,
+         _line: usize,
+         _col: usize,
+    },
+    ThisExpr { _line: usize, _col: usize },
+    SuperExpr { _line: usize, _col: usize },
+    // TemplateLiteralExpr removed
+    LambdaExpr {
+        params: Vec<Parameter>,
+        body: Box<Statement>, // BlockStmt
+        _line: usize,
+        _col: usize,
+    },
+    AwaitExpr {
+        expr: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    // TypeofExpr removed
+
+    MatchExpr {
+        target: Box<Expression>,
+        arms: Vec<MatchArm>,
+        _line: usize,
+        _col: usize,
+    },
+    TernaryExpr {
+        _condition: Box<Expression>,
+        _true_branch: Box<Expression>,
+        _false_branch: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    UndefinedExpr { _line: usize, _col: usize },
+    NoneExpr { _line: usize, _col: usize },
+    SomeExpr {
+        _value: Box<BindingNode>, // Or ASTNode? C++ says ASTNode. But usually Expression?
+        _line: usize,
+        _col: usize,
+    },
+    // Optional chaining
+    OptionalMemberAccessExpr {
+        object: Box<Expression>,
+        member: String,
+        _line: usize,
+        _col: usize,
+    },
+    OptionalCallExpr {
+        callee: Box<Expression>,
+        args: Vec<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    OptionalArrayAccessExpr {
+        target: Box<Expression>,
+        index: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    NullishCoalescingExpr {
+        _left: Box<Expression>,
+        _right: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    SpreadExpr {
+        _expr: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    BlockExpr {
+        statements: Vec<Statement>, // For match arms with blocks
+        _line: usize,
+        _col: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionDeclaration {
+    pub name: String,
+    pub params: Vec<Parameter>,
+    pub return_type: String,
+    pub body: Box<Statement>, // BlockStmt
+    pub _is_async: bool,
+    pub _line: usize,
+    pub _col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Parameter {
+    pub name: String,
+    pub type_name: String,
+    pub _default_value: Option<Box<Expression>>,
+    pub _is_rest: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassDeclaration {
+    pub name: String,
+    pub _parent_name: String,
+    pub _is_abstract: bool,
+    pub _implemented_protocols: Vec<String>,
+    pub _members: Vec<ClassMember>,
+    pub methods: Vec<ClassMethod>,
+    pub _getters: Vec<ClassGetter>,
+    pub _setters: Vec<ClassSetter>,
+    pub _constructor: Option<FunctionDeclaration>,
+    pub _line: usize,
+    pub _col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassMember {
+    pub _name: String,
+    pub _type_name: String,
+    pub _access: AccessModifier,
+    pub _is_static: bool,
+    pub _initializer: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassMethod {
+    pub func: FunctionDeclaration,
+    pub _access: AccessModifier,
+    pub is_static: bool,
+    pub _is_abstract: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassGetter {
+    pub _name: String,
+    pub _return_type: String,
+    pub _body: Box<Statement>,
+    pub _access: AccessModifier,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassSetter {
+    pub _name: String,
+    pub _param_name: String,
+    pub _param_type: String,
+    pub _body: Box<Statement>,
+    pub _access: AccessModifier,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AccessModifier {
+    Public,
+    Private,
+    Protected,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDeclaration {
+    pub name: String,
+    pub _members: Vec<EnumMember>,
+    pub _line: usize,
+    pub _col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumMember {
+    pub _name: String,
+    pub _value: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Case {
+    pub value: Option<Box<Expression>>, // None for default
+    pub statements: Vec<Statement>,
+}
+
+
+#[derive(Debug, Clone)]
+pub struct ProtocolMethod {
+    pub _name: String,
+    pub _params: Vec<Parameter>,
+    pub _return_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtocolDeclaration {
+    pub _name: String,
+    pub _methods: Vec<ProtocolMethod>,
+    pub _line: usize,
+    pub _col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtensionDeclaration {
+     pub _target_type: String,
+     pub _methods: Vec<FunctionDeclaration>,
+     pub _line: usize,
+     pub _col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum BindingNode {
+    Identifier(String),
+    ArrayBinding {
+        elements: Vec<BindingNode>,
+        rest: Option<Box<BindingNode>>,
+    },
+    ObjectBinding {
+        entries: Vec<(String, BindingNode)>,
+    },
+    // C++ parsed literals in patterns too, but BindingNode usually implies destructuring.
+    // We'll stick to this for now.
+    LiteralMatch(Box<Expression>), // To handle pattern matching literals
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: BindingNode,
+    pub guard: Option<Box<Expression>>,
+    pub body: Box<Expression>,
+}

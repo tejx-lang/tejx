@@ -70,4 +70,4 @@ function mainFunc() {
          // For now, I just verify compilation of assignment and check.
     }
 }
-main();
+mainFunc();

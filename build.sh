@@ -1,17 +1,23 @@
 #!/bin/bash
 
-# Create build directory if it doesn't exist
-mkdir -p build
+# ============================================
+# TejX Rust Compiler - Build Script
+# ============================================
 
-# Compile the compiler (tejxc)
-echo "Compiling TejX Compiler (tejxc)..."
-SOURCES="src/main.cpp src/lexer/Lexer.cpp src/parser/Parser.cpp src/codegen/CodeGen.cpp"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-clang++ -std=c++17 -Iinclude $SOURCES -o build/tejxc
+echo ">>> Building TejX Compiler..."
+
+# Build in release mode
+cargo build --release 2>&1
+
+echo ">>> Building Rust Runtime..."
+rustc --crate-type=staticlib runtime.rs -o libruntime.a
 
 if [ $? -eq 0 ]; then
-    echo "Compiler Build successful! Binary located at: build/tejxc"
+    echo "✅ Compiler Build successful!"
+    echo "   Binary: $SCRIPT_DIR/target/release/tejxr"
 else
-    echo "Compiler Build failed."
+    echo "❌ Compiler Build failed."
     exit 1
 fi

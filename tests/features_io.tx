@@ -39,3 +39,6 @@ console.log("Reading file: ", fs.readFile(filePath));
 console.log("Removing directory (recursive)...");
 fs.remove("test_fs_dir");
 console.log("Checking if dir exists (should be false): ", fs.exists("test_fs_dir"));
+
+// Cleanup the first test file
+fs.remove("test_file.txt");

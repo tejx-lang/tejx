@@ -16,3 +16,5 @@ examples/hello
 .idea/
 build/
 cmake-build-debug/
+target
+libruntime.a
