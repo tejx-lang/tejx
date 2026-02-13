@@ -45,6 +45,57 @@ pub static HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
     next_id: 1000, 
     objects: HashMap::new(),
 }));
+ 
+ static EXCEPTION_STACK: LazyLock<Mutex<Vec<usize>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+ static CURRENT_EXCEPTION: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(0));
+ 
+ unsafe extern "C" {
+     fn longjmp(env: *mut u64, val: i32);
+ }
+
+ // Push a pointer to a jmp_buf (allocated in the generated code's stack frame)
+ #[unsafe(no_mangle)]
+ pub extern "C" fn tejx_push_handler(buf_ptr: *mut u64) {
+     let mut stack = EXCEPTION_STACK.lock().unwrap();
+     stack.push(buf_ptr as usize);
+ }
+
+ // Pop the top handler (called at end of try block, normal path)
+ #[unsafe(no_mangle)]
+ pub extern "C" fn tejx_pop_handler() {
+     let mut stack = EXCEPTION_STACK.lock().unwrap();
+     stack.pop();
+ }
+
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn tejx_throw(val: i64) {
+     {
+         let mut exc = CURRENT_EXCEPTION.lock().unwrap();
+         *exc = val;
+     }
+     
+     // Pop the handler address and RELEASE THE LOCK before longjmp.
+     // longjmp never returns, so we must not hold any locks when calling it.
+     let buf_addr = {
+         let mut stack = EXCEPTION_STACK.lock().unwrap();
+         stack.pop()
+     };
+     
+     if let Some(addr) = buf_addr {
+         longjmp(addr as *mut u64, 1);
+     } else {
+         // Uncaught exception!
+         let msg = stringify_value(val);
+         eprintln!("Uncaught Exception: {}", msg);
+         std::process::exit(1);
+     }
+ }
+ 
+ #[unsafe(no_mangle)]
+ pub extern "C" fn tejx_get_exception() -> i64 {
+     let exc = CURRENT_EXCEPTION.lock().unwrap();
+     *exc
+ }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tejx_hello() {
@@ -158,7 +209,9 @@ pub extern "C" fn m_new() -> i64 {
     let mut heap = HEAP.lock().unwrap();
     let id = heap.next_id;
     heap.next_id += 1;
-    heap.objects.insert(id, TaggedValue::Map(HashMap::new()));
+    let mut map = HashMap::new();
+    map.insert("toString".to_string(), rt_Object_toString as *const () as i64);
+    heap.objects.insert(id, TaggedValue::Map(map));
     id
 }
 
@@ -310,7 +363,24 @@ pub fn stringify_value(id: i64) -> String {
                 }
                 format!("[{}]", parts.join(", "))
             }
-            TaggedValue::Map(_) => "[Object]".to_string(),
+            TaggedValue::Map(map) => {
+                let name_id = map.get("name").cloned();
+                let msg_id = map.get("message").cloned();
+                drop(heap); // Release lock before recursing
+                
+                let name = name_id.map(|id| stringify_value(id)).unwrap_or_else(|| "Object".to_string());
+                let message = msg_id.map(|id| stringify_value(id));
+                
+                if let Some(msg) = message {
+                    if !msg.is_empty() {
+                         format!("{}: {}", name, msg)
+                    } else {
+                         format!("[{}]", name)
+                    }
+                } else {
+                    format!("[{}]", name)
+                }
+            }
             TaggedValue::Thread(_) => "[Thread]".to_string(),
             TaggedValue::Mutex(_) => "[Mutex]".to_string(),
             TaggedValue::Number(n) => {
@@ -355,7 +425,34 @@ pub unsafe extern "C" fn __callee___toString(id: i64) -> i64 {
 }
 
 // ... OOP Stubs ...
-#[unsafe(no_mangle)] pub extern "C" fn f_Error_constructor(_this: i64, _message: i64) {}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn f_Error_constructor(this: i64, message: i64) {
+    let mut heap = HEAP.lock().unwrap();
+    
+    // Create a boxed "Error" string for the name if not present
+    let name_id = heap.next_id;
+    heap.next_id += 1;
+    heap.objects.insert(name_id, TaggedValue::String("Error".to_string()));
+
+    if let Some(TaggedValue::Map(map)) = heap.objects.get_mut(&this) {
+        map.insert("message".to_string(), message);
+        map.insert("name".to_string(), name_id);
+        map.insert("toString".to_string(), rt_Object_toString as *const () as i64);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_Object_toString(this: i64) -> i64 {
+    // stringify_value already handles everything including releasing the lock
+    let s = stringify_value(this);
+    
+    // Create a new boxed string from the result
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    heap.objects.insert(id, TaggedValue::String(s));
+    id
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn f_Map_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
@@ -1441,6 +1538,13 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_json_stringify(val: i64) -> i64 {
+    if val == 0 {
+        let err_msg = "Cannot stringify null or undefined";
+        let c_str = CString::new(err_msg).unwrap();
+        let err_obj = rt_box_string(c_str.as_ptr() as i64);
+        tejx_throw(err_obj);
+        return 0;
+    }
     // Very simplified JSON.stringify
     let s = format!("{{\"value\": {}}}", val);
     CString::new(s).unwrap().into_raw() as i64

@@ -19,6 +19,7 @@ pub struct MIRLowering {
     temp_counter: usize,
     block_counter: usize,
     loop_stack: Vec<LoopContext>,
+    exception_handler_stack: Vec<usize>,
 }
 
 impl MIRLowering {
@@ -29,6 +30,7 @@ impl MIRLowering {
             temp_counter: 0,
             block_counter: 0,
             loop_stack: Vec::new(),
+            exception_handler_stack: Vec::new(),
         }
     }
 
@@ -71,7 +73,8 @@ impl MIRLowering {
     fn new_block(&mut self, prefix: &str) -> usize {
         let name = format!("{}_{}", prefix, self.block_counter);
         self.block_counter += 1;
-        let bb = BasicBlock::new(name);
+        let mut bb = BasicBlock::new(name);
+        bb.exception_handler = self.exception_handler_stack.last().cloned();
         self.current_function.blocks.push(bb);
         self.current_function.blocks.len() - 1
     }
@@ -313,6 +316,73 @@ impl MIRLowering {
                 
                 self.loop_stack.pop();
                 self.current_block = switch_exit;
+            }
+            HIRStatement::Try { try_block, catch_var, catch_block, finally_block } => {
+                let catch_block_idx = self.new_block("catch");
+                let finally_block_idx = finally_block.as_ref().map(|_| self.new_block("finally"));
+                let exit_block_idx = self.new_block("try_exit");
+
+                // Lower try block with catch handler
+                self.exception_handler_stack.push(catch_block_idx);
+                // We need to start a new block for the try body to ensure it has the exception handler
+                let try_start_idx = self.new_block("try_start");
+                self.emit(MIRInstruction::Jump { target: try_start_idx });
+                self.current_block = try_start_idx;
+                
+                self.lower_statement(try_block);
+                
+                let cb = self.current_block;
+                if !self.current_function.blocks[cb].is_terminated() {
+                    if let Some(f) = finally_block_idx {
+                        self.emit(MIRInstruction::Jump { target: f });
+                    } else {
+                        self.emit(MIRInstruction::Jump { target: exit_block_idx });
+                    }
+                }
+                self.exception_handler_stack.pop();
+
+                // Lower catch block
+                self.current_block = catch_block_idx;
+                if let Some(var) = catch_var {
+                    // Extract exception into variable
+                    let temp = self.new_temp(TejxType::Any);
+                    self.emit(MIRInstruction::Call {
+                        dst: temp.clone(),
+                        callee: "tejx_get_exception".to_string(),
+                        args: vec![],
+                    });
+                    self.emit(MIRInstruction::Move {
+                        dst: var.clone(),
+                        src: MIRValue::Variable { name: temp, ty: TejxType::Any },
+                    });
+                }
+                self.lower_statement(catch_block);
+                let cb = self.current_block;
+                if !self.current_function.blocks[cb].is_terminated() {
+                    if let Some(f) = finally_block_idx {
+                        self.emit(MIRInstruction::Jump { target: f });
+                    } else {
+                        self.emit(MIRInstruction::Jump { target: exit_block_idx });
+                    }
+                }
+
+                // Lower finally block
+                if let Some(f_idx) = finally_block_idx {
+                    self.current_block = f_idx;
+                    if let Some(f_stmt) = finally_block {
+                        self.lower_statement(f_stmt);
+                    }
+                    let cb = self.current_block;
+                    if !self.current_function.blocks[cb].is_terminated() {
+                        self.emit(MIRInstruction::Jump { target: exit_block_idx });
+                    }
+                }
+
+                self.current_block = exit_block_idx;
+            }
+            HIRStatement::Throw { value } => {
+                let val = self.lower_expression(value);
+                self.emit(MIRInstruction::Throw { value: val });
             }
         }
     }

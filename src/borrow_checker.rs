@@ -198,11 +198,18 @@ impl BorrowChecker {
                     current_state.insert(dst.clone(), VarState::Live);
                 }
                 MIRInstruction::StoreIndex { obj, index, src } => {
-                     for v in [obj, index, src] {
+                    for v in [obj, index, src] {
                         if let MIRValue::Variable { name, .. } = v {
                             if current_state.get(name) == Some(&VarState::Moved) {
                                 self.error(format!("Borrow Error: Use of moved variable '{}'", name));
                             }
+                        }
+                    }
+                }
+                MIRInstruction::Throw { value } => {
+                    if let MIRValue::Variable { name, .. } = value {
+                        if current_state.get(name) == Some(&VarState::Moved) {
+                            self.error(format!("Borrow Error: Use of moved variable '{}'", name));
                         }
                     }
                 }

@@ -81,6 +81,7 @@ let obj = {
     w: { nested: true }
 };
 
+try{
 let json_str = json.stringify(obj);
 print("JSON.stringify: Expected: JSON string, Actual: ", json_str);
 
@@ -90,7 +91,9 @@ print("Parsed x: Expected: 10, Actual: ", parsed["x"]);
 print("Parsed y: Expected: hello, Actual: ", parsed["y"]);
 print("Parsed z length: Expected: 3, Actual: ", parsed["z"].length);
 print("Parsed w.nested: Expected: 1/true, Actual: ", parsed["w"]["nested"]);
-
+}catch(e){
+    print("Caught error: ", e);
+}
 // Test Globals
 print("parseInt('123')+1: Expected: 124, Actual: ", (parseInt("123") + 1));
 print("parseFloat('12.34')+1: Expected: 13.34, Actual: ", (parseFloat("12.34") + 1));

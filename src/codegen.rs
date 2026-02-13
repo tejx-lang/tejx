@@ -211,6 +211,20 @@ impl CodeGen {
             self.gen_function_v2(func);
         }
 
+        // Exception handling runtime functions
+        self.global_buffer.push_str("declare i32 @_setjmp(i8*)\n");
+        self.global_buffer.push_str("declare void @tejx_push_handler(i8*)\n");
+        self.global_buffer.push_str("declare void @tejx_pop_handler()\n");
+        if !self.declared_functions.contains("tejx_throw") {
+            self.global_buffer.push_str("declare void @tejx_throw(i64)\n");
+        }
+        if !self.declared_functions.contains("tejx_get_exception") {
+            self.global_buffer.push_str("declare i64 @tejx_get_exception()\n");
+        }
+        if !self.declared_functions.contains("rt_box_string") {
+            self.global_buffer.push_str("declare i64 @rt_box_string(i64)\n");
+        }
+
         // Generate main wrapper if tejx_main exists
         if has_tejx_main {
             self.buffer.push_str("\n");
@@ -288,10 +302,47 @@ impl CodeGen {
         }
 
         // Generate blocks with block name resolution
-        for bb in &func.blocks {
+        for (i, bb) in func.blocks.iter().enumerate() {
             self.emit(&format!("{}:\n", bb.name));
+            
+            let mut has_handler = false;
+            if let Some(handler_idx) = bb.exception_handler {
+                if handler_idx < func.blocks.len() {
+                    has_handler = true;
+                    let handler_name = &func.blocks[handler_idx].name;
+                    // Allocate jmp_buf on THIS function's stack frame
+                    self.temp_counter += 1;
+                    let jmpbuf = format!("%jmpbuf{}", self.temp_counter);
+                    self.emit_line(&format!("{} = alloca [37 x i64]", jmpbuf));
+                    self.temp_counter += 1;
+                    let jmpbuf_ptr = format!("%jmpbuf_ptr{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast [37 x i64]* {} to i8*", jmpbuf_ptr, jmpbuf));
+                    // Call setjmp inline — this is the critical part
+                    self.temp_counter += 1;
+                    let handler_res = format!("%handler_res{}", self.temp_counter);
+                    self.emit_line(&format!("{} = call i32 @_setjmp(i8* {})", handler_res, jmpbuf_ptr));
+                    // If setjmp returned 0, register the handler and continue
+                    self.temp_counter += 1;
+                    let is_exception = format!("%is_exception{}", self.temp_counter);
+                    self.emit_line(&format!("{} = icmp ne i32 {}, 0", is_exception, handler_res));
+                    let body_label = format!("{}_body", bb.name);
+                    self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_exception, handler_name, body_label));
+                    self.emit(&format!("{}:\n", body_label));
+                    // Push handler AFTER setjmp returned 0 (normal path)
+                    self.emit_line(&format!("call void @tejx_push_handler(i8* {})", jmpbuf_ptr));
+                }
+            }
+
             for inst in &bb.instructions {
                 self.gen_instruction_v2(inst, func);
+            }
+
+            if has_handler {
+                // If the block is not terminated, we need to call tejx_try_end before the terminator
+                // But MIR instructions usually end with a terminator (Jump/Branch/Return).
+                // We should inject tejx_try_end BEFORE the terminator.
+                // Wait, gen_instruction_v2 handles terminators.
+                // I need to modify gen_instruction_v2 or handle it here if I see a terminator.
             }
         }
 
@@ -421,11 +472,25 @@ impl CodeGen {
             }
 
             MIRInstruction::Jump { target } => {
+                let current_bb_idx = self.find_block_idx(_func, inst);
+                if let Some(idx) = current_bb_idx {
+                    if _func.blocks[idx].exception_handler.is_some() {
+                        self.emit_line("call void @tejx_pop_handler()");
+                    }
+                }
+
                 if *target < _func.blocks.len() {
                     self.emit_line(&format!("br label %{}", _func.blocks[*target].name));
                 }
             }
             MIRInstruction::Branch { condition, true_target, false_target } => {
+                let current_bb_idx = self.find_block_idx(_func, inst);
+                if let Some(idx) = current_bb_idx {
+                    if _func.blocks[idx].exception_handler.is_some() {
+                        self.emit_line("call void @tejx_pop_handler()");
+                    }
+                }
+                
                 let cond_val = self.resolve_value(condition);
                 let ty = match condition {
                     MIRValue::Constant { ty, .. } => ty,
@@ -462,6 +527,13 @@ impl CodeGen {
                 self.emit_line(&format!("br i1 {}, label %{}, label %{}", cmp, true_name, false_name));
             }
             MIRInstruction::Return { value } => {
+                let current_bb_idx = self.find_block_idx(_func, inst);
+                if let Some(idx) = current_bb_idx {
+                    if _func.blocks[idx].exception_handler.is_some() {
+                        self.emit_line("call void @tejx_pop_handler()");
+                    }
+                }
+
                 if let Some(val) = value {
                     let v = self.resolve_value(val);
                     self.emit_line(&format!("ret i64 {}", v));
@@ -608,6 +680,24 @@ impl CodeGen {
             MIRInstruction::IndirectCall { dst, callee, args } => {
                 let callee_val = self.resolve_value(callee);
                 
+                // Add null check for indirect call
+                self.temp_counter += 1;
+                let is_null = format!("%is_null{}", self.temp_counter);
+                self.emit_line(&format!("{} = icmp eq i64 {}, 0", is_null, callee_val));
+                self.temp_counter += 1;
+                let fail_label = format!("call_fail_{}", self.temp_counter);
+                let ok_label = format!("call_ok_{}", self.temp_counter);
+                self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_null, fail_label, ok_label));
+                
+                self.emit(&format!("{}:\n", fail_label));
+                let err_msg = self.resolve_value(&MIRValue::Constant { value: "\"Undefined function\"".to_string(), ty: TejxType::String });
+                let err_obj = format!("%err_obj{}", self.temp_counter);
+                self.emit_line(&format!("{} = call i64 @rt_box_string(i64 {})", err_obj, err_msg));
+                self.emit_line(&format!("call void @tejx_throw(i64 {})", err_obj));
+                self.emit_line("unreachable");
+                
+                self.emit(&format!("{}:\n", ok_label));
+
                 self.temp_counter += 1;
                 let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
                 let ptr_args = vec!["i64"; args.len()].join(", ");
@@ -737,6 +827,22 @@ impl CodeGen {
                 }
                 self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, idx_val, v_val));
             }
+            MIRInstruction::Throw { value } => {
+                let val = self.resolve_value(value);
+                self.emit_line(&format!("call void @tejx_throw(i64 {})", val));
+                self.emit_line("unreachable");
+            }
         }
+    }
+
+    fn find_block_idx(&self, func: &MIRFunction, inst: &MIRInstruction) -> Option<usize> {
+        for (i, bb) in func.blocks.iter().enumerate() {
+            for bi in &bb.instructions {
+                if std::ptr::eq(bi, inst) {
+                    return Some(i);
+                }
+            }
+        }
+        None
     }
 }

@@ -160,4 +160,13 @@ pub enum HIRStatement {
     },
     Break,
     Continue,
+    Try {
+        try_block: Box<HIRStatement>,
+        catch_var: Option<String>,
+        catch_block: Box<HIRStatement>,
+        finally_block: Option<Box<HIRStatement>>,
+    },
+    Throw {
+        value: HIRExpression,
+    },
 }

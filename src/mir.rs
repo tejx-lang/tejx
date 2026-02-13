@@ -89,12 +89,16 @@ pub enum MIRInstruction {
         index: MIRValue,
         src: MIRValue,
     },
+    Throw {
+        value: MIRValue,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct BasicBlock {
     pub name: String,
     pub instructions: Vec<MIRInstruction>,
+    pub exception_handler: Option<usize>, // target block index if an exception occurs in this block
 }
 
 impl BasicBlock {
@@ -102,6 +106,7 @@ impl BasicBlock {
         Self {
             name,
             instructions: Vec::new(),
+            exception_handler: None,
         }
     }
 

@@ -912,6 +912,25 @@ impl Lowering {
                     cases: hir_cases,
                 })
             }
+            Statement::TryStmt { _try_block, _catch_var, _catch_block, _finally_block, .. } => {
+                let try_hir = self.lower_statement(_try_block)
+                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                let catch_hir = self.lower_statement(_catch_block)
+                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                let finally_hir = _finally_block.as_ref()
+                    .and_then(|f| self.lower_statement(f));
+                
+                Some(HIRStatement::Try {
+                    try_block: Box::new(try_hir),
+                    catch_var: if _catch_var.is_empty() { None } else { Some(_catch_var.clone()) },
+                    catch_block: Box::new(catch_hir),
+                    finally_block: finally_hir.map(Box::new),
+                })
+            }
+            Statement::ThrowStmt { _expression, .. } => {
+                let val = self.lower_expression(_expression);
+                Some(HIRStatement::Throw { value: val })
+            }
             Statement::FunctionDeclaration(func) => {
                 let params: Vec<(String, TejxType)> = func.params.iter()
                     .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
@@ -1309,7 +1328,7 @@ impl Lowering {
                             ImportMode::All => {
                                 if callee.contains('.') {
                                     let parts: Vec<&str> = callee.split('.').collect();
-                                    if parts[0] == mod_name {
+                                    if parts[0].eq_ignore_ascii_case(mod_name) {
                                         self.stdlib.is_std_func(mod_name, parts[1])
                                     } else {
                                         false
@@ -1321,7 +1340,7 @@ impl Lowering {
                             ImportMode::Named(set) => {
                                 if callee.contains('.') {
                                     let parts: Vec<&str> = callee.split('.').collect();
-                                    if parts[0] == mod_name {
+                                    if parts[0].eq_ignore_ascii_case(mod_name) {
                                         set.contains(parts[1])
                                     } else {
                                         false
