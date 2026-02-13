@@ -51,6 +51,17 @@ while (true) {
     k1 = k1 + 1;
 }
 
+// Nested Loop Break
+print("Nested Loop Break Test:");
+for(let outer = 0; outer < 3; outer = outer + 1) {
+    print("Outer: ", outer);
+    for(let inner = 0; inner < 3; inner = inner + 1) {
+        if (inner == 1) break; // Should break inner only
+        print("  Inner (should be 0): ", inner);
+    }
+}
+
+
 // 3. Switch Statement
 print("\n--- Switch ---");
 function getFruitColor(fruit: string): string {
@@ -202,4 +213,3 @@ if (false && (logicSum += 1) > 0) {
     print("FAIL: Short-circuit AND (unexpected)");
 }
 if (logicSum == 0) { print("logicSum (AND): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (AND) is ", logicSum); }
-

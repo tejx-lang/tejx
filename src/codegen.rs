@@ -13,6 +13,7 @@ pub struct CodeGen {
     temp_counter: usize,
     label_counter: usize,
     declared_functions: HashSet<String>,
+    function_param_counts: HashMap<String, usize>,
 }
 
 impl CodeGen {
@@ -24,6 +25,7 @@ impl CodeGen {
             temp_counter: 0,
             label_counter: 0,
             declared_functions: HashSet::new(),
+            function_param_counts: HashMap::new(),
         }
     }
 
@@ -46,12 +48,16 @@ impl CodeGen {
 
 
 
+
+
     fn resolve_value(&mut self, val: &MIRValue) -> String {
         match val {
             MIRValue::Constant { value, ty } => {
                 // Handle "new Class" hack
                 if value.starts_with("lambda_") {
-                    return format!("ptrtoint (i64 (...)* @{} to i64)", value);
+                    let count = self.function_param_counts.get(value).cloned().unwrap_or(1);
+                    let args = vec!["i64"; count].join(", ");
+                    return format!("ptrtoint (i64 ({})* @{} to i64)", args, value);
                 }
                 if value.starts_with("new ") {
                     return "0".to_string();
@@ -96,15 +102,36 @@ impl CodeGen {
                 
                 let len = content.len() + 1;
 
+                let mut escaped = String::new();
+                for b in content.as_bytes() {
+                    match *b {
+                        b'\\' => escaped.push_str("\\\\"),
+                        b'\"' => escaped.push_str("\\22"),
+                        b'\n' => escaped.push_str("\\0A"),
+                        b'\r' => escaped.push_str("\\0D"),
+                        b'\t' => escaped.push_str("\\09"),
+                        32..=126 => escaped.push(*b as char), // Printable ASCII
+                        _ => escaped.push_str(&format!("\\{:02X}", b)),
+                    }
+                }
+                
+                let byte_len = content.as_bytes().len() + 1;
+
                 self.global_buffer.push_str(&format!(
                     "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
-                    str_lbl, len, content
+                    str_lbl, byte_len, escaped
                 ));
 
                 // Return ptrtoint cast to i64
-                format!("ptrtoint ([{} x i8]* {} to i64)", len, str_lbl)
+                format!("ptrtoint ([{} x i8]* {} to i64)", byte_len, str_lbl)
             }
             MIRValue::Variable { name, .. } => {
+                if name.starts_with("g_") {
+                    self.temp_counter += 1;
+                    let tmp = format!("%t{}", self.temp_counter);
+                    self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
+                    return tmp;
+                }
                 if let Some(ptr) = self.value_map.get(name).cloned() {
                     // It's a pointer (alloca), load it
                     self.temp_counter += 1;
@@ -139,7 +166,11 @@ impl CodeGen {
                          
                          if self.declared_functions.contains(&target) {
                              // Known function: Cast function pointer to i64
-                             format!("ptrtoint (i64 (...)* @{} to i64)", target)
+                             {
+                              let count = self.function_param_counts.get(&target).cloned().unwrap_or(1);
+                              let args_sig = vec!["i64"; count].join(", ");
+                              format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, target)
+                          }
                          } else {
                              // Unknown global (e.g. Class name used as value) -> 0
                              "0".to_string()
@@ -147,6 +178,14 @@ impl CodeGen {
                     }
                 }
             }
+        }
+    }
+
+    fn resolve_ptr(&self, name: &str) -> String {
+        if name.starts_with("g_") {
+            format!("@{}", name)
+        } else {
+            self.value_map.get(name).cloned().unwrap_or_else(|| format!("%{}_ptr", name))
         }
     }
 }
@@ -158,9 +197,38 @@ impl CodeGen {
         self.global_buffer.clear();
         self.declared_functions.clear();
         
-        // Register defined functions to avoid auto-declaring them
+        // Register defined functions and their param counts
         for f in functions {
             self.declared_functions.insert(f.name.clone());
+            self.function_param_counts.insert(f.name.clone(), f.params.len());
+        }
+
+        // Collect and declare global variables
+        let mut globals = HashSet::new();
+        for func in functions {
+            for bb in &func.blocks {
+                for inst in &bb.instructions {
+                    match inst {
+                        MIRInstruction::Move { dst, src } => {
+                            if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                            if let MIRValue::Variable { name, .. } = src { if name.starts_with("g_") { globals.insert(name.clone()); } }
+                        }
+                        MIRInstruction::BinaryOp { dst, left, right, .. } => {
+                            if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                            if let MIRValue::Variable { name, .. } = left { if name.starts_with("g_") { globals.insert(name.clone()); } }
+                            if let MIRValue::Variable { name, .. } = right { if name.starts_with("g_") { globals.insert(name.clone()); } }
+                        }
+                        MIRInstruction::Call { dst, args, .. } => {
+                            if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                            for arg in args { if let MIRValue::Variable { name, .. } = arg { if name.starts_with("g_") { globals.insert(name.clone()); } } }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for g in globals {
+            self.global_buffer.push_str(&format!("@{} = global i64 0\n", g));
         }
 
         // Declarations are now handled on-demand during instruction generation
@@ -225,7 +293,7 @@ impl CodeGen {
                     _ => None,
                 };
                 if let Some(name) = dest_var {
-                    if !self.value_map.contains_key(&name) {
+                    if !name.starts_with("g_") && !self.value_map.contains_key(&name) {
                         let reg_name = format!("%{}_ptr", name);
                         self.emit_line(&format!("{} = alloca i64", reg_name));
                         self.value_map.insert(name, reg_name);
@@ -256,7 +324,7 @@ impl CodeGen {
         match inst {
             MIRInstruction::Move { dst, src } => {
                 let val = self.resolve_value(src);
-                let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
+                let ptr = self.resolve_ptr(dst);
                 self.emit_line(&format!("store i64 {}, i64* {}", val, ptr));
             }
             MIRInstruction::BinaryOp { dst, left, op, right } => {
@@ -436,8 +504,7 @@ impl CodeGen {
                     }
                 }
                 
-                let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
-                self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
             }
 
 
@@ -515,9 +582,8 @@ impl CodeGen {
                     }
                     self.emit_line("call void @print_newline()");
                     
-                    // Assign 0 to result
-                    if let Some(ptr) = self.value_map.get(dst) {
-                         self.emit_line(&format!("store i64 0, i64* {}", ptr));
+                    if !dst.is_empty() {
+                         self.emit_line(&format!("store i64 0, i64* {}", self.resolve_ptr(dst)));
                     }
                 } else if callee == "eprint" {
                     if !self.declared_functions.contains("eprint_raw") {
@@ -587,7 +653,8 @@ impl CodeGen {
                         self.emit_line(&format!("{} = load i64, i64* {}", func_val_tmp, ptr));
                         self.temp_counter += 1;
                         let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = inttoptr i64 {} to i64 (...)*", func_ptr_tmp, func_val_tmp));
+                        let ptr_args = vec!["i64"; args.len()].join(", ");
+                        self.emit_line(&format!("{} = inttoptr i64 {} to i64 ({})*", func_ptr_tmp, func_val_tmp, ptr_args));
                         let mut call_arg_vals = Vec::new();
                         for arg in args {
                             let arg_val = self.resolve_value(arg);
@@ -597,8 +664,8 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let result_tmp = format!("%call{}", self.temp_counter);
                         self.emit_line(&format!("{} = call i64 {}({})", result_tmp, func_ptr_tmp, args_str));
-                        if let Some(p) = self.value_map.get(dst) {
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, p));
+                        if !dst.is_empty() {
+                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, self.resolve_ptr(dst)));
                         }
                         return;
                     }
@@ -616,16 +683,13 @@ impl CodeGen {
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
                     if !self.declared_functions.contains(&final_callee) {
-                        if final_callee == "rt_str_concat_v2" {
-                            self.global_buffer.push_str("declare i64 @rt_str_concat_v2(i64, i64)\n");
-                        } else {
-                            self.global_buffer.push_str(&format!("declare i64 @{}(...)\n", final_callee));
-                        }
+                            let decl_args = vec!["i64"; arg_vals.len()].join(", ");
+                            self.global_buffer.push_str(&format!("declare i64 @{}({})\n", final_callee, decl_args));
                         self.declared_functions.insert(final_callee.clone());
                     }
                     self.emit_line(&format!("{} = call i64 @{}({})", result_tmp, final_callee, args_str));
-                    if let Some(ptr) = self.value_map.get(dst) {
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                    if !dst.is_empty() {
+                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, self.resolve_ptr(dst)));
                     }
                 }
             }
@@ -634,7 +698,8 @@ impl CodeGen {
                 
                 self.temp_counter += 1;
                 let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
-                self.emit_line(&format!("{} = inttoptr i64 {} to i64 (...)*", func_ptr_tmp, callee_val));
+                let ptr_args = vec!["i64"; args.len()].join(", ");
+                self.emit_line(&format!("{} = inttoptr i64 {} to i64 ({})*", func_ptr_tmp, callee_val, ptr_args));
                 
                 let mut arg_vals = Vec::new();
                 for arg in args {
@@ -647,8 +712,8 @@ impl CodeGen {
                 let result_tmp = format!("%call{}", self.temp_counter);
                 self.emit_line(&format!("{} = call i64 {}({})", result_tmp, func_ptr_tmp, args_str));
                 
-                if let Some(ptr) = self.value_map.get(dst) {
-                    self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                if !dst.is_empty() {
+                    self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, self.resolve_ptr(dst)));
                 }
             }
             MIRInstruction::ObjectLiteral { dst, entries } => {
@@ -668,8 +733,7 @@ impl CodeGen {
                     }
                     self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_tmp, k_val, v_val));
                 }
-                let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
-                self.emit_line(&format!("store i64 {}, i64* {}", obj_tmp, ptr));
+                self.emit_line(&format!("store i64 {}, i64* {}", obj_tmp, self.resolve_ptr(dst)));
             }
             MIRInstruction::ArrayLiteral { dst, elements } => {
                 self.temp_counter += 1;
@@ -687,8 +751,7 @@ impl CodeGen {
                     }
                     self.emit_line(&format!("call i64 @Array_push(i64 {}, i64 {})", arr_tmp, v_val));
                 }
-                let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
-                self.emit_line(&format!("store i64 {}, i64* {}", arr_tmp, ptr));
+                self.emit_line(&format!("store i64 {}, i64* {}", arr_tmp, self.resolve_ptr(dst)));
             }
             MIRInstruction::LoadMember { dst, obj, member } => {
                 let obj_val = self.resolve_value(obj);
@@ -700,8 +763,7 @@ impl CodeGen {
                     self.declared_functions.insert("m_get".to_string());
                 }
                 self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, k_val));
-                let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
-                self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, self.resolve_ptr(dst)));
             }
             MIRInstruction::StoreMember { obj, member, src } => {
                 let obj_val = self.resolve_value(obj);
@@ -723,8 +785,7 @@ impl CodeGen {
                     self.declared_functions.insert("m_get".to_string());
                 }
                 self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, idx_val));
-                let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
-                self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, self.resolve_ptr(dst)));
             }
             MIRInstruction::StoreIndex { obj, index, src } => {
                 let obj_val = self.resolve_value(obj);

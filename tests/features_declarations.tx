@@ -78,6 +78,8 @@ const lambdaGreet = () => {
     print("lambdaGreet: Expected: Hello Lambda!, Actual: Hello Lambda!");
 };
 lambdaGreet();
+
+print("--- Default Args Test ---");
 function greetUser(name: string = "Guest") {
     print("greetUser(", name, "): Expected: Hello, ", name, ", Actual: Hello, ", name);
 }
@@ -86,7 +88,6 @@ function power(base: number, exp: number = 2) {
     print(base, "^", exp, ": Expected: ", Math.pow(base, exp), ", Actual: ", Math.pow(base, exp));
 }
 
-print("--- Default Args Test ---");
 greetUser();
 greetUser("TejX");
 power(5);
@@ -108,9 +109,6 @@ print("typeof {x:1}: Expected: [Object], Actual: ", (typeof objVal));
 print("typeof [1,2,3]: Expected: [1, 2, 3], Actual: ", (typeof arrVal));
 
 function testFunc() { return 1; }
-// Function types are currently tricky in our C++ mapping, 
-// let's see what typeof says for an identifier that is a function.
-// For now, it will likely be an error or "undefined" if not specifically handled.
 
 // Verification with conditionals
 if (typeof nVal === "number") {
@@ -122,3 +120,14 @@ if (typeof sVal === "string") {
 }
 
 print("typeof operator test complete!");
+
+// --- NEW: Block Scoping & Shadowing ---
+print("\n--- Block Scoping & Shadowing ---");
+let globalVar = "Global";
+{
+    let globalVar = "Local Shadow";
+    print("Inside Block: Expected: Local Shadow, Actual: ", globalVar);
+}
+print("Outside Block: Expected: Global, Actual: ", globalVar);
+
+print("=== Declarations Test Complete ===");

@@ -42,21 +42,37 @@ try {
 
 // Scenario 3: Nested try/catch and RAII finally
 function nestedTest() {
+    print("\n--- Nested Try/Catch ---");
     try {
         print("Entering outer try: Expected: pass, Actual: pass");
         try {
             print("Entering inner try: Expected: pass, Actual: pass");
             process(-1);
+        } catch (innerErr) {
+             print("Inner catch: Expected: Negative input, Actual: ", innerErr.message);
+             // Rethrow
+             throw innerErr;
         } finally {
             print("Inner finally: Expected: pass, Actual: pass");
         }
     } catch (err) {
-        print("Outer catch: Expected: Negative input, Actual: ", err.message);
+        print("Outer catch (rethrow): Expected: Negative input, Actual: ", err.message);
     } finally {
         print("Outer finally: Expected: pass, Actual: pass");
     }
 }
 
 nestedTest();
+
+// Scenario 4: Error in Loop
+print("\n--- Error in Loop ---");
+for (let i = -2; i <= 2; i = i + 1) {
+    try {
+        if (i == 0) throw "Zero!";
+        print("Result: ", 10/i);
+    } catch (e) {
+        print("Loop catch: ", e);
+    }
+}
 
 print("Error handling test complete!");

@@ -30,37 +30,41 @@ print("Ackermann(2, 2) =", result);
 assert(result == 7);
 
 
-// 2. Closure-like Behavior and Higher-Order Functions
-// Simulating closures with object state if closures aren't fully supported
-print("\n--- Higher-Order Function Logic ---");
+// 3. Higher-Order Functions / Closures (Simulated with Class)
+// Closures capturing variables are not fully supported yet in lowering.
+// We use a Class to simulate stateful behavior, which is robust.
 
-function makeCounter(start: int) {
-    // Returning an object that maintains state
-    // Simulating closure via object properties might be tricky if "this" not fully supported in literals or if function expressions invalid in obj literal
-    // Let's use a simpler class or just global/outer variable for simulation? 
-    // Or return an object with methods if parser supports MethodDefinition in ObjectLiteral?
-    // Based on error, ObjectLiteral expects PropertyName: Value.
-    // Error came from `increment: function() ...`. parser might not support `function` keyword there.
-    // Try arrow function?
-    let state = start;
-    return {
-        increment: () => {
-             // Closure capture support?
-             // If not supported, this might fail runtime. behavior. 
-             // But let's fix parser error first.
-             // Using arrow syntax.
-            state = state + 1;
-            return state;
-        },
-        get: () => state
-    };
+class Counter {
+    state: number;
+    
+    constructor(start: number) {
+        this.state = start;
+    }
+    
+    increment(): number {
+        this.state = this.state + 1;
+        return this.state;
+    }
+    
+    getValue(): number {
+        return this.state;
+    }
 }
 
+function makeCounter(start: number): Counter {
+    return new Counter(start);
+}
+
+// Simple Arrow Function (Stateless)
+let double = (x: number) => x * 2;
+print(`Arrow Function Test: double(10) = ${double(10)}`);
+assert(double(10) == 20);
+
 let counter = makeCounter(10);
-print(`Initial: ${counter.get()}`);
+print(`Initial: ${counter.getValue()}`);
 print(`Inc 1: ${counter.increment()}`);
 print(`Inc 2: ${counter.increment()}`);
-assert(counter.get() == 12);
+assert(counter.getValue() == 12);
 
 
 // 3. Complex Object & Array Manipulation

@@ -33,10 +33,22 @@ let count: any = 0;
 let validCount = count ?? 10; // 0 is falsely but not nullish, so should allow 0
 print("Count (Falsy 0): Expected: 0, Actual: ", validCount);
 
+// Chained Nullish
+let a = null;
+let b = undefined;
+let c = "Found Me";
+let result = a ?? b ?? c;
+print("Chained Nullish: Expected: Found Me, Actual: ", result);
+
 
 print("\n--- Ternary Operator ---");
 let status = (score > 50) ? "Pass" : "Fail";
 print("Status: Expected: Pass, Actual: ", status);
+
+// Nested Ternary
+let grade = score >= 90 ? "A" : (score >= 80 ? "B" : "C");
+print("Grade: Expected: A, Actual: ", grade);
+
 
 // Modern Syntax Test: Optional Chaining and Nullish Coalescing
 let obj = {
@@ -100,13 +112,13 @@ greet(user2);
 // Nested matching with arrays
 const item = [1, 2, 3];
 
-const result = match (item) {
+const resultMatch = match (item) {
     [x, ...rest] => "Array starts with " + x + ", rest has " + rest.length + " elements",
     [] => "Empty array",
     _ => "Something else"
 };
 
-print("match([1,2,3]): Expected: starts with 1, rest 2, Actual: ", result);
+print("match([1,2,3]): Expected: starts with 1, rest 2, Actual: ", resultMatch);
 
 print("Option tests completed.");
 

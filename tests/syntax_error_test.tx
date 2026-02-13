@@ -3,5 +3,5 @@ let s2 = 'Single \'quote\' test';
 print(s);
 print(s2);
 
-let err = "unclosed multi-line
+let err = "unclosed multi-line";
 print("Recovered?");

@@ -227,15 +227,15 @@ print("=== Getter/Setter Test ===");
 let p = new Person("Alice", 30);
 
 // Test getters
-print("Name: Expected: Alice, Actual: ", p.get_name());
-print("Age: Expected: 30, Actual: ", p.get_age());
-print("Info: Expected: Alice is 30 years old, Actual: ", p.get_info());
+print("Name: Expected: Alice, Actual: ", p.name);
+print("Age: Expected: 30, Actual: ", p.age);
+print("Info: Expected: Alice is 30 years old, Actual: ", p.info);
 
 // Test setters
-p.set_name("Bob");
-p.set_age(25);
-print("After update - Name: Expected: Bob, Actual: ", p.get_name());
-print("After update - Age: Expected: 25, Actual: ", p.get_age());
+p.name = "Bob";
+p.age = 25;
+print("After update - Name: Expected: Bob, Actual: ", p.name);
+print("After update - Age: Expected: 25, Actual: ", p.age);
 
 print("=== Getter/Setter Test Complete ===");
 
@@ -280,6 +280,11 @@ class Dog extends Animal {
     
     bark(): void {
         print(this.name, " barks!");
+    }
+
+    speak(): void {
+        print("Dog overrides speak:");
+        super.speak();
     }
 }
 
@@ -348,3 +353,12 @@ if (c instanceof Animal) {
 }
 
 print("Instanceof test complete!");
+
+// Polymorphism Check
+let animals: Animal[] = [d, c];
+print("\n--- Polymorphism Check ---");
+animals.forEach(a => {
+    print("Item is Animal: ", (a instanceof Animal));
+});
+
+print("=== OOP Test Complete ===");

@@ -9,6 +9,7 @@ pub struct TypeChecker {
     scopes: Vec<HashMap<String, String>>,
     current_class: Option<String>,
     current_function_return: Option<String>,
+    current_function_is_async: bool,
     pub diagnostics: Vec<Diagnostic>, // Collect errors
     current_file: String,
 }
@@ -29,6 +30,7 @@ impl TypeChecker {
             scopes: vec![globals], // Global scope
             current_class: None,
             current_function_return: None,
+            current_function_is_async: false,
             diagnostics: Vec::new(),
             current_file: "unknown".to_string(),
         }
@@ -134,11 +136,14 @@ impl TypeChecker {
                  }
                  
                  let prev_return = self.current_function_return.take();
+                 let prev_async = self.current_function_is_async;
                  self.current_function_return = Some(func.return_type.clone());
+                 self.current_function_is_async = func._is_async;
                  
                  self.check_statement(&func.body)?;
                  
                  self.current_function_return = prev_return;
+                 self.current_function_is_async = prev_async;
                  self.exit_scope();
                  Ok(())
             },
@@ -155,11 +160,14 @@ impl TypeChecker {
                          self.define(param.name.clone(), param.type_name.clone());
                      }
                      let prev_return = self.current_function_return.take();
+                     let prev_async = self.current_function_is_async;
                      self.current_function_return = Some(method.func.return_type.clone());
+                     self.current_function_is_async = method.func._is_async;
                      
                      self.check_statement(&method.func.body)?;
                      
                      self.current_function_return = prev_return;
+                     self.current_function_is_async = prev_async;
                      self.exit_scope();
                  }
                  
@@ -169,18 +177,29 @@ impl TypeChecker {
             },
             Statement::ReturnStmt { value, _line: line, _col: col } => {
                  let expected = self.current_function_return.clone();
-                 if let Some(expected_type) = expected {
+                 if let Some(expected_original) = expected {
                       let got = if let Some(expr) = value {
                           self.check_expression(expr)?
                       } else {
                           "void".to_string()
                       };
+
+                      let mut expected_type = expected_original.clone();
+                      // If async, expected_type is Promise<T>, but we allow returning T
+                      if self.current_function_is_async && expected_type.starts_with("Promise<") {
+                           let inner = &expected_type[8..expected_type.len()-1];
+                           if got == inner || (inner == "number" && got == "int") || (inner == "int" && got == "number") {
+                               // Implicit wrap: OK
+                               return Ok(());
+                           }
+                      }
+
                       if expected_type != "any" && got != "any" && expected_type != got {
                             // Allow number to match int for now
                             if (expected_type == "int" && got == "number") || (expected_type == "number" && got == "int") {
                                 // Ok
                             } else {
-                                self.report_error(format!("Return type mismatch: expected '{}', got '{}'", expected_type, got), *line, *col);
+                                self.report_error(format!("Return type mismatch: expected '{}', got '{}'", expected_original, got), *line, *col);
                             }
                        }
                  }

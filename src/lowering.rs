@@ -24,6 +24,11 @@ pub struct Lowering {
     stdlib: StdLib,
     current_class: RefCell<Option<String>>,
     parent_class: RefCell<Option<String>>,
+    class_methods: RefCell<HashMap<String, Vec<String>>>,
+    class_instance_fields: RefCell<HashMap<String, Vec<(String, Expression)>>>,
+    class_static_fields: RefCell<HashMap<String, Vec<(String, Expression)>>>,
+    class_getters: RefCell<HashMap<String, HashSet<String>>>,
+    class_setters: RefCell<HashMap<String, HashSet<String>>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -44,6 +49,11 @@ impl Lowering {
             stdlib: StdLib::new(),
             current_class: RefCell::new(None),
             parent_class: RefCell::new(None),
+            class_methods: RefCell::new(HashMap::new()),
+            class_instance_fields: RefCell::new(HashMap::new()),
+            class_static_fields: RefCell::new(HashMap::new()),
+            class_getters: RefCell::new(HashMap::new()),
+            class_setters: RefCell::new(HashMap::new()),
         }
     }
 
@@ -193,24 +203,86 @@ impl Lowering {
                     self.user_functions.borrow_mut().insert(func.name.clone(), TejxType::from_name(&func.return_type));
                 }
                 Statement::ClassDeclaration(class_decl) => {
+                    let mut methods = Vec::new();
                     for method in &class_decl.methods {
                          let mangled = format!("{}_{}", class_decl.name, method.func.name);
                          self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
+                         if !method.is_static {
+                             methods.push(method.func.name.clone());
+                         }
                     }
+                    self.class_methods.borrow_mut().insert(class_decl.name.clone(), methods);
+
+                    let mut i_fields = Vec::new();
+                    let mut s_fields = Vec::new();
+                    for member in &class_decl._members {
+                        if member._is_static {
+                            if let Some(init) = &member._initializer {
+                                s_fields.push((member._name.clone(), *init.clone()));
+                            }
+                        } else {
+                            if let Some(init) = &member._initializer {
+                                i_fields.push((member._name.clone(), *init.clone()));
+                            }
+                        }
+                    }
+                    self.class_instance_fields.borrow_mut().insert(class_decl.name.clone(), i_fields);
+                    self.class_static_fields.borrow_mut().insert(class_decl.name.clone(), s_fields);
+
                     if let Some(constructor) = &class_decl._constructor {
                          let mangled = format!("{}_{}", class_decl.name, constructor.name);
                          self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&constructor.return_type));
                     }
+
+                    let mut getters = HashSet::new();
+                    for getter in &class_decl._getters {
+                         let mangled = format!("{}_get_{}", class_decl.name, getter._name);
+                         self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&getter._return_type));
+                         getters.insert(getter._name.clone());
+                    }
+                    self.class_getters.borrow_mut().insert(class_decl.name.clone(), getters);
+
+                    let mut setters = HashSet::new();
+                    for setter in &class_decl._setters {
+                         let mangled = format!("{}_set_{}", class_decl.name, setter._name);
+                         self.user_functions.borrow_mut().insert(mangled, TejxType::Void);
+                         setters.insert(setter._name.clone());
+                    }
+                    self.class_setters.borrow_mut().insert(class_decl.name.clone(), setters);
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::FunctionDeclaration(func) = &**declaration {
                          self.user_functions.borrow_mut().insert(func.name.clone(), TejxType::from_name(&func.return_type));
+                    } else if let Statement::ClassDeclaration(class_decl) = &**declaration {
+                        let mut methods = Vec::new();
+                        for method in &class_decl.methods {
+                             let mangled = format!("{}_{}", class_decl.name, method.func.name);
+                             self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
+                             if !method.is_static {
+                                 methods.push(method.func.name.clone());
+                             }
+                        }
+                        self.class_methods.borrow_mut().insert(class_decl.name.clone(), methods);
+
+                        if let Some(constructor) = &class_decl._constructor {
+                             let mangled = format!("{}_{}", class_decl.name, constructor.name);
+                             self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&constructor.return_type));
+                        }
                     }
                 }
                 Statement::VarDeclaration { pattern, type_annotation, .. } => {
                     if let BindingNode::Identifier(name) = pattern {
                         let ty = TejxType::from_name(type_annotation);
                         self.define(name.clone(), ty);
+                    }
+                }
+                Statement::ExtensionDeclaration(ext_decl) => {
+                    let mut class_methods = self.class_methods.borrow_mut();
+                    let methods = class_methods.entry(ext_decl._target_type.clone()).or_insert_with(Vec::new);
+                    for method in &ext_decl._methods {
+                        let mangled = format!("{}_{}", ext_decl._target_type, method.name);
+                        self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.return_type));
+                        methods.push(method.name.clone());
                     }
                 }
                 _ => {}
@@ -220,113 +292,32 @@ impl Lowering {
         // Pass 2: Lower
         for stmt in &merged_statements {
             match stmt {
-                Statement::ClassDeclaration(class_decl) => {
-                    *self.current_class.borrow_mut() = Some(class_decl.name.clone());
-                    let p_name = if class_decl._parent_name.is_empty() { None } else { Some(class_decl._parent_name.clone()) };
-                    *self.parent_class.borrow_mut() = p_name;
-
-                    let mut all_methods = Vec::new();
-                    for m in &class_decl.methods {
-                        all_methods.push((&m.func, m.is_static));
-                    }
-                    if let Some(cons) = &class_decl._constructor {
-                        all_methods.push((cons, false));
-                    }
-
-                    for (func_decl, is_static) in all_methods {
-                        let mut params: Vec<(String, TejxType)> = Vec::new();
-                        if !is_static {
-                            params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
-                        }
-                        for p in &func_decl.params {
-                            params.push((p.name.clone(), TejxType::from_name(&p.type_name)));
-                        }
-                        let name = format!("f_{}_{}", class_decl.name, func_decl.name);
-                        let return_type = TejxType::from_name(&func_decl.return_type);
-                        
-                        self.enter_scope();
-                        for (pname, pty) in &params {
-                            self.define(pname.clone(), pty.clone());
-                        }
-                        
-                        let mut hir_body = self.lower_statement(&func_decl.body)
-                            .unwrap_or(HIRStatement::Block { statements: vec![] });
-                        
-                        // Inject debug print at method start
-                        if let HIRStatement::Block { ref mut statements } = hir_body {
-                             statements.insert(0, HIRStatement::ExpressionStmt {
-                                 expr: HIRExpression::Call {
-                                     callee: "print".to_string(),
-                                     args: vec![HIRExpression::Literal { 
-                                         value: format!("DEBUG: Entering method {}::{}", class_decl.name, func_decl.name),
-                                         ty: TejxType::Primitive("string".to_string())
-                                     }],
-                                     ty: TejxType::Void
-                                 }
-                             });
-                        }
-                        
-                        let body = hir_body;
-                        
-                        self._exit_scope();
-
-                        functions.push(HIRStatement::Function {
-                            name, params, _return_type: return_type, body: Box::new(body),
-                        });
-                    }
-                    
-                    *self.current_class.borrow_mut() = None;
-                    *self.parent_class.borrow_mut() = None;
-                }
                 Statement::FunctionDeclaration(func) => {
-                    let params: Vec<(String, TejxType)> = func.params.iter()
-                        .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
-                        .collect();
-                    let return_type = TejxType::from_name(&func.return_type);
-                    
-                    self.enter_scope();
-                    for (name, ty) in &params {
-                        self.define(name.clone(), ty.clone());
-                    }
-                    
-                    let body = self.lower_statement(&func.body)
-                        .unwrap_or(HIRStatement::Block { statements: vec![] });
-                    
-                    self._exit_scope();
-                    
-                    let name = if func.name == "main" {
-                        func.name.clone()
-                    } else {
-                        format!("f_{}", func.name)
-                    };
-                    functions.push(HIRStatement::Function {
-                        name, params, _return_type: return_type, body: Box::new(body),
-                    });
+                    self.lower_function_declaration(func, &mut functions);
+                }
+                Statement::ClassDeclaration(class_decl) => {
+                    self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
                 }
                 Statement::ExportDecl { declaration, .. } => {
-                    if let Statement::FunctionDeclaration(func) = &**declaration {
-                        let params: Vec<(String, TejxType)> = func.params.iter()
-                            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
-                            .collect();
-                        let return_type = TejxType::from_name(&func.return_type);
-                        
-                        self.enter_scope();
-                        for (name, ty) in &params {
-                            self.define(name.clone(), ty.clone());
+                    match &**declaration {
+                        Statement::FunctionDeclaration(func) => {
+                            self.lower_function_declaration(func, &mut functions);
                         }
-                        
-                        let body = self.lower_statement(&func.body)
-                            .unwrap_or(HIRStatement::Block { statements: vec![] });
-                        
-                        self._exit_scope();
-                        
-                        functions.push(HIRStatement::Function {
-                            name: format!("f_{}", func.name),
-                            params, _return_type: return_type, body: Box::new(body),
-                        });
-                    } else if let Some(hir) = self.lower_statement(stmt) {
-                        main_stmts.push(hir);
+                        Statement::ClassDeclaration(class_decl) => {
+                            self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                        }
+                        Statement::ExtensionDeclaration(ext_decl) => {
+                            self.lower_extension_declaration(ext_decl, &mut functions);
+                        }
+                        _ => {
+                            if let Some(hir) = self.lower_statement(stmt) {
+                                main_stmts.push(hir);
+                            }
+                        }
                     }
+                }
+                Statement::ExtensionDeclaration(ext_decl) => {
+                    self.lower_extension_declaration(ext_decl, &mut functions);
                 }
                 Statement::ImportDecl { .. } => {
                     // Handled in Pass 0
@@ -377,6 +368,266 @@ impl Lowering {
         LoweringResult { functions }
     }
 
+    fn lower_function_declaration(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
+        let params: Vec<(String, TejxType)> = func.params.iter()
+            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+            .collect();
+        let return_type = TejxType::from_name(&func.return_type);
+        
+        self.enter_scope();
+        for (name, ty) in &params {
+            self.define(name.clone(), ty.clone());
+        }
+        
+        let body = self.lower_statement(&func.body)
+            .unwrap_or(HIRStatement::Block { statements: vec![] });
+        
+        self._exit_scope();
+        
+        let name = if func.name == "main" {
+            func.name.clone()
+        } else {
+            format!("f_{}", func.name)
+        };
+        functions.push(HIRStatement::Function {
+            name, params, _return_type: return_type, body: Box::new(body),
+        });
+    }
+
+    fn lower_class_declaration(&self, class_decl: &ClassDeclaration, functions: &mut Vec<HIRStatement>, main_stmts: &mut Vec<HIRStatement>) {
+        *self.current_class.borrow_mut() = Some(class_decl.name.clone());
+        let p_name = if class_decl._parent_name.is_empty() { None } else { Some(class_decl._parent_name.clone()) };
+        *self.parent_class.borrow_mut() = p_name;
+
+        let mut all_methods = Vec::new();
+        for m in &class_decl.methods {
+            all_methods.push((&m.func, m.is_static));
+        }
+
+        // Handle constructor (explicit or default)
+        let default_body = Box::new(Statement::BlockStmt { statements: vec![], _line: 0, _col: 0 });
+        let default_cons = FunctionDeclaration {
+            name: "constructor".to_string(),
+            params: vec![],
+            return_type: "void".to_string(),
+            body: default_body,
+            _is_async: false,
+            _line: 0,
+            _col: 0,
+        };
+
+        if let Some(cons) = &class_decl._constructor {
+            all_methods.push((cons, false));
+        } else {
+            // Check if we need to generate a default constructor
+            // Always generate one to avoid linker errors in mir_lowering
+            all_methods.push((&default_cons, false));
+        }
+
+        for (func_decl, is_static) in all_methods {
+            let mut params: Vec<(String, TejxType)> = Vec::new();
+            if !is_static {
+                params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
+            }
+            for p in &func_decl.params {
+                params.push((p.name.clone(), TejxType::from_name(&p.type_name)));
+            }
+            let name = format!("f_{}_{}", class_decl.name, func_decl.name);
+            let return_type = TejxType::from_name(&func_decl.return_type);
+            
+            self.enter_scope();
+            for (pname, pty) in &params {
+                self.define(pname.clone(), pty.clone());
+            }
+            
+            let mut hir_body = self.lower_statement(&func_decl.body)
+                .unwrap_or(HIRStatement::Block { statements: vec![] });
+            
+            if let HIRStatement::Block { ref mut statements } = hir_body {
+                 // Inject method attachments for constructor
+                 if func_decl.name == "constructor" {
+                     // Instance fields
+                     let i_fields_borrow = self.class_instance_fields.borrow();
+                     if let Some(i_list) = i_fields_borrow.get(&class_decl.name) {
+                         for (f_name, f_init) in i_list {
+                             let hir_init = self.lower_expression(f_init);
+                             // Insert before other logic
+                             statements.insert(0, HIRStatement::ExpressionStmt {
+                                 expr: HIRExpression::Assignment {
+                                     target: Box::new(HIRExpression::MemberAccess {
+                                         target: Box::new(HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) }),
+                                         member: f_name.clone(),
+                                         ty: TejxType::Any
+                                     }),
+                                     value: Box::new(hir_init),
+                                     ty: TejxType::Any
+                                 }
+                             });
+                         }
+                     }
+
+                     let methods_borrow = self.class_methods.borrow();
+                     if let Some(m_list) = methods_borrow.get(&class_decl.name) {
+                         for m_name in m_list {
+                             let mangled_func = format!("f_{}_{}", class_decl.name, m_name);
+                             // Insert after debug print
+                             statements.insert(0, HIRStatement::ExpressionStmt {
+                                 expr: HIRExpression::Call {
+                                     callee: "m_set".to_string(),
+                                     args: vec![
+                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                         HIRExpression::Literal { value: m_name.clone(), ty: TejxType::Primitive("string".to_string()) },
+                                         HIRExpression::Variable { name: mangled_func, ty: TejxType::Any }
+                                     ],
+                                     ty: TejxType::Void
+                                 }
+                             });
+                         }
+                     }
+
+                     // Getters
+                     let getters_borrow = self.class_getters.borrow();
+                     if let Some(g_list) = getters_borrow.get(&class_decl.name) {
+                         for g_name in g_list {
+                             let mangled_func = format!("f_{}_get_{}", class_decl.name, g_name);
+                             statements.insert(0, HIRStatement::ExpressionStmt {
+                                 expr: HIRExpression::Call {
+                                     callee: "m_set".to_string(),
+                                     args: vec![
+                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                         HIRExpression::Literal { value: format!("get_{}", g_name), ty: TejxType::Primitive("string".to_string()) },
+                                         HIRExpression::Variable { name: mangled_func, ty: TejxType::Any }
+                                     ],
+                                     ty: TejxType::Void
+                                 }
+                             });
+                         }
+                     }
+
+                     // Setters
+                     let setters_borrow = self.class_setters.borrow();
+                     if let Some(s_list) = setters_borrow.get(&class_decl.name) {
+                         for s_name in s_list {
+                             let mangled_func = format!("f_{}_set_{}", class_decl.name, s_name);
+                             statements.insert(0, HIRStatement::ExpressionStmt {
+                                 expr: HIRExpression::Call {
+                                     callee: "m_set".to_string(),
+                                     args: vec![
+                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                         HIRExpression::Literal { value: format!("set_{}", s_name), ty: TejxType::Primitive("string".to_string()) },
+                                         HIRExpression::Variable { name: mangled_func, ty: TejxType::Any }
+                                     ],
+                                     ty: TejxType::Void
+                                 }
+                             });
+                         }
+                     }
+                 }
+            }
+            
+            let body = hir_body;
+            
+            self._exit_scope();
+
+            functions.push(HIRStatement::Function {
+                name, params, _return_type: return_type, body: Box::new(body),
+            });
+        }
+        
+
+        // Lower getters
+        for getter in &class_decl._getters {
+            let mut params: Vec<(String, TejxType)> = Vec::new();
+            params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
+            
+            let name = format!("f_{}_get_{}", class_decl.name, getter._name);
+            let return_type = TejxType::from_name(&getter._return_type);
+            
+            self.enter_scope();
+            for (pname, pty) in &params {
+                self.define(pname.clone(), pty.clone());
+            }
+            
+            let hir_body = self.lower_statement(&getter._body)
+                .unwrap_or(HIRStatement::Block { statements: vec![] });
+
+            self._exit_scope();
+            functions.push(HIRStatement::Function {
+                name, params, _return_type: return_type, body: Box::new(hir_body),
+            });
+        }
+
+        // Lower setters
+        for setter in &class_decl._setters {
+            let mut params: Vec<(String, TejxType)> = Vec::new();
+            params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
+            params.push((setter._param_name.clone(), TejxType::from_name(&setter._param_type)));
+            
+            let name = format!("f_{}_set_{}", class_decl.name, setter._name);
+            
+            self.enter_scope();
+            for (pname, pty) in &params {
+                self.define(pname.clone(), pty.clone());
+            }
+            
+            let hir_body = self.lower_statement(&setter._body)
+                .unwrap_or(HIRStatement::Block { statements: vec![] });
+
+            self._exit_scope();
+            functions.push(HIRStatement::Function {
+                name, params, _return_type: TejxType::Void, body: Box::new(hir_body),
+            });
+        }
+
+        // Lower static fields into global assignments
+        let s_fields_borrow = self.class_static_fields.borrow();
+        if let Some(s_list) = s_fields_borrow.get(&class_decl.name) {
+            for (f_name, f_init) in s_list {
+                let hir_init = self.lower_expression(f_init);
+                // Static fields are mangled as g_Class_Field
+                let mangled_name = format!("g_{}_{}", class_decl.name, f_name);
+                main_stmts.push(HIRStatement::ExpressionStmt {
+                    expr: HIRExpression::Assignment {
+                        target: Box::new(HIRExpression::Variable { name: mangled_name, ty: TejxType::Any }),
+                        value: Box::new(hir_init),
+                        ty: TejxType::Any
+                    }
+                });
+            }
+        }
+
+        *self.current_class.borrow_mut() = None;
+        *self.parent_class.borrow_mut() = None;
+    }
+
+    fn lower_extension_declaration(&self, ext_decl: &ExtensionDeclaration, functions: &mut Vec<HIRStatement>) {
+        for func_decl in &ext_decl._methods {
+            let mut params: Vec<(String, TejxType)> = Vec::new();
+            params.push(("this".to_string(), TejxType::Class(ext_decl._target_type.clone())));
+            
+            for p in &func_decl.params {
+                params.push((p.name.clone(), TejxType::from_name(&p.type_name)));
+            }
+            
+            let name = format!("f_{}_{}", ext_decl._target_type, func_decl.name);
+            let return_type = TejxType::from_name(&func_decl.return_type);
+            
+            self.enter_scope();
+            for (pname, pty) in &params {
+                self.define(pname.clone(), pty.clone());
+            }
+            
+            let mut hir_body = self.lower_statement(&func_decl.body)
+                .unwrap_or(HIRStatement::Block { statements: vec![] });
+            
+            self._exit_scope();
+
+            functions.push(HIRStatement::Function {
+                name, params, _return_type: return_type, body: Box::new(hir_body),
+            });
+        }
+    }
+
     fn lower_statement(&self, stmt: &Statement) -> Option<HIRStatement> {
         match stmt {
             Statement::BlockStmt { statements, .. } => {
@@ -392,7 +643,11 @@ impl Lowering {
             }
             Statement::VarDeclaration { pattern, type_annotation, initializer, is_const, .. } => {
                 let init = initializer.as_ref().map(|e| self.lower_expression(e));
-                let ty = TejxType::from_name(type_annotation);
+                let ty = if type_annotation.is_empty() {
+                    init.as_ref().map(|e| e.get_type()).unwrap_or(TejxType::Any)
+                } else {
+                    TejxType::from_name(type_annotation)
+                };
                 
                 let mut stmts = Vec::new();
                 self.lower_binding_pattern(pattern, init, &ty, *is_const, &mut stmts);
@@ -664,8 +919,13 @@ impl Lowering {
             }
             Expression::Identifier { name, .. } => {
                 let ty = self.lookup(name).unwrap_or(TejxType::Any);
+                let final_name = if self.user_functions.borrow().contains_key(name) && name != "main" {
+                    format!("f_{}", name)
+                } else {
+                    name.clone()
+                };
                 HIRExpression::Variable {
-                    name: name.clone(),
+                    name: final_name,
                     ty,
                 }
             }
@@ -717,6 +977,22 @@ impl Lowering {
                     }
                     _ => v // Direct assignment
                 };
+
+                if let Expression::MemberAccessExpr { object, member, .. } = target.as_ref() {
+                    let obj_ty = self.lower_expression(object).get_type();
+                    if let TejxType::Class(class_name) = obj_ty {
+                        let setters = self.class_setters.borrow();
+                        if let Some(s_set) = setters.get(&class_name) {
+                            if s_set.contains(member) {
+                                return HIRExpression::Call {
+                                    callee: format!("f_{}_set_{}", class_name, member),
+                                    args: vec![self.lower_expression(object), final_value],
+                                    ty: TejxType::Void
+                                };
+                            }
+                        }
+                    }
+                }
 
                 match target.as_ref() {
                     Expression::Identifier { .. } | Expression::MemberAccessExpr { .. } | Expression::ArrayAccessExpr { .. } => {
@@ -799,11 +1075,26 @@ impl Lowering {
                 
                 let normalized = callee.replace('.', "_").replace("::", "_").replace(":", "_");
                 
-                let mut final_callee = if self.user_functions.borrow().contains_key(callee) && callee != "main" {
-                    format!("f_{}", callee)
-                } else if self.stdlib.is_prelude_func(callee) {
-                    callee.clone()
-                } else if callee == "super" {
+                if self.user_functions.borrow().contains_key(callee) && callee != "main" {
+                    let mut final_args = Vec::new();
+                    // If it's a method calling itself without 'this', we might need to handle it?
+                    // But assume it's a global function for now.
+                    final_args.extend(hir_args);
+                    return HIRExpression::Call {
+                        callee: format!("f_{}", callee),
+                        args: final_args,
+                        ty: TejxType::Any,
+                    };
+                } else if self.stdlib.is_prelude_func(&normalized) || normalized == "log" || normalized == "console_log" {
+                    let target_callee = if normalized == "log" || normalized == "console_log" { "print".to_string() } else { normalized.clone() };
+                    return HIRExpression::Call {
+                        callee: target_callee,
+                        args: hir_args,
+                        ty: TejxType::Any,
+                    };
+                }
+                
+                let mut final_callee = if callee == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {
                          format!("f_{}_constructor", parent)
                     } else {
@@ -846,9 +1137,10 @@ impl Lowering {
 
                 let ty = if let Some(known_ty) = self.user_functions.borrow().get(callee) {
                     known_ty.clone()
-                } else if final_callee == "fs_readFile" || final_callee == "JSON_stringify" || 
-                           final_callee.starts_with("d_toISOString") {
-                    TejxType::Primitive("string".to_string())
+                } else if final_callee == "fs_readFile" {
+                    TejxType::Primitive("string".to_string()) // Assuming fs_readFile returns raw ptr for now, but should check
+                } else if final_callee == "JSON_stringify" || final_callee.starts_with("d_toISOString") {
+                    TejxType::Any
                 } else if final_callee == "Math_random" || final_callee == "Date_now" || 
                            final_callee == "d_getTime" || final_callee == "std_time_now" {
                     TejxType::Primitive("number".to_string())
@@ -860,19 +1152,79 @@ impl Lowering {
                 if callee.contains('.') && 
                    !callee.starts_with("Math.") && !callee.starts_with("JSON.") && 
                    !callee.starts_with("fs.") && !callee.starts_with("Date.") && 
+                   !callee.starts_with("http.") &&
                    !callee.starts_with("Promise.") && !callee.starts_with("Array.") {
                     let parts: Vec<&str> = callee.split('.').collect();
                     if parts.len() == 2 {
                         let obj_name = parts[0];
                         let method_name = parts[1];
+
+                        if obj_name == "super" {
+                            if let Some(parent) = &*self.parent_class.borrow() {
+                                let mangled_func = format!("f_{}_{}", parent, method_name);
+                                let mut final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
+                                final_args.extend(hir_args);
+                                return HIRExpression::Call {
+                                    callee: mangled_func,
+                                    args: final_args,
+                                    ty: TejxType::Any,
+                                };
+                            }
+                        }
                         
+                        // Try Static Dispatch for Classes
+                        let mut class_name_opt = None;
+                        let mut is_instance = false;
+                        if let Some(TejxType::Class(cn)) = self.lookup(obj_name) {
+                            class_name_opt = Some(cn);
+                            is_instance = true;
+                        } else if self.class_methods.borrow().contains_key(obj_name) {
+                            class_name_opt = Some(obj_name.to_string());
+                        }
+
+                        if let Some(class_name) = class_name_opt {
+                            let mangled_key = format!("{}_{}", class_name, method_name);
+                            if self.user_functions.borrow().contains_key(&mangled_key) {
+                                let mut final_args = Vec::new();
+                                if is_instance {
+                                    final_args.push(HIRExpression::Variable { 
+                                        name: obj_name.to_string(), 
+                                        ty: TejxType::Class(class_name.clone())
+                                    });
+                                }
+                                final_args.extend(hir_args);
+                                let mangled_func = format!("f_{}", mangled_key);
+                                return HIRExpression::Call {
+                                    callee: mangled_func,
+                                    args: final_args,
+                                    ty: TejxType::Any
+                                };
+                            }
+                        }
+
                         // Transform to Array_push(obj, args) etc if it is a common method
                         let (runtime_callee, ret_type) = match method_name {
                              "push" | "unshift" | "indexOf" => (format!("Array_{}", method_name), TejxType::Primitive("number".to_string())),
                              "pop" | "shift" => (format!("Array_{}", method_name), TejxType::Any), 
-                             "join" => ("__join".to_string(), TejxType::Primitive("string".to_string())),
+                             "join" => ("__join".to_string(), TejxType::Any),
+                             "lock" | "unlock" => (format!("m_{}", method_name), TejxType::Any),
                              "concat" | "map" | "filter" => (format!("Array_{}", method_name), TejxType::Any),
                              "forEach" => (format!("Array_{}", method_name), TejxType::Void),
+                             "set" => ("m_set".to_string(), TejxType::Any),
+                             "get" => ("m_get".to_string(), TejxType::Any),
+                             "has" => ("rt_has".to_string(), TejxType::Any),
+                             "delete" | "del" => ("rt_del".to_string(), TejxType::Any),
+                             "size" => ("s_size".to_string(), TejxType::Any),
+                             "clear" => ("m_clear".to_string(), TejxType::Any),
+                             "add" => ("s_add".to_string(), TejxType::Any),
+                             "trim" => ("rt_string_trim".to_string(), TejxType::Any),
+                             "toLowerCase" => ("rt_string_to_lower".to_string(), TejxType::Any),
+                             "toUpperCase" => ("rt_string_to_upper".to_string(), TejxType::Any),
+                             "startsWith" => ("rt_string_starts_with".to_string(), TejxType::Primitive("boolean".to_string())),
+                             "endsWith" => ("rt_string_ends_with".to_string(), TejxType::Primitive("boolean".to_string())),
+                             "replace" => ("rt_string_replace".to_string(), TejxType::Any),
+                             "getTime" => ("d_getTime".to_string(), TejxType::Primitive("number".to_string())),
+                             "toISOString" => ("d_toISOString".to_string(), TejxType::Any),
                              _ => {
                                  // Dynamic method call: obj["method"](args)
                                  // Check if we can treat it as indirect call.
@@ -893,9 +1245,12 @@ impl Lowering {
                                      ty: TejxType::Any
                                  };
                                  
+                                 let mut final_args = vec![HIRExpression::Variable { name: obj_name.to_string(), ty: TejxType::Any }];
+                                 final_args.extend(hir_args);
+
                                  return HIRExpression::IndirectCall {
                                      callee: Box::new(func_expr),
-                                     args: hir_args,
+                                     args: final_args,
                                      ty: TejxType::Any
                                  };
                              }
@@ -949,6 +1304,34 @@ impl Lowering {
                     _ => "".to_string(),
                 };
                 
+                // Static Field Resolution
+                if !obj_name.is_empty() {
+                    let s_fields = self.class_static_fields.borrow();
+                    if let Some(f_list) = s_fields.get(&obj_name) {
+                        if f_list.iter().any(|(n, _)| n == member) {
+                            return HIRExpression::Variable {
+                                name: format!("g_{}_{}", obj_name, member),
+                                ty: TejxType::Any
+                            };
+                        }
+                    }
+                }
+
+                // Getter Resolution
+                let obj_ty = self.lower_expression(object).get_type();
+                if let TejxType::Class(class_name) = obj_ty {
+                    let getters = self.class_getters.borrow();
+                    if let Some(g_set) = getters.get(&class_name) {
+                        if g_set.contains(member) {
+                            return HIRExpression::Call {
+                                callee: format!("f_{}_get_{}", class_name, member),
+                                args: vec![self.lower_expression(object)],
+                                ty: TejxType::Any
+                            };
+                        }
+                    }
+                }
+
                 let combined = format!("{}_{}", obj_name, member);
                 if self.user_functions.borrow().contains_key(&combined) {
                     HIRExpression::Variable {
@@ -1072,6 +1455,17 @@ impl Lowering {
                 HIRExpression::NewExpr {
                     class_name: class_name.clone(),
                     _args: hir_args,
+                }
+            }
+            Expression::TernaryExpr { _condition, _true_branch, _false_branch, .. } => {
+                let cond = self.lower_expression(_condition);
+                let t_branch = self.lower_expression(_true_branch);
+                let f_branch = self.lower_expression(_false_branch);
+                HIRExpression::If {
+                    condition: Box::new(cond),
+                    then_branch: Box::new(t_branch),
+                    else_branch: Box::new(f_branch),
+                    ty: TejxType::Any,
                 }
             }
             Expression::MatchExpr { target, arms, .. } => {

@@ -5,23 +5,32 @@ function run(): void {
     let user: object = {
         name: "TejX",
         age: 1.0,
-        active: true
+        active: true,
+        address: {
+            city: "Metropolis",
+            zip: 12345
+        }
     };
     
     // Access Properties
     print("Name: Expected: TejX, Actual: ", user["name"]);
     print("Age: Expected: 1, Actual: ", user["age"]);
+    print("City: Expected: Metropolis, Actual: ", user["address"]["city"]);
     
     print("--- End Test ---");
 }
 
 run();
+
 // Nested Objects Test
 let o = { 
     name: "Outer", 
     inner: { 
         name: "Inner", 
-        val: 42 
+        val: 42,
+        deep: {
+            secret: "Hidden"
+        }
     },
     list: [1, 2, 3]
 };
@@ -29,7 +38,19 @@ let o = {
 print("Object 'o': Expected: [Object], Actual: ", o);
 // Used bracket notation which is guaranteed for maps
 print("Inner Name: Expected: Inner, Actual: ", o["inner"]["name"]);
+print("Deep Secret: Expected: Hidden, Actual: ", o["inner"]["deep"]["secret"]);
 print("List[1]: Expected: 2, Actual: ", o["list"][1]);
+
+// Dynamic Keys
+print("\n--- Dynamic Property Access ---");
+let mapObj = {
+    "key-1": "Value 1",
+    "key-2": "Value 2"
+};
+let idx = 1;
+let key = "key-" + idx;
+print("Dynamic Key 'key-1': Expected: Value 1, Actual: ", mapObj[key]);
+
 
 function runProfile(): void {
     print("--- Profile Test ---");
@@ -46,3 +67,21 @@ function runProfile(): void {
     print("--- End Profile Test ---");
 }
 runProfile();
+
+// Complex Object Mixing
+print("\n--- Complex Object Mixing ---");
+let config = {
+    servers: [
+        { host: "192.168.1.1", port: 80 },
+        { host: "192.168.1.2", port: 8080 }
+    ],
+    admin: {
+        name: "Admin",
+        roles: ["read", "write"]
+    }
+};
+
+print("Server 2 Port: Expected: 8080, Actual: ", config.servers[1].port);
+print("Admin Role 1: Expected: read, Actual: ", config.admin.roles[0]);
+
+print("=== Objects Test Complete ===");

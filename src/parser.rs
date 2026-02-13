@@ -517,6 +517,22 @@ impl Parser {
             self.consume(TokenType::CloseBrace, "Expected '}' after class body.");
         }
         
+        if constructor.is_none() {
+            constructor = Some(FunctionDeclaration {
+                name: "constructor".to_string(),
+                params: vec![],
+                return_type: "void".to_string(),
+                body: Box::new(Statement::BlockStmt { 
+                    statements: vec![],
+                    _line: start.line,
+                    _col: start.column
+                }),
+                _is_async: false,
+                _line: start.line,
+                _col: start.column
+            });
+        }
+
         Statement::ClassDeclaration(ClassDeclaration {
             name,
             _parent_name: parent_name,

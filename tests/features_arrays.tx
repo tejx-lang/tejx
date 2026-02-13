@@ -3,7 +3,7 @@
 
 print("--- Array Creation & Access ---");
 let numbers: number[] = [10, 20, 30, 40, 50];
-print("Original Array: Expected: [10, 20, 30, 40, 50], Actual: ", numbers); // Assuming string conversion works
+print("Original Array: Expected: [10, 20, 30, 40, 50], Actual: ", numbers); 
 print("First Element: Expected: 10, Actual: ", numbers[0]);
 print("Length: Expected: 5, Actual: ", numbers.length);
 
@@ -18,7 +18,7 @@ print("New Length after push: Expected: 6, Actual: ", numbers.length);
 // Spread Operator
 print("\n--- Spread Operator ---");
 let moreNumbers = [0, ...numbers, 70];
-print("Combined Array Length: Expected: 8, Actual: ", moreNumbers.length); // 0 + 6 items + 70 = 8 items
+print("Combined Array Length: Expected: 8, Actual: ", moreNumbers.length); 
 
 // Array Destructuring
 print("\n--- Array Destructuring ---");
@@ -29,8 +29,8 @@ print("Destructured Y: Expected: 200, Actual: ", y);
 
 // Rest Pattern in Destructuring
 let [head, ...tail] = [1, 2, 3, 4];
-print("Head: Expected: 1, Actual: ", head); // 1
-print("Tail: Expected: [2, 3, 4], Actual: ", tail); // [2, 3, 4]
+print("Head: Expected: 1, Actual: ", head); 
+print("Tail: Expected: [2, 3, 4], Actual: ", tail); 
 
 let nums = [1, 2, 3, 4, 5];
 
@@ -132,3 +132,29 @@ function sum(...nums: number[]): number {
 
 print("Sum 1,2,3: Expected: 6, Actual: ", sum(1, 2, 3));
 print("Sum 10,20: Expected: 30, Actual: ", sum(10, 20));
+
+
+// --- NEW: Nested Arrays & Matrix Operations ---
+print("\n--- Nested Arrays & Matrix ---");
+let matrix = [
+    [1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 9]
+];
+
+print("Matrix[1][1]: Expected: 5, Actual: ", matrix[1][1]);
+
+let diagSum = 0;
+for(let i=0; i<3; i++) {
+    diagSum += matrix[i][i];
+}
+print("Diagonal Sum: Expected: 15 (1+5+9), Actual: ", diagSum);
+
+// Flattening
+let flat: number[] = [];
+matrix.forEach(row => {
+    row.forEach(val => flat.push(val));
+});
+print("Flattened: Expected: 1..9, Actual: ", flat.join(","));
+
+print("=== Arrays Test Complete ===");

@@ -76,6 +76,12 @@ pub enum HIRExpression {
         statements: Vec<HIRStatement>,
         ty: TejxType,
     },
+    If {
+        condition: Box<HIRExpression>,
+        then_branch: Box<HIRExpression>,
+        else_branch: Box<HIRExpression>,
+        ty: TejxType,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +109,7 @@ impl HIRExpression {
             HIRExpression::ArrayLiteral { ty, .. } => ty.clone(),
             HIRExpression::Match { ty, .. } => ty.clone(),
             HIRExpression::BlockExpr { ty, .. } => ty.clone(),
+            HIRExpression::If { ty, .. } => ty.clone(),
         }
     }
 }
