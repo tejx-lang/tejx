@@ -63,27 +63,18 @@ impl CodeGen {
                     return "0".to_string();
                 }
 
-                let is_number = match ty {
-                    TejxType::Primitive(name) => name == "number" || name == "int" || name == "float",
-                    TejxType::Any => {
-                         // Check if value parses as number
-                         value.parse::<f64>().is_ok()
-                    },
-                    _ => false,
-                };
-                let is_bool = match ty {
-                    TejxType::Primitive(name) => name == "boolean",
-                     _ => false,
-                };
+                let is_integer = ty.is_numeric() && !ty.is_float();
+                let is_float = ty.is_float();
+                let is_bool = matches!(ty, TejxType::Bool);
 
                 if is_bool {
                      if value == "true" || value == "1" { return "1".to_string(); }
                      return "0".to_string();
                 }
 
-                if is_number {
-                    // Always convert to f64 bits to ensure runtime consistency (fadd/fsub expect bits)
+                if is_integer || is_float || matches!(ty, TejxType::Any) && value.parse::<f64>().is_ok() {
                     if let Ok(d) = value.parse::<f64>() {
+                        // NovaJs uses double-bitcasting for ALL numbers on the stack
                         return format!("{}", d.to_bits());
                     }
                     return "0".to_string();
@@ -285,7 +276,7 @@ impl CodeGen {
                     MIRInstruction::Move { dst, .. } => Some(dst.clone()),
                     MIRInstruction::BinaryOp { dst, .. } => Some(dst.clone()),
                     MIRInstruction::Call { dst, .. } => Some(dst.clone()),
-                    MIRInstruction::ObjectLiteral { dst, .. } => Some(dst.clone()),
+                    MIRInstruction::ObjectLiteral { dst, .. } |
                     MIRInstruction::ArrayLiteral { dst, .. } => Some(dst.clone()),
                     MIRInstruction::LoadMember { dst, .. } => Some(dst.clone()),
                     MIRInstruction::LoadIndex { dst, .. } => Some(dst.clone()),
@@ -343,76 +334,14 @@ impl CodeGen {
                 };
 
                 // Check types
-                let is_string_op = matches!(l_ty, TejxType::Primitive(n) if n == "string") || 
-                                matches!(r_ty, TejxType::Primitive(n) if n == "string");
+                let is_string_op = matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String);
                 
                 let is_any_op = matches!(l_ty, TejxType::Any) || matches!(r_ty, TejxType::Any);
-                let is_float_op = matches!(l_ty, TejxType::Primitive(n) if n == "number" || n == "float") || 
-                               matches!(r_ty, TejxType::Primitive(n) if n == "number" || n == "float");
+                let is_float_op = l_ty.is_float() || r_ty.is_float();
 
-                if is_any_op {
-                    let runtime_func = match op {
-                        TokenType::Plus => Some("rt_add"),
-                        TokenType::Minus => Some("rt_sub"),
-                        TokenType::Star => Some("rt_mul"),
-                        TokenType::Slash => Some("rt_div"),
-                        _ => None
-                    };
+                let is_numeric_op = (l_ty.is_numeric() && r_ty.is_numeric()) || is_float_op || is_any_op;
 
-                    if let Some(func_name) = runtime_func {
-                         if !self.declared_functions.contains(func_name) {
-                            self.global_buffer.push_str(&format!("declare i64 @{}(i64, i64)\n", func_name));
-                            self.declared_functions.insert(func_name.to_string());
-                        }
-                        
-                        let l_is_num = matches!(l_ty, TejxType::Primitive(n) if n == "number" || n == "float");
-                        let r_is_num = matches!(r_ty, TejxType::Primitive(n) if n == "number" || n == "float");
-                        
-                        let l_val = if l_is_num {
-                            if !self.declared_functions.contains("rt_box_number") {
-                                self.global_buffer.push_str("declare i64 @rt_box_number(i64)\n");
-                                self.declared_functions.insert("rt_box_number".to_string());
-                            }
-                            self.temp_counter += 1;
-                            let boxed = format!("%boxed{}", self.temp_counter);
-                            self.emit_line(&format!("{} = call i64 @rt_box_number(i64 {})", boxed, l));
-                            boxed
-                        } else {
-                            l.to_string()
-                        };
-
-                        let r_val = if r_is_num {
-                            if !self.declared_functions.contains("rt_box_number") {
-                                self.global_buffer.push_str("declare i64 @rt_box_number(i64)\n");
-                                self.declared_functions.insert("rt_box_number".to_string());
-                            }
-                            self.temp_counter += 1;
-                            let boxed = format!("%boxed{}", self.temp_counter);
-                            self.emit_line(&format!("{} = call i64 @rt_box_number(i64 {})", boxed, r));
-                            boxed
-                        } else {
-                            r.to_string()
-                        };
-
-                        self.emit_line(&format!("{} = call i64 @{}(i64 {}, i64 {})", tmp, func_name, l_val, r_val));
-                    } else {
-                         let (is_cmp, llvm_op, pred) = match op {
-                             TokenType::EqualEqual => (true, "", "eq"),
-                             TokenType::BangEqual => (true, "", "ne"),
-                             TokenType::Less => (true, "", "slt"),
-                             TokenType::Greater => (true, "", "sgt"),
-                             _ => (false, "add", "") 
-                         };
-                         if is_cmp {
-                             self.temp_counter += 1;
-                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
-                             self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_res, pred, l, r));
-                             self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
-                         } else {
-                             self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
-                         }
-                    }
-                } else if is_string_op {
+                if is_string_op {
                     if matches!(op, TokenType::Plus) {
                         if !self.declared_functions.contains("rt_str_concat_v2") {
                             self.global_buffer.push_str("declare i64 @rt_str_concat_v2(i64, i64)\n");
@@ -434,51 +363,88 @@ impl CodeGen {
                             self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
                             self.declared_functions.insert("rt_not".to_string());
                         }
-                         self.temp_counter += 1;
                          let eq_tmp = format!("%eq{}", self.temp_counter);
                          self.emit_line(&format!("{} = call i64 @rt_str_equals(i64 {}, i64 {})", eq_tmp, l, r));
                          self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_tmp));
                     } else {
-                         // Fallback?
                          self.emit_line(&format!("{} = add i64 {}, {}", tmp, l, r));
                     }
-                } else if is_float_op {
-                     // Convert inputs to double
-                     self.temp_counter += 1;
-                     let l_dbl = format!("%l_dbl{}", self.temp_counter);
-                     self.emit_line(&format!("{} = bitcast i64 {} to double", l_dbl, l));
-                     
-                     self.temp_counter += 1;
-                     let r_dbl = format!("%r_dbl{}", self.temp_counter);
-                     self.emit_line(&format!("{} = bitcast i64 {} to double", r_dbl, r));
+                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
+                } else if is_numeric_op {
+                    let runtime_func = if is_any_op {
+                        match op {
+                            TokenType::Plus => Some("rt_add"),
+                            TokenType::Minus => Some("rt_sub"),
+                            TokenType::Star => Some("rt_mul"),
+                            TokenType::Slash => Some("rt_div"),
+                            TokenType::EqualEqual => Some("rt_eq"),
+                            TokenType::BangEqual => Some("rt_eq"),
+                            _ => None
+                        }
+                    } else {
+                        None
+                    };
 
-                     let (is_cmp, llvm_op, pred) = match op {
-                        TokenType::Plus => (false, "fadd", ""),
-                        TokenType::Minus => (false, "fsub", ""),
-                        TokenType::Star => (false, "fmul", ""),
-                        TokenType::Slash => (false, "fdiv", ""),
-                        TokenType::Less => (true, "", "olt"),
-                        TokenType::Greater => (true, "", "ogt"),
-                        TokenType::EqualEqual => (true, "", "oeq"),
-                        TokenType::BangEqual => (true, "", "one"),
-                        TokenType::LessEqual => (true, "", "ole"),
-                        TokenType::GreaterEqual => (true, "", "oge"),
-                        _ => (false, "fadd", "")
-                     };
+                    if let Some(mut func_name) = runtime_func {
+                         if !self.declared_functions.contains(func_name) {
+                            self.global_buffer.push_str(&format!("declare i64 @{}(i64, i64)\n", func_name));
+                            self.declared_functions.insert(func_name.to_string());
+                        }
+                        self.emit_line(&format!("{} = call i64 @{}(i64 {}, i64 {})", tmp, func_name, l, r));
+                        
+                        if matches!(op, TokenType::BangEqual) && is_any_op {
+                             if !self.declared_functions.contains("rt_not") {
+                                self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
+                                self.declared_functions.insert("rt_not".to_string());
+                            }
+                            let eq_tmp = tmp.clone();
+                            self.temp_counter += 1;
+                            let not_tmp = format!("%not{}", self.temp_counter);
+                            self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", not_tmp, eq_tmp));
+                            self.emit_line(&format!("store i64 {}, i64* {}", not_tmp, self.resolve_ptr(dst)));
+                        } else {
+                            self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
+                        }
+                    } else {
+                         // Fallback to inline floating point instructions
+                         self.temp_counter += 1;
+                         let l_dbl = format!("%l_dbl{}", self.temp_counter);
+                         self.emit_line(&format!("{} = bitcast i64 {} to double", l_dbl, l));
+                         
+                         self.temp_counter += 1;
+                         let r_dbl = format!("%r_dbl{}", self.temp_counter);
+                         self.emit_line(&format!("{} = bitcast i64 {} to double", r_dbl, r));
 
-                     if is_cmp {
-                         self.temp_counter += 1;
-                         let cmp_res = format!("%cmp_res{}", self.temp_counter);
-                         self.emit_line(&format!("{} = fcmp {} double {}, {}", cmp_res, pred, l_dbl, r_dbl));
-                         self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
-                     } else {
-                         self.temp_counter += 1;
-                         let res_dbl = format!("%res_dbl{}", self.temp_counter);
-                         self.emit_line(&format!("{} = {} double {}, {}", res_dbl, llvm_op, l_dbl, r_dbl));
-                         self.emit_line(&format!("{} = bitcast double {} to i64", tmp, res_dbl));
-                     }
+                         let (is_cmp, llvm_op, pred) = match op {
+                            TokenType::Plus => (false, "fadd", ""),
+                            TokenType::Minus => (false, "fsub", ""),
+                            TokenType::Star => (false, "fmul", ""),
+                            TokenType::Slash => (false, "fdiv", ""),
+                            TokenType::Less => (true, "", "olt"),
+                            TokenType::Greater => (true, "", "ogt"),
+                            TokenType::EqualEqual => (true, "", "oeq"),
+                            TokenType::BangEqual => (true, "", "one"),
+                            TokenType::LessEqual => (true, "", "ole"),
+                            TokenType::GreaterEqual => (true, "", "oge"),
+                            TokenType::Modulo => (false, "frem", ""),
+                            _ => (false, "fadd", "")
+                         };
+
+                         if is_cmp {
+                             self.temp_counter += 1;
+                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
+                             self.emit_line(&format!("{} = fcmp {} double {}, {}", cmp_res, pred, l_dbl, r_dbl));
+                             self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
+                         } else {
+                             self.temp_counter += 1;
+                             let res_dbl = format!("%res_dbl{}", self.temp_counter);
+                             self.emit_line(&format!("{} = {} double {}, {}", res_dbl, llvm_op, l_dbl, r_dbl));
+                             self.emit_line(&format!("{} = bitcast double {} to i64", tmp, res_dbl));
+                         }
+                         self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
+                    }
                 } else {
-                    // Integer / Default
+                    // Integer / DefaultFallback
                     let (is_cmp, llvm_op, pred) = match op {
                         TokenType::Plus => (false, "add", ""),
                         TokenType::Minus => (false, "sub", ""),
@@ -489,22 +455,18 @@ impl CodeGen {
                         TokenType::Greater => (true, "", "sgt"),
                         TokenType::EqualEqual => (true, "", "eq"),
                         TokenType::BangEqual => (true, "", "ne"),
-                        TokenType::LessEqual => (true, "", "sle"),
-                        TokenType::GreaterEqual => (true, "", "sge"),
                         _ => (false, "add", "")
                     };
-
                     if is_cmp {
                         self.temp_counter += 1;
-                        let cmp_tmp = format!("%cmp{}", self.temp_counter);
-                        self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_tmp, pred, l, r));
-                        self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_tmp));
+                        let cmp_res = format!("%cmp_res{}", self.temp_counter);
+                        self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_res, pred, l, r));
+                        self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
                     } else {
                         self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
                     }
+                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
                 }
-                
-                self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
             }
 
 
@@ -716,7 +678,7 @@ impl CodeGen {
                     self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, self.resolve_ptr(dst)));
                 }
             }
-            MIRInstruction::ObjectLiteral { dst, entries } => {
+            MIRInstruction::ObjectLiteral { dst, entries, .. } => {
                 self.temp_counter += 1;
                 let obj_tmp = format!("%obj{}", self.temp_counter);
                 if !self.declared_functions.contains("m_new") {
@@ -725,7 +687,7 @@ impl CodeGen {
                 }
                 self.emit_line(&format!("{} = call i64 @m_new()", obj_tmp));
                 for (k, v) in entries {
-                    let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", k), ty: TejxType::Primitive("string".to_string()) });
+                    let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", k), ty: TejxType::String });
                     let v_val = self.resolve_value(v);
                     if !self.declared_functions.contains("m_set") {
                         self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
@@ -735,27 +697,66 @@ impl CodeGen {
                 }
                 self.emit_line(&format!("store i64 {}, i64* {}", obj_tmp, self.resolve_ptr(dst)));
             }
-            MIRInstruction::ArrayLiteral { dst, elements } => {
+            MIRInstruction::ArrayLiteral { dst, elements, ty } => {
                 self.temp_counter += 1;
                 let arr_tmp = format!("%arr{}", self.temp_counter);
-                if !self.declared_functions.contains("a_new") {
-                    self.global_buffer.push_str("declare i64 @a_new()\n");
-                    self.declared_functions.insert("a_new".to_string());
+                
+                let mut size = elements.len() as i64;
+                let mut use_fixed = false;
+                if let Some(TejxType::FixedArray(_, sz)) = ty {
+                    size = *sz as i64;
+                    use_fixed = true;
                 }
-                self.emit_line(&format!("{} = call i64 @a_new()", arr_tmp));
+
+                if use_fixed {
+                    if !self.declared_functions.contains("a_new_fixed") {
+                        self.global_buffer.push_str("declare i64 @a_new_fixed(i64)\n");
+                        self.declared_functions.insert("a_new_fixed".to_string());
+                    }
+                    self.emit_line(&format!("{} = call i64 @a_new_fixed(i64 {})", arr_tmp, size));
+                } else {
+                    if !self.declared_functions.contains("a_new") {
+                        self.global_buffer.push_str("declare i64 @a_new()\n");
+                        self.declared_functions.insert("a_new".to_string());
+                    }
+                    self.emit_line(&format!("{} = call i64 @a_new()", arr_tmp));
+                }
+
+                // If fixed and elements provided are fewer than size, push them
+                // Actually, if fixed, we should probably check if index exists or just push.
+                // a_new_fixed already initializes with 0.
+                // For literals, we usually want to set the values.
+                // If it's fixed, should we use Array_set or Array_push?
+                // Our current runtime Array_push just appends.
+                // For FixedArray literal [1, 2, 3], we should probably just use push but a_new_fixed pre-allocates?
+                // Wait, if a_new_fixed pre-allocates 5 elements with 0, and we push 3, we get 8 elements.
+                // We should use set instead.
+                
+                let mut idx = 0;
                 for v in elements {
                     let v_val = self.resolve_value(v);
-                    if !self.declared_functions.contains("Array_push") {
-                        self.global_buffer.push_str("declare i64 @Array_push(i64, i64)\n");
-                        self.declared_functions.insert("Array_push".to_string());
+                    if use_fixed {
+                         // Use a_set or similar?
+                         if !self.declared_functions.contains("a_set") {
+                            self.global_buffer.push_str("declare i64 @a_set(i64, i64, i64)\n");
+                            self.declared_functions.insert("a_set".to_string());
+                        }
+                        let k_idx = self.resolve_value(&MIRValue::Constant { value: idx.to_string(), ty: TejxType::Int32 });
+                        self.emit_line(&format!("call i64 @a_set(i64 {}, i64 {}, i64 {})", arr_tmp, k_idx, v_val));
+                    } else {
+                        if !self.declared_functions.contains("Array_push") {
+                             self.global_buffer.push_str("declare i64 @Array_push(i64, i64)\n");
+                             self.declared_functions.insert("Array_push".to_string());
+                        }
+                        self.emit_line(&format!("call i64 @Array_push(i64 {}, i64 {})", arr_tmp, v_val));
                     }
-                    self.emit_line(&format!("call i64 @Array_push(i64 {}, i64 {})", arr_tmp, v_val));
+                    idx += 1;
                 }
                 self.emit_line(&format!("store i64 {}, i64* {}", arr_tmp, self.resolve_ptr(dst)));
             }
             MIRInstruction::LoadMember { dst, obj, member } => {
                 let obj_val = self.resolve_value(obj);
-                let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::Primitive("string".to_string()) });
+                let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::String });
                 self.temp_counter += 1;
                 let res_tmp = format!("%val{}", self.temp_counter);
                 if !self.declared_functions.contains("m_get") {
@@ -767,7 +768,7 @@ impl CodeGen {
             }
             MIRInstruction::StoreMember { obj, member, src } => {
                 let obj_val = self.resolve_value(obj);
-                let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::Primitive("string".to_string()) });
+                let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::String });
                 let v_val = self.resolve_value(src);
                 if !self.declared_functions.contains("m_set") {
                     self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");

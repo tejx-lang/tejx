@@ -83,7 +83,7 @@ let mixed = ["Version", 1, true];
 print("Mixed Data: Expected: [Version, 1, 1], Actual: ", mixed);
 
 // Option Types Test - Match Expression Returning Values
-function findUser(id: number): string {
+function findUser(id: int32): string {
     if (id == 1) {
         return "Alice";
     }

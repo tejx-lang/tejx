@@ -10,8 +10,8 @@ protocol Greeter {
 // 2. Classes
 // ----------
 class Entity {
-    id: number;
-    constructor(id: number) {
+    id: int32;
+    constructor(id: int32) {
         this.id = id;
     }
 }
@@ -19,7 +19,7 @@ class Entity {
 class Robot extends Entity {
     model: string;
 
-    constructor(id: number, model: string) {
+    constructor(id: int32, model: string) {
         super(id); 
         this.id = id;
         this.model = model;
@@ -53,10 +53,10 @@ r.greet("Human");   // Protocol method via Extension
 print("Status: Expected: Operational, Actual: ", r.status()); // Extension method
 
 class Point {
-    x: number;
-    y: number;
+    x: int32;
+    y: int32;
 
-    constructor(x: number, y: number) {
+    constructor(x: int32, y: int32) {
         this.x = x;
         this.y = y;
     }
@@ -137,7 +137,7 @@ extension ExtensibleUser {
         print("sayHello: Expected: Hello, Tej, Actual: Hello, ", this.name);
     }
     
-    greet(times: number) {
+    greet(times: int32) {
         let i = 0;
         while (i < times) {
             print("Greeting ", (i + 1), ": Expected: ", this.name, ", Actual: ", this.name);
@@ -154,21 +154,21 @@ print("Extensions test complete!");
 
 // OOP Polish Test
 class BankAccount {
-    private balance: number = 0;
+    private balance: int32 = 0;
     public owner: string;
     static bankName: string = "TejXBank";
 
-    constructor(owner: string, initialBalance: number) {
+    constructor(owner: string, initialBalance: int32) {
         this.owner = owner;
         this.balance = initialBalance;
     }
 
-    public deposit(amount: number): void {
+    public deposit(amount: int32): void {
         this.balance += amount;
         print("Deposited: ", amount);
     }
 
-    public getBalance(): number {
+    public getBalance(): int32 {
         return this.balance;
     }
     
@@ -187,9 +187,9 @@ print("Balance: Expected: 150, Actual: ", acc.getBalance());
 // Getter/Setter Test
 class Person {
     _name: string = "";
-    _age: number = 0;
+    _age: int32 = 0;
     
-    constructor(name: string, age: number) {
+    constructor(name: string, age: int32) {
         this._name = name;
         this._age = age;
     }
@@ -205,12 +205,12 @@ class Person {
     }
     
     // Getter for age
-    get age(): number {
+    get age(): int32 {
         return this._age;
     }
     
     // Setter for age
-    set age(value: number) {
+    set age(value: int32) {
         if (value >= 0) {
             this._age = value;
         }
@@ -300,7 +300,7 @@ abstract class Shape {
         this.name = "Unknown Shape";
     }
     
-    abstract area(): number;
+    abstract area(): int32;
     
     describe(): void {
         print("I am a ", this.name);
@@ -308,15 +308,15 @@ abstract class Shape {
 }
 
 class Circle extends Shape {
-    private radius: number;
+    private radius: int32;
     
-    constructor(r: number) {
+    constructor(r: int32) {
         super();
         this.name = "Circle"; 
         this.radius = r;
     }
     
-    area(): number {
+    area(): int32 {
         return 3.14 * this.radius * this.radius;
     }
     

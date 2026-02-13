@@ -5,7 +5,7 @@ function run(): void {
     print("--- Native Math Verification ---");
     
     // Trigonometry
-    let angle: number = 3.14159 / 2; // PI/2
+    let angle: int32 = 3.14159 / 2; // PI/2
     print("sin(PI/2): Expected: ~1.0, Actual: ", sin(angle));
     print("cos(0): Expected: 1.0, Actual: ", cos(0));
     
@@ -19,10 +19,10 @@ function run(): void {
     
     // Physics Simulation (Bouncing Ball)
     print("--- Physics Sim ---");
-    let y: number = 10;
-    let velocity: number = 0;
+    let y: int32 = 10;
+    let velocity: int32 = 0;
     
-    let i: number = 0;
+    let i: int32 = 0;
     while (i < 5) {
         velocity = velocity - 1; // Gravity
         y = y + velocity;

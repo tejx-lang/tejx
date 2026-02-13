@@ -62,10 +62,12 @@ pub enum MIRInstruction {
     ObjectLiteral {
         dst: String,
         entries: Vec<(String, MIRValue)>,
+        ty: Option<TejxType>,
     },
     ArrayLiteral {
         dst: String,
         elements: Vec<MIRValue>,
+        ty: Option<TejxType>,
     },
     LoadMember {
         dst: String,

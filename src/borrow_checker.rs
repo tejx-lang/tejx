@@ -145,7 +145,7 @@ impl BorrowChecker {
                     }
                     current_state.insert(dst.clone(), VarState::Live);
                 }
-                MIRInstruction::ObjectLiteral { dst, entries } => {
+                MIRInstruction::ObjectLiteral { dst, entries, .. } => {
                     for (_, v) in entries {
                         if let MIRValue::Variable { name, .. } = v {
                             if current_state.get(name) == Some(&VarState::Moved) {
@@ -155,7 +155,7 @@ impl BorrowChecker {
                     }
                     current_state.insert(dst.clone(), VarState::Live);
                 }
-                MIRInstruction::ArrayLiteral { dst, elements } => {
+                MIRInstruction::ArrayLiteral { dst, elements, .. } => {
                     for v in elements {
                         if let MIRValue::Variable { name, .. } = v {
                             if current_state.get(name) == Some(&VarState::Moved) {

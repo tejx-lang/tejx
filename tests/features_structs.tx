@@ -2,7 +2,7 @@ function run(): void {
     print("--- Structural Type Test ---");
     
     // Structural Type Declaration
-    let point: { x: number, y: number } = {
+    let point: { x: int32, y: int32 } = {
         x: 10,
         y: 20
     };

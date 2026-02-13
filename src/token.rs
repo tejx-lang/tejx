@@ -10,8 +10,10 @@ pub enum TokenType {
     Some, None, Option, // Option types
     Get, Set, TypeAlias, Interface, // Property accessors & Type defs
     // Primitives
-    TypeNumber, TypeString, TypeBoolean, TypeVoid, TypeAny,
-    TypeInt, TypeFloat, TypeBigInt, TypeBigFloat,
+    TypeString, TypeBoolean, TypeVoid, TypeAny,
+    TypeInt, TypeInt16, TypeInt64, TypeInt128,
+    TypeFloat, TypeFloat16, TypeFloat64,
+    TypeChar, TypeBigInt, TypeBigFloat,
     // Literals
     Identifier, Number, String, TemplateString, True, False,
     // Symbols
@@ -19,7 +21,7 @@ pub enum TokenType {
     Dot, Comma, Colon, DoubleColon, Semicolon, Ellipsis,
     OpenParen, CloseParen, OpenBrace, CloseBrace, OpenBracket, CloseBracket,
     // Logic & Comparison
-    EqualEqual, Bang, BangEqual, Less, LessEqual, Greater, GreaterEqual,
+    EqualEqual, EqualEqualEqual, Bang, BangEqual, BangEqualEqual, Less, LessEqual, Greater, GreaterEqual,
     AmpersandAmpersand, PipePipe,
     // Assignment & Unary Sugar
     PlusEquals, MinusEquals, StarEquals, SlashEquals,

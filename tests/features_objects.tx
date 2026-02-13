@@ -55,7 +55,7 @@ print("Dynamic Key 'key-1': Expected: Value 1, Actual: ", mapObj[key]);
 function runProfile(): void {
     print("--- Profile Test ---");
     
-    let profile: { username: string, active: boolean, id: number } = {
+    let profile: { username: string, active: boolean, id: int32 } = {
         username: "TejXUser",
         active: true,
         id: 101

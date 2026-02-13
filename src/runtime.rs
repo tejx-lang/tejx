@@ -133,6 +133,21 @@ pub extern "C" fn a_new() -> i64 {
     id
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn a_new_fixed(size: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    // Pre-allocate with given size, fill with 0 (default)
+    // In NovaJs, 0 is bitcast(0.0) usually for 'number', but here we use 0 i64.
+    let mut v = Vec::new();
+    for _ in 0..size {
+        v.push(0i64); 
+    }
+    heap.objects.insert(id, TaggedValue::Array(v));
+    id
+}
+
 
 #[unsafe(no_mangle)]
 pub extern "C" fn m_new() -> i64 {
@@ -477,6 +492,73 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_instanceof(obj: i64, class_name_id: i64) -> i64 {
+    // Get the target class name string
+    let target_class = {
+        let heap = HEAP.lock().unwrap();
+        match heap.objects.get(&class_name_id) {
+            Some(TaggedValue::String(s)) => s.clone(),
+            _ => {
+                // Try as C string pointer
+                if class_name_id > 0x100000000 && class_name_id < 0x7FFFFFFFFFFF {
+                    let ptr = class_name_id as *const i8;
+                    if !ptr.is_null() {
+                        CStr::from_ptr(ptr).to_string_lossy().to_string()
+                    } else {
+                        return 0;
+                    }
+                } else {
+                    return 0;
+                }
+            }
+        }
+    };
+
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(map)) = heap.objects.get(&obj) {
+        // Check __class__ field (Map keys are String)
+        if let Some(&class_val) = map.get("__class__") {
+            let cls = match heap.objects.get(&class_val) {
+                Some(TaggedValue::String(s)) => s.clone(),
+                _ => {
+                    if class_val > 0x100000000 && class_val < 0x7FFFFFFFFFFF {
+                        let ptr = class_val as *const i8;
+                        if !ptr.is_null() {
+                            CStr::from_ptr(ptr).to_string_lossy().to_string()
+                        } else { String::new() }
+                    } else { String::new() }
+                }
+            };
+            if cls == target_class {
+                return 1;
+            }
+        }
+
+        // Check __parents__ field for inheritance chain
+        if let Some(&parents_val) = map.get("__parents__") {
+            let parents = match heap.objects.get(&parents_val) {
+                Some(TaggedValue::String(s)) => s.clone(),
+                _ => {
+                    if parents_val > 0x100000000 && parents_val < 0x7FFFFFFFFFFF {
+                        let ptr = parents_val as *const i8;
+                        if !ptr.is_null() {
+                            CStr::from_ptr(ptr).to_string_lossy().to_string()
+                        } else { String::new() }
+                    } else { String::new() }
+                }
+            };
+            for parent in parents.split(',') {
+                if parent == target_class {
+                    return 1;
+                }
+            }
+        }
+    }
+
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rt_not(val: i64) -> i64 {
     if val == 0 { 1 } else { 0 }
 }
@@ -652,7 +734,23 @@ pub unsafe extern "C" fn delay(ms: i64) -> i64 {
 }
 #[unsafe(no_mangle)] pub extern "C" fn http_get(_url: i64) -> i64 { CString::new("<html></html>").unwrap().into_raw() as i64 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
+    if a == b { return 1; }
+    let heap = HEAP.lock().unwrap();
+    let obj_a = heap.objects.get(&a);
+    let obj_b = heap.objects.get(&b);
+    
+    match (obj_a, obj_b) {
+        (Some(TaggedValue::Number(n1)), Some(TaggedValue::Number(n2))) => if n1 == n2 { 1 } else { 0 },
+        (Some(TaggedValue::String(s1)), Some(TaggedValue::String(s2))) => if s1 == s2 { 1 } else { 0 },
+        (Some(TaggedValue::Boolean(b1)), Some(TaggedValue::Boolean(b2))) => if b1 == b2 { 1 } else { 0 },
+        _ => 0
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
+    if a == b { return 1; }
     let l_f = rt_to_number(a);
     let r_f = rt_to_number(b);
     if l_f == r_f { 1 } else { 0 }
@@ -701,14 +799,21 @@ pub unsafe extern "C" fn Array_concat(id_a: i64, id_b: i64) -> i64 {
     id
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_strict_ne(a: i64, b: i64) -> i64 {
+    if rt_strict_equal(a, b) == 1 { 0 } else { 1 }
+}
+
 #[unsafe(no_mangle)] 
 pub unsafe extern "C" fn Array_indexOf(id: i64, val: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.objects.get(&id) {
-         for (i, &v) in arr.iter().enumerate() {
-             if v == val { return i as i64; }
+         let elements = arr.clone();
+         drop(heap);
+         for (i, &v) in elements.iter().enumerate() {
+             if rt_strict_equal(v, val) == 1 { return i as i64; }
          }
-    }
+    } else { drop(heap); }
     -1
 }
 
@@ -744,6 +849,26 @@ pub unsafe extern "C" fn Array_forEach(id: i64, callback: i64) -> i64 {
     0
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_is_truthy(val: i64) -> bool {
+    if val == 0 { return false; } // null/undefined
+    let heap = HEAP.lock().unwrap();
+    if let Some(obj) = heap.objects.get(&val) {
+        match obj {
+            TaggedValue::Boolean(b) => *b,
+            TaggedValue::Number(n) => *n != 0.0 && !n.is_nan(),
+            TaggedValue::String(s) => !s.is_empty(),
+            TaggedValue::Array(a) => true,
+            TaggedValue::Map(m) => true,
+            _ => true
+        }
+    } else {
+        // Assume raw float
+        let f = f64::from_bits(val as u64);
+        f != 0.0 && !f.is_nan()
+    }
+}
+
 #[unsafe(no_mangle)] 
 pub unsafe extern "C" fn Array_map(id: i64, callback: i64) -> i64 {
     let mut new_arr = Vec::new();
@@ -769,7 +894,10 @@ pub unsafe extern "C" fn Array_filter(id: i64, callback: i64) -> i64 {
          let elements = arr.clone();
          drop(heap);
          let cb: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(callback);
-         for (i, &val) in elements.iter().enumerate() { if cb(val, i as i64, id) != 0 { new_arr.push(val); } }
+         for (i, &val) in elements.iter().enumerate() { 
+             let res = cb(val, i as i64, id);
+             if rt_is_truthy(res) { new_arr.push(val); } 
+         }
     } else { drop(heap); }
     let mut heap = HEAP.lock().unwrap();
     let new_id = heap.next_id;

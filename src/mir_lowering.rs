@@ -104,9 +104,9 @@ impl MIRLowering {
                      if is_target_any {
                          let src_ty = src.get_type();
                          let box_func = match src_ty {
-                             TejxType::Primitive(n) if n == "number" || n == "float" => Some("rt_box_number"),
-                             TejxType::Primitive(n) if n == "boolean" => Some("rt_box_boolean"),
-                             TejxType::Primitive(n) if n == "string" => Some("rt_box_string"),
+                             t if t.is_numeric() => Some("rt_box_number"),
+                             TejxType::Bool => Some("rt_box_boolean"),
+                             TejxType::String => Some("rt_box_string"),
                              _ => None
                          };
                          
@@ -260,7 +260,7 @@ impl MIRLowering {
                         
                         // Compare
                         // Compare: switch_val == case_val
-                        let cmp_res = self.new_temp(TejxType::Primitive("boolean".to_string()));
+                        let cmp_res = self.new_temp(TejxType::Bool);
                         self.emit(MIRInstruction::BinaryOp {
                             dst: cmp_res.clone(),
                             left: switch_val.clone(),
@@ -268,7 +268,7 @@ impl MIRLowering {
                             right: case_val,
                         });
                         self.emit(MIRInstruction::Branch {
-                            condition: MIRValue::Variable { name: cmp_res, ty: TejxType::Primitive("boolean".to_string()) },
+                            condition: MIRValue::Variable { name: cmp_res, ty: TejxType::Bool },
                             true_target: body_block,
                             false_target: next_c,
                         });
@@ -340,7 +340,7 @@ impl MIRLowering {
                          MIRValue::Constant { value: "0".to_string(), ty: TejxType::Any }
                      };
                      
-                     let temp = self.new_temp(TejxType::Class("Thread".to_string()));
+                     let temp = self.new_temp(TejxType::Int32);
                      self.emit(MIRInstruction::Call {
                          callee: "Thread_new".to_string(),
                          args: vec![callback, arg],
@@ -484,9 +484,9 @@ impl MIRLowering {
                                 let mut r_boxed = r;
                                 
                                 let l_box_func = match l_boxed.get_type() {
-                                    TejxType::Primitive(n) if n == "number" || n == "float" => Some("rt_box_number"),
-                                    TejxType::Primitive(n) if n == "boolean" => Some("rt_box_boolean"),
-                                    TejxType::Primitive(n) if n == "string" => Some("rt_box_string"),
+                                    t if t.is_numeric() => Some("rt_box_number"),
+                                    TejxType::Bool => Some("rt_box_boolean"),
+                                    TejxType::String => Some("rt_box_string"),
                                     _ => None
                                 };
                                 if let Some(f) = l_box_func {
@@ -496,9 +496,9 @@ impl MIRLowering {
                                 }
                                 
                                 let r_box_func = match r_boxed.get_type() {
-                                    TejxType::Primitive(n) if n == "number" || n == "float" => Some("rt_box_number"),
-                                    TejxType::Primitive(n) if n == "boolean" => Some("rt_box_boolean"),
-                                    TejxType::Primitive(n) if n == "string" => Some("rt_box_string"),
+                                    t if t.is_numeric() => Some("rt_box_number"),
+                                    TejxType::Bool => Some("rt_box_boolean"),
+                                    TejxType::String => Some("rt_box_string"),
                                     _ => None
                                 };
                                 if let Some(f) = r_box_func {
@@ -542,9 +542,9 @@ impl MIRLowering {
                          if is_target_any {
                              let src_ty = val.get_type();
                              let box_func = match src_ty {
-                                 TejxType::Primitive(n) if n == "number" || n == "float" => Some("rt_box_number"),
-                                 TejxType::Primitive(n) if n == "boolean" => Some("rt_box_boolean"),
-                                 TejxType::Primitive(n) if n == "string" => Some("rt_box_string"),
+                                 t if t.is_numeric() => Some("rt_box_number"),
+                                 TejxType::Bool => Some("rt_box_boolean"),
+                                 TejxType::String => Some("rt_box_string"),
                                  _ => None
                              };
                              
@@ -571,9 +571,9 @@ impl MIRLowering {
                         
                              let src_ty = val.get_type();
                              let box_func = match src_ty {
-                                 TejxType::Primitive(n) if n == "number" || n == "float" => Some("rt_box_number"),
-                                 TejxType::Primitive(n) if n == "boolean" => Some("rt_box_boolean"),
-                                 TejxType::Primitive(n) if n == "string" => Some("rt_box_string"),
+                                 t if t.is_numeric() => Some("rt_box_number"),
+                                 TejxType::Bool => Some("rt_box_boolean"),
+                                 TejxType::String => Some("rt_box_string"),
                                  _ => None
                              };
                              
@@ -599,9 +599,9 @@ impl MIRLowering {
                         // Index access -> Any -> Must box.
                              let src_ty = val.get_type();
                              let box_func = match src_ty {
-                                 TejxType::Primitive(n) if n == "number" || n == "float" => Some("rt_box_number"),
-                                 TejxType::Primitive(n) if n == "boolean" => Some("rt_box_boolean"),
-                                 TejxType::Primitive(n) if n == "string" => Some("rt_box_string"),
+                                 t if t.is_numeric() => Some("rt_box_number"),
+                                 TejxType::Bool => Some("rt_box_boolean"),
+                                 TejxType::String => Some("rt_box_string"),
                                  _ => None
                              };
                              
@@ -672,8 +672,7 @@ impl MIRLowering {
                  let val = self.lower_expression(target);
                  let op_str = MIRValue::Constant { 
                      value: format!("\"{}\"", operation), // Quote string
-                     ty: TejxType::Primitive("string".to_string()) 
-                 };
+                      ty: TejxType::String                 };
                  let temp = self.new_temp(ty.clone());
                  self.emit(MIRInstruction::Call {
                      dst: temp.clone(),
@@ -711,6 +710,7 @@ impl MIRLowering {
                 self.emit(MIRInstruction::ObjectLiteral {
                     dst: temp.clone(),
                     entries: mir_entries,
+                    ty: Some(ty.clone()),
                 });
                 MIRValue::Variable { name: temp, ty: ty.clone() }
             }
@@ -722,6 +722,7 @@ impl MIRLowering {
                 self.emit(MIRInstruction::ArrayLiteral {
                     dst: temp.clone(),
                     elements: mir_elements,
+                    ty: Some(ty.clone()),
                 });
                 MIRValue::Variable { name: temp, ty: ty.clone() }
             }
@@ -798,7 +799,7 @@ impl MIRLowering {
                                       self.emit(MIRInstruction::LoadIndex {
                                           dst: temp.clone(),
                                           obj: val.clone(),
-                                          index: MIRValue::Constant { value: i.to_string(), ty: TejxType::Primitive("number".to_string()) },
+                                           index: MIRValue::Constant { value: i.to_string(), ty: TejxType::Int32 },
                                       });
                                       self.emit(MIRInstruction::Move {
                                           dst: name.clone(),

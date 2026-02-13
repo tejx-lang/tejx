@@ -4,7 +4,7 @@
 print("--- Async Functions & Promises ---");
 
 // 1. Basic Async Function
-async function fetchData(id: number): Promise<string> {
+async function fetchData(id: int32): Promise<string> {
     return "Data for ID: " + id;
 }
 
@@ -40,7 +40,7 @@ async function runAsyncDemo(): Promise<void> {
 
 runAsyncDemo();
 
-async function compute(x: number): Promise<number> {
+async function compute(x: int32): Promise<int32> {
     return x * 2;
 }
 
@@ -70,8 +70,8 @@ print("=== Async Tests Complete ===");
 
 print("=== Promise Features Test ===");
 
-// Basic async function with Promise<number>
-async function computeDouble(x: number): Promise<number> {
+// Basic async function with Promise<int32>
+async function computeDouble(x: int32): Promise<int32> {
     return x * 2;
 }
 
@@ -81,7 +81,7 @@ async function fetchGreeting(name: string): Promise<string> {
 }
 
 // Async function with delayed computation
-async function slowAdd(a: number, b: number): Promise<number> {
+async function slowAdd(a: int32, b: int32): Promise<int32> {
     return a + b;
 }
 

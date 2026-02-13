@@ -2,7 +2,7 @@
 // ========================================================
 
 print("--- Array Creation & Access ---");
-let numbers: number[] = [10, 20, 30, 40, 50];
+let numbers: int32[] = [10, 20, 30, 40, 50];
 print("Original Array: Expected: [10, 20, 30, 40, 50], Actual: ", numbers); 
 print("First Element: Expected: 10, Actual: ", numbers[0]);
 print("Length: Expected: 5, Actual: ", numbers.length);
@@ -22,7 +22,7 @@ print("Combined Array Length: Expected: 8, Actual: ", moreNumbers.length);
 
 // Array Destructuring
 print("\n--- Array Destructuring ---");
-let point: number[] = [100, 200];
+let point: int32[] = [100, 200];
 let [x, y] = point;
 print("Destructured X: Expected: 100, Actual: ", x);
 print("Destructured Y: Expected: 200, Actual: ", y);
@@ -122,7 +122,7 @@ print("Copy: Expected: 1, 2, 3, Actual: ", copy.join(", "));
 print("Spread operator test complete!");
 
 // Rest Arguments Test
-function sum(...nums: number[]): number {
+function sum(...nums: int32[]): int32 {
     let total = 0;
     for (let i = 0; i < nums.length; i = i + 1) {
         total = total + nums[i];
@@ -151,7 +151,7 @@ for(let i=0; i<3; i++) {
 print("Diagonal Sum: Expected: 15 (1+5+9), Actual: ", diagSum);
 
 // Flattening
-let flat: number[] = [];
+let flat: int32[] = [];
 matrix.forEach(row => {
     row.forEach(val => flat.push(val));
 });

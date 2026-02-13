@@ -5,13 +5,13 @@ print("--- Variables ---");
 // Implicit type
 let x = 10; 
 // Explicit type
-let y: number = 20;
+let y: int32 = 20;
 // Constant
-const PI: number = 3.14159;
+const PI: int32 = 3.14159;
 // String
 let name: string = "NovaJs";
 // Boolean
-let isAwesome: boolean = true;
+let isAwesome: bool = true;
 // Any
 let dynamic: any = "I can handle anything";
 print("Any (String): Expected: I can handle anything, Actual: ", dynamic);
@@ -22,7 +22,7 @@ print("Any (Number): Expected: 100, Actual: ", dynamic);
 print("\n--- Functions ---");
 
 // Standard Function
-function add(a: number, b: number): number {
+function add(a: int32, b: int32): int32 {
     return a + b;
 }
 print("Add(10, 20): Expected: 30, Actual: ", add(10, 20));
@@ -31,18 +31,18 @@ print("Add(10, 20): Expected: 30, Actual: ", add(10, 20));
 print("\n--- Lambdas (Arrow Functions) ---");
 
 // Single expression body
-const multiply = (a: number, b: number) => a * b;
+const multiply = (a: int32, b: int32) => a * b;
 print("Multiply(5, 5): Expected: 25, Actual: ", multiply(5, 5));
 
 // Block body
-const complexCalc = (val: number) => {
+const complexCalc = (val: int32) => {
     let temp = val * 2;
     return temp + 1;
 };
 print("ComplexCalc(10): Expected: 21, Actual: ", complexCalc(10));
 
 // Passing lambda as argument
-function process(val: number, op: (n: number) => number): number {
+function process(val: int32, op: (n: int32) => number): int32 {
     return op(val);
 }
 
@@ -59,19 +59,19 @@ const MESSAGE = "Hello, TejX!";
 print("MESSAGE: Expected: Hello, TejX!, Actual: ", MESSAGE);
 
 // Const with typed array
-const numbers: number[] = [1, 2, 3];
+const numbers: int32[] = [1, 2, 3];
 print("Const array: Expected: 1, 2, 3, Actual: ", numbers.join(", "));
 
 // Note: const prevents reassignment, not mutation
 // numbers.push(4); // This would still work in JS, and here too
 
 print("Const test complete!");
-const lambdaAdd = (x: number, y: number) => {
+const lambdaAdd = (x: int32, y: int32) => {
     return x + y;
 };
 print("lambdaAdd(5,3): Expected: 8, Actual: ", lambdaAdd(5, 3));
 
-const square = (x: number) => x * x;
+const square = (x: int32) => x * x;
 print("square(4): Expected: 16, Actual: ", square(4));
 
 const lambdaGreet = () => {
@@ -84,7 +84,7 @@ function greetUser(name: string = "Guest") {
     print("greetUser(", name, "): Expected: Hello, ", name, ", Actual: Hello, ", name);
 }
 
-function power(base: number, exp: number = 2) {
+function power(base: int32, exp: int32 = 2) {
     print(base, "^", exp, ": Expected: ", Math.pow(base, exp), ", Actual: ", Math.pow(base, exp));
 }
 
@@ -102,7 +102,7 @@ let arrVal = [1, 2, 3];
 
 print("Testing typeof operator...");
 
-print("typeof 42: Expected: number/42, Actual: ", (typeof nVal));
+print("typeof 42: Expected: int32/42, Actual: ", (typeof nVal));
 print("typeof 'hello': Expected: string/hello, Actual: ", (typeof sVal));
 print("typeof true: Expected: boolean/true, Actual: ", (typeof bVal));
 print("typeof {x:1}: Expected: [Object], Actual: ", (typeof objVal));

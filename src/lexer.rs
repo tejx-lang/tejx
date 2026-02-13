@@ -28,13 +28,20 @@ impl Lexer {
         keywords.insert("case".to_string(), TokenType::Case);
         keywords.insert("default".to_string(), TokenType::Default);
         keywords.insert("extends".to_string(), TokenType::Extends);
-        keywords.insert("number".to_string(), TokenType::TypeNumber);
         keywords.insert("string".to_string(), TokenType::TypeString);
         keywords.insert("boolean".to_string(), TokenType::TypeBoolean);
+        keywords.insert("bool".to_string(), TokenType::TypeBoolean);
         keywords.insert("void".to_string(), TokenType::TypeVoid);
         keywords.insert("any".to_string(), TokenType::TypeAny);
         keywords.insert("int".to_string(), TokenType::TypeInt);
+        keywords.insert("int16".to_string(), TokenType::TypeInt16);
+        keywords.insert("int64".to_string(), TokenType::TypeInt64);
+        keywords.insert("int128".to_string(), TokenType::TypeInt128);
         keywords.insert("float".to_string(), TokenType::TypeFloat);
+        keywords.insert("float32".to_string(), TokenType::TypeFloat);
+        keywords.insert("float64".to_string(), TokenType::TypeFloat64);
+        keywords.insert("float16".to_string(), TokenType::TypeFloat16);
+        keywords.insert("char".to_string(), TokenType::TypeChar);
         keywords.insert("bigInt".to_string(), TokenType::TypeBigInt);
         keywords.insert("bigfloat".to_string(), TokenType::TypeBigFloat);
         keywords.insert("true".to_string(), TokenType::True);
@@ -245,57 +252,29 @@ impl Lexer {
                     _ => TokenType::Unknown,
                 };
                 
-                let value = if token_type == TokenType::Unknown {
-                    c.to_string()
-                } else {
-                    // Logic to extract value based on what we advanced? 
-                    // To keep it simple, we can reconstruct or just store the char c
-                    // But for multi-char operators we need the full string.
-                    // For now let's just use the current char as value, or better, 
-                    // we should probably just store the representation if needed.
-                    c.to_string() 
+                let value = match token_type {
+                    TokenType::PlusEquals => "+=".to_string(),
+                    TokenType::PlusPlus => "++".to_string(),
+                    TokenType::MinusEquals => "-=".to_string(),
+                    TokenType::MinusMinus => "--".to_string(),
+                    TokenType::StarEquals => "*=".to_string(),
+                    TokenType::SlashEquals => "/=".to_string(),
+                    TokenType::Arrow => "=>".to_string(),
+                    TokenType::EqualEqual => "==".to_string(),
+                    TokenType::BangEqual => "!=".to_string(),
+                    TokenType::LessEqual => "<=".to_string(),
+                    TokenType::GreaterEqual => ">=".to_string(),
+                    TokenType::Ellipsis => "...".to_string(),
+                    TokenType::QuestionDot => "?.".to_string(),
+                    TokenType::QuestionQuestion => "??".to_string(),
+                    TokenType::AmpersandAmpersand => "&&".to_string(),
+                    TokenType::PipePipe => "||".to_string(),
+                    TokenType::DoubleColon => "::".to_string(),
+                    _ => c.to_string(),
                 };
-                 
-                // Advance past the current char (we may have advanced more inside match)
-                self.advance();
-                
-                // TODO: Fix value for multi-char tokens
-                // In C++ it did: std::string val(1, c); ... val = "+=";
-                // I should replicate that logic to be correct.
-                
-                let actual_value = match token_type {
-                     TokenType::PlusEquals => "+=",
-                     TokenType::PlusPlus => "++",
-                     TokenType::MinusEquals => "-=",
-                     TokenType::MinusMinus => "--",
-                     TokenType::StarEquals => "*=",
-                     TokenType::SlashEquals => "/=",
-                     TokenType::Arrow => "=>",
-                     TokenType::EqualEqual => "==", // or ===
-                     TokenType::BangEqual => "!=", // or !==
-                     TokenType::LessEqual => "<=",
-                     TokenType::GreaterEqual => ">=",
-                     TokenType::Ellipsis => "...",
-                     TokenType::QuestionDot => "?.",
-                     TokenType::QuestionQuestion => "??",
-                     TokenType::AmpersandAmpersand => "&&",
-                     TokenType::PipePipe => "||",
-                     _ => {
-                         // Convert char to string
-                          // This is a bit hacky because `value` above intialized with `c`
-                          // and we advanced. ensuring we get the right string.
-                          // Let's just return the char as string for single chars.
-                          // It's already in `value`.
-                          // But wait, constructing `value` correctly is key.
-                          // I'll fix this in a cleanup pass or now.
-                          // Let's assume single char for now for others.
-                          ""
-                     }
-                };
-                
-                let final_value = if actual_value.is_empty() { value } else { actual_value.to_string() };
 
-                tokens.push(Token::new(token_type, final_value, self.line, start_col));
+                self.advance();
+                tokens.push(Token::new(token_type, value, self.line, start_col));
             }
         }
 
@@ -334,7 +313,20 @@ impl Lexer {
                 self.advance();
             } else if c == '/' {
                 if self.peek(1) == '/' {
-                     while self.peek(0) != '\n' && !self.is_at_end() {
+                    // Single-line comment
+                    while self.peek(0) != '\n' && !self.is_at_end() {
+                        self.advance();
+                    }
+                } else if self.peek(1) == '*' {
+                    // Block comment /* ... */
+                    self.advance(); // skip /
+                    self.advance(); // skip *
+                    while !self.is_at_end() {
+                        if self.peek(0) == '*' && self.peek(1) == '/' {
+                            self.advance(); // skip *
+                            self.advance(); // skip /
+                            break;
+                        }
                         self.advance();
                     }
                 } else {

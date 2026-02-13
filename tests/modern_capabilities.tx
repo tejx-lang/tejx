@@ -9,14 +9,14 @@ print("=== Modern Capabilities Test Suite ===");
 print("\n--- Advanced OOP: Deep Inheritance ---");
 
 class Node {
-    id: number;
-    constructor(id: number) { this.id = id; }
+    id: int32;
+    constructor(id: int32) { this.id = id; }
     describe(): string { return "Node(" + this.id + ")"; }
 }
 
 class Element extends Node {
     tagName: string;
-    constructor(id: number, tagName: string) {
+    constructor(id: int32, tagName: string) {
         super(id);
         this.tagName = tagName;
     }
@@ -25,7 +25,7 @@ class Element extends Node {
 
 class Button extends Element {
     label: string;
-    constructor(id: number, label: string) {
+    constructor(id: int32, label: string) {
         super(id, "button");
         this.label = label;
     }
@@ -92,7 +92,7 @@ class Stack {
         return this.items[this.items.length - 1];
     }
     
-    isEmpty(): boolean {
+    isEmpty(): bool {
         if (this.items.length == 0) {
             return true;
         }
@@ -117,7 +117,7 @@ print("IsEmpty after clearing: Expected: true, Actual: ", stack.isEmpty());
 // ----------------------------
 print("\n--- Algorithms: Binary Search ---");
 
-function binarySearch(arr: number[], target: number): number {
+function binarySearch(arr: int32[], target: int32): int32 {
     let left = 0;
     let right = arr.length - 1;
     

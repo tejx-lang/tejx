@@ -150,8 +150,10 @@ impl Parser {
             TokenType::Protected | TokenType::Static | TokenType::Abstract |
             TokenType::Implements | TokenType::Extends | TokenType::Protocol | TokenType::Extension |
             TokenType::TypeAny | TokenType::TypeVoid | TokenType::TypeInt | TokenType::TypeFloat |
+            TokenType::TypeInt16 | TokenType::TypeInt64 | TokenType::TypeInt128 |
+            TokenType::TypeFloat16 | TokenType::TypeFloat64 | TokenType::TypeChar |
             TokenType::TypeBigInt | TokenType::TypeBigFloat |
-            TokenType::TypeString | TokenType::TypeNumber | TokenType::TypeBoolean => true,
+            TokenType::TypeString | TokenType::TypeBoolean => true,
             _ => false
         }
     }
@@ -703,8 +705,8 @@ impl Parser {
                 };
             }
             // Fallback if it was just an identifier 'std' but not followed by ':'
-            let mut names = vec!["std".to_string()];
-            let mut is_default = true;
+            let names = vec!["std".to_string()];
+            let is_default = true;
             
             // Re-use logic for 'import name from "..."'
             if self.check(TokenType::Identifier) {
@@ -843,9 +845,10 @@ impl Parser {
                   }
              }
              self.consume(TokenType::CloseParen, "Expected ')'");
+             params_str.push(')');
              self.consume(TokenType::Arrow, "Expected '=>'");
              let ret_type = self.parse_type_annotation();
-             return format!("({}) => {}", params_str, ret_type);
+             return format!("{} => {}", params_str, ret_type);
         }
         
         // Object Type: { x: number, y: string }
@@ -894,12 +897,17 @@ impl Parser {
             if self.match_token(TokenType::TypeAny) { base_type = "any".to_string(); }
             else if self.match_token(TokenType::TypeVoid) { base_type = "void".to_string(); }
             else if self.match_token(TokenType::TypeInt) { base_type = "int".to_string(); }
+            else if self.match_token(TokenType::TypeInt16) { base_type = "int16".to_string(); }
+            else if self.match_token(TokenType::TypeInt64) { base_type = "int64".to_string(); }
+            else if self.match_token(TokenType::TypeInt128) { base_type = "int128".to_string(); }
             else if self.match_token(TokenType::TypeFloat) { base_type = "float".to_string(); }
+            else if self.match_token(TokenType::TypeFloat16) { base_type = "float16".to_string(); }
+            else if self.match_token(TokenType::TypeFloat64) { base_type = "float64".to_string(); }
+            else if self.match_token(TokenType::TypeChar) { base_type = "char".to_string(); }
             else if self.match_token(TokenType::TypeBigInt) { base_type = "bigInt".to_string(); }
             else if self.match_token(TokenType::TypeBigFloat) { base_type = "bigfloat".to_string(); }
             else if self.match_token(TokenType::TypeString) { base_type = "string".to_string(); }
-            else if self.match_token(TokenType::TypeBoolean) { base_type = "boolean".to_string(); }
-            else if self.match_token(TokenType::TypeNumber) { base_type = "number".to_string(); }
+            else if self.match_token(TokenType::TypeBoolean) { base_type = "bool".to_string(); }
             else {
                  let t = self.peek().clone();
                  self.errors.push(crate::diagnostics::Diagnostic::new(format!("Expected type"), t.line, t.column, self.filename.clone()));
@@ -908,10 +916,16 @@ impl Parser {
             }
         }
         
-        // Array syntax: type[]
+        // Array syntax: type[] or type[size]
         while self.match_token(TokenType::OpenBracket) {
-            self.consume(TokenType::CloseBracket, "Expected ']'");
-            base_type.push_str("[]");
+            if self.check(TokenType::Number) {
+                let size = self.consume(TokenType::Number, "Expected size").value.clone();
+                self.consume(TokenType::CloseBracket, "Expected ']'");
+                base_type.push_str(&format!("[{}]", size));
+            } else {
+                self.consume(TokenType::CloseBracket, "Expected ']'");
+                base_type.push_str("[]");
+            }
         }
         
         base_type
