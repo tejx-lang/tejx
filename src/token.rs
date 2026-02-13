@@ -3,17 +3,16 @@
 pub enum TokenType {
     // Keywords
     Function, Return, Let, Const, If, Else, While, For, Break, Continue,
-    Class, New, This, Super, Constructor, Extends, Abstract, Switch, Case, Default, Import, Export, From, Instanceof,
-    Public, Private, Protected, Static, Async, Await, // OOP Modifiers
-    Protocol, Implements, Extension, // Interfaces
-    Try, Catch, Finally, Throw, Match, Undefined, // Error handling & Types
+    Class, New, This, Super, Constructor, Extends, Implements, Extension, Abstract, Switch, Case, Default, Import, Export, From, Instanceof,
+    Public, Private, Protected, Static, Protocol, Async, Await, // OOP Modifiers
+    Try, Catch, Finally, Throw, // Error handling
     Some, None, Option, // Option types
-    Get, Set, TypeAlias, Interface, // Property accessors & Type defs
+    Get, Set, Interface, // Property accessors
     // Primitives
     TypeString, TypeBoolean, TypeVoid, TypeAny,
     TypeInt, TypeInt16, TypeInt64, TypeInt128,
     TypeFloat, TypeFloat16, TypeFloat64,
-    TypeChar, TypeBigInt, TypeBigFloat,
+    TypeChar,
     // Literals
     Identifier, Number, String, TemplateString, True, False,
     // Symbols
@@ -27,7 +26,7 @@ pub enum TokenType {
     PlusEquals, MinusEquals, StarEquals, SlashEquals,
     PlusPlus, MinusMinus,
     // Control
-    Question, QuestionDot, QuestionQuestion, Arrow, Typeof, Enum,
+    Question, QuestionDot, QuestionQuestion, Arrow, Enum,
     // Contextual keywords
     To, Of,
     // OOP

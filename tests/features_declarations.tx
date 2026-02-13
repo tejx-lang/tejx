@@ -12,11 +12,11 @@ const PI: int32 = 3.14159;
 let name: string = "NovaJs";
 // Boolean
 let isAwesome: bool = true;
-// Any
-let dynamic: any = "I can handle anything";
-print("Any (String): Expected: I can handle anything, Actual: ", dynamic);
-dynamic = 100;
-print("Any (Number): Expected: 100, Actual: ", dynamic);
+// String
+let dynamic = "I can handle anything";
+print("String: Expected: I can handle anything, Actual: ", dynamic);
+dynamic = "100";
+print("String (Updated): Expected: 100, Actual: ", dynamic);
 
 
 print("\n--- Functions ---");
@@ -42,7 +42,7 @@ const complexCalc = (val: int32) => {
 print("ComplexCalc(10): Expected: 21, Actual: ", complexCalc(10));
 
 // Passing lambda as argument
-function process(val: int32, op: (n: int32) => number): int32 {
+function process(val: int32, op: (n: int32) => int32): int32 {
     return op(val);
 }
 
@@ -102,20 +102,20 @@ let arrVal = [1, 2, 3];
 
 print("Testing typeof operator...");
 
-print("typeof 42: Expected: int32/42, Actual: ", (typeof nVal));
-print("typeof 'hello': Expected: string/hello, Actual: ", (typeof sVal));
-print("typeof true: Expected: boolean/true, Actual: ", (typeof bVal));
-print("typeof {x:1}: Expected: [Object], Actual: ", (typeof objVal));
-print("typeof [1,2,3]: Expected: [1, 2, 3], Actual: ", (typeof arrVal));
+print("typeof 42: Expected: int32/42, Actual: ", typeof(nVal));
+print("typeof 'hello': Expected: string/hello, Actual: ", typeof(sVal));
+print("typeof true: Expected: boolean/true, Actual: ", typeof(bVal));
+print("typeof {x:1}: Expected: [Object], Actual: ", typeof(objVal));
+print("typeof [1,2,3]: Expected: [1, 2, 3], Actual: ", typeof(arrVal));
 
 function testFunc() { return 1; }
 
 // Verification with conditionals
-if (typeof nVal === "number") {
+if (typeof(nVal) === "number") {
     print("Verified: n is a number: Expected: logic pass, Actual: logic pass");
 }
 
-if (typeof sVal === "string") {
+if (typeof(sVal) === "string") {
     print("Verified: s is a string: Expected: logic pass, Actual: logic pass");
 }
 

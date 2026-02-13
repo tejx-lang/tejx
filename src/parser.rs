@@ -74,11 +74,10 @@ impl Parser {
                      Some(self.parse_statement())
                 }
             }
-            TokenType::Protocol => Some(self.parse_protocol_declaration()),
             TokenType::Interface => Some(self.parse_interface_declaration()),
             TokenType::Extension => Some(self.parse_extension_declaration()),
             TokenType::Enum => Some(self.parse_enum_declaration()),
-            TokenType::TypeAlias => Some(self.parse_type_alias_declaration()),
+            TokenType::Protocol => Some(self.parse_protocol_declaration()),
             TokenType::Export => {
                 self.advance(); // consume export
                 let is_default = self.match_token(TokenType::Default);
@@ -143,16 +142,15 @@ impl Parser {
 
     fn is_keyword_identifier(&self) -> bool {
         match self.peek().token_type {
-            TokenType::Get | TokenType::Set | TokenType::TypeAlias | TokenType::Interface |
+            TokenType::Get | TokenType::Set | TokenType::Interface |
             TokenType::Enum | TokenType::Async | TokenType::Await | TokenType::Option | 
             TokenType::String | TokenType::Number | 
             TokenType::From | TokenType::To | TokenType::Of | TokenType::Public | TokenType::Private |
             TokenType::Protected | TokenType::Static | TokenType::Abstract |
-            TokenType::Implements | TokenType::Extends | TokenType::Protocol | TokenType::Extension |
+            TokenType::Extends |
             TokenType::TypeAny | TokenType::TypeVoid | TokenType::TypeInt | TokenType::TypeFloat |
             TokenType::TypeInt16 | TokenType::TypeInt64 | TokenType::TypeInt128 |
             TokenType::TypeFloat16 | TokenType::TypeFloat64 | TokenType::TypeChar |
-            TokenType::TypeBigInt | TokenType::TypeBigFloat |
             TokenType::TypeString | TokenType::TypeBoolean => true,
             _ => false
         }
@@ -199,8 +197,6 @@ impl Parser {
              return BindingNode::LiteralMatch(Box::new(Expression::BooleanLiteral { value: true, _line: 0, _col: 0 }));
         } else if self.match_token(TokenType::False) {
              return BindingNode::LiteralMatch(Box::new(Expression::BooleanLiteral { value: false, _line: 0, _col: 0 }));
-        } else if self.match_token(TokenType::Undefined) {
-             return BindingNode::LiteralMatch(Box::new(Expression::UndefinedExpr { _line: 0, _col: 0 }));
         } else if self.match_token(TokenType::Number) {
              let t = self.previous().clone();
              return BindingNode::LiteralMatch(Box::new(Expression::NumberLiteral { 
@@ -316,7 +312,7 @@ impl Parser {
             loop {
                 let is_rest = self.match_token(TokenType::Ellipsis);
                 let p_name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
-                let mut p_type = "any".to_string();
+                let mut p_type = "".to_string();
                 if self.match_token(TokenType::Colon) {
                     p_type = self.parse_type_annotation();
                 }
@@ -449,7 +445,7 @@ impl Parser {
                  let name = self.consume_identifier("Expected setter name").value.clone();
                  self.consume(TokenType::OpenParen, "Expected '('");
                  let param = self.consume(TokenType::Identifier, "Expected param").value.clone();
-                 let mut p_type = "any".to_string();
+                 let mut p_type = "".to_string();
                  if self.match_token(TokenType::Colon) { p_type = self.parse_type_annotation(); }
                  self.consume(TokenType::CloseParen, "Expected ')'");
                  let body = self.parse_block();
@@ -491,7 +487,7 @@ impl Parser {
                  });
              } else {
                  // Field
-                 let mut type_name = "any".to_string();
+                 let mut type_name = "".to_string();
                  if self.match_token(TokenType::Colon) { type_name = self.parse_type_annotation(); }
                  let mut initializer = None;
                  if self.match_token(TokenType::Equals) {
@@ -551,57 +547,59 @@ impl Parser {
     }
 
     fn parse_protocol_declaration(&mut self) -> Statement {
-         let start = self.consume(TokenType::Protocol, "Expected 'protocol'").clone();
-         let name = self.consume_identifier("Expected protocol name").value.clone();
-         self.consume(TokenType::OpenBrace, "Expected '{'");
-         
-         let mut methods = Vec::new();
-         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-             let method_name = self.consume_identifier("Expected method name").value.clone();
-             self.consume(TokenType::OpenParen, "Expected '('");
-             let mut params = Vec::new();
-             if !self.check(TokenType::CloseParen) {
-                  loop {
-                      let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
-                      self.consume(TokenType::Colon, "Expected ':'");
-                      let p_type = self.parse_type_annotation();
-                      params.push(Parameter { name: p_name, type_name: p_type, _default_value: None, _is_rest: false });
-                      if !self.match_token(TokenType::Comma) { break; }
-                  }
-             }
-             self.consume(TokenType::CloseParen, "Expected ')'");
-             self.consume(TokenType::Colon, "Expected ':'");
-             let ret_type = self.parse_type_annotation();
-             self.consume(TokenType::Semicolon, "Expected ';'");
-             
-             methods.push(ProtocolMethod {
-                 _name: method_name,
-                 _params: params,
-                 _return_type: ret_type
-             });
-         }
-         self.consume(TokenType::CloseBrace, "Expected '}'");
-         Statement::ProtocolDeclaration(ProtocolDeclaration {
-             _name: name,
-             _methods: methods,
-             _line: start.line,
-             _col: start.column
-         })
+        let start = self.consume(TokenType::Protocol, "Expected 'protocol'").clone();
+        let name = self.consume_identifier("Expected protocol name").value.clone();
+        self.consume(TokenType::OpenBrace, "Expected '{'");
+        
+        let mut methods = Vec::new();
+        while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+            let member_name = self.consume_identifier("Expected member name").value.clone();
+            
+            self.consume(TokenType::OpenParen, "Expected '('");
+            let mut params = Vec::new();
+            if !self.check(TokenType::CloseParen) {
+                    loop {
+                        let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
+                        self.consume(TokenType::Colon, "Expected ':'");
+                        let p_type = self.parse_type_annotation();
+                        params.push(Parameter { name: p_name, type_name: p_type, _default_value: None, _is_rest: false });
+                        if !self.match_token(TokenType::Comma) { break; }
+                    }
+            }
+            self.consume(TokenType::CloseParen, "Expected ')'");
+            self.consume(TokenType::Colon, "Expected ':'");
+            let ret_type = self.parse_type_annotation();
+            self.consume(TokenType::Semicolon, "Expected ';'");
+            methods.push(ProtocolMethod { _name: member_name, _params: params, _return_type: ret_type });
+        }
+        self.consume(TokenType::CloseBrace, "Expected '}'");
+        
+        Statement::ProtocolDeclaration(ProtocolDeclaration {
+            _name: name,
+            _methods: methods,
+            _line: start.line,
+            _col: start.column
+        })
     }
 
     fn parse_extension_declaration(&mut self) -> Statement {
          let start = self.consume(TokenType::Extension, "Expected 'extension'").clone();
-         let target = self.consume_identifier("Expected target type").value.clone();
+         let target_type = self.consume_identifier("Expected type name").value.clone();
          self.consume(TokenType::OpenBrace, "Expected '{'");
          
          let mut methods = Vec::new();
          while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+             // Methods in extension are like methods in class but without modifiers usually?
+             // features_oop.tx uses standard method syntax: greet(name: string): void { ... }
+             // or status(): string { ... }
+             // They look like function declarations but without 'function' keyword.
+             
              let name = self.consume_identifier("Expected method name").value.clone();
              self.consume(TokenType::OpenParen, "Expected '('");
              let mut params = Vec::new();
              if !self.check(TokenType::CloseParen) {
                  loop {
-                     let p_name = self.consume_identifier("Expected param name").value.clone();
+                     let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
                      let mut p_type = "any".to_string();
                      if self.match_token(TokenType::Colon) {
                          p_type = self.parse_type_annotation();
@@ -625,13 +623,14 @@ impl Parser {
                  return_type,
                  body: Box::new(body),
                  _is_async: false,
-                 _line: 0, _col: 0 // Use current token line/col if tracked
+                 _line: 0,
+                 _col: 0
              });
          }
          self.consume(TokenType::CloseBrace, "Expected '}'");
          
          Statement::ExtensionDeclaration(ExtensionDeclaration {
-             _target_type: target,
+             _target_type: target_type,
              _methods: methods,
              _line: start.line,
              _col: start.column
@@ -639,7 +638,7 @@ impl Parser {
     }
 
     fn parse_enum_declaration(&mut self) -> Statement {
-        let start = self.consume(TokenType::Enum, "Expected 'enum'").clone();
+         let start = self.consume(TokenType::Enum, "Expected 'enum'").clone();
         let name = self.consume_identifier("Expected enum name").value.clone();
         self.consume(TokenType::OpenBrace, "Expected '{'");
         
@@ -663,29 +662,6 @@ impl Parser {
         })
     }
 
-    fn parse_type_alias_declaration(&mut self) -> Statement {
-        let start = self.consume(TokenType::TypeAlias, "Expected 'type'").clone();
-        let name = self.consume(TokenType::Identifier, "Expected type alias name").value.clone();
-        
-        // Handle generics <T> if present (ignoring for now)
-        if self.match_token(TokenType::Less) {
-             while !self.check(TokenType::Greater) && !self.is_at_end() {
-                 self.advance();
-             }
-             self.consume(TokenType::Greater, "Expected '>'");
-        }
-        
-        self.consume(TokenType::Equals, "Expected '='");
-        let type_def = self.parse_type_annotation();
-        self.consume(TokenType::Semicolon, "Expected ';'");
-        
-        Statement::TypeAliasDeclaration {
-            name,
-            _type_def: type_def,
-            _line: start.line,
-            _col: start.column
-        }
-    }
 
     fn parse_import_statement(&mut self) -> Statement {
         let start = self.consume(TokenType::Import, "Expected 'import'").clone();
@@ -904,8 +880,6 @@ impl Parser {
             else if self.match_token(TokenType::TypeFloat16) { base_type = "float16".to_string(); }
             else if self.match_token(TokenType::TypeFloat64) { base_type = "float64".to_string(); }
             else if self.match_token(TokenType::TypeChar) { base_type = "char".to_string(); }
-            else if self.match_token(TokenType::TypeBigInt) { base_type = "bigInt".to_string(); }
-            else if self.match_token(TokenType::TypeBigFloat) { base_type = "bigfloat".to_string(); }
             else if self.match_token(TokenType::TypeString) { base_type = "string".to_string(); }
             else if self.match_token(TokenType::TypeBoolean) { base_type = "bool".to_string(); }
             else {
@@ -1446,8 +1420,7 @@ impl Parser {
             };
         }
         if self.match_token(TokenType::Bang) || self.match_token(TokenType::Minus) ||
-           self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) ||
-           self.match_token(TokenType::Typeof) {
+           self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_unary();
              return Expression::UnaryExpr {
@@ -1585,9 +1558,6 @@ impl Parser {
         if self.match_token(TokenType::False) {
             return Expression::BooleanLiteral { value: false, _line: 0, _col: 0 };
         }
-        if self.match_token(TokenType::Undefined) {
-             return Expression::UndefinedExpr { _line: 0, _col: 0 };
-        }
         if self.match_token(TokenType::None) {
              return Expression::NoneExpr { _line: 0, _col: 0 };
         }
@@ -1613,9 +1583,6 @@ impl Parser {
              return self.parse_new_expression();
         }
         
-        if self.match_token(TokenType::Match) {
-             return self.parse_match_expression();
-        }
 
         // Literal null/none check?
         

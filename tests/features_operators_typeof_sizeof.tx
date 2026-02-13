@@ -1,0 +1,38 @@
+function main() {
+    // 1. typeof Primitives
+    let a: int = 10;
+    let b: string = "hello";
+    let c: bool = true;
+    let d: float = 3.14;
+
+    console.log("typeof int: " + typeof(a));
+    console.log("typeof string: " + typeof(b));
+    console.log("typeof boolean: " + typeof(c));
+    console.log("typeof float: " + typeof(d));
+
+    // 2. typeof Boxed (any)
+    let x: any = 42;
+    console.log("typeof any(number): " + typeof(x));
+    
+    x = "world";
+    console.log("typeof any(string): " + typeof(x));
+
+    x = false;
+    console.log("typeof any(boolean): " + typeof(x));
+
+    let obj: any = {};
+    console.log("typeof any(object): " + typeof(obj));
+
+    // 3. sizeof Primitives (Compile-time)
+    console.log("sizeof int: " + sizeof(a));     // 4
+    // Let's use variables
+    let a64: int64 = 100;
+    console.log("sizeof int64: " + sizeof(a64)); // 8
+
+    // 4. sizeof Arrays
+    let arr: int[10];
+    console.log("sizeof int[10]: " + sizeof(arr)); // 40
+
+    let arr2: int64[5];
+    console.log("sizeof int64[5]: " + sizeof(arr2)); // 40
+}

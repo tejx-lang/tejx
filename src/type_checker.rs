@@ -109,7 +109,7 @@ impl TypeChecker {
     }
 
     fn is_valid_type(&self, type_name: &str) -> bool {
-        if type_name == "any" || type_name == "void" || type_name == "" {
+        if type_name == "void" || type_name == "any" {
             return true;
         }
 
@@ -154,14 +154,14 @@ impl TypeChecker {
             "int", "int16", "int32", "int64", "int128",
             "float", "float16", "float32", "float64",
             "bool", "string", "char", "bigInt", "bigfloat",
-            "number", "object" // object is common in JS/Novajs
+            "object" 
         ];
         if primitives.contains(&type_name) {
             return true;
         }
 
         // Built-ins
-        let builtins = ["Array", "Map", "Set", "Promise", "Console", "Error", "Date", "JSON", "Math", "process", "console", "Option", "Result", "Some", "None"];
+        let builtins = ["Array", "Map", "Set", "Promise", "Console", "Error", "Date", "Math", "process", "console", "Option", "Result", "Some", "None"];
         if builtins.contains(&type_name) {
             return true;
         }
@@ -188,15 +188,22 @@ impl TypeChecker {
 
                     let compatible = (is_numeric(type_annotation) && is_numeric(&init_type)) ||
                                      (type_annotation == "bool" && init_type == "bool") ||
-                                     (is_array(type_annotation) && init_type == "any[]");
+                                     (is_array(type_annotation) && (init_type == "[]" || init_type == "any[]")) ||
+                                     (type_annotation == "any[]" && is_array(&init_type)) ||
+                                     (type_annotation == "any");
                     
                     if type_annotation != "any" && init_type != "any" && init_type != *type_annotation && !compatible {
                          self.report_error(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col);
-                         // Don't return error, continue checking
                     }
+
+                    if type_annotation == "any" {
+                        let _ = self.define_pattern(pattern, "any".to_string());
+                    } else {
+                        let _ = self.define_pattern(pattern, type_annotation.clone());
+                    }
+                } else {
+                    let _ = self.define_pattern(pattern, type_annotation.clone());
                 }
-                
-                let _ = self.define_pattern(pattern, type_annotation.clone());
                 Ok(())
             },
             Statement::ExpressionStmt { _expression: expression, .. } => {
@@ -363,6 +370,9 @@ impl TypeChecker {
                          self.define("sqrt".to_string(), "function".to_string());
                          self.define("sin".to_string(), "function".to_string());
                          self.define("cos".to_string(), "function".to_string());
+                     } else if source == "std:json" {
+                         self.define("parse".to_string(), "function".to_string());
+                         self.define("stringify".to_string(), "function".to_string());
                      } else if source == "std:fs" {
                          self.define("read_to_string".to_string(), "function".to_string());
                          self.define("write".to_string(), "function".to_string());
@@ -400,6 +410,25 @@ impl TypeChecker {
                 }
             }
             Expression::BooleanLiteral { .. } => Ok("bool".to_string()),
+            Expression::UnaryExpr { op, right, _line, _col } => {
+                let right_type = self.check_expression(right)?;
+                match op {
+                    TokenType::Bang => Ok("bool".to_string()),
+                    TokenType::Minus => {
+                        let is_numeric = |t: &str| -> bool {
+                            matches!(t, "int" | "int16" | "int32" | "int64" | "int128" | "float" | "float16" | "float32" | "float64")
+                        };
+                        if is_numeric(&right_type) || right_type == "any" {
+                            Ok(right_type)
+                        } else {
+                            self.report_error(format!("Unary '-' cannot be applied to type '{}'", right_type), *_line, *_col);
+                            Ok("any".to_string())
+                        }
+                    },
+                    TokenType::PlusPlus | TokenType::MinusMinus => Ok(right_type),
+                    _ => Ok("any".to_string()),
+                }
+            },
             Expression::ThisExpr { _line, _col } => {
                 if let Some(c) = &self.current_class {
                     Ok(c.clone())
@@ -453,8 +482,14 @@ impl TypeChecker {
                     let is_numeric = |t: &str| -> bool {
                          matches!(t, "int" | "int16" | "int32" | "int64" | "int128" | "float" | "float16" | "float32" | "float64")
                     };
+                    let is_array = |t: &str| -> bool {
+                        t.ends_with("[]") || t.contains("[") || t.starts_with("Array<")
+                    };
                     if is_numeric(&target_type) && is_numeric(&value_type) {
                         // Allow numeric assignments for now (implicit cast)
+                    } else if (is_array(&target_type) && (value_type == "[]" || value_type == "any[]")) ||
+                              (target_type == "any[]" && is_array(&value_type)) {
+                        // Allow array compatibility
                     } else {
                         self.report_error(format!("Type mismatch in assignment: expected '{}', got '{}'", target_type, value_type), *_line, *_col);
                     }
@@ -462,6 +497,15 @@ impl TypeChecker {
                 Ok(value_type)
             },
             Expression::CallExpr { callee, args, _line, _col } => {
+                if callee == "typeof" {
+                    for arg in args { self.check_expression(arg)?; }
+                    return Ok("string".to_string());
+                }
+                if callee == "sizeof" {
+                    for arg in args { self.check_expression(arg)?; }
+                    return Ok("int32".to_string());
+                }
+
                 if !self.lookup(callee).is_some() && callee != "print" && callee != "delay" {
                     if !callee.contains('.') {
                         self.report_error(format!("Undefined function '{}'", callee), *_line, *_col);
@@ -479,7 +523,7 @@ impl TypeChecker {
                     let first_type = self.check_expression(&elements[0])?;
                     Ok(format!("{}[]", first_type))
                 } else {
-                    Ok("any[]".to_string())
+                    Ok("[]".to_string())
                 }
             },
             Expression::AwaitExpr { expr, .. } => {

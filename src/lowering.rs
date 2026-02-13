@@ -103,7 +103,6 @@ impl Lowering {
             "Math_round", "Math_sqrt", "Math_sin", 
             "Math_cos", "Math_random", "Math_min", 
             "Math_max", "parseInt", "parseFloat", 
-            "JSON_stringify", "JSON_parse",
             "console_error", "console_warn", 
             "d_getTime", "d_toISOString",
             "m_set", "m_get", "m_has", 
@@ -408,11 +407,7 @@ impl Lowering {
         
         self._exit_scope();
         
-        let name = if func.name == "main" {
-            func.name.clone()
-        } else {
-            format!("f_{}", func.name)
-        };
+        let name = format!("f_{}", func.name);
         functions.push(HIRStatement::Function {
             name, params, _return_type: return_type, body: Box::new(body),
         });
@@ -1002,6 +997,86 @@ impl Lowering {
                     ty,
                 }
             }
+            Expression::NoneExpr { .. } | Expression::UndefinedExpr { .. } => {
+                 HIRExpression::Literal {
+                    value: "0".to_string(),
+                    ty: TejxType::Int32, // Or Any? Using Int32 for 0 is safer for now.
+                 }
+            }
+            Expression::NullishCoalescingExpr { _left, _right, .. } => {
+                // Desugar to: let temp = left; if temp != 0 { temp } else { right }
+                // Since we don't have block expressions easily here without generating a function or specialized HIR,
+                // we'll implement it as a conditional (Ternary) if possible, or BinaryOp if we treat it as ||
+                // For now, treat as || (PipePipe) as we lack separate None value from 0
+                let left_hir = self.lower_expression(_left);
+                let right_hir = self.lower_expression(_right);
+                
+                HIRExpression::BinaryExpr {
+                    op: TokenType::PipePipe,
+                    left: Box::new(left_hir),
+                    right: Box::new(right_hir),
+                    ty: TejxType::Any
+                }
+            }
+            Expression::OptionalMemberAccessExpr { object, member, .. } => {
+                 let obj_hir = self.lower_expression(object);
+                 
+                 HIRExpression::If {
+                     condition: Box::new(HIRExpression::BinaryExpr {
+                         op: TokenType::BangEqual,
+                         left: Box::new(obj_hir.clone()), 
+                         right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                         ty: TejxType::Bool
+                     }),
+                     then_branch: Box::new(HIRExpression::MemberAccess {
+                         target: Box::new(obj_hir),
+                         member: member.clone(),
+                         ty: TejxType::Any
+                     }),
+                     else_branch: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                     ty: TejxType::Any
+                 }
+            }
+            Expression::OptionalCallExpr { callee, args, .. } => {
+                 let callee_hir = self.lower_expression(callee);
+                 let args_hir: Vec<HIRExpression> = args.iter().map(|a| self.lower_expression(a)).collect();
+                 
+                  HIRExpression::If {
+                     condition: Box::new(HIRExpression::BinaryExpr {
+                         op: TokenType::BangEqual,
+                         left: Box::new(callee_hir.clone()), 
+                         right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                         ty: TejxType::Bool
+                     }),
+                     then_branch: Box::new(HIRExpression::IndirectCall {
+                         callee: Box::new(callee_hir),
+                         args: args_hir,
+                         ty: TejxType::Any
+                     }),
+                     else_branch: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                     ty: TejxType::Any
+                 }
+            }
+             Expression::OptionalArrayAccessExpr { target, index, .. } => {
+                 let target_hir = self.lower_expression(target);
+                 let index_hir = self.lower_expression(index);
+                 
+                 HIRExpression::If {
+                     condition: Box::new(HIRExpression::BinaryExpr {
+                         op: TokenType::BangEqual,
+                         left: Box::new(target_hir.clone()), 
+                         right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                         ty: TejxType::Bool
+                     }),
+                     then_branch: Box::new(HIRExpression::IndexAccess {
+                         target: Box::new(target_hir),
+                         index: Box::new(index_hir),
+                         ty: TejxType::Any
+                     }),
+                     else_branch: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                     ty: TejxType::Any
+                 }
+            }
             Expression::BinaryExpr { left, op, right, .. } => {
                 // Desugar instanceof to runtime call
                 if matches!(op, TokenType::Instanceof) {
@@ -1142,7 +1217,7 @@ impl Lowering {
                              ty: TejxType::Int32
                          }
                      }
-                     TokenType::Bang => {
+                      TokenType::Bang => {
                          HIRExpression::BinaryExpr {
                              left: Box::new(self.lower_expression(right)),
                              op: TokenType::BangEqual, // Hack: Use != 0 or similar? 
@@ -1182,14 +1257,47 @@ impl Lowering {
                 let mut final_args = hir_args.clone();
                 let mut ty = TejxType::Any;
 
+                if callee == "typeof" {
+                    let r_expr = hir_args[0].clone();
+                    let r_ty = r_expr.get_type();
+                    if matches!(r_ty, TejxType::Any) {
+                        return HIRExpression::Call {
+                            callee: "rt_typeof".to_string(),
+                            args: vec![r_expr],
+                            ty: TejxType::String,
+                        };
+                    } else {
+                        let type_name = match &r_ty {
+                            TejxType::Int32 | TejxType::Int16 | TejxType::Int64 | TejxType::Int128 => "number",
+                            TejxType::Float32 | TejxType::Float16 | TejxType::Float64 => "number",
+                            TejxType::Bool => "bool",
+                            TejxType::String => "string",
+                            TejxType::Char => "char",
+                            TejxType::Class(c) => c,
+                            _ => "object",
+                        };
+                        return HIRExpression::Literal {
+                            value: format!("\"{}\"", type_name),
+                            ty: TejxType::String,
+                        };
+                    }
+                } else if callee == "sizeof" {
+                    let r_expr = hir_args[0].clone();
+                    let r_ty = r_expr.get_type();
+                    return HIRExpression::Literal {
+                        value: r_ty.size().to_string(),
+                        ty: TejxType::Int32,
+                    };
+                }
+
                 if callee == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {
                         final_callee = format!("f_{}_constructor", parent);
                         final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
                         final_args.extend(hir_args.clone());
                     }
-                } else if self.user_functions.borrow().contains_key(callee) && callee != "main" {
-                    final_callee = format!("f_{}", callee);
+                } else if self.user_functions.borrow().contains_key(callee) {
+                    final_callee = if callee == "main" { "f_main".to_string() } else { format!("f_{}", callee) };
                 } else if self.stdlib.is_prelude_func(&normalized) || normalized == "log" || normalized == "console_log" {
                     final_callee = if normalized == "log" || normalized == "console_log" { "print".to_string() } else { normalized.clone() };
                 } else {
@@ -1198,21 +1306,49 @@ impl Lowering {
                     let mut found_std = false;
                     for (mod_name, mode) in imports.iter() {
                         let is_imported = match mode {
-                            ImportMode::All => self.stdlib.is_std_func(mod_name, callee),
-                            ImportMode::Named(set) => set.contains(callee),
+                            ImportMode::All => {
+                                if callee.contains('.') {
+                                    let parts: Vec<&str> = callee.split('.').collect();
+                                    if parts[0] == mod_name {
+                                        self.stdlib.is_std_func(mod_name, parts[1])
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    self.stdlib.is_std_func(mod_name, callee)
+                                }
+                            }
+                            ImportMode::Named(set) => {
+                                if callee.contains('.') {
+                                    let parts: Vec<&str> = callee.split('.').collect();
+                                    if parts[0] == mod_name {
+                                        set.contains(parts[1])
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    set.contains(callee)
+                                }
+                            }
                         };
+                        
                         if is_imported {
-                            final_callee = self.stdlib.get_runtime_name(mod_name, callee);
+                            found_std = true;
+                            let func_name = if callee.contains('.') {
+                                callee.split('.').collect::<Vec<&str>>()[1]
+                            } else {
+                                callee
+                            };
+                            final_callee = self.stdlib.get_runtime_name(mod_name, func_name);
                             if mod_name == "math" {
                                 ty = TejxType::Float32;
                             }
-                            found_std = true;
                             break;
                         }
                     }
 
                     if !found_std && callee.contains('.') && 
-                       !callee.starts_with("Math.") && !callee.starts_with("JSON.") && 
+                       !callee.starts_with("Math.") && 
                        !callee.starts_with("fs.") && !callee.starts_with("Date.") && 
                        !callee.starts_with("http.") &&
                        !callee.starts_with("Promise.") && !callee.starts_with("Array.") {

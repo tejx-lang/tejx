@@ -1,5 +1,6 @@
 import std:math;
 import std:time;
+import std:json;
 
 function run(): void {
     print("--- Native Math Verification ---");
@@ -80,11 +81,11 @@ let obj = {
     w: { nested: true }
 };
 
-let json = JSON.stringify(obj);
-print("JSON.stringify: Expected: JSON string, Actual: ", json);
+let json_str = json.stringify(obj);
+print("JSON.stringify: Expected: JSON string, Actual: ", json_str);
 
 // Test parsing
-let parsed = JSON.parse(json);
+let parsed = json.parse(json_str);
 print("Parsed x: Expected: 10, Actual: ", parsed["x"]);
 print("Parsed y: Expected: hello, Actual: ", parsed["y"]);
 print("Parsed z length: Expected: 3, Actual: ", parsed["z"].length);

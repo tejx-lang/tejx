@@ -61,7 +61,6 @@ let evens = numbers.filter(n => n % 2 == 0);
 let squares = evens.map(n => n * n);
 
 let sumSquares = 0;
-let sumSquares = 0;
 for (let i = 0; i < squares.length; i = i + 1) {
     sumSquares = sumSquares + squares[i];
 }
@@ -75,20 +74,20 @@ print("Even Squares Sum: Expected: 220, Actual: ", sumSquares);
 print("\n--- Data Structures: Generic-like Stack ---");
 
 class Stack {
-    items: any[] = [];
+    items: object[] = [];
     
-    push(item: any): void {
+    push(item: object): void {
         let list = this.items;
         list.push(item);
     }
     
-    pop(): any {
+    pop(): object {
         let list = this.items;
         return list.pop();
     }
     
-    peek(): any {
-        if (this.items.length == 0) return null;
+    peek(): object {
+        if (this.items.length == 0) return None;
         return this.items[this.items.length - 1];
     }
     

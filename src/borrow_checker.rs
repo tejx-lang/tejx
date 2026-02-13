@@ -25,7 +25,6 @@ impl BorrowChecker {
     }
 
     fn error(&mut self, msg: String) {
-        eprintln!("{}", msg);
         self.errors.push(msg);
     }
 

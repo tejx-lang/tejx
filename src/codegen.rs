@@ -29,9 +29,6 @@ impl CodeGen {
         }
     }
 
-
-
-
     fn emit(&mut self, code: &str) {
         self.buffer.push_str(code);
     }
@@ -41,14 +38,6 @@ impl CodeGen {
         self.buffer.push_str(code);
         self.buffer.push('\n');
     }
-
-
-
-
-
-
-
-
 
     fn resolve_value(&mut self, val: &MIRValue) -> String {
         match val {
@@ -133,18 +122,6 @@ impl CodeGen {
                     // It's a function argument (value, not pointer)
                     format!("%{}", name)
                 } else {
-                    // Unknown variable or temporary?
-                    // If it's a temporary like %t0, %call1 etc, they are values, not pointers?
-                    // Wait, temporaries are usually in value_map? NO.
-                    // MIRLowering new_temp returns name like "t0".
-                    // CodeGen doesn't put "t0" in value_map?
-                    // In gen_instruction_v2, dst is put in value_map only if it is Move/Binary/Call dest?
-                    // Actually, gen_function_v2 iterates instructions to create allocas for dsts.
-                    // So temporaries ARE allocas in current CodeGen strategy!
-                    // except if it missed something.
-                    // But __arg0 is NOT a temporary that is written to (it's read from).
-                    // So it is NOT in value_map.
-                    
                     if name.starts_with("%") {
                          name.clone()
                     } else {
@@ -158,10 +135,10 @@ impl CodeGen {
                          if self.declared_functions.contains(&target) {
                              // Known function: Cast function pointer to i64
                              {
-                              let count = self.function_param_counts.get(&target).cloned().unwrap_or(1);
-                              let args_sig = vec!["i64"; count].join(", ");
-                              format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, target)
-                          }
+                               let count = self.function_param_counts.get(&target).cloned().unwrap_or(1);
+                               let args_sig = vec!["i64"; count].join(", ");
+                               format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, target)
+                           }
                          } else {
                              // Unknown global (e.g. Class name used as value) -> 0
                              "0".to_string()
@@ -189,9 +166,11 @@ impl CodeGen {
         self.declared_functions.clear();
         
         // Register defined functions and their param counts
+        let mut has_tejx_main = false;
         for f in functions {
             self.declared_functions.insert(f.name.clone());
             self.function_param_counts.insert(f.name.clone(), f.params.len());
+            if f.name == "tejx_main" { has_tejx_main = true; }
         }
 
         // Collect and declare global variables
@@ -222,9 +201,6 @@ impl CodeGen {
             self.global_buffer.push_str(&format!("@{} = global i64 0\n", g));
         }
 
-        // Declarations are now handled on-demand during instruction generation
-        // to support LTO-style linking (only declared if used).
-        
         self.global_buffer.push_str("@.fmt_d = private unnamed_addr constant [5 x i8] c\"%lld\\00\"\n");
         self.global_buffer.push_str("@.fmt_f = private unnamed_addr constant [3 x i8] c\"%f\\00\"\n");
         self.global_buffer.push_str("@.fmt_s = private unnamed_addr constant [3 x i8] c\"%s\\00\"\n");
@@ -233,6 +209,17 @@ impl CodeGen {
 
         for func in functions {
             self.gen_function_v2(func);
+        }
+
+        // Generate main wrapper if tejx_main exists
+        if has_tejx_main {
+            self.buffer.push_str("\n");
+            self.buffer.push_str("declare i32 @tejx_runtime_main(i32, i8**)\n");
+            self.buffer.push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
+            self.buffer.push_str("entry:\n");
+            self.buffer.push_str("  %call = call i32 @tejx_runtime_main(i32 %argc, i8** %argv)\n");
+            self.buffer.push_str("  ret i32 %call\n");
+            self.buffer.push_str("}\n");
         }
 
         format!("{}{}", self.global_buffer, self.buffer)
@@ -311,7 +298,7 @@ impl CodeGen {
         self.emit("}\n\n");
     }
 
-    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, func: &MIRFunction) {
+    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, _func: &MIRFunction) {
         match inst {
             MIRInstruction::Move { dst, src } => {
                 let val = self.resolve_value(src);
@@ -335,7 +322,6 @@ impl CodeGen {
 
                 // Check types
                 let is_string_op = matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String);
-                
                 let is_any_op = matches!(l_ty, TejxType::Any) || matches!(r_ty, TejxType::Any);
                 let is_float_op = l_ty.is_float() || r_ty.is_float();
 
@@ -365,84 +351,49 @@ impl CodeGen {
                         }
                          let eq_tmp = format!("%eq{}", self.temp_counter);
                          self.emit_line(&format!("{} = call i64 @rt_str_equals(i64 {}, i64 {})", eq_tmp, l, r));
+                         self.temp_counter += 1;
                          self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_tmp));
                     } else {
                          self.emit_line(&format!("{} = add i64 {}, {}", tmp, l, r));
                     }
                     self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
                 } else if is_numeric_op {
-                    let runtime_func = if is_any_op {
-                        match op {
-                            TokenType::Plus => Some("rt_add"),
-                            TokenType::Minus => Some("rt_sub"),
-                            TokenType::Star => Some("rt_mul"),
-                            TokenType::Slash => Some("rt_div"),
-                            TokenType::EqualEqual => Some("rt_eq"),
-                            TokenType::BangEqual => Some("rt_eq"),
-                            _ => None
-                        }
-                    } else {
-                        None
+                    // All numeric types (int, float, even boxed any) in NovaJs are bitcasted doubles
+                    self.temp_counter += 1;
+                    let l_dbl = format!("%l_dbl{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", l_dbl, l));
+                    
+                    self.temp_counter += 1;
+                    let r_dbl = format!("%r_dbl{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", r_dbl, r));
+
+                    let (is_cmp, llvm_op, pred) = match op {
+                        TokenType::Plus => (false, "fadd", ""),
+                        TokenType::Minus => (false, "fsub", ""),
+                        TokenType::Star => (false, "fmul", ""),
+                        TokenType::Slash => (false, "fdiv", ""),
+                        TokenType::Less => (true, "", "olt"),
+                        TokenType::Greater => (true, "", "ogt"),
+                        TokenType::EqualEqual => (true, "", "oeq"),
+                        TokenType::BangEqual => (true, "", "one"),
+                        TokenType::LessEqual => (true, "", "ole"),
+                        TokenType::GreaterEqual => (true, "", "oge"),
+                        TokenType::Modulo => (false, "frem", ""),
+                        _ => (false, "fadd", "")
                     };
 
-                    if let Some(mut func_name) = runtime_func {
-                         if !self.declared_functions.contains(func_name) {
-                            self.global_buffer.push_str(&format!("declare i64 @{}(i64, i64)\n", func_name));
-                            self.declared_functions.insert(func_name.to_string());
-                        }
-                        self.emit_line(&format!("{} = call i64 @{}(i64 {}, i64 {})", tmp, func_name, l, r));
-                        
-                        if matches!(op, TokenType::BangEqual) && is_any_op {
-                             if !self.declared_functions.contains("rt_not") {
-                                self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
-                                self.declared_functions.insert("rt_not".to_string());
-                            }
-                            let eq_tmp = tmp.clone();
-                            self.temp_counter += 1;
-                            let not_tmp = format!("%not{}", self.temp_counter);
-                            self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", not_tmp, eq_tmp));
-                            self.emit_line(&format!("store i64 {}, i64* {}", not_tmp, self.resolve_ptr(dst)));
-                        } else {
-                            self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
-                        }
+                    if is_cmp {
+                        self.temp_counter += 1;
+                        let cmp_res = format!("%cmp_res{}", self.temp_counter);
+                        self.emit_line(&format!("{} = fcmp {} double {}, {}", cmp_res, pred, l_dbl, r_dbl));
+                        self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
                     } else {
-                         // Fallback to inline floating point instructions
-                         self.temp_counter += 1;
-                         let l_dbl = format!("%l_dbl{}", self.temp_counter);
-                         self.emit_line(&format!("{} = bitcast i64 {} to double", l_dbl, l));
-                         
-                         self.temp_counter += 1;
-                         let r_dbl = format!("%r_dbl{}", self.temp_counter);
-                         self.emit_line(&format!("{} = bitcast i64 {} to double", r_dbl, r));
-
-                         let (is_cmp, llvm_op, pred) = match op {
-                            TokenType::Plus => (false, "fadd", ""),
-                            TokenType::Minus => (false, "fsub", ""),
-                            TokenType::Star => (false, "fmul", ""),
-                            TokenType::Slash => (false, "fdiv", ""),
-                            TokenType::Less => (true, "", "olt"),
-                            TokenType::Greater => (true, "", "ogt"),
-                            TokenType::EqualEqual => (true, "", "oeq"),
-                            TokenType::BangEqual => (true, "", "one"),
-                            TokenType::LessEqual => (true, "", "ole"),
-                            TokenType::GreaterEqual => (true, "", "oge"),
-                            TokenType::Modulo => (false, "frem", ""),
-                            _ => (false, "fadd", "")
-                         };
-
-                         if is_cmp {
-                             self.temp_counter += 1;
-                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
-                             self.emit_line(&format!("{} = fcmp {} double {}, {}", cmp_res, pred, l_dbl, r_dbl));
-                             self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
-                         } else {
-                             self.temp_counter += 1;
-                             let res_dbl = format!("%res_dbl{}", self.temp_counter);
-                             self.emit_line(&format!("{} = {} double {}, {}", res_dbl, llvm_op, l_dbl, r_dbl));
-                             self.emit_line(&format!("{} = bitcast double {} to i64", tmp, res_dbl));
-                         }
-                         self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
+                        self.temp_counter += 1;
+                        let res_dbl = format!("%res_dbl{}", self.temp_counter);
+                        self.emit_line(&format!("{} = {} double {}, {}", res_dbl, llvm_op, l_dbl, r_dbl));
+                        self.emit_line(&format!("{} = bitcast double {} to i64", tmp, res_dbl));
                     }
+                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, self.resolve_ptr(dst)));
                 } else {
                     // Integer / DefaultFallback
                     let (is_cmp, llvm_op, pred) = match op {
@@ -469,10 +420,9 @@ impl CodeGen {
                 }
             }
 
-
             MIRInstruction::Jump { target } => {
-                if *target < func.blocks.len() {
-                    self.emit_line(&format!("br label %{}", func.blocks[*target].name));
+                if *target < _func.blocks.len() {
+                    self.emit_line(&format!("br label %{}", _func.blocks[*target].name));
                 }
             }
             MIRInstruction::Branch { condition, true_target, false_target } => {
@@ -499,13 +449,13 @@ impl CodeGen {
                 let cmp = format!("%cmp{}", self.temp_counter);
                 self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, cond));
 
-                let true_name = if *true_target < func.blocks.len() {
-                    func.blocks[*true_target].name.clone()
+                let true_name = if *true_target < _func.blocks.len() {
+                    _func.blocks[*true_target].name.clone()
                 } else {
                     "unknown".to_string()
                 };
-                let false_name = if *false_target < func.blocks.len() {
-                    func.blocks[*false_target].name.clone()
+                let false_name = if *false_target < _func.blocks.len() {
+                    _func.blocks[*false_target].name.clone()
                 } else {
                     "unknown".to_string()
                 };
@@ -570,8 +520,8 @@ impl CodeGen {
                     }
                     self.emit_line("call void @eprint_newline()");
 
-                    if let Some(ptr) = self.value_map.get(dst) {
-                         self.emit_line(&format!("store i64 0, i64* {}", ptr));
+                    if !dst.is_empty() {
+                         self.emit_line(&format!("store i64 0, i64* {}", self.resolve_ptr(dst)));
                     }
                 } else {
                     let mut arg_vals = Vec::new();
@@ -722,21 +672,10 @@ impl CodeGen {
                     self.emit_line(&format!("{} = call i64 @a_new()", arr_tmp));
                 }
 
-                // If fixed and elements provided are fewer than size, push them
-                // Actually, if fixed, we should probably check if index exists or just push.
-                // a_new_fixed already initializes with 0.
-                // For literals, we usually want to set the values.
-                // If it's fixed, should we use Array_set or Array_push?
-                // Our current runtime Array_push just appends.
-                // For FixedArray literal [1, 2, 3], we should probably just use push but a_new_fixed pre-allocates?
-                // Wait, if a_new_fixed pre-allocates 5 elements with 0, and we push 3, we get 8 elements.
-                // We should use set instead.
-                
                 let mut idx = 0;
                 for v in elements {
                     let v_val = self.resolve_value(v);
                     if use_fixed {
-                         // Use a_set or similar?
                          if !self.declared_functions.contains("a_set") {
                             self.global_buffer.push_str("declare i64 @a_set(i64, i64, i64)\n");
                             self.declared_functions.insert("a_set".to_string());

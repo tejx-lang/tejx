@@ -4,6 +4,7 @@ pub mod math;
 pub mod fs;
 pub mod os;
 pub mod time;
+pub mod json;
 pub mod prelude;
 
 pub struct StdLib {
@@ -19,6 +20,7 @@ impl StdLib {
         modules.insert("fs".to_string(), fs::exports());
         modules.insert("os".to_string(), os::exports());
         modules.insert("time".to_string(), time::exports());
+        modules.insert("json".to_string(), HashSet::from(["stringify".to_string(), "parse".to_string()]));
         
         Self {
             modules,

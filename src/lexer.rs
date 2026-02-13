@@ -28,8 +28,9 @@ impl Lexer {
         keywords.insert("case".to_string(), TokenType::Case);
         keywords.insert("default".to_string(), TokenType::Default);
         keywords.insert("extends".to_string(), TokenType::Extends);
+        keywords.insert("extension".to_string(), TokenType::Extension);
+        keywords.insert("implements".to_string(), TokenType::Implements);
         keywords.insert("string".to_string(), TokenType::TypeString);
-        keywords.insert("boolean".to_string(), TokenType::TypeBoolean);
         keywords.insert("bool".to_string(), TokenType::TypeBoolean);
         keywords.insert("void".to_string(), TokenType::TypeVoid);
         keywords.insert("any".to_string(), TokenType::TypeAny);
@@ -42,8 +43,6 @@ impl Lexer {
         keywords.insert("float64".to_string(), TokenType::TypeFloat64);
         keywords.insert("float16".to_string(), TokenType::TypeFloat16);
         keywords.insert("char".to_string(), TokenType::TypeChar);
-        keywords.insert("bigInt".to_string(), TokenType::TypeBigInt);
-        keywords.insert("bigfloat".to_string(), TokenType::TypeBigFloat);
         keywords.insert("true".to_string(), TokenType::True);
         keywords.insert("false".to_string(), TokenType::False);
         keywords.insert("class".to_string(), TokenType::Class);
@@ -55,9 +54,6 @@ impl Lexer {
         keywords.insert("private".to_string(), TokenType::Private);
         keywords.insert("protected".to_string(), TokenType::Protected);
         keywords.insert("abstract".to_string(), TokenType::Abstract);
-        keywords.insert("protocol".to_string(), TokenType::Protocol);
-        keywords.insert("implements".to_string(), TokenType::Implements);
-        keywords.insert("extension".to_string(), TokenType::Extension);
         keywords.insert("static".to_string(), TokenType::Static);
         keywords.insert("async".to_string(), TokenType::Async);
         keywords.insert("await".to_string(), TokenType::Await);
@@ -65,11 +61,8 @@ impl Lexer {
         keywords.insert("catch".to_string(), TokenType::Catch);
         keywords.insert("finally".to_string(), TokenType::Finally);
         keywords.insert("throw".to_string(), TokenType::Throw);
-        keywords.insert("typeof".to_string(), TokenType::Typeof);
-        keywords.insert("match".to_string(), TokenType::Match);
+        keywords.insert("protocol".to_string(), TokenType::Protocol);
         keywords.insert("enum".to_string(), TokenType::Enum);
-        keywords.insert("undefined".to_string(), TokenType::Undefined);
-        keywords.insert("null".to_string(), TokenType::Undefined);
         keywords.insert("Some".to_string(), TokenType::Some);
         keywords.insert("None".to_string(), TokenType::None);
         keywords.insert("Option".to_string(), TokenType::Option);
@@ -79,7 +72,6 @@ impl Lexer {
         keywords.insert("instanceof".to_string(), TokenType::Instanceof);
         keywords.insert("get".to_string(), TokenType::Get);
         keywords.insert("set".to_string(), TokenType::Set);
-        keywords.insert("type".to_string(), TokenType::TypeAlias);
         keywords.insert("interface".to_string(), TokenType::Interface);
         keywords.insert("to".to_string(), TokenType::To);
         keywords.insert("of".to_string(), TokenType::Of);

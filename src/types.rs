@@ -53,6 +53,20 @@ impl TejxType {
         }
     }
 
+    pub fn size(&self) -> usize {
+        match self {
+            TejxType::Int16 | TejxType::Float16 => 2,
+            TejxType::Int32 | TejxType::Float32 => 4,
+            TejxType::Int64 | TejxType::Float64 => 8,
+            TejxType::Int128 => 16,
+            TejxType::Bool => 1,
+            TejxType::Char => 4,
+            TejxType::String | TejxType::Class(_) | TejxType::Any => 8, // Pointers/Boxed
+            TejxType::FixedArray(inner, count) => inner.size() * count,
+            TejxType::Void => 0,
+        }
+    }
+
     pub fn from_name(name: &str) -> TejxType {
         if name.ends_with("]") {
              // Handle type[size]
@@ -77,10 +91,6 @@ impl TejxType {
             "float16" => TejxType::Float16,
             "string" => TejxType::String,
             "boolean" | "bool" => TejxType::Bool,
-            "bigInt" => TejxType::Int64,
-            "bigfloat" => TejxType::Float64,
-            "char" => TejxType::Char,
-            "void" => TejxType::Void,
             "any" | "" => TejxType::Any,
             other => TejxType::Class(other.to_string()),
         }

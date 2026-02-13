@@ -62,20 +62,18 @@ for FILE in "$TESTS_DIR"/*.tx; do
             
             # Run the binary
             echo -e "  Running $FILENAME..."
-            OUTPUT=$("$BUILD_DIR/tests/$FILENAME" 2>&1)
-            RUN_EXIT=$?
+            # Create a temporary file for output to avoid buffering issues and still capture it
+            OUT_FILE=$(mktemp)
+            "$BUILD_DIR/tests/$FILENAME" 2>&1 | tee "$OUT_FILE"
+            RUN_EXIT=${PIPESTATUS[0]}
+            OUTPUT=$(cat "$OUT_FILE")
+            rm "$OUT_FILE"
             
             if [ $RUN_EXIT -eq 0 ]; then
                 echo -e "  ${GREEN}✅ PASS${NC} (exit: $RUN_EXIT)"
-                if [ -n "$OUTPUT" ]; then
-                    echo "  Output: $OUTPUT"
-                fi
                 PASSED=$((PASSED + 1))
             else
                 echo -e "  ${RED}❌ RUNTIME ERROR${NC} (exit: $RUN_EXIT)"
-                if [ -n "$OUTPUT" ]; then
-                    echo "  Output: $OUTPUT"
-                fi
                 FAILED=$((FAILED + 1))
                 ERRORS+=("$FILENAME (runtime error, exit: $RUN_EXIT)")
             fi
