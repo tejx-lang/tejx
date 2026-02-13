@@ -59,18 +59,28 @@ impl CodeGen {
 
                 let is_number = match ty {
                     TejxType::Primitive(name) => name == "number" || name == "int" || name == "float",
+                    TejxType::Any => {
+                         // Check if value parses as number
+                         value.parse::<f64>().is_ok()
+                    },
                     _ => false,
                 };
+                let is_bool = match ty {
+                    TejxType::Primitive(name) => name == "boolean",
+                     _ => false,
+                };
+
+                if is_bool {
+                     if value == "true" || value == "1" { return "1".to_string(); }
+                     return "0".to_string();
+                }
 
                 if is_number {
-                    if value.contains('.') {
-                        // Float → truncate to int
-                        if let Ok(d) = value.parse::<f64>() {
-                            return format!("{}", d as i64);
-                        }
-                        return "0".to_string();
+                    // Always convert to f64 bits to ensure runtime consistency (fadd/fsub expect bits)
+                    if let Ok(d) = value.parse::<f64>() {
+                        return format!("{}", d.to_bits());
                     }
-                    return value.clone();
+                    return "0".to_string();
                 }
 
                 // String literal → global constant
@@ -95,7 +105,7 @@ impl CodeGen {
                 format!("ptrtoint ([{} x i8]* {} to i64)", len, str_lbl)
             }
             MIRValue::Variable { name, .. } => {
-                if let Some(ptr) = self.value_map.get(name) {
+                if let Some(ptr) = self.value_map.get(name).cloned() {
                     // It's a pointer (alloca), load it
                     self.temp_counter += 1;
                     let tmp = format!("%t{}", self.temp_counter);
@@ -120,9 +130,20 @@ impl CodeGen {
                     if name.starts_with("%") {
                          name.clone()
                     } else {
-                         // Unknown or global symbol (Status, Dog, etc.)
-                         // Return "0" to keep LLVM happy; these are stubs for now.
-                         "0".to_string()
+                         // Check if it's a known function (global or user defined)
+                         let mut target = name.clone();
+                         let f_name = format!("f_{}", name);
+                         if self.declared_functions.contains(&f_name) {
+                             target = f_name;
+                         }
+                         
+                         if self.declared_functions.contains(&target) {
+                             // Known function: Cast function pointer to i64
+                             format!("ptrtoint (i64 (...)* @{} to i64)", target)
+                         } else {
+                             // Unknown global (e.g. Class name used as value) -> 0
+                             "0".to_string()
+                         }
                     }
                 }
             }
@@ -142,54 +163,14 @@ impl CodeGen {
             self.declared_functions.insert(f.name.clone());
         }
 
-        // Standard declarations
-        self.global_buffer.push_str("declare i32 @printf(i8*, ...)\n");
-        self.declared_functions.insert("printf".to_string());
+        // Declarations are now handled on-demand during instruction generation
+        // to support LTO-style linking (only declared if used).
         
-
-
         self.global_buffer.push_str("@.fmt_d = private unnamed_addr constant [5 x i8] c\"%lld\\00\"\n");
+        self.global_buffer.push_str("@.fmt_f = private unnamed_addr constant [3 x i8] c\"%f\\00\"\n");
         self.global_buffer.push_str("@.fmt_s = private unnamed_addr constant [3 x i8] c\"%s\\00\"\n");
         self.global_buffer.push_str("@.fmt_nl = private unnamed_addr constant [2 x i8] c\"\\0A\\00\"\n");
         self.global_buffer.push_str("@.fmt_sp = private unnamed_addr constant [2 x i8] c\" \\00\"\n");
-
-        let runtime_funcs = vec![
-            ("Math_pow", "i64, i64"), ("fs_exists", "i64"), ("Array_push", "i64, i64"), 
-            ("Array_pop", "i64"), ("arrUtil_concat", "i64, i64"), ("Thread_join", "i64"), 
-            ("__await", "i64"), ("__optional_chain", "i64, i64"), 
-            ("add", "i64, i64"), ("multiply", "i64, i64"), 
-            ("Calculator_add", "i64, i64"), ("Calculator_getValue", "i64"),
-            ("calc_add", "i64, i64"), ("calc_getValue", "i64"), 
-            ("hello", "i64"), ("__callee___area", ""),
-            ("arrUtil_indexOf", "i64, i64"), ("arrUtil_shift", "i64"), 
-            ("arrUtil_unshift", "i64, i64"), ("Array_forEach", "i64, i64"), 
-            ("Array_map", "i64, i64"), ("Array_filter", "i64, i64"),
-            ("Date_now", ""), ("fs_mkdir", "i64"), ("fs_readFile", "i64"), 
-            ("fs_writeFile", "i64, i64"), ("fs_remove", "i64"), ("Promise_all", "i64"), 
-            ("delay", "i64"), ("http_get", "i64"),
-            ("Math_abs", "i64"), ("Math_ceil", "i64"), ("Math_floor", "i64"), 
-            ("Math_round", "i64"), ("Math_sqrt", "i64"), ("Math_sin", "i64"), 
-            ("Math_cos", "i64"), ("Math_random", ""), ("Math_min", "i64, i64"), 
-            ("Math_max", "i64, i64"), ("parseInt", "i64"), ("parseFloat", "i64"), 
-            ("JSON_stringify", "i64"), ("JSON_parse", "i64"),
-            ("console_error", "i64"), ("console_warn", "i64"), 
-            ("d_getTime", "i64"), ("d_toISOString", "i64"),
-            ("m_new", ""), ("a_new", ""),
-            ("m_set", "i64, i64, i64"), ("m_get", "i64, i64"), ("m_has", "i64, i64"), 
-            ("m_del", "i64, i64"), ("m_size", "i64"),
-            ("s_add", "i64, i64"), ("s_has", "i64, i64"), ("s_size", "i64"),
-            ("strVal_trim", "i64"), ("trimmed_startsWith", "i64, i64"), 
-            ("trimmed_endsWith", "i64, i64"), ("trimmed_replace", "i64, i64, i64"), 
-            ("trimmed_toLowerCase", "i64"), ("trimmed_toUpperCase", "i64"),
-            ("m_lock", "i64"), ("m_unlock", "i64")
-        ];
-
-        for (name, args) in runtime_funcs {
-            if !self.declared_functions.contains(name) {
-                self.global_buffer.push_str(&format!("declare i64 @{}({})\n", name, args));
-                self.declared_functions.insert(name.to_string());
-            }
-        }
 
         for func in functions {
             self.gen_function_v2(func);
@@ -218,11 +199,14 @@ impl CodeGen {
         self.emit("entry:\n");
         
         // Allocas for parameters first
-        for p in &func.params {
+        for (i, p) in func.params.iter().enumerate() {
             if !self.value_map.contains_key(p) {
                 let reg_name = format!("%{}_ptr", p);
                 self.emit_line(&format!("{} = alloca i64", reg_name));
-                self.value_map.insert(p.clone(), reg_name);
+                self.value_map.insert(p.clone(), reg_name.clone());
+                
+                // CRITICAL: Store the incoming argument into the alloca
+                self.emit_line(&format!("store i64 %__arg{}, i64* {}", i, reg_name));
             }
         }
         
@@ -237,6 +221,7 @@ impl CodeGen {
                     MIRInstruction::ArrayLiteral { dst, .. } => Some(dst.clone()),
                     MIRInstruction::LoadMember { dst, .. } => Some(dst.clone()),
                     MIRInstruction::LoadIndex { dst, .. } => Some(dst.clone()),
+                    MIRInstruction::IndirectCall { dst, .. } => Some(dst.clone()),
                     _ => None,
                 };
                 if let Some(name) = dest_var {
@@ -280,39 +265,207 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let tmp = format!("%tmp{}", self.temp_counter);
 
-                let (is_compare, llvm_op, cmp_pred) = match op {
-                    TokenType::Plus => (false, "add", ""),
-                    TokenType::Minus => (false, "sub", ""),
-                    TokenType::Star => (false, "mul", ""),
-                    TokenType::Slash => (false, "sdiv", ""),
-                    TokenType::Less => (true, "", "slt"),
-                    TokenType::Greater => (true, "", "sgt"),
-                    TokenType::EqualEqual => (true, "", "eq"),
-                    TokenType::BangEqual => (true, "", "ne"),
-                    TokenType::LessEqual => (true, "", "sle"),
-                    TokenType::GreaterEqual => (true, "", "sge"),
-                    _ => (false, "add", ""),
+                let l_ty = match left {
+                    MIRValue::Constant { ty, .. } => ty,
+                    MIRValue::Variable { ty, .. } => ty,
+                };
+                let r_ty = match right {
+                    MIRValue::Constant { ty, .. } => ty,
+                    MIRValue::Variable { ty, .. } => ty,
                 };
 
-                if is_compare {
-                    self.temp_counter += 1;
-                    let cmp_tmp = format!("%cmp{}", self.temp_counter);
-                    self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_tmp, cmp_pred, l, r));
-                    self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_tmp));
-                } else {
-                    self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
-                }
+                // Check types
+                let is_string_op = matches!(l_ty, TejxType::Primitive(n) if n == "string") || 
+                                matches!(r_ty, TejxType::Primitive(n) if n == "string");
+                
+                let is_any_op = matches!(l_ty, TejxType::Any) || matches!(r_ty, TejxType::Any);
+                let is_float_op = matches!(l_ty, TejxType::Primitive(n) if n == "number" || n == "float") || 
+                               matches!(r_ty, TejxType::Primitive(n) if n == "number" || n == "float");
 
+                if is_any_op {
+                    let runtime_func = match op {
+                        TokenType::Plus => Some("rt_add"),
+                        TokenType::Minus => Some("rt_sub"),
+                        TokenType::Star => Some("rt_mul"),
+                        TokenType::Slash => Some("rt_div"),
+                        _ => None
+                    };
+
+                    if let Some(func_name) = runtime_func {
+                         if !self.declared_functions.contains(func_name) {
+                            self.global_buffer.push_str(&format!("declare i64 @{}(i64, i64)\n", func_name));
+                            self.declared_functions.insert(func_name.to_string());
+                        }
+                        
+                        let l_is_num = matches!(l_ty, TejxType::Primitive(n) if n == "number" || n == "float");
+                        let r_is_num = matches!(r_ty, TejxType::Primitive(n) if n == "number" || n == "float");
+                        
+                        let l_val = if l_is_num {
+                            if !self.declared_functions.contains("rt_box_number") {
+                                self.global_buffer.push_str("declare i64 @rt_box_number(i64)\n");
+                                self.declared_functions.insert("rt_box_number".to_string());
+                            }
+                            self.temp_counter += 1;
+                            let boxed = format!("%boxed{}", self.temp_counter);
+                            self.emit_line(&format!("{} = call i64 @rt_box_number(i64 {})", boxed, l));
+                            boxed
+                        } else {
+                            l.to_string()
+                        };
+
+                        let r_val = if r_is_num {
+                            if !self.declared_functions.contains("rt_box_number") {
+                                self.global_buffer.push_str("declare i64 @rt_box_number(i64)\n");
+                                self.declared_functions.insert("rt_box_number".to_string());
+                            }
+                            self.temp_counter += 1;
+                            let boxed = format!("%boxed{}", self.temp_counter);
+                            self.emit_line(&format!("{} = call i64 @rt_box_number(i64 {})", boxed, r));
+                            boxed
+                        } else {
+                            r.to_string()
+                        };
+
+                        self.emit_line(&format!("{} = call i64 @{}(i64 {}, i64 {})", tmp, func_name, l_val, r_val));
+                    } else {
+                         let (is_cmp, llvm_op, pred) = match op {
+                             TokenType::EqualEqual => (true, "", "eq"),
+                             TokenType::BangEqual => (true, "", "ne"),
+                             TokenType::Less => (true, "", "slt"),
+                             TokenType::Greater => (true, "", "sgt"),
+                             _ => (false, "add", "") 
+                         };
+                         if is_cmp {
+                             self.temp_counter += 1;
+                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
+                             self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_res, pred, l, r));
+                             self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
+                         } else {
+                             self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
+                         }
+                    }
+                } else if is_string_op {
+                    if matches!(op, TokenType::Plus) {
+                        if !self.declared_functions.contains("rt_str_concat_v2") {
+                            self.global_buffer.push_str("declare i64 @rt_str_concat_v2(i64, i64)\n");
+                            self.declared_functions.insert("rt_str_concat_v2".to_string());
+                        }
+                        self.emit_line(&format!("{} = call i64 @rt_str_concat_v2(i64 {}, i64 {})", tmp, l, r));
+                    } else if matches!(op, TokenType::EqualEqual) {
+                        if !self.declared_functions.contains("rt_str_equals") {
+                            self.global_buffer.push_str("declare i64 @rt_str_equals(i64, i64)\n");
+                            self.declared_functions.insert("rt_str_equals".to_string());
+                        }
+                        self.emit_line(&format!("{} = call i64 @rt_str_equals(i64 {}, i64 {})", tmp, l, r));
+                    } else if matches!(op, TokenType::BangEqual) {
+                         if !self.declared_functions.contains("rt_str_equals") {
+                            self.global_buffer.push_str("declare i64 @rt_str_equals(i64, i64)\n");
+                            self.declared_functions.insert("rt_str_equals".to_string());
+                        }
+                         if !self.declared_functions.contains("rt_not") {
+                            self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
+                            self.declared_functions.insert("rt_not".to_string());
+                        }
+                         self.temp_counter += 1;
+                         let eq_tmp = format!("%eq{}", self.temp_counter);
+                         self.emit_line(&format!("{} = call i64 @rt_str_equals(i64 {}, i64 {})", eq_tmp, l, r));
+                         self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_tmp));
+                    } else {
+                         // Fallback?
+                         self.emit_line(&format!("{} = add i64 {}, {}", tmp, l, r));
+                    }
+                } else if is_float_op {
+                     // Convert inputs to double
+                     self.temp_counter += 1;
+                     let l_dbl = format!("%l_dbl{}", self.temp_counter);
+                     self.emit_line(&format!("{} = bitcast i64 {} to double", l_dbl, l));
+                     
+                     self.temp_counter += 1;
+                     let r_dbl = format!("%r_dbl{}", self.temp_counter);
+                     self.emit_line(&format!("{} = bitcast i64 {} to double", r_dbl, r));
+
+                     let (is_cmp, llvm_op, pred) = match op {
+                        TokenType::Plus => (false, "fadd", ""),
+                        TokenType::Minus => (false, "fsub", ""),
+                        TokenType::Star => (false, "fmul", ""),
+                        TokenType::Slash => (false, "fdiv", ""),
+                        TokenType::Less => (true, "", "olt"),
+                        TokenType::Greater => (true, "", "ogt"),
+                        TokenType::EqualEqual => (true, "", "oeq"),
+                        TokenType::BangEqual => (true, "", "one"),
+                        TokenType::LessEqual => (true, "", "ole"),
+                        TokenType::GreaterEqual => (true, "", "oge"),
+                        _ => (false, "fadd", "")
+                     };
+
+                     if is_cmp {
+                         self.temp_counter += 1;
+                         let cmp_res = format!("%cmp_res{}", self.temp_counter);
+                         self.emit_line(&format!("{} = fcmp {} double {}, {}", cmp_res, pred, l_dbl, r_dbl));
+                         self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
+                     } else {
+                         self.temp_counter += 1;
+                         let res_dbl = format!("%res_dbl{}", self.temp_counter);
+                         self.emit_line(&format!("{} = {} double {}, {}", res_dbl, llvm_op, l_dbl, r_dbl));
+                         self.emit_line(&format!("{} = bitcast double {} to i64", tmp, res_dbl));
+                     }
+                } else {
+                    // Integer / Default
+                    let (is_cmp, llvm_op, pred) = match op {
+                        TokenType::Plus => (false, "add", ""),
+                        TokenType::Minus => (false, "sub", ""),
+                        TokenType::Star => (false, "mul", ""),
+                        TokenType::Slash => (false, "sdiv", ""),
+                        TokenType::Modulo => (false, "srem", ""),
+                        TokenType::Less => (true, "", "slt"),
+                        TokenType::Greater => (true, "", "sgt"),
+                        TokenType::EqualEqual => (true, "", "eq"),
+                        TokenType::BangEqual => (true, "", "ne"),
+                        TokenType::LessEqual => (true, "", "sle"),
+                        TokenType::GreaterEqual => (true, "", "sge"),
+                        _ => (false, "add", "")
+                    };
+
+                    if is_cmp {
+                        self.temp_counter += 1;
+                        let cmp_tmp = format!("%cmp{}", self.temp_counter);
+                        self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_tmp, pred, l, r));
+                        self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_tmp));
+                    } else {
+                        self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
+                    }
+                }
+                
                 let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
                 self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
             }
+
+
             MIRInstruction::Jump { target } => {
                 if *target < func.blocks.len() {
                     self.emit_line(&format!("br label %{}", func.blocks[*target].name));
                 }
             }
             MIRInstruction::Branch { condition, true_target, false_target } => {
-                let cond = self.resolve_value(condition);
+                let cond_val = self.resolve_value(condition);
+                let ty = match condition {
+                    MIRValue::Constant { ty, .. } => ty,
+                    MIRValue::Variable { ty, .. } => ty,
+                };
+
+                let cond = if matches!(ty, TejxType::Any) {
+                    if !self.declared_functions.contains("rt_to_boolean") {
+                        self.global_buffer.push_str("declare i64 @rt_to_boolean(i64)\n");
+                        self.declared_functions.insert("rt_to_boolean".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let bool_val = format!("%bool_val{}", self.temp_counter);
+                    self.emit_line(&format!("{} = call i64 @rt_to_boolean(i64 {})", bool_val, cond_val));
+                    bool_val
+                } else {
+                    cond_val
+                };
+
                 self.temp_counter += 1;
                 let cmp = format!("%cmp{}", self.temp_counter);
                 self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, cond));
@@ -338,36 +491,60 @@ impl CodeGen {
                 }
             }
             MIRInstruction::Call { dst, callee, args } => {
-                if callee == "console.log" || callee == "printf" {
-                    for arg in args {
-                        let arg_val = self.resolve_value(arg);
-                        let is_str = matches!(arg.get_type(), TejxType::Primitive(n) if n == "string");
-
-                        if is_str {
-                            self.temp_counter += 1;
-                            let cast_tmp = format!("%str{}", self.temp_counter);
-                            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", cast_tmp, arg_val));
-                            self.temp_counter += 1;
-                            let fmt_tmp = format!("%fmt{}", self.temp_counter);
-                            self.emit_line(&format!("{} = getelementptr inbounds [3 x i8], [3 x i8]* @.fmt_s, i64 0, i64 0", fmt_tmp));
-                            self.emit_line(&format!("call i32 (i8*, ...) @printf(i8* {}, i8* {})", fmt_tmp, cast_tmp));
-                        } else {
-                            self.temp_counter += 1;
-                            let fmt_tmp = format!("%fmt{}", self.temp_counter);
-                            self.emit_line(&format!("{} = getelementptr inbounds [5 x i8], [5 x i8]* @.fmt_d, i64 0, i64 0", fmt_tmp));
-                            self.emit_line(&format!("call i32 (i8*, ...) @printf(i8* {}, i64 {})", fmt_tmp, arg_val));
-                        }
-                        
-                        // Print space between args
-                        self.temp_counter += 1;
-                        let sp_tmp = format!("%sp{}", self.temp_counter);
-                        self.emit_line(&format!("{} = getelementptr inbounds [2 x i8], [2 x i8]* @.fmt_sp, i64 0, i64 0", sp_tmp));
-                        self.emit_line(&format!("call i32 (i8*, ...) @printf(i8* {})", sp_tmp));
+                // Handle print/eprint specifically for variadic support (like console.log)
+                if callee == "print" {
+                    if !self.declared_functions.contains("print_raw") {
+                        self.global_buffer.push_str("declare void @print_raw(i64)\n");
+                        self.declared_functions.insert("print_raw".to_string());
                     }
-                    self.temp_counter += 1;
-                    let nl_tmp = format!("%nl{}", self.temp_counter);
-                    self.emit_line(&format!("{} = getelementptr inbounds [2 x i8], [2 x i8]* @.fmt_nl, i64 0, i64 0", nl_tmp));
-                    self.emit_line(&format!("call i32 (i8*, ...) @printf(i8* {})", nl_tmp));
+                    if !self.declared_functions.contains("print_space") {
+                        self.global_buffer.push_str("declare void @print_space()\n");
+                        self.declared_functions.insert("print_space".to_string());
+                    }
+                    if !self.declared_functions.contains("print_newline") {
+                        self.global_buffer.push_str("declare void @print_newline()\n");
+                        self.declared_functions.insert("print_newline".to_string());
+                    }
+
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            self.emit_line("call void @print_space()");
+                        }
+                        let arg_val = self.resolve_value(arg);
+                        self.emit_line(&format!("call void @print_raw(i64 {})", arg_val));
+                    }
+                    self.emit_line("call void @print_newline()");
+                    
+                    // Assign 0 to result
+                    if let Some(ptr) = self.value_map.get(dst) {
+                         self.emit_line(&format!("store i64 0, i64* {}", ptr));
+                    }
+                } else if callee == "eprint" {
+                    if !self.declared_functions.contains("eprint_raw") {
+                        self.global_buffer.push_str("declare void @eprint_raw(i64)\n");
+                        self.declared_functions.insert("eprint_raw".to_string());
+                    }
+                    if !self.declared_functions.contains("eprint_space") {
+                        self.global_buffer.push_str("declare void @eprint_space()\n");
+                        self.declared_functions.insert("eprint_space".to_string());
+                    }
+                    if !self.declared_functions.contains("eprint_newline") {
+                        self.global_buffer.push_str("declare void @eprint_newline()\n");
+                        self.declared_functions.insert("eprint_newline".to_string());
+                    }
+
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            self.emit_line("call void @eprint_space()");
+                        }
+                        let arg_val = self.resolve_value(arg);
+                        self.emit_line(&format!("call void @eprint_raw(i64 {})", arg_val));
+                    }
+                    self.emit_line("call void @eprint_newline()");
+
+                    if let Some(ptr) = self.value_map.get(dst) {
+                         self.emit_line(&format!("store i64 0, i64* {}", ptr));
+                    }
                 } else {
                     let mut arg_vals = Vec::new();
                     for arg in args {
@@ -439,7 +616,11 @@ impl CodeGen {
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
                     if !self.declared_functions.contains(&final_callee) {
-                        self.global_buffer.push_str(&format!("declare i64 @{}(...)\n", final_callee));
+                        if final_callee == "rt_str_concat_v2" {
+                            self.global_buffer.push_str("declare i64 @rt_str_concat_v2(i64, i64)\n");
+                        } else {
+                            self.global_buffer.push_str(&format!("declare i64 @{}(...)\n", final_callee));
+                        }
                         self.declared_functions.insert(final_callee.clone());
                     }
                     self.emit_line(&format!("{} = call i64 @{}({})", result_tmp, final_callee, args_str));
@@ -448,13 +629,43 @@ impl CodeGen {
                     }
                 }
             }
+            MIRInstruction::IndirectCall { dst, callee, args } => {
+                let callee_val = self.resolve_value(callee);
+                
+                self.temp_counter += 1;
+                let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
+                self.emit_line(&format!("{} = inttoptr i64 {} to i64 (...)*", func_ptr_tmp, callee_val));
+                
+                let mut arg_vals = Vec::new();
+                for arg in args {
+                    let val = self.resolve_value(arg);
+                    arg_vals.push(format!("i64 {}", val));
+                }
+                let args_str = arg_vals.join(", ");
+                
+                self.temp_counter += 1;
+                let result_tmp = format!("%call{}", self.temp_counter);
+                self.emit_line(&format!("{} = call i64 {}({})", result_tmp, func_ptr_tmp, args_str));
+                
+                if let Some(ptr) = self.value_map.get(dst) {
+                    self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                }
+            }
             MIRInstruction::ObjectLiteral { dst, entries } => {
                 self.temp_counter += 1;
                 let obj_tmp = format!("%obj{}", self.temp_counter);
+                if !self.declared_functions.contains("m_new") {
+                    self.global_buffer.push_str("declare i64 @m_new()\n");
+                    self.declared_functions.insert("m_new".to_string());
+                }
                 self.emit_line(&format!("{} = call i64 @m_new()", obj_tmp));
                 for (k, v) in entries {
                     let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", k), ty: TejxType::Primitive("string".to_string()) });
                     let v_val = self.resolve_value(v);
+                    if !self.declared_functions.contains("m_set") {
+                        self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
+                        self.declared_functions.insert("m_set".to_string());
+                    }
                     self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_tmp, k_val, v_val));
                 }
                 let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
@@ -463,9 +674,17 @@ impl CodeGen {
             MIRInstruction::ArrayLiteral { dst, elements } => {
                 self.temp_counter += 1;
                 let arr_tmp = format!("%arr{}", self.temp_counter);
+                if !self.declared_functions.contains("a_new") {
+                    self.global_buffer.push_str("declare i64 @a_new()\n");
+                    self.declared_functions.insert("a_new".to_string());
+                }
                 self.emit_line(&format!("{} = call i64 @a_new()", arr_tmp));
                 for v in elements {
                     let v_val = self.resolve_value(v);
+                    if !self.declared_functions.contains("Array_push") {
+                        self.global_buffer.push_str("declare i64 @Array_push(i64, i64)\n");
+                        self.declared_functions.insert("Array_push".to_string());
+                    }
                     self.emit_line(&format!("call i64 @Array_push(i64 {}, i64 {})", arr_tmp, v_val));
                 }
                 let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
@@ -476,6 +695,10 @@ impl CodeGen {
                 let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::Primitive("string".to_string()) });
                 self.temp_counter += 1;
                 let res_tmp = format!("%val{}", self.temp_counter);
+                if !self.declared_functions.contains("m_get") {
+                    self.global_buffer.push_str("declare i64 @m_get(i64, i64)\n");
+                    self.declared_functions.insert("m_get".to_string());
+                }
                 self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, k_val));
                 let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
                 self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
@@ -484,6 +707,10 @@ impl CodeGen {
                 let obj_val = self.resolve_value(obj);
                 let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::Primitive("string".to_string()) });
                 let v_val = self.resolve_value(src);
+                if !self.declared_functions.contains("m_set") {
+                    self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
+                    self.declared_functions.insert("m_set".to_string());
+                }
                 self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, k_val, v_val));
             }
             MIRInstruction::LoadIndex { dst, obj, index } => {
@@ -491,6 +718,10 @@ impl CodeGen {
                 let idx_val = self.resolve_value(index);
                 self.temp_counter += 1;
                 let res_tmp = format!("%val{}", self.temp_counter);
+                if !self.declared_functions.contains("m_get") {
+                    self.global_buffer.push_str("declare i64 @m_get(i64, i64)\n");
+                    self.declared_functions.insert("m_get".to_string());
+                }
                 self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, idx_val));
                 let ptr = self.value_map.get(dst).cloned().unwrap_or_else(|| format!("%{}_ptr", dst));
                 self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
@@ -499,6 +730,10 @@ impl CodeGen {
                 let obj_val = self.resolve_value(obj);
                 let idx_val = self.resolve_value(index);
                 let v_val = self.resolve_value(src);
+                if !self.declared_functions.contains("m_set") {
+                    self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
+                    self.declared_functions.insert("m_set".to_string());
+                }
                 self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, idx_val, v_val));
             }
         }

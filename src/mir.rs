@@ -54,6 +54,11 @@ pub enum MIRInstruction {
         callee: String,
         args: Vec<MIRValue>,
     },
+    IndirectCall {
+        dst: String,
+        callee: MIRValue,
+        args: Vec<MIRValue>,
+    },
     ObjectLiteral {
         dst: String,
         entries: Vec<(String, MIRValue)>,

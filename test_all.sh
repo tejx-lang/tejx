@@ -27,14 +27,12 @@ echo -e "${CYAN}============================================${NC}"
 echo ""
 
 # 1. Build the compiler
-echo -e "${YELLOW}>>> Building TejX Compiler...${NC}"
 ./build.sh
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Compiler Build Failed!${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Compiler Build Successful.${NC}"
 echo ""
 
 # 2. Create build directory

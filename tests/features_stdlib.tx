@@ -1,21 +1,24 @@
+import std:math;
+import std:time;
+
 function run(): void {
-    console.log("--- Native Math Verification ---");
+    print("--- Native Math Verification ---");
     
     // Trigonometry
     let angle: number = 3.14159 / 2; // PI/2
-    console.log("sin(PI/2): ", Math.sin(angle));
-    console.log("cos(0): ", Math.cos(0));
+    print("sin(PI/2): Expected: ~1.0, Actual: ", sin(angle));
+    print("cos(0): Expected: 1.0, Actual: ", cos(0));
     
     // Min/Max/Rounding
-    console.log("max(10, 20): ", Math.max(10, 20));
-    console.log("min(10, 20): ", Math.min(10, 20));
-    console.log("floor(3.9): ", Math.floor(3.9));
+    print("max(10, 20): Expected: 20, Actual: ", max(10, 20));
+    print("min(10, 20): Expected: 10, Actual: ", min(10, 20));
+    print("floor(3.9): Expected: 3.0, Actual: ", floor(3.9));
 
     // Random Simulation
-    console.log("Random number (0-1): ", Math.random());
+    print("Random number (0-1): Expected: Value between 0-1, Actual: ", random());
     
     // Physics Simulation (Bouncing Ball)
-    console.log("--- Physics Sim ---");
+    print("--- Physics Sim ---");
     let y: number = 10;
     let velocity: number = 0;
     
@@ -29,49 +32,46 @@ function run(): void {
             velocity = -velocity * 0.8; // Bounce with energy loss
         }
         
-        console.log("Step ", i, ": Height = ", Math.round(y));
+        print("Step ", i, ": Expected height (descending then bounce or 0), Actual: ", round(y));
         i = i + 1;
     }
 }
 run();
-// Console and Math API Test
 
-console.log("Testing console methods...");
+print("Testing console methods...");
 
 // Console methods
-console.log("This is a log message");
-console.warn("This is a warning");
-console.error("This is an error");
+print("This is a log message");
+eprint("This is a warning");
+eprint("This is an error");
 
 // Math API
-console.log("Math.min(5, 3): ", Math.min(5, 3));
-console.log("Math.max(5, 3): ", Math.max(5, 3));
-console.log("Math.abs(-10): ", Math.abs(-10));
-console.log("Math.sqrt(16): ", Math.sqrt(16));
-console.log("Math.pow(2, 8): ", Math.pow(2, 8));
-console.log("Math.floor(4.7): ", Math.floor(4.7));
-console.log("Math.ceil(4.2): ", Math.ceil(4.2));
-console.log("Math.round(4.5): ", Math.round(4.5));
-console.log("Math.round(4.4): ", Math.round(4.4));
+print("min(5, 3): Expected: 3, Actual: ", min(5, 3));
+print("max(5, 3): Expected: 5, Actual: ", max(5, 3));
+print("abs(-10): Expected: 10, Actual: ", abs(-10));
+print("sqrt(16): Expected: 4, Actual: ", sqrt(16));
+print("pow(2, 8): Expected: 256, Actual: ", pow(2, 8));
+print("floor(4.7): Expected: 4.0, Actual: ", floor(4.7));
+print("ceil(4.2): Expected: 5.0, Actual: ", ceil(4.2));
+print("round(4.5): Expected: 5.0, Actual: ", round(4.5));
+print("round(4.4): Expected: 4.0, Actual: ", round(4.4));
 
-console.log("Console and Math test complete!");
-// Date Test
+print("Console and Math test complete!");
+
 let d = new Date();
-console.log("Current Time (ISO): ", d.toISOString());
+print("Current Time (ISO): Expected: ISO string, Actual: ", d.toISOString());
 
 let t = d.getTime();
-console.log("Timestamp: ", t);
+print("Timestamp: Expected: Number, Actual: ", t);
 
 let now = Date.now();
-console.log("Now (static): ", now);
+print("Date.now(): Expected: Number, Actual: ", now);
 
 if (now >= t) {
-    console.log("Time flows forward");
+    print("Time flow: Expected: forward, Actual: forward");
 } else {
-    console.log("Time broken?");
+    print("Time flow: Expected: forward, Actual: broken");
 }
-
-// JSON & Globals Verification
 
 let obj = {
     x: 10,
@@ -81,69 +81,66 @@ let obj = {
 };
 
 let json = JSON.stringify(obj);
-console.log("JSON: ", json);
+print("JSON.stringify: Expected: JSON string, Actual: ", json);
 
 // Test parsing
 let parsed = JSON.parse(json);
-console.log("Parsed x: ", parsed["x"]);
-console.log("Parsed y: ", parsed["y"]);
-console.log("Parsed z length: ", parsed["z"].length);
-console.log("Parsed w.nested: ", parsed["w"]["nested"]);
+print("Parsed x: Expected: 10, Actual: ", parsed["x"]);
+print("Parsed y: Expected: hello, Actual: ", parsed["y"]);
+print("Parsed z length: Expected: 3, Actual: ", parsed["z"].length);
+print("Parsed w.nested: Expected: 1/true, Actual: ", parsed["w"]["nested"]);
 
 // Test Globals
-console.log("parseInt: ", (parseInt("123") + 1));
-console.log("parseFloat: ", (parseFloat("12.34") + 1));
-console.log("parseInt (invalid): ", parseInt("abc"));
-// Map and Set Test
+print("parseInt('123')+1: Expected: 124, Actual: ", (parseInt("123") + 1));
+print("parseFloat('12.34')+1: Expected: 13.34, Actual: ", (parseFloat("12.34") + 1));
+print("parseInt('abc'): Expected: 0/NaN, Actual: ", parseInt("abc"));
 
-console.log("Testing Map and Set types...");
+print("Testing Map and Set types...");
 
 // Test Map
 let m = new Map();
 m.set("name", "TejX");
 m.set("version", 1);
 
-console.log("Map has 'name': ", m.has("name"));
-console.log("Map get 'name': ", m.get("name"));
-console.log("Map size: ", m.size());
+print("Map.has('name'): Expected: 1/true, Actual: ", m.has("name"));
+print("Map.get('name'): Expected: TejX, Actual: ", m.get("name"));
+print("Map.size(): Expected: 2, Actual: ", m.size());
 
 m.del("version");
-console.log("After del, size: ", m.size());
+print("After del size: Expected: 1, Actual: ", m.size());
 
 // Test Set
 let s = new Set();
 s.add(1);
 s.add(2);
-s.add(2);  // Duplicate, should not increase size
+s.add(2);  // Duplicate
 s.add(3);
 
-console.log("Set has 1: ", s.has(1));
-console.log("Set has 99: ", s.has(99));
-console.log("Set size: ", s.size());
+print("Set.has(1): Expected: 1/true, Actual: ", s.has(1));
+print("Set.has(99): Expected: 0/false, Actual: ", s.has(99));
+print("Set.size(): Expected: 3, Actual: ", s.size());
 
-console.log("Map and Set test complete!");
-
-// String Utilities Verification
+print("Map and Set test complete!");
 
 let strVal = "  Hello, TejX!  ";
-console.log("Original: '", strVal, "'");
+print("Original String: Expected: '  Hello, TejX!  ', Actual: '", strVal, "'");
 
 let trimmed = strVal.trim();
-console.log("Trimmed: '", trimmed, "'");
+print("Trimmed: Expected: 'Hello, TejX!', Actual: ", trimmed);
 
 let lower = trimmed.toLowerCase();
-console.log("Lower: ", lower);
+print("Lower: Expected: 'hello, tejx!', Actual: ", lower);
 
 let upper = trimmed.toUpperCase();
-console.log("Upper: ", upper);
+print("Upper: Expected: 'HELLO, TEJX!', Actual: ", upper);
 
 if (trimmed.startsWith("Hello")) {
-    console.log("Starts with Hello: Yes");
+    print("startsWith('Hello'): Expected: pass, Actual: pass");
 }
 
 if (trimmed.endsWith("!")) {
-    console.log("Ends with !: Yes");
+    print("endsWith('!'): Expected: pass, Actual: pass");
 }
 
 let replaced = trimmed.replace("TejX", "World");
-console.log("Replaced: ", replaced);
+print("Replaced: Expected: 'Hello, World!', Actual: ", replaced);

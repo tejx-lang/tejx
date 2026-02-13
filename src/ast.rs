@@ -19,6 +19,7 @@ pub enum Statement {
     ClassDeclaration(ClassDeclaration),
     #[allow(dead_code)]
     ProtocolDeclaration(ProtocolDeclaration), // If needed
+ 
     #[allow(dead_code)]
     ExtensionDeclaration(ExtensionDeclaration), // If needed
     EnumDeclaration(EnumDeclaration),
@@ -67,7 +68,13 @@ pub enum Statement {
         _line: usize,
         _col: usize,
     },
-    // ForOfStmt removed (unused)
+    ForOfStmt {
+        variable: BindingNode,
+        iterable: Box<Expression>,
+        body: Box<Statement>,
+        _line: usize,
+        _col: usize,
+    },
     SwitchStmt {
         condition: Box<Expression>,
         cases: Vec<Case>,
@@ -144,6 +151,7 @@ pub enum Expression {
         member: String,
         _line: usize,
         _col: usize,
+        _is_namespace: bool,
     },
     ArrayAccessExpr {
         target: Box<Expression>,

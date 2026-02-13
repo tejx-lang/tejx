@@ -1,26 +1,37 @@
-// Multithreading Test
+// features_concurrency.tx
+import { Thread, Mutex } from "std";
 
-let m = new Mutex();
-let count = 0;
+// Using object literal since Class instantiation isn't fully lowered yet
+// class SharedState { ... }
 
-console.log("Starting threads test...");
-
-let t1 = new Thread(() => {
+function run(state: any) {
+    let m = state.mutex;
     m.lock();
-    count = count + 1;
-    console.log("Thread 1 done: ", count);
+    let c = state.count;
+    let temp = c + 1;
+    state.count = temp;
     m.unlock();
-});
+}
 
-let t2 = new Thread(() => {
-    m.lock();
-    count = count + 1;
-    console.log("Thread 2 done: ", count);
-    m.unlock();
-});
+print("Starting threads test...");
+
+let state = {
+    count: 0,
+    mutex: new Mutex()
+};
+
+// Create threads passing shared state
+let t1 = new Thread(run, state);
+let t2 = new Thread(run, state);
 
 t1.join();
 t2.join();
 
-console.log("Final count: ", count);
-console.log("Threads test complete!");
+let final = state.count;
+print("Final count: Expected: 2, Actual: ", final);
+
+if (final == 2) {
+    print("Concurrency Test: Expected: SUCCESS, Actual: SUCCESS");
+} else {
+    print("Concurrency Test: Expected: SUCCESS, Actual: FAILURE");
+}

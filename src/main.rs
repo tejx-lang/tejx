@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 mod token;
 mod lexer;
 mod parser;
@@ -5,15 +6,22 @@ mod ast;
 mod types;
 mod hir;
 mod lowering;
+pub mod runtime;
 mod type_checker;
 mod mir;
 mod mir_lowering;
 mod borrow_checker;
 mod codegen;
+mod linker;
+mod diagnostics;
 
 use std::env;
 use std::fs;
 use std::process;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+// Modules are declared above
 
 use lexer::Lexer;
 use parser::Parser;
@@ -22,6 +30,10 @@ use lowering::Lowering;
 use mir_lowering::MIRLowering;
 use borrow_checker::BorrowChecker;
 use codegen::CodeGen;
+use linker::Linker;
+
+// Embed the pre-compiled runtime library
+const RUNTIME_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libruntime.a"));
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -37,33 +49,50 @@ fn main() {
     });
 
     // 1. Lexing
-    let mut lexer = Lexer::new(&contents);
+    let mut lexer = Lexer::new(&contents, filename);
     let tokens = lexer.tokenize();
+    let mut has_errors = false;
+
+    if !lexer.errors.is_empty() {
+        eprintln!("Lexing failed with errors:");
+        for diag in &lexer.errors {
+            diag.report(&contents);
+        }
+        has_errors = true;
+    }
 
     // 2. Parsing
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, filename);
     let program = parser.parse_program();
 
     if parser.has_errors() {
         eprintln!("Parsing failed with errors:");
-        for error in parser.get_errors() {
-            eprintln!("  - {}", error);
+        for diag in parser.get_errors() {
+            diag.report(&contents);
         }
+        has_errors = true;
+    }
+
+    if has_errors {
         process::exit(1);
     }
 
     // 3. Type Checker
     let mut type_checker = TypeChecker::new();
-    match type_checker.check(&program) {
+    match type_checker.check(&program, filename) {
         Ok(_) => {},
-        Err(e) => {
-            eprintln!("Type checking warning: {}", e);
+        Err(_) => {
+            eprintln!("Type Checking Failed:");
+            for diag in &type_checker.diagnostics {
+                diag.report(&contents);
+            }
+            process::exit(1);
         }
     }
 
     // 4. Lowering AST → HIR (produces multiple functions)
     let lowering = Lowering::new();
-    let base_path = std::path::Path::new(filename).parent().unwrap_or(std::path::Path::new("."));
+    let base_path = Path::new(filename).parent().unwrap_or(Path::new("."));
     let lowering_result = lowering.lower(&program, base_path);
 
     // 5. HIR → MIR Lowering (each function separately)
@@ -93,52 +122,57 @@ fn main() {
 
     // Determine output file names
     let output_name = if let Some(pos) = filename.rfind('.') {
-        filename[..pos].to_string()
+        &filename[..pos]
     } else {
-        "a.out".to_string()
+        "a.out"
     };
 
-    let temp_file = format!("{}.ll", output_name);
-    fs::write(&temp_file, &llvm_code).unwrap_or_else(|err| {
+    let temp_ll_file = format!("{}.ll", output_name);
+    // Write LLVM IR to a temporary file
+    fs::write(&temp_ll_file, &llvm_code).unwrap_or_else(|err| {
         eprintln!("Error writing LLVM IR: {}", err);
         process::exit(1);
     });
 
-    // 8. Compile & Link with clang
-    // Find runtime.c relative to the executable
-    let exe_path = env::current_exe().unwrap_or_default();
-    let exe_dir = exe_path.parent().unwrap_or(std::path::Path::new("."));
+    // 8. Link with Embedded Runtime using Linker module
+    let pid = process::id();
+    let temp_dir = env::temp_dir();
+    let runtime_lib_path = temp_dir.join(format!("libruntime_{}.a", pid));
     
-    // Search order: ../../libruntime.a (from target/release/), then ./libruntime.a (from project root)
-    let runtime_candidates = vec![
-        exe_dir.join("../../libruntime.a"),          // target/release/ → project root
-        exe_dir.join("../../../libruntime.a"),        // target/debug/ → project root  
-        std::path::PathBuf::from("libruntime.a"),     // current directory
-    ];
+    // Write embedded library to disk so linker can use it
+    if let Err(e) = fs::write(&runtime_lib_path, RUNTIME_LIB) {
+        eprintln!("Error writing embedded runtime to temp file: {}", e);
+        let _ = fs::remove_file(&temp_ll_file);
+        process::exit(1);
+    }
+
+    let mut linker = Linker::new(Path::new(output_name));
     
-    let runtime_path = runtime_candidates.iter()
-        .find(|p| p.exists())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| {
-            eprintln!("Error: libruntime.a not found. Searched: {:?}", runtime_candidates);
-            process::exit(1);
-        });
+    // Compiler drivers (cc/clang) verify extension to decide action (compile vs link)
+    // Passing .ll directly often works for clang, but strict cc might want .o
+    // But keeping .ll simplifies our codegen. 
+    linker.add_object(Path::new(&temp_ll_file));
+    linker.add_object(&runtime_lib_path);
 
-    let result = process::Command::new("clang++")
-        .args(&["-O3", "-Wno-deprecated", "-Wno-override-module"])
-        .arg(&temp_file)
-        .arg(&runtime_path)
-        .arg("-o")
-        .arg(&output_name)
-        .status();
-
-    match result {
-        Ok(status) if status.success() => {
-            // let _ = fs::remove_file(&temp_file);
-        }
-        _ => {
-            eprintln!("Compilation failed. LLVM IR saved to: {}", temp_file);
+    match linker.link() {
+        Ok(_) => {
+            // Success
+        },
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Hint: Ensure a C compiler (cc, clang, or gcc) is installed.");
+            // Cleanup
+            let _ = fs::remove_file(&runtime_lib_path);
+            if env::var("TEJXR_DEBUG").is_err() {
+                let _ = fs::remove_file(&temp_ll_file);
+            }
             process::exit(1);
         }
+    }
+
+    // Cleanup temp files
+    let _ = fs::remove_file(&runtime_lib_path);
+    if env::var("TEJXR_DEBUG").is_err() {
+        let _ = fs::remove_file(&temp_ll_file);
     }
 }

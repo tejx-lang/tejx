@@ -4,21 +4,21 @@
 import { add, multiply, VERSION, Calculator } from "./modules/math.tx";
 import hello from "./modules/export_default.tx";
 
-console.log("Testing modules...");
+print("Testing modules...");
 
-console.log("Utils module: Version ", VERSION);
+print("Utils module: Version: Expected: 1.0.0, Actual: ", VERSION);
 
-let sum = add(10, 20);
-console.log("add(10, 20) = ", sum);
+let sum_val = add(10, 20);
+print("add(10, 20): Expected: 30, Actual: ", sum_val);
 
 let product = multiply(5, 4);
-console.log("multiply(5, 4) = ", product);
+print("multiply(5, 4): Expected: 20, Actual: ", product);
 
 let calc = new Calculator();
 calc.add(100);
-console.log("Calculator value: ", calc.getValue());
+print("Calculator value: Expected: 100, Actual: ", calc.getValue());
 
 // Default export test
-console.log(hello("TejX User"));
+print("Default export: Expected: Hello from runtime.rs! (or similar), Actual: ", hello("TejX User"));
 
-console.log("Module test complete!");
+print("Module test complete!");

@@ -1,5 +1,5 @@
 function run(): void {
-    console.log("--- Object Literal Test ---");
+    print("--- Object Literal Test ---");
     
     // Create Object
     let user: object = {
@@ -9,14 +9,10 @@ function run(): void {
     };
     
     // Access Properties
-    console.log("Name: ", user["name"]);
-    console.log("Age: ", user["age"]);
+    print("Name: Expected: TejX, Actual: ", user["name"]);
+    print("Age: Expected: 1, Actual: ", user["age"]);
     
-    // Dynamic Access
-    let key: string = "active";
-    // console.log("Active: ", user[key]); // Need to verify if this works with Variant logic
-
-    console.log("--- End Test ---");
+    print("--- End Test ---");
 }
 
 run();
@@ -30,16 +26,13 @@ let o = {
     list: [1, 2, 3]
 };
 
-console.log(o);
-// console.log("Inner Val: ", o.inner.val); // Dot access on dynamic objects requires type checking or different CodeGen
+print("Object 'o': Expected: [Object], Actual: ", o);
 // Used bracket notation which is guaranteed for maps
-console.log("Inner Name: ", o["inner"]["name"]);
-console.log("List[1]: ", o["list"][1]);
+print("Inner Name: Expected: Inner, Actual: ", o["inner"]["name"]);
+print("List[1]: Expected: 2, Actual: ", o["list"][1]);
 
-// Mixed types in array? Not supported by ArrayLiteral yet unless typed as []
-// let mixed = [1, "a"]; // This would fail in ArrayLiteral generation
 function runProfile(): void {
-    console.log("--- Profile Test ---");
+    print("--- Profile Test ---");
     
     let profile: { username: string, active: boolean, id: number } = {
         username: "TejXUser",
@@ -47,9 +40,9 @@ function runProfile(): void {
         id: 101
     };
     
-    console.log("User: ", profile.username);
-    console.log("Active: ", profile.active); // Tests string + bool
-    console.log("ID: ", profile.id);
-    console.log("--- End Profile Test ---");
+    print("User: Expected: TejXUser, Actual: ", profile.username);
+    print("Active: Expected: 1/true, Actual: ", profile.active);
+    print("ID: Expected: 101, Actual: ", profile.id);
+    print("--- End Profile Test ---");
 }
 runProfile();

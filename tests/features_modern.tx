@@ -1,17 +1,17 @@
 // Modern Syntax: Template Literals, Optional Chaining, Nullish Coalescing
 // =======================================================================
 
-console.log("--- Template Literals ---");
+print("--- Template Literals ---");
 let user = "Alice";
 let score = 100;
 let message = `Start: User ${user} has a score of ${score}`;
-console.log(message);
+print("Template (Basic): Expected: Start: User Alice has a score of 100, Actual: ", message);
 
 // Expressions inside templates
-console.log(`Calculation: 10 + 20 = ${10 + 20}`);
+print(`Calculation: 10 + 20: Expected: 30, Actual: ${10 + 20}`);
 
 
-console.log("\n--- Optional Chaining ---");
+print("\n--- Optional Chaining ---");
 // Mocking an object structure with potential missing parts
 let data: any = {
     config: {
@@ -21,93 +21,56 @@ let data: any = {
 
 // Safe access
 let setting = data?.config?.setting;
-console.log("Setting: ", setting); // Should be undefined or null, not crash
+print("Setting (Safe Access): Expected: 0/undefined, Actual: ", setting);
 
 
-console.log("\n--- Nullish Coalescing ---");
+print("\n--- Nullish Coalescing ---");
 // Use default if null/undefined
 let actualSetting = setting ?? "Default (Disabled)";
-console.log("Actual Setting: ", actualSetting);
+print("Actual Setting: Expected: Default (Disabled), Actual: ", actualSetting);
 
 let count: any = 0;
 let validCount = count ?? 10; // 0 is falsely but not nullish, so should allow 0
-console.log("Count (should be 0): ", validCount);
+print("Count (Falsy 0): Expected: 0, Actual: ", validCount);
 
 
-console.log("\n--- Ternary Operator ---");
+print("\n--- Ternary Operator ---");
 let status = (score > 50) ? "Pass" : "Fail";
-console.log("Status: ", status);
-// Modern Syntax Test: Optional Chaining and Nullish Coalescing
+print("Status: Expected: Pass, Actual: ", status);
 
+// Modern Syntax Test: Optional Chaining and Nullish Coalescing
 let obj = {
   a: 42,
   b: { c: "Nested" }
 };
 
-console.log("Testing Optional Chaining...");
-console.log("obj?.a: ", obj?.a);
-console.log("obj?.b?.c: ", obj?.b?.c);
-console.log("obj?.nonexistent: ", obj?.nonexistent);
+print("Testing Optional Chaining...");
+print("obj?.a: Expected: 42, Actual: ", obj?.a);
+print("obj?.b?.c: Expected: Nested, Actual: ", obj?.b?.c);
+print("obj?.nonexistent: Expected: 0/undefined, Actual: ", obj?.nonexistent);
 
 let nothing = undefined;
-console.log("nothing?.prop: ", nothing?.prop);
+print("nothing?.prop: Expected: 0/undefined, Actual: ", nothing?.prop);
 
-console.log("\nTesting Nullish Coalescing...");
+print("\nTesting Nullish Coalescing...");
 let val1 = nothing ?? "Default String";
-console.log("val1 (should be default): ", val1);
+print("val1: Expected: Default String, Actual: ", val1);
 
 let val2 = obj?.a ?? 100;
-console.log("val2 (should be 42): ", val2);
+print("val2: Expected: 42, Actual: ", val2);
 
-console.log("\nTesting Optional Array Access...");
+print("\nTesting Optional Array Access...");
 let list = [10, 20, 30];
-console.log("list?.[1]: ", list?.[1]);
-console.log("nothing?.[0]: ", nothing?.[0]);
+print("list?.[1]: Expected: 20, Actual: ", list?.[1]);
+print("nothing?.[0]: Expected: 0/undefined, Actual: ", nothing?.[0]);
 
-console.log("\nModern syntax test complete!");
-// TejX Modern Features Showcase
-
-enum Status {
-    Pending,
-    Active,
-    Closed
-}
-
-function getSystemInfo() {
-    return {
-        name: "TejXOS",
-        version: "1.0.0",
-        stats: {
-            uptime: 3600,
-            status: Status.Active
-        },
-        tags: ["native", "fast", "soul"]
-    };
-}
-
-// 1. Destructuring with Nesting & Aliasing
-// let { name, stats: { status: s, uptime }, tags: [firstTag] } = getSystemInfo();
-// console.log("System: ", name);
-// console.log("Status: ", s); // Uses Enum value
-// console.log("Uptime: ", uptime, "s");
-// console.log("Primary Tag: ", firstTag);
-
-// 2. Optional Chaining & Nullish Coalescing
-let config = undefined;
-// let theme = config?.theme ?? "Dark Mode (Default)";
-// console.log("Theme: ", theme);
-
-// 3. Strict Boolean Verification
-// let isActive = (s == Status.Active);
-// if (isActive) {
-//     console.log("The system is running with Native Soul.");
-// }
+print("\nModern syntax test complete!");
 
 // 4. Multi-type Array (Automatic Var Promotion)
 let mixed = ["Version", 1, true];
-console.log("Mixed Data: ", mixed);
-// Option Types Test - Match Expression Returning Values
+print("Mixed Data: Expected: [Version, 1, 1], Actual: ", mixed);
 
+// Option Types Test - Match Expression Returning Values
 function findUser(id: number): string {
     if (id == 1) {
         return "Alice";
@@ -121,16 +84,18 @@ function greet(user: string) {
         "" => "Hello, stranger!",
         name => "Hello, " + name + "!"
     };
-    console.log(message);
+    print(message);
 }
 
-console.log("Testing Option-like matching...");
+print("Testing Option-like matching...");
 
 const user1 = findUser(1);
 const user2 = findUser(2);
 
-greet(user1);  // Should print "Hello, Alice!"
-greet(user2);  // Should print "Hello, stranger!"
+print("greet(Alice): Expected: Hello, Alice!");
+greet(user1);
+print("greet(2): Expected: Hello, stranger!");
+greet(user2);
 
 // Nested matching with arrays
 const item = [1, 2, 3];
@@ -141,57 +106,55 @@ const result = match (item) {
     _ => "Something else"
 };
 
-console.log(result);
+print("match([1,2,3]): Expected: starts with 1, rest 2, Actual: ", result);
 
-console.log("Option tests completed.");
-// Template Literals Test
+print("Option tests completed.");
 
 let libName = "TejX";
 let libVersion = 1.0;
 
-console.log("Testing template literals...");
+print("Testing template literals...");
 
 // Basic interpolation
 let greeting = `Hello, ${libName}!`;
-console.log(greeting);
+print("greeting: Expected: Hello, TejX!, Actual: ", greeting);
 
 // Multiple interpolations
 let info = `Language: ${libName}, Version: ${libVersion}`;
-console.log(info);
+print("info: Expected: Language: TejX, Version: 1, Actual: ", info);
 
 // Expressions inside interpolation
 let calc = `One plus one is ${1 + 1}`;
-console.log(calc);
+print("calc: Expected: One plus one is 2, Actual: ", calc);
 
-// Nested template literals (if supported by parser logic)
+// Nested template literals
 let complex = `Value: ${`inner ${libName}`}`;
-console.log(complex);
+print("complex: Expected: Value: inner TejX, Actual: ", complex);
 
-console.log("Template literals test complete!");
-// Object Spread Test - {...obj} syntax
+print("Template literals test complete!");
 
-console.log("=== Object Spread Test ===");
+print("=== Object Spread Test ===");
 
 // Base objects
 let person = { name: "Alice", age: 30 };
 let job = { title: "Engineer", salary: 100000 };
 
-console.log("Person: ", person);
-console.log("Job: ", job);
+print("Person: Expected: [Object], Actual: ", person);
+print("Job: Expected: [Object], Actual: ", job);
 
 // Test 1: Spread one object into another
-console.log("\n--- Test 1: Merge objects ---");
+print("\n--- Test 1: Merge objects ---");
 let employee = { ...person, ...job };
-console.log("Employee: ", employee);
+print("Employee: Expected: [Object] (Alice, Engineer), Actual: ", employee);
 
 // Test 2: Spread with overrides
-console.log("\n--- Test 2: Spread with overrides ---");
+print("\n--- Test 2: Spread with overrides ---");
 let updated = { ...person, age: 31, city: "NYC" };
-console.log("Updated: ", updated);
+print("Updated: Expected: [Object] (Alice, 31, NYC), Actual: ", updated);
 
 // Test 3: Empty object with spread
-console.log("\n--- Test 3: Spread into empty ---");
+print("\n--- Test 3: Spread into empty ---");
 let copy = { ...person };
-console.log("Copy: ", copy);
+print("Copy: Expected: [Object] (Alice, 30), Actual: ", copy);
 
-console.log("\n=== Object Spread Test Complete ===");
+print("\n=== Object Spread Test Complete ===");

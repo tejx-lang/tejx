@@ -1,5 +1,5 @@
 function run(): void {
-    console.log("--- Structural Type Test ---");
+    print("--- Structural Type Test ---");
     
     // Structural Type Declaration
     let point: { x: number, y: number } = {
@@ -7,13 +7,9 @@ function run(): void {
         y: 20
     };
     
-    console.log("Point: ", point.x, ", ", point.y);
+    print("Point: Expected: 10, 20, Actual: ", point.x, ", ", point.y);
     
-    // Modify
-    // point.x = 50; // TODO: Check if assignment works with default genExpression
-    // console.log("New X: ", point.x);
-
-    console.log("--- End Test ---");
+    print("--- End Test ---");
 }
 
 run();

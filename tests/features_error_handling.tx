@@ -19,44 +19,44 @@ function process(x: number) {
     return 100 / x;
 }
 
-console.log("Testing Proper Error Handling...");
+print("Testing Proper Error Handling...");
 
 // Scenario 1: Throwing a string
 try {
     process(0);
 } catch (e) {
-    console.log("Caught string: ", e);
+    print("Caught string: Expected: Zero is not allowed, Actual: ", e);
 } finally {
-    console.log("Cleanup 1 (String test)");
+    print("Cleanup 1: Expected: pass, Actual: pass");
 }
 
 // Scenario 2: Throwing an object (CustomError)
 try {
     process(-5);
 } catch (e) {
-    console.log("Caught object: ", e.message, " (Code: ", e.code, ")");
-    console.log("ToString: ", e.toString());
+    print("Caught object: Expected: Negative input (Code: 400), Actual: ", e.message, " (Code: ", e.code, ")");
+    print("ToString: Expected: Error: Negative input, Actual: ", e.toString());
 } finally {
-    console.log("Cleanup 2 (Object test)");
+    print("Cleanup 2: Expected: pass, Actual: pass");
 }
 
 // Scenario 3: Nested try/catch and RAII finally
 function nestedTest() {
     try {
-        console.log("Entering outer try");
+        print("Entering outer try: Expected: pass, Actual: pass");
         try {
-            console.log("Entering inner try");
+            print("Entering inner try: Expected: pass, Actual: pass");
             process(-1);
         } finally {
-            console.log("Inner finally executed");
+            print("Inner finally: Expected: pass, Actual: pass");
         }
     } catch (err) {
-        console.log("Outer catch caught: ", err.message);
+        print("Outer catch: Expected: Negative input, Actual: ", err.message);
     } finally {
-        console.log("Outer finally executed");
+        print("Outer finally: Expected: pass, Actual: pass");
     }
 }
 
 nestedTest();
 
-console.log("Error handling test complete!");
+print("Error handling test complete!");

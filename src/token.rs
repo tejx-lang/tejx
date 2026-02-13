@@ -16,7 +16,7 @@ pub enum TokenType {
     Identifier, Number, String, TemplateString, True, False,
     // Symbols
     Plus, Minus, Star, Slash, Modulo, Equals,
-    Dot, Comma, Colon, Semicolon, Ellipsis,
+    Dot, Comma, Colon, DoubleColon, Semicolon, Ellipsis,
     OpenParen, CloseParen, OpenBrace, CloseBrace, OpenBracket, CloseBracket,
     // Logic & Comparison
     EqualEqual, Bang, BangEqual, Less, LessEqual, Greater, GreaterEqual,

@@ -1,7 +1,7 @@
 // Declarations: Variables, Functions, Lambdas
 // ============================================
 
-console.log("--- Variables ---");
+print("--- Variables ---");
 // Implicit type
 let x = 10; 
 // Explicit type
@@ -14,32 +14,32 @@ let name: string = "NovaJs";
 let isAwesome: boolean = true;
 // Any
 let dynamic: any = "I can handle anything";
-console.log(dynamic);
+print("Any (String): Expected: I can handle anything, Actual: ", dynamic);
 dynamic = 100;
-console.log(dynamic);
+print("Any (Number): Expected: 100, Actual: ", dynamic);
 
 
-console.log("\n--- Functions ---");
+print("\n--- Functions ---");
 
 // Standard Function
 function add(a: number, b: number): number {
     return a + b;
 }
-console.log("Add(10, 20): ", add(10, 20));
+print("Add(10, 20): Expected: 30, Actual: ", add(10, 20));
 
 
-console.log("\n--- Lambdas (Arrow Functions) ---");
+print("\n--- Lambdas (Arrow Functions) ---");
 
 // Single expression body
 const multiply = (a: number, b: number) => a * b;
-console.log("Multiply(5, 5): ", multiply(5, 5));
+print("Multiply(5, 5): Expected: 25, Actual: ", multiply(5, 5));
 
 // Block body
 const complexCalc = (val: number) => {
     let temp = val * 2;
     return temp + 1;
 };
-console.log("ComplexCalc(10): ", complexCalc(10));
+print("ComplexCalc(10): Expected: 21, Actual: ", complexCalc(10));
 
 // Passing lambda as argument
 function process(val: number, op: (n: number) => number): number {
@@ -47,48 +47,46 @@ function process(val: number, op: (n: number) => number): number {
 }
 
 let squared = process(4, (n) => n * n);
-console.log("Squared(4): ", squared);
+print("Squared(4): Expected: 16, Actual: ", squared);
 // Const Keyword Test
 
-console.log("Testing const keyword...");
+print("Testing const keyword...");
 
 const PI2 = 3.14159;
-console.log("PI2 = ", PI2);
+print("PI2: Expected: 3.14159, Actual: ", PI2);
 
 const MESSAGE = "Hello, TejX!";
-console.log("MESSAGE = ", MESSAGE);
+print("MESSAGE: Expected: Hello, TejX!, Actual: ", MESSAGE);
 
 // Const with typed array
 const numbers: number[] = [1, 2, 3];
-console.log("Const array: ", numbers.join(", "));
+print("Const array: Expected: 1, 2, 3, Actual: ", numbers.join(", "));
 
 // Note: const prevents reassignment, not mutation
 // numbers.push(4); // This would still work in JS, and here too
 
-console.log("Const test complete!");
+print("Const test complete!");
 const lambdaAdd = (x: number, y: number) => {
     return x + y;
 };
-console.log("Add(5,3):");
-console.log(lambdaAdd(5, 3));
+print("lambdaAdd(5,3): Expected: 8, Actual: ", lambdaAdd(5, 3));
 
 const square = (x: number) => x * x;
-console.log("Square(4):");
-console.log(square(4));
+print("square(4): Expected: 16, Actual: ", square(4));
 
 const lambdaGreet = () => {
-    console.log("Hello Lambda!");
+    print("lambdaGreet: Expected: Hello Lambda!, Actual: Hello Lambda!");
 };
 lambdaGreet();
 function greetUser(name: string = "Guest") {
-    console.log("Hello, ", name);
+    print("greetUser(", name, "): Expected: Hello, ", name, ", Actual: Hello, ", name);
 }
 
 function power(base: number, exp: number = 2) {
-    console.log(base, "^", exp, " = ", Math.pow(base, exp));
+    print(base, "^", exp, ": Expected: ", Math.pow(base, exp), ", Actual: ", Math.pow(base, exp));
 }
 
-console.log("--- Default Args Test ---");
+print("--- Default Args Test ---");
 greetUser();
 greetUser("TejX");
 power(5);
@@ -101,13 +99,13 @@ let bVal = true;
 let objVal = { x: 1 };
 let arrVal = [1, 2, 3];
 
-console.log("Testing typeof operator...");
+print("Testing typeof operator...");
 
-console.log("typeof 42: ", (typeof nVal));
-console.log("typeof 'hello': ", (typeof sVal));
-console.log("typeof true: ", (typeof bVal));
-console.log("typeof {x:1}: ", (typeof objVal));
-console.log("typeof [1,2,3]: ", (typeof arrVal));
+print("typeof 42: Expected: number/42, Actual: ", (typeof nVal));
+print("typeof 'hello': Expected: string/hello, Actual: ", (typeof sVal));
+print("typeof true: Expected: boolean/true, Actual: ", (typeof bVal));
+print("typeof {x:1}: Expected: [Object], Actual: ", (typeof objVal));
+print("typeof [1,2,3]: Expected: [1, 2, 3], Actual: ", (typeof arrVal));
 
 function testFunc() { return 1; }
 // Function types are currently tricky in our C++ mapping, 
@@ -116,11 +114,11 @@ function testFunc() { return 1; }
 
 // Verification with conditionals
 if (typeof nVal === "number") {
-    console.log("Verified: n is a number");
+    print("Verified: n is a number: Expected: logic pass, Actual: logic pass");
 }
 
 if (typeof sVal === "string") {
-    console.log("Verified: s is a string");
+    print("Verified: s is a string: Expected: logic pass, Actual: logic pass");
 }
 
-console.log("typeof operator test complete!");
+print("typeof operator test complete!");

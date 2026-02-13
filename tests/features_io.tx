@@ -1,44 +1,44 @@
 let path = "test_file.txt";
 let content = "Hello from TejXFS!";
 
-console.log("--- File I/O Test ---");
-console.log("Writing to ", path);
+print("--- File I/O Test ---");
+print("Writing to ", path);
 fs.writeFile(path, content);
 
-console.log("Reading from ", path);
+print("Reading from ", path);
 let readBack = fs.readFile(path);
-console.log("Content: ", readBack);
+print("Content: ", readBack);
 
 if (readBack == content) {
-    console.log("SUCCESS: Content matches!");
+    print("SUCCESS: Content matches!");
 } else {
-    console.log("FAILURE: Content mismatch.");
+    print("FAILURE: Content mismatch.");
 }
 
 // FileSystem++ Verification
 
 // Clean up first
 if (fs.exists("test_fs_dir")) {
-    console.log("Cleaning up old dir...");
+    print("Cleaning up old dir...");
     fs.remove("test_fs_dir");
 }
 
-console.log("Checking if dir exists (should be false): ", fs.exists("test_fs_dir"));
+print("Checking if dir exists (should be false): ", fs.exists("test_fs_dir"));
 
-console.log("Creating directory...");
+print("Creating directory...");
 fs.mkdir("test_fs_dir");
-console.log("Checking if dir exists (should be true): ", fs.exists("test_fs_dir"));
+print("Checking if dir exists (should be true): ", fs.exists("test_fs_dir"));
 
 let filePath = "test_fs_dir/hello.txt";
-console.log("Writing file...");
+print("Writing file...");
 fs.writeFile(filePath, "Hello World from FS++");
 
-console.log("Checking file exists: ", fs.exists(filePath));
-console.log("Reading file: ", fs.readFile(filePath));
+print("Checking file exists: ", fs.exists(filePath));
+print("Reading file: ", fs.readFile(filePath));
 
-console.log("Removing directory (recursive)...");
+print("Removing directory (recursive)...");
 fs.remove("test_fs_dir");
-console.log("Checking if dir exists (should be false): ", fs.exists("test_fs_dir"));
+print("Checking if dir exists (should be false): ", fs.exists("test_fs_dir"));
 
 // Cleanup the first test file
 fs.remove("test_file.txt");

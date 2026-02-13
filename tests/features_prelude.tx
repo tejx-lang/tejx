@@ -1,0 +1,32 @@
+// Prelude Functions Test
+// ======================
+
+print("--- Testing Prelude Functions ---");
+
+// 1. len()
+let arr = [1, 2, 3, 4, 5];
+print("len(Array): Expected: 5, Actual: ", len(arr));
+
+let s = "Hello";
+print("len(String): Expected: 5, Actual: ", len(s));
+
+let m = new Map();
+m.set("a", 1);
+m.set("b", 2);
+print("len(Map): Expected: 2, Actual: ", len(m));
+
+// 2. Math-like globals
+print("abs(-42): Expected: 42, Actual: ", abs(-42));
+print("min(10, 20): Expected: 10, Actual: ", min(10, 20));
+print("max(10, 20): Expected: 20, Actual: ", max(10, 20));
+
+// 3. assert()
+assert(1 == 1);
+print("assert(1 == 1): Expected: pass, Actual: pass");
+
+// 4. process
+print("process.argv: Expected: [Object] (Array), Actual: ", process.argv());
+let args = process.argv();
+print("Arguments count: Expected: >= 1, Actual: ", len(args));
+
+print("Prelude test complete!");

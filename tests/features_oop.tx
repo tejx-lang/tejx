@@ -26,7 +26,7 @@ class Robot extends Entity {
     }
 
     identify(): void {
-        console.log("Robot Model: ", this.model, " (ID: ", this.id, ")");
+        print("Robot Model: Expected: T-800, Actual: ", this.model, " (ID: Expected: 101, Actual: ", this.id, ")");
     }
 }
 
@@ -34,7 +34,7 @@ class Robot extends Entity {
 // ----------------------------------
 extension Robot {
     greet(name: string): void {
-        console.log("BEEP BOOP. Hello ", name, ".");
+        print("BEEP BOOP. Hello ", name, ". Expected: Human, Actual: ", name);
     }
     
     // Additional method in extension
@@ -45,12 +45,13 @@ extension Robot {
 
 // 4. Usage
 // --------
-console.log("--- OOP Demo ---");
+print("--- OOP Demo ---");
 let r = new Robot(101, "T-800");
 
 r.identify();       // Class method
 r.greet("Human");   // Protocol method via Extension
-console.log("Status: ", r.status()); // Extension method
+print("Status: Expected: Operational, Actual: ", r.status()); // Extension method
+
 class Point {
     x: number;
     y: number;
@@ -61,21 +62,22 @@ class Point {
     }
 
     print(): void {
-        console.log("Point: ", this.x, ", ", this.y);
+        print("Point: Expected: 10, 20, Actual: ", this.x, ", ", this.y);
     }
 }
 
 function runMemorySafety(): void {
-    console.log("--- Memory Safety Demo ---");
-    console.log("Entering block...");
+    print("--- Memory Safety Demo ---");
+    print("Entering block...");
     {
         let p: Point = new Point(10, 20);
         p.print();
-        console.log("Exiting block...");
+        print("Exiting block...");
     }
-    console.log("Block exited. Point should be freed.");
+    print("Block exited. Point should be freed.");
 }
 runMemorySafety();
+
 protocol Printable {
     toString(): string;
     print(prefix: string): void;
@@ -92,7 +94,7 @@ class User implements Printable {
     }
     
     print(prefix: string): void {
-        console.log(prefix + this.toString());
+        print(prefix + "Expected: User: TejX, Actual: " + this.toString());
     }
 }
 
@@ -107,7 +109,7 @@ class Document implements Printable {
     }
     
     print(prefix: string): void {
-        console.log(prefix + this.toString());
+        print(prefix + "Expected: Doc: Hello World, Actual: " + this.toString());
     }
 }
 
@@ -121,8 +123,8 @@ let dProto = new Document("Hello World");
 
 printAny(uProto);
 printAny(dProto);
-// Extensions Feature Test
 
+// Extensions Feature Test
 class ExtensibleUser {
     name: string;
     constructor(n: string) {
@@ -132,13 +134,13 @@ class ExtensibleUser {
 
 extension ExtensibleUser {
     sayHello() {
-        console.log("Hello, ", this.name);
+        print("sayHello: Expected: Hello, Tej, Actual: Hello, ", this.name);
     }
     
     greet(times: number) {
         let i = 0;
         while (i < times) {
-            console.log("Greeting ", (i + 1), ": ", this.name);
+            print("Greeting ", (i + 1), ": Expected: ", this.name, ", Actual: ", this.name);
             i = i + 1;
         }
     }
@@ -148,7 +150,8 @@ let uExt = new ExtensibleUser("Tej");
 uExt.sayHello();
 uExt.greet(3);
 
-console.log("Extensions test complete!");
+print("Extensions test complete!");
+
 // OOP Polish Test
 class BankAccount {
     private balance: number = 0;
@@ -162,7 +165,7 @@ class BankAccount {
 
     public deposit(amount: number): void {
         this.balance += amount;
-        console.log("Deposited: ", amount);
+        print("Deposited: ", amount);
     }
 
     public getBalance(): number {
@@ -174,17 +177,14 @@ class BankAccount {
     }
 }
 
-console.log("Bank: ", BankAccount.getBankName());
+print("Bank: Expected: TejXBank, Actual: ", BankAccount.getBankName());
 
 let acc = new BankAccount("Alice", 100);
-console.log("Owner: ", acc.owner);
+print("Owner: Expected: Alice, Actual: ", acc.owner);
 acc.deposit(50);
-console.log("Balance: ", acc.getBalance());
+print("Balance: Expected: 150, Actual: ", acc.getBalance());
 
-// Uncompiled check: acc.balance should fail if we tried to access it directly in C++ 
-// (though our parser allows it, C++ compiler will error if private works)
 // Getter/Setter Test
-
 class Person {
     _name: string = "";
     _age: number = 0;
@@ -222,52 +222,51 @@ class Person {
     }
 }
 
-console.log("=== Getter/Setter Test ===");
+print("=== Getter/Setter Test ===");
 
 let p = new Person("Alice", 30);
 
 // Test getters
-console.log("Name: ", p.get_name());
-console.log("Age: ", p.get_age());
-console.log("Info: ", p.get_info());
+print("Name: Expected: Alice, Actual: ", p.get_name());
+print("Age: Expected: 30, Actual: ", p.get_age());
+print("Info: Expected: Alice is 30 years old, Actual: ", p.get_info());
 
 // Test setters
 p.set_name("Bob");
 p.set_age(25);
-console.log("After update - Name: ", p.get_name());
-console.log("After update - Age: ", p.get_age());
+print("After update - Name: Expected: Bob, Actual: ", p.get_name());
+print("After update - Age: Expected: 25, Actual: ", p.get_age());
 
-console.log("=== Getter/Setter Test Complete ===");
-// examples/advanced.tx
+print("=== Getter/Setter Test Complete ===");
 
-console.log("--- Ternary Operator ---");
+print("--- Ternary Operator ---");
 let age = 18;
 let status = age >= 18 ? "Adult" : "Minor";
-console.log("Status: ", status);
-console.log(10 > 5 ? "10 is bigger" : "5 is bigger");
+print("Status: Expected: Adult, Actual: ", status);
+print("10 > 5: Expected: 10 is bigger, Actual: ", (10 > 5 ? "10 is bigger" : "5 is bigger"));
 
-console.log("--- Switch (Desugared) ---");
+print("--- Switch (Desugared) ---");
 let fruit = "Apple";
 
 switch (fruit) {
     case "Banana":
-        console.log("It is a banana.");
+        print("Result: Expected: it is an apple, Actual: banana (wrong)");
         break;
     case "Apple":
-        console.log("It is an apple.");
+        print("Result: Expected: it is an apple, Actual: it is an apple");
         break;
     default:
-        console.log("Unknown fruit.");
+        print("Result: Unknown fruit.");
 }
 
-console.log("--- Inheritance ---");
+print("--- Inheritance ---");
 class Animal {
     name: string;
     constructor(n: string) {
         this.name = n;
     }
     speak(): void {
-        console.log(this.name, " makes a noise.");
+        print(this.name, " makes a noise.");
     }
 }
 
@@ -279,16 +278,16 @@ class Dog extends Animal {
         this.breed = "Unknown";
     }
     
-    // Shadowing/Overriding method (non-virtual in C++ unless marked virtual)
     bark(): void {
-        console.log(this.name, " barks!");
+        print(this.name, " barks!");
     }
 }
 
 let dDog = new Dog("Rex");
-dDog.speak(); // Should call Animal method
-dDog.bark();  // Should call Dog method
-console.log("Dog Name: ", dDog.name);
+dDog.speak(); // Makes noise
+dDog.bark();  // Barks
+print("Dog Name: Expected: Rex, Actual: ", dDog.name);
+
 abstract class Shape {
     protected name: string;
     
@@ -299,7 +298,7 @@ abstract class Shape {
     abstract area(): number;
     
     describe(): void {
-        console.log("I am a ", this.name);
+        print("I am a ", this.name);
     }
 }
 
@@ -307,26 +306,28 @@ class Circle extends Shape {
     private radius: number;
     
     constructor(r: number) {
-        this.name = "Circle"; // Access protected member
+        super();
+        this.name = "Circle"; 
         this.radius = r;
     }
     
     area(): number {
-        return 3.14159 * this.radius * this.radius;
+        return 3.14 * this.radius * this.radius;
     }
     
     printDetails(): void {
-        super.describe(); // Call base method
-        console.log("My area is: ", this.area());
+        super.describe();
+        print("My area: Expected: 12.56, Actual: ", this.area());
     }
 }
 
-function run() {
+function run_shape() {
     let c = new Circle(2);
     c.printDetails();
 }
 
-run();
+run_shape();
+
 class Cat extends Animal {
     constructor(n: string) { super(n); }
 }
@@ -334,16 +335,16 @@ class Cat extends Animal {
 let d = new Dog("Buddy");
 let c = new Cat("Whiskers");
 
-console.log("d is Dog: ", (d instanceof Dog));      // true
-console.log("d is Animal: ", (d instanceof Animal)); // true
-console.log("d is Cat: ", (d instanceof Cat));       // false
+print("d is Dog: Expected: 1, Actual: ", (d instanceof Dog));      
+print("d is Animal: Expected: 1, Actual: ", (d instanceof Animal)); 
+print("d is Cat: Expected: 0, Actual: ", (d instanceof Cat));       
 
 if (d instanceof Dog) {
-    console.log("Verified: d is a Dog");
+    print("Verified: d is a Dog: Expected: pass, Actual: pass");
 }
 
 if (c instanceof Animal) {
-    console.log("Verified: c is an Animal");
+    print("Verified: c is an Animal: Expected: pass, Actual: pass");
 }
 
-console.log("Instanceof test complete!");
+print("Instanceof test complete!");

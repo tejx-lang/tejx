@@ -26,6 +26,11 @@ pub enum HIRExpression {
         args: Vec<HIRExpression>,
         ty: TejxType,
     },
+    IndirectCall {
+        callee: Box<HIRExpression>,
+        args: Vec<HIRExpression>,
+        ty: TejxType,
+    },
     NewExpr {
         class_name: String,
         _args: Vec<HIRExpression>,
@@ -87,6 +92,7 @@ impl HIRExpression {
             HIRExpression::Variable { ty, .. } => ty.clone(),
             HIRExpression::BinaryExpr { ty, .. } => ty.clone(),
             HIRExpression::Call { ty, .. } => ty.clone(),
+            HIRExpression::IndirectCall { ty, .. } => ty.clone(),
             HIRExpression::NewExpr { class_name, .. } => TejxType::Class(class_name.clone()),
             HIRExpression::Assignment { ty, .. } => ty.clone(),
             HIRExpression::Await { ty, .. } => ty.clone(),

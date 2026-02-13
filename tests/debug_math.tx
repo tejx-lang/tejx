@@ -1,0 +1,9 @@
+import {min, pow} from 'std:math'; 
+print("Debug Math");
+let m = min(10, -5);
+print(`min(10, -5) raw: ${m}`);
+print(`min == -5: ${m == -5}`);
+
+let p = pow(2, 10);
+print(`pow(2, 10) raw: ${p}`);
+print(`pow == 1024: ${p == 1024}`);

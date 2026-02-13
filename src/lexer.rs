@@ -7,10 +7,12 @@ pub struct Lexer {
     line: usize,
     column: usize,
     keywords: HashMap<String, TokenType>,
+    pub errors: Vec<crate::diagnostics::Diagnostic>,
+    filename: String,
 }
 
 impl Lexer {
-    pub fn new(source: &str) -> Self {
+    pub fn new(source: &str, filename: &str) -> Self {
         let mut keywords = HashMap::new();
         keywords.insert("function".to_string(), TokenType::Function);
         keywords.insert("let".to_string(), TokenType::Let);
@@ -81,6 +83,8 @@ impl Lexer {
             line: 1,
             column: 1,
             keywords,
+            errors: Vec::new(),
+            filename: filename.to_string(),
         }
     }
 
@@ -100,8 +104,8 @@ impl Lexer {
                 tokens.push(self.read_identifier());
             } else if c.is_digit(10) {
                 tokens.push(self.read_number());
-            } else if c == '"' {
-                tokens.push(self.read_string());
+            } else if c == '"' || c == '\'' {
+                tokens.push(self.read_string(c));
             } else if c == '`' {
                 tokens.push(self.read_template_string());
             } else {
@@ -201,7 +205,14 @@ impl Lexer {
                     '}' => TokenType::CloseBrace,
                     '[' => TokenType::OpenBracket,
                     ']' => TokenType::CloseBracket,
-                    ':' => TokenType::Colon,
+                    ':' => {
+                        if self.peek(1) == ':' {
+                            self.advance();
+                            TokenType::DoubleColon
+                        } else {
+                            TokenType::Colon
+                        }
+                    }
                     ';' => TokenType::Semicolon,
                     ',' => TokenType::Comma,
                     '?' => {
@@ -363,15 +374,52 @@ impl Lexer {
         Token::new(TokenType::Number, value, self.line, start_col)
     }
 
-    fn read_string(&mut self) -> Token {
+    fn read_string(&mut self, quote: char) -> Token {
         let start_col = self.column;
+        let start_line = self.line;
         self.advance(); // Skip opening quote
         let mut value = String::new();
-        while !self.is_at_end() && self.peek(0) != '"' {
-             value.push(self.advance());
+        let mut is_escaped = false;
+
+        while !self.is_at_end() {
+            let c = self.peek(0);
+            if is_escaped {
+                value.push(self.advance());
+                is_escaped = false;
+            } else if c == '\\' {
+                is_escaped = true;
+                self.advance();
+            } else if c == quote {
+                break;
+            } else if c == '\n' {
+                 // Error: Unclosed string (newline in string not allowed without escaping usually)
+                 // But we can choose to allow it and just report error to continue lexing.
+                 self.errors.push(crate::diagnostics::Diagnostic::new(
+                    format!("Unclosed string literal starting with {}", quote),
+                    start_line,
+                    start_col,
+                    self.filename.clone()
+                 ));
+                 // Break to avoid gobbling the whole file into one string if possible? 
+                 // Actually, let's just break and treat the rest as new tokens.
+                 break;
+            } else {
+                value.push(self.advance());
+            }
         }
-         self.advance(); // Skip closing quote
-        Token::new(TokenType::String, value, self.line, start_col)
+        
+        if self.is_at_end() || self.peek(0) != quote {
+            self.errors.push(crate::diagnostics::Diagnostic::new(
+                format!("Unclosed string literal starting with {}", quote),
+                start_line,
+                start_col,
+                self.filename.clone()
+            ));
+        } else {
+            self.advance(); // Skip closing quote
+        }
+        
+        Token::new(TokenType::String, value, start_line, start_col)
     }
 
     fn read_template_string(&mut self) -> Token {

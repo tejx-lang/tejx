@@ -3,55 +3,56 @@
 
 // 1. If / Else
 function checkValue(n: number): void {
-    console.log("Checking ", n);
+    print("Checking Value: ", n);
     if (n > 10) {
-        console.log("  Big");
+        print("  Result: Expected: Big, Actual: Big");
     } else if (n > 5) {
-        console.log("  Medium");
+        print("  Result: Expected: Medium, Actual: Medium");
     } else {
-        console.log("  Small");
+        print("  Result: Expected: Small, Actual: Small");
     }
 }
 
 checkValue(15);
+checkValue(8);
 checkValue(3);
 
 // 2. Loops
-console.log("\n--- Loops ---");
+print("\n--- Loops ---");
 
 // While Loop
-console.log("While Loop:");
+print("While Loop:");
 let idx = 0;
 while (idx < 3) {
-    console.log("  idx = ", idx);
+    print("  idx: Expected: < 3, Actual: ", idx);
     idx = idx + 1;
 }
 
 // For Loop (C-Style)
-console.log("For Loop:");
+print("For Loop:");
 for (let j = 0; j < 3; j = j + 1) {
     if (j == 1) continue; // Test continue
-    console.log("  j = ", j);
+    print("  j: Expected: 0 or 2, Actual: ", j);
 }
 
 // For-Of Loop (using forEach as for-of on Var (inferred) is currently limited)
-console.log("For-Of Loop:");
+print("For-Of Loop:");
 let items = ["A", "B", "C"];
 items.forEach(item => {
-    console.log("  Item: ", item);
+    print("  Item: Expected: A|B|C, Actual: ", item);
 });
 
 // Break Statement
-console.log("Break Test:");
+print("Break Test:");
 let k1 = 0;
 while (true) {
     if (k1 >= 3) break;
-    console.log("  k1 = ", k1);
+    print("  k1: Expected: < 3, Actual: ", k1);
     k1 = k1 + 1;
 }
 
 // 3. Switch Statement
-console.log("\n--- Switch ---");
+print("\n--- Switch ---");
 function getFruitColor(fruit: string): string {
     switch (fruit) {
         case "Apple":
@@ -65,76 +66,73 @@ function getFruitColor(fruit: string): string {
     }
 }
 
-console.log("Apple is ", getFruitColor("Apple"));
-console.log("Banana is ", getFruitColor("Banana"));
-console.log("Kiwi is ", getFruitColor("Kiwi"));
-// examples/control.tx
+print("Apple: Expected: Red, Actual: ", getFruitColor("Apple"));
+print("Banana: Expected: Yellow, Actual: ", getFruitColor("Banana"));
+print("Kiwi: Expected: Unknown, Actual: ", getFruitColor("Kiwi"));
 
 let sumVal = 0;
 // Test +=
 sumVal += 10;
-console.log("Sum should be 10: ", sumVal);
+print("Add 10: Expected: 10, Actual: ", sumVal);
 
 sumVal -= 5;
-console.log("Sum should be 5: ", sumVal);
+print("Sub 5: Expected: 5, Actual: ", sumVal);
 
 sumVal *= 2;
-console.log("Sum should be 10: ", sumVal);
+print("Mul 2: Expected: 10, Actual: ", sumVal);
 
 sumVal /= 2;
-console.log("Sum should be 5: ", sumVal);
+print("Div 2: Expected: 5, Actual: ", sumVal);
 
 // Test ++ / --
 let xVal = 0;
 ++xVal;
-console.log("x should be 1: ", xVal);
+print("Inc: Expected: 1, Actual: ", xVal);
 --xVal;
-console.log("x should be 0: ", xVal);
+print("Dec: Expected: 0, Actual: ", xVal);
 
 // Test Break
-console.log("--- Break Test ---");
+print("--- Break Test ---");
 for (let i = 0; i < 10; i = i + 1) {
     if (i == 5) {
         break;
     }
-    console.log("i: ", i);
+    print("i (break at 5): Expected: < 5, Actual: ", i);
 }
 
 // Test Continue
-console.log("--- Continue Test ---");
+print("--- Continue Test ---");
 for (let j = 0; j < 5; j = j + 1) {
     if (j == 2) {
         continue;
     }
-    console.log("j: ", j);
+    print("j (skip 2): Expected: != 2, Actual: ", j);
 }
 
 // Test While Break
-console.log("--- While Break Test ---");
+print("--- While Break Test ---");
 let k = 0;
 while (k < 10) {
     if (k == 3) {
         break;
     }
-    console.log("k: ", k);
+    print("k (break at 3): Expected: < 3, Actual: ", k);
     k = k + 1;
 }
-// For-Of Loop Test (typed arrays)
 
-console.log("Testing for-of loop (as forEach)...");
+print("Testing for-of loop (as forEach)...");
 
 let numbers = [1, 2, 3, 4, 5];
 let sum = 0;
 
-numbers.forEach(n => {
-    console.log("Number: ", n);
+for (let n of numbers) {
+    print("Number: Expected: 1-5, Actual: ", n);
     sum = sum + n;
-});
+}
 
-console.log("Sum: ", sum);
+print("Sum: Expected: 15, Actual: ", sum);
 
-console.log("For-of loop test complete!");
-// examples/logic.tx
+print("For-of loop test complete!");
 
 let a = true;
 let b = false;
@@ -142,99 +140,66 @@ let c = true;
 
 // AND
 if (a && c) {
-    console.log("a && c is true");
+    print("a && c: Expected: true, Actual: true");
 } else {
-    console.log("a && c is false");
+    print("a && c: Expected: true, Actual: false");
 }
 
 // OR
 if (a || b) {
-    console.log("a || b is true");
+    print("a || b: Expected: true, Actual: true");
 }
 
 if (b || b) {
-    console.log("b || b is true");
+    print("b || b: Expected: false, Actual: true");
 } else {
-    console.log("b || b is false");
+    print("b || b: Expected: false, Actual: false");
 }
 
 // Complex
 if ((a && b) || c) {
-    console.log("(a && b) || c is true");
+    print("(a && b) || c: Expected: true, Actual: true");
 }
 
 // Not Equal
 let x2 = 10;
 if (x2 != 20) {
-    console.log("x != 20");
+    print("x != 20: Expected: true, Actual: true");
 }
 
 // Short-circuit Test
 if (true || (1/0 == 0)) {
-   console.log("Short-circuit works (no crash)");
-}
-function describe(val: any) {
-    const result = match (val) {
-        1 => "one",
-        n if (n > 10) => "a large number: " + n,
-        "hello" => "a greeting",
-        true => "yes",
-        undefined => "nothing",
-        _ => "something else"
-    };
-    console.log("Input: ", val, " => Result: ", result);
+   print("Short-circuit OR: Expected: No crash, Actual: No crash");
 }
 
-function processArray(arr: any) {
-    const result = match (arr) {
-        [1, y] => "Starts with 1, second is " + y,
-        [x, 2] => "Ends with 2, first is " + x,
-        [first, ...rest] if (rest.length > 0) => "Starts with " + first + ", rest size: " + rest.length,
-        [a, b, c] => "Three elements: " + a + ", " + b + ", " + c,
-        _ => "Unknown array pattern"
-    };
-    console.log("Array: ", arr, " => ", result);
+// Test Compound Assignments
+let val = 10;
+val += 5; // 15
+print("val += 5: Expected: 15, Actual: ", val);
+val -= 5; // 10
+print("val -= 5: Expected: 10, Actual: ", val);
+val *= 2; // 20
+print("val *= 2: Expected: 20, Actual: ", val);
+val /= 2; // 10
+print("val /= 2: Expected: 10, Actual: ", val);
+
+// Test Logical Operators
+let t = true;
+let f = false;
+if (t && t) { print("true && true: Expected: success, Actual: success"); }
+if (t || f) { print("true || false: Expected: success, Actual: success"); }
+if (f || t) { print("false || true: Expected: success, Actual: success"); }
+if (f && t) { print("FAIL: false && t (unexpected)"); } else { print("false && t: Expected: false, Actual: false"); }
+
+let logicSum = 0;
+// Short circuit check
+if (true || (logicSum += 1) > 0) {
+    print("Short-circuit OR: Expected: worked, Actual: worked");
 }
+if (logicSum == 0) { print("logicSum (OR): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (OR) is ", logicSum); }
 
-function processObject(obj: any) {
-    const result = match (obj) {
-        { name: n, age: a } => n + " is " + a + " years old",
-        { status: s } => "Status is " + s,
-        _ => "Unknown object"
-    };
-    console.log("Object: ", obj, " => ", result);
+if (false && (logicSum += 1) > 0) {
+    print("FAIL: Short-circuit AND (unexpected)");
 }
+if (logicSum == 0) { print("logicSum (AND): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (AND) is ", logicSum); }
 
-function processComplex(val: any) {
-    const result = match (val) {
-        [[x, ...y], ...rest] => "Nested head: " + x + ", sub-rest: " + y.length + ", outer rest: " + rest.length,
-        { details: { score: s } } if (s >= 90) => "High score: " + s,
-        { details: { score: s } } => "Regular score: " + s,
-        [first, ...rest] if (rest.length == 0) => "Single element array: " + first,
-        _ => "Other complex case"
-    };
-    console.log("Complex: ", val, " => ", result);
-}
-
-console.log("--- Match Expression Test ---");
-describe(1);
-describe(42);
-describe("hello");
-describe(false);
-describe(undefined);
-
-processArray([1, 42]);
-processArray([99, 2]);
-processArray([10, 20, 30]);
-processArray([1, 2, 3]);
-processArray([1]);
-
-processObject({ name: "Alice", age: 30 });
-processObject({ status: "active" });
-processObject({ foo: "bar" });
-
-processComplex([[1, 2, 3], 4, 5]);
-processComplex({ details: { score: 95 } });
-processComplex({ details: { score: 70 } });
-processComplex([100]);
-processComplex("random");

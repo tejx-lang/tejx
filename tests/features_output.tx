@@ -1,0 +1,9 @@
+
+// tests/features_output.tx
+import std:prelude;
+
+print("This should be on stdout");
+eprint("This should be on stderr");
+
+print("Stdout Line 2");
+eprint("Stderr Line 2");

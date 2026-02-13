@@ -26,7 +26,8 @@ impl TejxType {
 
     pub fn from_name(name: &str) -> TejxType {
         match name {
-            "number" | "int" | "float" => TejxType::Primitive("number".to_string()),
+            "int" => TejxType::Primitive("int".to_string()),
+            "float" | "number" => TejxType::Primitive("float".to_string()),
             "string" => TejxType::Primitive("string".to_string()),
             "boolean" | "bool" => TejxType::Primitive("boolean".to_string()),
             "void" => TejxType::Void,
