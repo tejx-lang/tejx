@@ -53,6 +53,7 @@ impl TejxType {
                 let inner = &name[0..name.len()-2];
                 TejxType::from_name(inner)
             }
+            TejxType::Class(name) if name == "ByteArray" => TejxType::Bool,
             _ => TejxType::Any
         }
     }

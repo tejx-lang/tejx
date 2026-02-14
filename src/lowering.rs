@@ -170,6 +170,35 @@ impl Lowering {
                         }
                     }
 
+                    if mod_name == "collections" {
+                        let mut class_methods = self.class_methods.borrow_mut();
+                        let mut user_functions = self.user_functions.borrow_mut();
+                        
+                        let collections = [
+                            ("Stack", vec!["push", "pop", "peek", "size", "isEmpty"]),
+                            ("Queue", vec!["enqueue", "dequeue", "size", "isEmpty"]),
+                            ("MinHeap", vec!["insert", "extractMin", "size", "isEmpty"]),
+                            ("MaxHeap", vec!["insertMax", "extractMax", "size", "isEmpty"]),
+                            ("PriorityQueue", vec!["insert", "extractMin", "size", "isEmpty"]),
+                            ("Map", vec!["put", "at", "has", "size", "isEmpty"]),
+                            ("Set", vec!["add", "has", "size", "isEmpty"]),
+                            ("OrderedMap", vec!["put", "at", "has", "size", "isEmpty"]),
+                            ("OrderedSet", vec!["add", "has", "size", "isEmpty"]),
+                            ("BloomFilter", vec!["add", "contains"]),
+                            ("Trie", vec!["addPath", "find"]),
+                        ];
+
+                        for (cls, methods) in collections {
+                            class_methods.insert(cls.to_string(), methods.iter().map(|s| s.to_string()).collect());
+                            for m in methods {
+                                let mangled = format!("{}_{}", cls, m);
+                                user_functions.insert(mangled, TejxType::Any);
+                            }
+                            // Also register constructor
+                            user_functions.insert(format!("{}_constructor", cls), TejxType::Void);
+                        }
+                    }
+
                     i += 1;
                     continue;
                 }
@@ -1061,45 +1090,6 @@ impl Lowering {
                     ty: TejxType::Any
                 }
             }
-            Expression::OptionalMemberAccessExpr { object, member, .. } => {
-                 let obj_hir = self.lower_expression(object);
-                 
-                 HIRExpression::If {
-                     condition: Box::new(HIRExpression::BinaryExpr {
-                         op: TokenType::BangEqual,
-                         left: Box::new(obj_hir.clone()), 
-                         right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
-                         ty: TejxType::Bool
-                     }),
-                     then_branch: Box::new(HIRExpression::MemberAccess {
-                         target: Box::new(obj_hir),
-                         member: member.clone(),
-                         ty: TejxType::Any
-                     }),
-                     else_branch: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
-                     ty: TejxType::Any
-                 }
-            }
-            Expression::OptionalCallExpr { callee, args, .. } => {
-                 let callee_hir = self.lower_expression(callee);
-                 let args_hir: Vec<HIRExpression> = args.iter().map(|a| self.lower_expression(a)).collect();
-                 
-                  HIRExpression::If {
-                     condition: Box::new(HIRExpression::BinaryExpr {
-                         op: TokenType::BangEqual,
-                         left: Box::new(callee_hir.clone()), 
-                         right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
-                         ty: TejxType::Bool
-                     }),
-                     then_branch: Box::new(HIRExpression::IndirectCall {
-                         callee: Box::new(callee_hir),
-                         args: args_hir,
-                         ty: TejxType::Any
-                     }),
-                     else_branch: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
-                     ty: TejxType::Any
-                 }
-            }
              Expression::OptionalArrayAccessExpr { target, index, .. } => {
                  let target_hir = self.lower_expression(target);
                  let index_hir = self.lower_expression(index);
@@ -1422,8 +1412,13 @@ impl Lowering {
                                 if let Some(class_name) = class_name_opt {
                                     let mangled_key = format!("{}_{}", class_name, method_name);
                                     if self.user_functions.borrow().contains_key(&mangled_key) {
-                                        final_callee = format!("f_{}", mangled_key);
-                                        eprintln!("lowering: resolved method {} to {}", callee, final_callee);
+                                        let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"]
+                                            .contains(&class_name.as_str());
+                                        if is_std_collection {
+                                            final_callee = format!("std_collections_{}", mangled_key);
+                                        } else {
+                                            final_callee = format!("f_{}", mangled_key);
+                                        }
                                         let mut m_args = Vec::new();
                                         if is_instance {
                                             m_args.push(HIRExpression::Variable { 

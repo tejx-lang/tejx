@@ -1,46 +1,44 @@
 import { 
-    Stack, Queue, MinHeap, MaxHeap, Map, Set, OrderedMap, OrderedSet, BloomFilter, Trie,
-    push, pop, peek, enqueue, dequeue, insert, extractMin, insertMax, extractMax,
-    isEmpty, size, put, at, has, add, contains, find, addPath
+    Stack, Queue, MinHeap, MaxHeap, Map, Set, OrderedMap, OrderedSet, BloomFilter, Trie
 } from "std:collections";
 
 print("--- Testing MinHeap & MaxHeap ---");
-let minH = MinHeap();
-insert(minH, 50); insert(minH, 10); insert(minH, 30);
-print("MinHeap extractMin (10): ", extractMin(minH));
-print("MinHeap extractMin (30): ", extractMin(minH));
+let minH = new MinHeap();
+minH.insert(50); minH.insert(10); minH.insert(30);
+print("MinHeap extractMin (10): ", minH.extractMin());
+print("MinHeap extractMin (30): ", minH.extractMin());
 
-let maxH = MaxHeap();
-insertMax(maxH, 10); insertMax(maxH, 50); insertMax(maxH, 30);
-print("MaxHeap extractMax (50): ", extractMax(maxH));
-print("MaxHeap extractMax (30): ", extractMax(maxH));
+let maxH = new MaxHeap();
+maxH.insertMax(10); maxH.insertMax(50); maxH.insertMax(30);
+print("MaxHeap extractMax (50): ", maxH.extractMax());
+print("MaxHeap extractMax (30): ", maxH.extractMax());
 
 print("\n--- Testing OrderedMap & OrderedSet ---");
-let om = OrderedMap();
-put(om, "b", 2);
-put(om, "a", 1);
-put(om, "c", 3);
-print("OrderedMap get 'a' (1): ", at(om, "a"));
-print("OrderedMap size (3): ", size(om));
+let om = new OrderedMap();
+om.put("b", 2);
+om.put("a", 1);
+om.put("c", 3);
+print("OrderedMap get 'a' (1): ", om.at("a"));
+print("OrderedMap size (3): ", om.size());
 
-let os = OrderedSet();
-add(os, 100); add(os, 50); add(os, 200);
-print("OrderedSet has 50 (true): ", has(os, 50));
-print("OrderedSet has 99 (false): ", has(os, 99));
+let os = new OrderedSet();
+os.add(100); os.add(50); os.add(200);
+print("OrderedSet has 50 (true): ", os.has(50));
+print("OrderedSet has 99 (false): ", os.has(99));
 
 print("\n--- Testing BloomFilter ---");
-let bf = BloomFilter(100, 3);
-add(bf, "apple");
-add(bf, "banana");
-print("BloomFilter contains 'apple' (true): ", contains(bf, "apple"));
-print("BloomFilter contains 'orange' (false): ", contains(bf, "orange"));
+let bf = new BloomFilter(100, 3);
+bf.add("apple");
+bf.add("banana");
+print("BloomFilter contains 'apple' (true): ", bf.contains("apple"));
+print("BloomFilter contains 'orange' (false): ", bf.contains("orange"));
 
 print("\n--- Testing Trie ---");
-let t = Trie();
-addPath(t, "hello", 1);
-addPath(t, "world", 2);
-print("Trie find 'hello' (1): ", find(t, "hello"));
-print("Trie find 'world' (2): ", find(t, "world"));
-print("Trie find 'hell' (0): ", find(t, "hell"));
+let t = new Trie();
+t.addPath("hello", 1);
+t.addPath("world", 2);
+print("Trie find 'hello' (1): ", t.find("hello"));
+print("Trie find 'world' (2): ", t.find("world"));
+print("Trie find 'hell' (0): ", t.find("hell"));
 
 print("\nAdvanced Collections test complete!");

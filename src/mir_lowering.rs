@@ -496,38 +496,41 @@ impl MIRLowering {
                       });
                       
                       MIRValue::Variable { name: temp, ty: TejxType::Class("Promise".to_string()) }
-                } else if class_name == "Array" {
-                      let temp = self.new_temp(TejxType::Class("Array".to_string()));
-                      let elem_size = if let Some(ety) = &self.expected_ty {
-                          if ety.is_array() && matches!(ety.get_array_element_type(), TejxType::Bool) { 1 } else { 8 }
-                      } else { 8 };
-                      
-                      self.emit(MIRInstruction::Call {
-                          callee: "m_new".to_string(),
-                          args: vec![],
-                          dst: temp.clone(),
-                      });
-                      
-                      let constructor_name = "f_Array_constructor".to_string();
-                      let mut constructor_args = vec![
-                          MIRValue::Variable { name: temp.clone(), ty: TejxType::Class("Array".to_string()) }
-                      ];
-                      if !_args.is_empty() {
-                          constructor_args.push(self.lower_expression(&_args[0]));
-                      } else {
-                          constructor_args.push(MIRValue::Constant { value: "0".to_string(), ty: TejxType::Int32 });
-                      }
-                      // Pass elem_size as 3rd arg
-                      constructor_args.push(MIRValue::Constant { value: elem_size.to_string(), ty: TejxType::Int32 });
-                      
-                      let void_temp = self.new_temp(TejxType::Void);
-                      self.emit(MIRInstruction::Call {
-                          callee: constructor_name,
-                          args: constructor_args,
-                          dst: void_temp,
-                      });
-                      
-                      MIRValue::Variable { name: temp, ty: TejxType::Class("Array".to_string()) }
+                } else if class_name == "Array" || class_name == "ByteArray" {
+                       let temp = self.new_temp(TejxType::Class(class_name.clone()));
+                       let elem_size = if class_name == "ByteArray" { 
+                           1 
+                       } else if let Some(ety) = &self.expected_ty {
+                           if ety.is_array() && matches!(ety.get_array_element_type(), TejxType::Bool) { 1 } else { 8 }
+                       } else { 8 };
+                       
+                       self.emit(MIRInstruction::Call {
+                           callee: "m_new".to_string(),
+                           args: vec![],
+                           dst: temp.clone(),
+                       });
+                       
+                       let constructor_name = "f_Array_constructor".to_string();
+                       let mut constructor_args = vec![
+                           MIRValue::Variable { name: temp.clone(), ty: TejxType::Class(class_name.clone()) }
+                       ];
+                       if !_args.is_empty() {
+                           let arg_val = self.lower_expression(&_args[0]);
+                           constructor_args.push(self.auto_box(arg_val, &TejxType::Any));
+                       } else {
+                           constructor_args.push(MIRValue::Constant { value: "0".to_string(), ty: TejxType::Int32 });
+                       }
+                       // Pass elem_size as 3rd arg
+                       constructor_args.push(MIRValue::Constant { value: elem_size.to_string(), ty: TejxType::Int32 });
+                       
+                       let void_temp = self.new_temp(TejxType::Void);
+                       self.emit(MIRInstruction::Call {
+                           callee: constructor_name,
+                           args: constructor_args,
+                           dst: void_temp,
+                       });
+                       
+                       MIRValue::Variable { name: temp, ty: TejxType::Class(class_name.clone()) }
                  } else {
                       // Default: create a generic object (Map)
                       let temp = self.new_temp(TejxType::Class(class_name.clone()));
@@ -538,7 +541,13 @@ impl MIRLowering {
                       });
                       
                       // Initialize with constructor: f_ClassName_constructor(this, args...)
-                      let constructor_name = format!("f_{}_constructor", class_name);
+                      let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"]
+                          .contains(&class_name.as_str());
+                      let constructor_name = if is_std_collection {
+                          format!("std_collections_{}_constructor", class_name)
+                      } else {
+                          format!("f_{}_constructor", class_name)
+                      };
                      let mut constructor_args = vec![MIRValue::Variable { 
                          name: temp.clone(), 
                          ty: TejxType::Class(class_name.clone()) 

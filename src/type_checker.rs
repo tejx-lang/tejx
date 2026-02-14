@@ -393,6 +393,18 @@ impl TypeChecker {
                          self.define("sleep".to_string(), "function".to_string());
                      } else if source == "std:os" {
                          self.define("args".to_string(), "function".to_string());
+                     } else if source == "std:collections" {
+                         self.define("Stack".to_string(), "class".to_string());
+                         self.define("Queue".to_string(), "class".to_string());
+                         self.define("PriorityQueue".to_string(), "class".to_string());
+                         self.define("MinHeap".to_string(), "class".to_string());
+                         self.define("MaxHeap".to_string(), "class".to_string());
+                         self.define("Map".to_string(), "class".to_string());
+                         self.define("Set".to_string(), "class".to_string());
+                         self.define("OrderedMap".to_string(), "class".to_string());
+                         self.define("OrderedSet".to_string(), "class".to_string());
+                         self.define("BloomFilter".to_string(), "class".to_string());
+                         self.define("Trie".to_string(), "class".to_string());
                      }
                  }
                  Ok(())

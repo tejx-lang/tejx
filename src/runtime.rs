@@ -241,6 +241,7 @@ pub extern "C" fn a_new() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn a_new_fixed(size: i64, elem_size: i64) -> i64 {
+    // eprintln!("a_new_fixed: size={}, elem_size={}", size, elem_size);
     let mut heap = HEAP.lock().unwrap();
     let id = heap.next_id;
     heap.next_id += 1;
@@ -600,6 +601,7 @@ pub unsafe extern "C" fn f_Date_constructor(this: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn f_Array_constructor(id: i64, arg: i64, elem_size: i64) {
     let size = if arg == 0 { 0 } else { rt_to_number(arg) as usize };
+    // eprintln!("Array_constructor id={} size={} elem_size={}", id, size, elem_size);
     let mut heap = HEAP.lock().unwrap();
     if elem_size == 1 {
         let v = vec![0u8; size];
@@ -773,17 +775,34 @@ pub extern "C" fn rt_array_set_fast(id: i64, idx: i64, val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn Array_fill(id: i64, val: i64, size_arg: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub extern "C" fn Array_fill(id: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let size = if size_arg >= 0 && size_arg < 200000000 { size_arg as usize } else { rt_to_number_internal(&heap, size_arg) as usize };
+
+    // Heuristic for ID vs Boolean primitive
+    let mut bool_val = false;
+    if val == 0 || val == 1 {
+         bool_val = val != 0;
+    } else if val > 1000 || val < -1000 {
+         // Check if it's a Boxed Boolean
+         if let Some(TaggedValue::Boolean(b)) = heap.get(val) {
+             bool_val = *b;
+         } else if let Some(TaggedValue::Number(n)) = heap.get(val) {
+             bool_val = *n != 0.0;
+         } else {
+             bool_val = true; // Objects are truthy
+         }
+    } else {
+         bool_val = val != 0;
+    }
+
     match heap.get_mut(id) {
         Some(TaggedValue::Array(arr)) => {
-            arr.clear();
-            arr.resize(size, val);
+            for elem in arr.iter_mut() { *elem = val; }
         }
         Some(TaggedValue::ByteArray(arr)) => {
-            arr.clear();
-            arr.resize(size, (val != 0) as u8);
+            let byte_val = if bool_val { 1 } else { 0 };
+            for elem in arr.iter_mut() { *elem = byte_val; }
         }
         _ => {}
     }

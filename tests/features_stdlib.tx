@@ -1,7 +1,7 @@
 import std:math;
 import std:time;
 import std:json;
-import { Map, Set, put, at, has, size, add } from "std:collections";
+import { Map, Set } from "std:collections";
 
 function run(): void {
     print("--- Native Math Verification ---");
@@ -102,27 +102,27 @@ print("parseInt('abc'): Expected: 0/NaN, Actual: ", parseInt("abc"));
 print("Testing Map and Set types...");
 
 // Test Map
-let m = Map();
-put(m, "name", "TejX");
-put(m, "version", 1);
+let m = new Map();
+m.put("name", "TejX");
+m.put("version", 1);
 
-print("Map.has('name'): Expected: 1/true, Actual: ", has(m, "name"));
-print("Map.get('name'): Expected: TejX, Actual: ", at(m, "name"));
-print("Map.size(): Expected: 2, Actual: ", size(m));
+print("Map.has('name'): Expected: 1/true, Actual: ", m.has("name"));
+print("Map.get('name'): Expected: TejX, Actual: ", m.at("name"));
+print("Map.size(): Expected: 2, Actual: ", m.size());
 
 // del not yet in std:collections, skip
 // print("After del size: Expected: 1, Actual: ", size(m));
 
 // Test Set
-let s = Set();
-add(s, 1);
-add(s, 2);
-add(s, 2);  // Duplicate
-add(s, 3);
+let s = new Set();
+s.add(1);
+s.add(2);
+s.add(2);  // Duplicate
+s.add(3);
 
-print("Set.has(1): Expected: 1/true, Actual: ", has(s, 1));
-print("Set.has(99): Expected: 0/false, Actual: ", has(s, 99));
-print("Set.size(): Expected: 3, Actual: ", size(s));
+print("Set.has(1): Expected: 1/true, Actual: ", s.has(1));
+print("Set.has(99): Expected: 0/false, Actual: ", s.has(99));
+print("Set.size(): Expected: 3, Actual: ", s.size());
 
 print("Map and Set test complete!");
 
