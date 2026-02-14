@@ -1,0 +1,23 @@
+import { Map } from "std:collections";
+
+function groupAnagrams(words: string[]): void {
+  let groups: Map<string, string[]> = new Map<string, string[]>();
+
+  for (let i = 0; i < words.length; i++) {
+    let word = words[i];
+    // Sort the characters of the word to create a "key"
+    let sortedKey = word.split('').sort().join('');
+    
+    if (!groups.has(sortedKey)) {
+      groups.set(sortedKey, []);
+    }
+    groups.get(sortedKey).push(word);
+  }
+
+  // Print grouped anagrams
+  groups.forEach((key, list) => {
+    print("Group (" + key + "):", list);
+  });
+}
+
+groupAnagrams(["eat", "tea", "tan", "ate", "nat", "bat"]);

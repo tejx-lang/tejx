@@ -1,0 +1,20 @@
+import { SharedQueue, Mutex } from "std:sync";
+
+function producer(q: SharedQueue<int>, lock: Mutex): void {
+  for (let i = 0; i < 100; i++) {
+    lock.acquire();
+    q.enqueue(i);
+    lock.release();
+  }
+}
+
+function consumer(q: SharedQueue<int>, lock: Mutex): void {
+  while (true) {
+    lock.acquire();
+    if (!q.isEmpty()) {
+      let val = q.dequeue();
+      print("Consumed:", val);
+    }
+    lock.release();
+  }
+}

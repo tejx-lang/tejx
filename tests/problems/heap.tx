@@ -1,0 +1,13 @@
+import { BinaryHeap } from "std:collections";
+
+function main(): void {
+  // A Max-Heap: always returns the largest number
+  let pq: BinaryHeap<int> = new BinaryHeap<int>();
+
+  pq.push(10);
+  pq.push(100);
+  pq.push(50);
+
+  print(pq.pop()); // Expected: 100
+  print(pq.pop()); // Expected: 50
+}

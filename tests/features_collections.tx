@@ -1,0 +1,36 @@
+import { Stack, Queue, PriorityQueue, push, pop, peek, enqueue, dequeue, insert, extractMin, isEmpty, size } from "std:collections";
+
+print("--- Testing Stack ---");
+let s = Stack();
+print("isEmpty (new): ", isEmpty(s));
+push(s, 10);
+push(s, 20);
+push(s, 30);
+print("size (3): ", size(s));
+print("peek (30): ", peek(s));
+print("pop (30): ", pop(s));
+print("pop (20): ", pop(s));
+print("size (1): ", size(s));
+
+print("\n--- Testing Queue ---");
+let q = Queue();
+enqueue(q, 100);
+enqueue(q, 200);
+print("dequeue (100): ", dequeue(q));
+print("dequeue (200): ", dequeue(q));
+print("isEmpty (true): ", isEmpty(q));
+
+print("\n--- Testing PriorityQueue ---");
+let pq = PriorityQueue();
+insert(pq, 30);
+insert(pq, 10);
+insert(pq, 20);
+insert(pq, 5);
+print("size (4): ", size(pq));
+print("extractMin (5): ", extractMin(pq));
+print("extractMin (10): ", extractMin(pq));
+print("extractMin (20): ", extractMin(pq));
+print("extractMin (30): ", extractMin(pq));
+print("isEmpty (true): ", isEmpty(pq));
+
+print("\nCollections test complete!");

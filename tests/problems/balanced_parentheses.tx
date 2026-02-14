@@ -1,0 +1,29 @@
+import { Stack } from "std:
+";
+
+function isBalanced(expr: string): bool {
+  let s: Stack<char> = new Stack<char>();
+  
+  for (let i = 0; i < expr.length; i++) {
+    let c = expr[i];
+    if (c == '(' || c == '[' || c == '{') {
+      s.push(c);
+    } else {
+      if (s.isEmpty()) return false;
+      let top = s.pop();
+      if ((c == ')' && top != '(') || 
+          (c == ']' && top != '[') || 
+          (c == '}' && top != '{')) {
+        return false;
+      }
+    }
+  }
+  return s.isEmpty();
+}
+
+function main(): void {
+  print(isBalanced("{[()]}")); // true
+  print(isBalanced("{[(])}")); // false
+}
+
+main();

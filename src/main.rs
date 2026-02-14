@@ -98,7 +98,7 @@ fn main() {
     // 5. HIR → MIR Lowering (each function separately)
     let mut mir_functions = Vec::new();
     for hir_func in &lowering_result.functions {
-        let mut mir_lowering = MIRLowering::new();
+        let mut mir_lowering = MIRLowering::new(lowering_result.signatures.clone());
         let mir_func = mir_lowering.lower(hir_func);
         mir_functions.push(mir_func);
     }

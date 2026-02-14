@@ -23,6 +23,13 @@ impl MIRValue {
             MIRValue::Constant { ty, .. } => ty,
         }
     }
+
+    pub fn get_name(&self) -> String {
+        match self {
+            MIRValue::Variable { name, .. } => name.clone(),
+            MIRValue::Constant { value, .. } => value.clone(),
+        }
+    }
 }
 
 
@@ -92,6 +99,11 @@ pub enum MIRInstruction {
     Throw {
         value: MIRValue,
     },
+    Cast {
+        dst: String,
+        src: MIRValue,
+        ty: TejxType,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +143,7 @@ impl BasicBlock {
 pub struct MIRFunction {
     pub name: String,
     pub params: Vec<String>,  // parameter names
+    pub variables: std::collections::HashMap<String, TejxType>, // variable types
     pub blocks: Vec<BasicBlock>,
     pub entry_block: usize,  // index into blocks
 }
@@ -140,6 +153,7 @@ impl MIRFunction {
         Self {
             name,
             params: Vec::new(),
+            variables: std::collections::HashMap::new(),
             blocks: Vec::new(),
             entry_block: 0,
         }

@@ -1,0 +1,22 @@
+class Rectangle {
+  x: float; y: float; w: float; h: float;
+  constructor(x: float, y: float, w: float, h: float) { /* ... */ }
+}
+
+class Quadtree {
+  boundary: Rectangle;
+  capacity: int;
+  points: Point[] = [];
+  divided: bool = false;
+  
+  // Children
+  northWest: Quadtree | null = null;
+  northEast: Quadtree | null = null;
+  southWest: Quadtree | null = null;
+  southEast: Quadtree | null = null;
+
+  subdivide(): void {
+    // Logic to create 4 new Quadtrees for the quadrants
+    this.divided = true;
+  }
+}

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 fn stringify_json_recursive(id: i64) -> String {
     let heap = HEAP.lock().unwrap();
-    if let Some(obj) = heap.objects.get(&id) {
+    if let Some(obj) = heap.get(id) {
         match obj {
             TaggedValue::Map(map) => {
                 let entries: Vec<(String, i64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -47,35 +47,126 @@ pub unsafe extern "C" fn std_json_stringify(val: i64) -> i64 {
     rt_box_string(c_str.into_raw() as i64)
 }
 
+fn parse_val(chars: &mut std::iter::Peekable<std::str::Chars>) -> i64 {
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() { chars.next(); continue; }
+        break;
+    }
+    
+    let first = if let Some(&c) = chars.peek() { c } else { return 0; };
+    
+    match first {
+        '{' => {
+            chars.next();
+            let mut map = HashMap::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() { chars.next(); continue; }
+                if c == '}' { chars.next(); break; }
+                
+                // Key
+                let key_ptr = parse_val(chars);
+                let key = if let Some(TaggedValue::String(s)) = crate::runtime::HEAP.lock().unwrap().get(key_ptr) {
+                    s.clone()
+                } else {
+                    String::new()
+                };
+                
+                while let Some(&c) = chars.peek() {
+                    if c.is_whitespace() || c == ':' { chars.next(); continue; }
+                    break;
+                }
+                
+                // Value
+                let val = parse_val(chars);
+                if !key.is_empty() {
+                    map.insert(key, val);
+                }
+                
+                while let Some(&c) = chars.peek() {
+                    if c.is_whitespace() || c == ',' { chars.next(); continue; }
+                    break;
+                }
+            }
+            let mut heap = crate::runtime::HEAP.lock().unwrap();
+            heap.alloc(TaggedValue::Map(map))
+        }
+        '[' => {
+            chars.next();
+            let mut arr = Vec::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() { chars.next(); continue; }
+                if c == ']' { chars.next(); break; }
+                
+                arr.push(parse_val(chars));
+                
+                while let Some(&c) = chars.peek() {
+                    if c.is_whitespace() || c == ',' { chars.next(); continue; }
+                    break;
+                }
+            }
+            let mut heap = crate::runtime::HEAP.lock().unwrap();
+            heap.alloc(TaggedValue::Array(arr))
+        }
+        '"' => {
+            chars.next();
+            let mut s = String::new();
+            while let Some(c) = chars.next() {
+                if c == '"' { break; }
+                if c == '\\' {
+                    if let Some(next) = chars.next() {
+                        match next {
+                            'n' => s.push('\n'),
+                            't' => s.push('\t'),
+                            'r' => s.push('\r'),
+                            _ => s.push(next),
+                        }
+                    }
+                } else {
+                    s.push(c);
+                }
+            }
+            let c_str = CString::new(s).unwrap();
+            unsafe { rt_box_string(c_str.into_raw() as i64) }
+        }
+        't' => {
+            for _ in 0..4 { chars.next(); }
+            crate::runtime::rt_box_boolean(1)
+        }
+        'f' => {
+            for _ in 0..5 { chars.next(); }
+            crate::runtime::rt_box_boolean(0)
+        }
+        'n' => {
+            for _ in 0..4 { chars.next(); }
+            0
+        }
+        _ if first.is_digit(10) || first == '-' => {
+            let mut s = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_digit(10) || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+' {
+                    s.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+            if let Ok(n) = s.parse::<f64>() {
+                crate::runtime::rt_box_number(n)
+            } else {
+                0
+            }
+        }
+        _ => { chars.next(); 0 }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_json_parse(str_ptr: i64) -> i64 {
-    // Basic parser for now: just returns 0 or number if simple
-    // Real implementation would be complex.
-    // Check if string "42" -> return 42
-    // Check if string "true" -> true
-    
-    // For the test std_json.tx, it likely tests basic parsing or just stringify
-    // Let's implement minimal parsing
-    
     let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::String(s)) = heap.objects.get(&str_ptr) {
-        let s = s.trim();
-        if s == "true" { 
-             drop(heap); return crate::runtime::rt_box_boolean(1); 
-        }
-        if s == "false" { 
-             drop(heap); return crate::runtime::rt_box_boolean(0); 
-        }
-        if let Ok(n) = s.parse::<f64>() {
-             drop(heap); return crate::runtime::rt_box_number(n.to_bits() as i64);
-        }
-        if s.starts_with('"') && s.ends_with('"') {
-             // String literal
-             let content = &s[1..s.len()-1];
-             let c_str = CString::new(content).unwrap();
-             drop(heap);
-             return rt_box_string(c_str.into_raw() as i64);
-        }
+    if let Some(TaggedValue::String(s)) = heap.get(str_ptr) {
+        let s = s.clone();
+        drop(heap);
+        let mut chars = s.chars().peekable();
+        return parse_val(&mut chars);
     }
     0
 }

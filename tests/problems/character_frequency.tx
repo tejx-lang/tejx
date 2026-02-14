@@ -1,0 +1,19 @@
+import { Map } from "std:collections";
+
+function charCount(input: string): void {
+  let counts: Map<char, int> = new Map<char, int>();
+  
+  for (let i = 0; i < input.length; i++) {
+    let c = input[i];
+    if (counts.has(c)) {
+      counts.set(c, counts.get(c) + 1);
+    } else {
+      counts.set(c, 1);
+    }
+  }
+  
+  // Printing results (assuming iterator support)
+  counts.forEach((key, val) => {
+    print(key, ":", val);
+  });
+}

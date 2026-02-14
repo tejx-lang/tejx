@@ -1,0 +1,22 @@
+import { Map } from "std:collections";
+
+class TrieNode {
+  children: Map<char, TrieNode> = new Map<char, TrieNode>();
+  isEndOfWord: bool = false;
+}
+
+class Trie {
+  root: TrieNode = new TrieNode();
+
+  insert(word: string): void {
+    let current = this.root;
+    for (let i = 0; i < word.length; i++) {
+      let c = word[i];
+      if (!current.children.has(c)) {
+        current.children.set(c, new TrieNode());
+      }
+      current = current.children.get(c);
+    }
+    current.isEndOfWord = true;
+  }
+}

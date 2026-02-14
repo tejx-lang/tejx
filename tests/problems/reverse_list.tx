@@ -1,0 +1,19 @@
+class Node<T> {
+  data: T;
+  next: Node<T> | null = null;
+  constructor(val: T) { this.data = val; }
+}
+
+function reverseList(head: Node<int>): Node<int> {
+  let prev: Node<int> | null = null;
+  let current: Node<int> | null = head;
+  let next: Node<int> | null = null;
+
+  while (current != null) {
+    next = current.next;     // Store next
+    current.next = prev;     // Reverse pointer
+    prev = current;          // Move prev forward
+    current = next;          // Move current forward
+  }
+  return prev; // New head
+}

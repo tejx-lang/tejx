@@ -1,5 +1,6 @@
 // Prelude Functions Test
 // ======================
+import { Map, put, size } from "std:collections";
 
 print("--- Testing Prelude Functions ---");
 
@@ -10,10 +11,10 @@ print("len(Array): Expected: 5, Actual: ", len(arr));
 let s = "Hello";
 print("len(String): Expected: 5, Actual: ", len(s));
 
-let m = new Map();
-m.set("a", 1);
-m.set("b", 2);
-print("len(Map): Expected: 2, Actual: ", len(m));
+let m = Map();
+put(m, "a", 1);
+put(m, "b", 2);
+print("len(Map): Expected: 2, Actual: ", size(m));
 
 // 2. Math-like globals
 print("abs(-42): Expected: 42, Actual: ", abs(-42));

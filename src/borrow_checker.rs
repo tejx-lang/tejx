@@ -213,6 +213,14 @@ impl BorrowChecker {
                         }
                     }
                 }
+                MIRInstruction::Cast { dst, src, .. } => {
+                    if let MIRValue::Variable { name, .. } = src {
+                        if current_state.get(name) == Some(&VarState::Moved) {
+                            self.error(format!("Borrow Error: Use of moved variable '{}'", name));
+                        }
+                    }
+                    current_state.insert(dst.clone(), VarState::Live);
+                }
             }
         }
     }

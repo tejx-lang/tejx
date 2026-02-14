@@ -84,6 +84,10 @@ impl TypeChecker {
             Statement::ExportDecl { declaration, .. } => {
                 self.collect_declarations(declaration);
             }
+            Statement::FunctionDeclaration(func) => {
+                let ret_ty = if func.return_type.is_empty() { "any".to_string() } else { func.return_type.clone() };
+                self.define(func.name.clone(), format!("function:{}", ret_ty));
+            }
             _ => {}
         }
     }
@@ -109,7 +113,7 @@ impl TypeChecker {
     }
 
     fn is_valid_type(&self, type_name: &str) -> bool {
-        if type_name == "void" || type_name == "any" {
+        if type_name == "void" || type_name == "any" || type_name == "" {
             return true;
         }
 
@@ -190,19 +194,23 @@ impl TypeChecker {
                                      (type_annotation == "bool" && init_type == "bool") ||
                                      (is_array(type_annotation) && (init_type == "[]" || init_type == "any[]")) ||
                                      (type_annotation == "any[]" && is_array(&init_type)) ||
-                                     (type_annotation == "any");
+                                     (type_annotation == "any" || type_annotation == "");
                     
-                    if type_annotation != "any" && init_type != "any" && init_type != *type_annotation && !compatible {
+                    if type_annotation != "any" && type_annotation != "" && init_type != "any" && init_type != *type_annotation && !compatible {
                          self.report_error(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col);
                     }
 
-                    if type_annotation == "any" {
-                        let _ = self.define_pattern(pattern, "any".to_string());
+                    if type_annotation == "any" || type_annotation == "" {
+                        self.define_pattern(pattern, "any".to_string());
                     } else {
-                        let _ = self.define_pattern(pattern, type_annotation.clone());
+                        self.define_pattern(pattern, type_annotation.clone());
                     }
                 } else {
-                    let _ = self.define_pattern(pattern, type_annotation.clone());
+                    if type_annotation == "any" || type_annotation == "" {
+                        self.define_pattern(pattern, "any".to_string());
+                    } else {
+                        self.define_pattern(pattern, type_annotation.clone());
+                    }
                 }
                 Ok(())
             },
@@ -250,7 +258,8 @@ impl TypeChecker {
                  if !self.is_valid_type(&func.return_type) {
                      self.report_error(format!("Unknown data type: '{}'", func.return_type), func._line, func._col);
                  }
-                 self.current_function_return = Some(func.return_type.clone());
+                  let ret_ty = if func.return_type.is_empty() { "any".to_string() } else { func.return_type.clone() };
+                  self.current_function_return = Some(ret_ty);
                  self.current_function_is_async = func._is_async;
                  
                  self.check_statement(&func.body)?;
@@ -280,7 +289,8 @@ impl TypeChecker {
                      if !self.is_valid_type(&method.func.return_type) {
                          self.report_error(format!("Unknown data type: '{}'", method.func.return_type), class_decl._line, class_decl._col);
                      }
-                     self.current_function_return = Some(method.func.return_type.clone());
+                      let ret_ty = if method.func.return_type.is_empty() { "any".to_string() } else { method.func.return_type.clone() };
+                      self.current_function_return = Some(ret_ty);
                      self.current_function_is_async = method.func._is_async;
                      
                      self.check_statement(&method.func.body)?;

@@ -1,0 +1,4 @@
+let a: int32[] = [10];
+print("Initial:", a[0]);
+a[0] = 99;
+print("After set:", a[0]);

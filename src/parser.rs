@@ -102,7 +102,7 @@ impl Parser {
          
          let pattern = self.parse_binding_pattern();
          
-         let mut type_annotation = "any".to_string();
+         let mut type_annotation = "".to_string();
          if self.match_token(TokenType::Colon) {
              type_annotation = self.parse_type_annotation();
          }
@@ -333,7 +333,7 @@ impl Parser {
         }
         self.consume(TokenType::CloseParen, "Expected ')'");
         
-        let mut return_type = "any".to_string();
+        let mut return_type = "".to_string();
         if self.match_token(TokenType::Colon) {
             return_type = self.parse_type_annotation();
         }
@@ -404,7 +404,7 @@ impl Parser {
                  if !self.check(TokenType::CloseParen) {
                      loop {
                          let name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
-                         let mut type_name = "any".to_string();
+                         let mut type_name = "".to_string();
                          if self.match_token(TokenType::Colon) {
                              type_name = self.parse_type_annotation();
                          }
@@ -433,7 +433,7 @@ impl Parser {
                  let name = self.consume_identifier("Expected getter name").value.clone();
                  self.consume(TokenType::OpenParen, "Expected '('");
                  self.consume(TokenType::CloseParen, "Expected ')'");
-                 let mut return_type = "any".to_string();
+                 let mut return_type = "".to_string();
                  if self.match_token(TokenType::Colon) { return_type = self.parse_type_annotation(); }
                  let body = self.parse_block();
                  getters.push(ClassGetter { _name: name, _return_type: return_type, _body: Box::new(body), _access: access.clone() });
@@ -462,7 +462,7 @@ impl Parser {
                  if !self.check(TokenType::CloseParen) {
                      loop {
                          let p_name = self.consume(TokenType::Identifier, "Expected param").value.clone();
-                         let mut p_type = "any".to_string();
+                         let mut p_type = "".to_string();
                          if self.match_token(TokenType::Colon) { p_type = self.parse_type_annotation(); }
                          params.push(Parameter { name: p_name, type_name: p_type, _default_value: None, _is_rest: false });
                          if !self.match_token(TokenType::Comma) { break; }
@@ -600,7 +600,7 @@ impl Parser {
              if !self.check(TokenType::CloseParen) {
                  loop {
                      let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
-                     let mut p_type = "any".to_string();
+                     let mut p_type = "".to_string();
                      if self.match_token(TokenType::Colon) {
                          p_type = self.parse_type_annotation();
                      }
@@ -1037,7 +1037,7 @@ impl Parser {
                  let pattern = BindingNode::Identifier(name.value.clone());
                  
                  // Type annotation?
-                 let mut ty_annotation = "any".to_string();
+                 let mut ty_annotation = "".to_string();
                  if self.match_token(TokenType::Colon) {
                      ty_annotation = self.parse_type_annotation();
                  }
@@ -1361,8 +1361,8 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> Expression {
         let mut expr = self.parse_term();
-         while self.match_token(TokenType::Greater) || self.match_token(TokenType::GreaterEqual) ||
-               self.match_token(TokenType::Less) || self.match_token(TokenType::LessEqual) ||
+         while self.match_token(TokenType::GreaterEqual) || self.match_token(TokenType::Greater) ||
+               self.match_token(TokenType::LessEqual) || self.match_token(TokenType::Less) ||
                self.match_token(TokenType::Instanceof) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_term();
@@ -1419,8 +1419,8 @@ impl Parser {
                 _col: op_token.column
             };
         }
-        if self.match_token(TokenType::Bang) || self.match_token(TokenType::Minus) ||
-           self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
+        if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) ||
+           self.match_token(TokenType::Bang) || self.match_token(TokenType::Minus) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_unary();
              return Expression::UnaryExpr {
@@ -1432,8 +1432,8 @@ impl Parser {
         }
         let mut expr = self.parse_call();
         // Postfix ++ and --
-        if self.check(TokenType::PlusPlus) || self.check(TokenType::MinusMinus) {
-            let op_token = self.advance().clone();
+        if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
+            let op_token = self.previous().clone();
             expr = Expression::UnaryExpr {
                 op: op_token.token_type,
                 right: Box::new(expr),
@@ -1702,7 +1702,7 @@ impl Parser {
             let name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
             params.push(Parameter {
                 name,
-                type_name: "any".to_string(), 
+                type_name: "".to_string(), 
                 _default_value: None,
                 _is_rest: false
             });
@@ -1713,7 +1713,7 @@ impl Parser {
                 loop {
                     let is_rest = self.match_token(TokenType::Ellipsis);
                     let name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
-                    let mut type_name = "any".to_string();
+                    let mut type_name = "".to_string();
                     if self.match_token(TokenType::Colon) {
                         type_name = self.parse_type_annotation();
                     }
@@ -1856,10 +1856,63 @@ impl Parser {
     fn match_token(&mut self, token_type: TokenType) -> bool {
         if self.check(token_type) {
             self.advance();
-            true
-        } else {
-            false
+            return true;
         }
+
+        // Spacing issue: handle split operators
+        match token_type {
+            TokenType::EqualEqual => {
+                if self.check(TokenType::Equals) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::EqualEqual;
+                    self.tokens[self.current - 1].value = "==".to_string();
+                    return true;
+                }
+            }
+            TokenType::BangEqual => {
+                if self.check(TokenType::Bang) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::BangEqual;
+                    self.tokens[self.current - 1].value = "!=".to_string();
+                    return true;
+                }
+            }
+            TokenType::LessEqual => {
+                if self.check(TokenType::Less) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::LessEqual;
+                    self.tokens[self.current - 1].value = "<=".to_string();
+                    return true;
+                }
+            }
+            TokenType::GreaterEqual => {
+                if self.check(TokenType::Greater) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::GreaterEqual;
+                    self.tokens[self.current - 1].value = ">=".to_string();
+                    return true;
+                }
+            }
+            TokenType::PlusPlus => {
+                if self.check(TokenType::Plus) && self.check_next(TokenType::Plus) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::PlusPlus;
+                    self.tokens[self.current - 1].value = "++".to_string();
+                    return true;
+                }
+            }
+            TokenType::MinusMinus => {
+                if self.check(TokenType::Minus) && self.check_next(TokenType::Minus) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::MinusMinus;
+                    self.tokens[self.current - 1].value = "--".to_string();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        false
     }
 
     fn consume(&mut self, token_type: TokenType, message: &str) -> &Token {

@@ -1,0 +1,20 @@
+class DSU {
+  parent: int[];
+  constructor(n: int) {
+    this.parent = new Array(n);
+    for (let i = 0; i < n; i++) this.parent[i] = i;
+  }
+
+  find(i: int): int {
+    if (this.parent[i] == i) return i;
+    // Path Compression: recursively update parent
+    this.parent[i] = this.find(this.parent[i]);
+    return this.parent[i];
+  }
+
+  union(i: int, j: int): void {
+    let rootI = this.find(i);
+    let rootJ = this.find(j);
+    if (rootI != rootJ) this.parent[rootI] = rootJ;
+  }
+}

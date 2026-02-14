@@ -38,7 +38,7 @@ impl TejxType {
     }
 
     pub fn is_array(&self) -> bool {
-        matches!(self, TejxType::FixedArray(_, _)) || if let TejxType::Class(name) = self { name == "Array" || name.starts_with("Array<") } else { false }
+        matches!(self, TejxType::FixedArray(_, _)) || if let TejxType::Class(name) = self { name == "Array" || name.starts_with("Array<") || name.ends_with("[]") } else { false }
     }
 
     pub fn get_array_element_type(&self) -> TejxType {
@@ -47,6 +47,10 @@ impl TejxType {
             TejxType::Class(name) if name.starts_with("Array<") => {
                 // Simplified extraction: Array<T>
                 let inner = &name[6..name.len()-1];
+                TejxType::from_name(inner)
+            }
+            TejxType::Class(name) if name.ends_with("[]") => {
+                let inner = &name[0..name.len()-2];
                 TejxType::from_name(inner)
             }
             _ => TejxType::Any

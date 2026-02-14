@@ -19,14 +19,15 @@ pub struct Lowering {
     user_functions: RefCell<HashMap<String, TejxType>>,
     variadic_functions: RefCell<HashMap<String, usize>>,
     lambda_functions: RefCell<Vec<HIRStatement>>,
-    scopes: RefCell<Vec<HashMap<String, TejxType>>>,
+    scopes: RefCell<Vec<HashMap<String, (String, TejxType)>>>, // name -> (mangled_name, type)
+    next_scope_id: RefCell<usize>,
     std_imports: RefCell<HashMap<String, ImportMode>>,
     stdlib: StdLib,
     current_class: RefCell<Option<String>>,
     parent_class: RefCell<Option<String>>,
     class_methods: RefCell<HashMap<String, Vec<String>>>,
-    class_instance_fields: RefCell<HashMap<String, Vec<(String, Expression)>>>,
-    class_static_fields: RefCell<HashMap<String, Vec<(String, Expression)>>>,
+    class_instance_fields: RefCell<HashMap<String, Vec<(String, TejxType, Expression)>>>,
+    class_static_fields: RefCell<HashMap<String, Vec<(String, TejxType, Expression)>>>,
     class_getters: RefCell<HashMap<String, HashSet<String>>>,
     class_setters: RefCell<HashMap<String, HashSet<String>>>,
     class_parents: RefCell<HashMap<String, String>>,
@@ -36,6 +37,7 @@ pub struct Lowering {
 /// The last one is always "tejx_main" containing non-function statements.
 pub struct LoweringResult {
     pub functions: Vec<HIRStatement>,  // Each should be HIRStatement::Function
+    pub signatures: HashMap<String, Vec<TejxType>>,
 }
 
 impl Lowering {
@@ -46,6 +48,7 @@ impl Lowering {
             variadic_functions: RefCell::new(HashMap::new()),
             lambda_functions: RefCell::new(Vec::new()),
             scopes: RefCell::new(vec![HashMap::new()]), // Global scope
+            next_scope_id: RefCell::new(1), // Global is 0
             std_imports: RefCell::new(HashMap::new()),
             stdlib: StdLib::new(),
             current_class: RefCell::new(None),
@@ -67,17 +70,30 @@ impl Lowering {
         self.scopes.borrow_mut().pop();
     }
 
-    fn define(&self, name: String, ty: TejxType) {
+    fn define(&self, name: String, ty: TejxType) -> String {
+        let depth = self.scopes.borrow().len() - 1;
+        let mangled = if depth == 0 {
+            name.clone()
+        } else {
+            // Include a unique ID per scope to avoid collisions between siblings
+            let mut id = self.next_scope_id.borrow_mut();
+            let mangled = format!("{}${}", name, *id);
+            // Wait, we only need to increment if we actually define something in a NEW scope?
+            // Actually, incrementing on enter_scope is better.
+            mangled
+        };
+
         if let Some(scope) = self.scopes.borrow_mut().last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name, (mangled.clone(), ty));
         }
+        mangled
     }
 
-    fn lookup(&self, name: &str) -> Option<TejxType> {
+    fn lookup(&self, name: &str) -> Option<(String, TejxType)> {
         let scopes = self.scopes.borrow();
         for scope in scopes.iter().rev() {
-            if let Some(ty) = scope.get(name) {
-                return Some(ty.clone());
+            if let Some(info) = scope.get(name) {
+                return Some(info.clone());
             }
         }
         None
@@ -238,11 +254,11 @@ impl Lowering {
                     for member in &class_decl._members {
                         if member._is_static {
                             if let Some(init) = &member._initializer {
-                                s_fields.push((member._name.clone(), *init.clone()));
+                                s_fields.push((member._name.clone(), TejxType::from_name(&member._type_name), *init.clone()));
                             }
                         } else {
                             if let Some(init) = &member._initializer {
-                                i_fields.push((member._name.clone(), *init.clone()));
+                                i_fields.push((member._name.clone(), TejxType::from_name(&member._type_name), *init.clone()));
                             }
                         }
                     }
@@ -388,7 +404,15 @@ impl Lowering {
             body: Box::new(main_body),
         });
 
-        LoweringResult { functions }
+        let mut signatures = HashMap::new();
+        for func in &functions {
+            if let HIRStatement::Function { name, params, .. } = func {
+                let param_types: Vec<TejxType> = params.iter().map(|(_, ty)| ty.clone()).collect();
+                signatures.insert(name.clone(), param_types);
+            }
+        }
+
+        LoweringResult { functions, signatures }
     }
 
     fn lower_function_declaration(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
@@ -468,7 +492,7 @@ impl Lowering {
                      // Instance fields
                      let i_fields_borrow = self.class_instance_fields.borrow();
                      if let Some(i_list) = i_fields_borrow.get(&class_decl.name) {
-                         for (f_name, f_init) in i_list {
+                         for (f_name, f_ty, f_init) in i_list {
                              let hir_init = self.lower_expression(f_init);
                              // Insert before other logic
                              statements.insert(0, HIRStatement::ExpressionStmt {
@@ -476,11 +500,11 @@ impl Lowering {
                                      target: Box::new(HIRExpression::MemberAccess {
                                          target: Box::new(HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) }),
                                          member: f_name.clone(),
-                                         ty: TejxType::Any
+                                         ty: f_ty.clone(),
                                      }),
                                      value: Box::new(hir_init),
-                                     ty: TejxType::Any
-                                 }
+                                     ty: TejxType::Any,
+                                 },
                              });
                          }
                      }
@@ -544,7 +568,7 @@ impl Lowering {
 
                      // Inject class metadata for instanceof support
                      // Set __class__ = "ClassName" on this
-                     statements.insert(0, HIRStatement::ExpressionStmt {
+                     statements.push(HIRStatement::ExpressionStmt {
                          expr: HIRExpression::Call {
                              callee: "m_set".to_string(),
                              args: vec![
@@ -578,7 +602,7 @@ impl Lowering {
                          }
                          drop(class_parents_borrow);
                          let parents_str = parents.join(",");
-                         statements.insert(0, HIRStatement::ExpressionStmt {
+                         statements.push(HIRStatement::ExpressionStmt {
                              expr: HIRExpression::Call {
                                  callee: "m_set".to_string(),
                                  args: vec![
@@ -650,13 +674,13 @@ impl Lowering {
         // Lower static fields into global assignments
         let s_fields_borrow = self.class_static_fields.borrow();
         if let Some(s_list) = s_fields_borrow.get(&class_decl.name) {
-            for (f_name, f_init) in s_list {
+            for (f_name, f_ty, f_init) in s_list {
                 let hir_init = self.lower_expression(f_init);
                 // Static fields are mangled as g_Class_Field
                 let mangled_name = format!("g_{}_{}", class_decl.name, f_name);
                 main_stmts.push(HIRStatement::ExpressionStmt {
                     expr: HIRExpression::Assignment {
-                        target: Box::new(HIRExpression::Variable { name: mangled_name, ty: TejxType::Any }),
+                        target: Box::new(HIRExpression::Variable { name: mangled_name, ty: f_ty.clone() }),
                         value: Box::new(hir_init),
                         ty: TejxType::Any
                     }
@@ -1005,7 +1029,7 @@ impl Lowering {
                 }
             }
             Expression::Identifier { name, .. } => {
-                let ty = self.lookup(name).unwrap_or(TejxType::Any);
+                let ty = self.lookup(name).map(|(_, t)| t).unwrap_or(TejxType::Any);
                 let final_name = if self.user_functions.borrow().contains_key(name) && name != "main" {
                     format!("f_{}", name)
                 } else {
@@ -1283,13 +1307,13 @@ impl Lowering {
                         return HIRExpression::Call {
                             callee: "rt_typeof".to_string(),
                             args: vec![r_expr],
-                            ty: TejxType::String,
+                            ty: TejxType::Any,
                         };
                     } else {
                         let type_name = match &r_ty {
                             TejxType::Int32 | TejxType::Int16 | TejxType::Int64 | TejxType::Int128 => "number",
                             TejxType::Float32 | TejxType::Float16 | TejxType::Float64 => "number",
-                            TejxType::Bool => "bool",
+                            TejxType::Bool => "boolean",
                             TejxType::String => "string",
                             TejxType::Char => "char",
                             TejxType::Class(c) => c,
@@ -1360,7 +1384,7 @@ impl Lowering {
                             };
                             final_callee = self.stdlib.get_runtime_name(mod_name, func_name);
                             if mod_name == "math" {
-                                ty = TejxType::Float32;
+                                ty = TejxType::Any;
                             }
                             break;
                         }
@@ -1388,7 +1412,7 @@ impl Lowering {
                                 // Try Static Dispatch for Classes
                                 let mut class_name_opt = None;
                                 let mut is_instance = false;
-                                if let Some(TejxType::Class(cn)) = self.lookup(obj_name) {
+                                if let Some((_, TejxType::Class(cn))) = self.lookup(obj_name) {
                                     class_name_opt = Some(cn);
                                     is_instance = true;
                                 } else if self.class_methods.borrow().contains_key(obj_name) {
@@ -1399,6 +1423,7 @@ impl Lowering {
                                     let mangled_key = format!("{}_{}", class_name, method_name);
                                     if self.user_functions.borrow().contains_key(&mangled_key) {
                                         final_callee = format!("f_{}", mangled_key);
+                                        eprintln!("lowering: resolved method {} to {}", callee, final_callee);
                                         let mut m_args = Vec::new();
                                         if is_instance {
                                             m_args.push(HIRExpression::Variable { 
@@ -1413,29 +1438,44 @@ impl Lowering {
 
                                 // If not resolved yet, check common methods or fallback to dynamic
                                 if final_callee == normalized {
-                                    let obj_expr = if obj_path == "this" || obj_path == "super" {
-                                        HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
-                                    } else if obj_path.contains('.') {
-                                         let sub_parts: Vec<&str> = obj_path.split('.').collect();
-                                         let mut current = if sub_parts[0] == "this" {
-                                             HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
-                                         } else {
-                                             HIRExpression::Variable { name: sub_parts[0].to_string(), ty: TejxType::Any }
-                                         };
-                                         for idx in 1..sub_parts.len() {
-                                             current = HIRExpression::MemberAccess {
-                                                 target: Box::new(current),
-                                                 member: sub_parts[idx].to_string(),
-                                                 ty: TejxType::Any
-                                             };
-                                         }
-                                         current
-                                    } else {
-                                        HIRExpression::Variable { name: obj_path.clone(), ty: TejxType::Any }
-                                    };
+                                     let obj_expr = if obj_path == "this" || obj_path == "super" {
+                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                     } else if obj_path.contains('.') {
+                                          let sub_parts: Vec<&str> = obj_path.split('.').collect();
+                                          let mut current = if sub_parts[0] == "this" {
+                                              HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                          } else {
+                                              let base_ty = self.lookup(sub_parts[0]).map(|(_, t)| t).unwrap_or(TejxType::Any);
+                                              HIRExpression::Variable { name: sub_parts[0].to_string(), ty: base_ty }
+                                          };
+                                          for idx in 1..sub_parts.len() {
+                                              let mut next_ty = TejxType::Any;
+                                              // Try to resolve member type
+                                              if let TejxType::Class(class_name) = current.get_type() {
+                                                  let fields = self.class_instance_fields.borrow();
+                                                  if let Some(i_list) = fields.get(&class_name) {
+                                                      for (f_name, f_ty, _) in i_list {
+                                                          if f_name == sub_parts[idx] {
+                                                              next_ty = f_ty.clone();
+                                                              break;
+                                                          }
+                                                      }
+                                                  }
+                                              }
+                                              current = HIRExpression::MemberAccess {
+                                                  target: Box::new(current),
+                                                  member: sub_parts[idx].to_string(),
+                                                  ty: next_ty,
+                                              };
+                                          }
+                                          current
+                                     } else {
+                                         let ty = self.lookup(&obj_path).map(|(_, t)| t).unwrap_or(TejxType::Any);
+                                         HIRExpression::Variable { name: obj_path.clone(), ty }
+                                     };
 
                                     let (runtime_callee, ret_type) = match method_name.as_str() {
-                                         "push" | "unshift" | "indexOf" => (format!("Array_{}", method_name), TejxType::Int32),
+                                         "push" | "unshift" | "indexOf" | "fill" => (format!("Array_{}", method_name), TejxType::Int32),
                                          "pop" | "shift" => (format!("Array_{}", method_name), TejxType::Any), 
                                          "join" => ("__join".to_string(), TejxType::Any),
                                          "lock" | "unlock" => (format!("m_{}", method_name), TejxType::Any),
@@ -1522,10 +1562,10 @@ impl Lowering {
                 if !obj_name.is_empty() {
                     let s_fields = self.class_static_fields.borrow();
                     if let Some(f_list) = s_fields.get(&obj_name) {
-                        if f_list.iter().any(|(n, _)| n == member) {
+                        if let Some((_name, f_ty, _)) = f_list.iter().find(|(n, _, _)| n == member) {
                             return HIRExpression::Variable {
                                 name: format!("g_{}_{}", obj_name, member),
-                                ty: TejxType::Any
+                                ty: f_ty.clone(),
                             };
                         }
                     }
@@ -1546,6 +1586,25 @@ impl Lowering {
                     }
                 }
 
+                // Field Resolution
+                let lowered_object = self.lower_expression(object);
+                let obj_ty = lowered_object.get_type();
+                if let TejxType::Class(class_name) = obj_ty {
+                    let fields = self.class_instance_fields.borrow();
+                    if let Some(i_list) = fields.get(&class_name) {
+                        for (f_name, f_ty, _) in i_list {
+                            if f_name == member {
+                                return HIRExpression::MemberAccess {
+                                    target: Box::new(lowered_object),
+                                    member: member.clone(),
+                                    ty: f_ty.clone(),
+                                };
+                            }
+                        }
+                    }
+                    // Static field? (If object name matches class name, handled differently usually, but let's check)
+                }
+
                 let combined = format!("{}_{}", obj_name, member);
                 if self.user_functions.borrow().contains_key(&combined) {
                     HIRExpression::Variable {
@@ -1554,17 +1613,19 @@ impl Lowering {
                     }
                 } else {
                     HIRExpression::MemberAccess {
-                        target: Box::new(self.lower_expression(object)),
+                        target: Box::new(lowered_object),
                         member: member.clone(),
                         ty: TejxType::Any,
                     }
                 }
             }
             Expression::ArrayAccessExpr { target, index, .. } => {
+                let lowered_target = self.lower_expression(target);
+                let ty = lowered_target.get_type().get_array_element_type();
                 HIRExpression::IndexAccess {
-                    target: Box::new(self.lower_expression(target)),
+                    target: Box::new(lowered_target),
                     index: Box::new(self.lower_expression(index)),
-                    ty: TejxType::Any,
+                    ty,
                 }
             }
             Expression::ObjectLiteralExpr { entries, .. } => {
@@ -1630,12 +1691,21 @@ impl Lowering {
                 };
                 let lambda_name = format!("lambda_{}", id);
                 
+                // Enforce Any type for lambda parameters to handle boxed values from indirect calls
                 let hir_params: Vec<(String, TejxType)> = params.iter()
-                    .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+                    .map(|p| (p.name.clone(), TejxType::Any))
                     .collect();
+                
+                // CRITICAL: Enter a new scope for the lambda body and define parameters
+                self.enter_scope();
+                for (name, ty) in &hir_params {
+                    self.define(name.clone(), ty.clone());
+                }
                 
                 let hir_body = self.lower_statement(body)
                     .unwrap_or(HIRStatement::Block { statements: vec![] });
+                
+                self._exit_scope();
                 
                 self.lambda_functions.borrow_mut().push(HIRStatement::Function {
                     name: lambda_name.clone(),

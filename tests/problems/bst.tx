@@ -1,0 +1,19 @@
+class TreeNode {
+  val: int;
+  left: TreeNode | null = null;
+  right: TreeNode | null = null;
+  constructor(v: int) { this.val = v; }
+}
+
+function hasPathSum(root: TreeNode | null, sum: int): bool {
+  if (root == null) return false;
+  
+  // If we are at a leaf node
+  if (root.left == null && root.right == null) {
+    return sum == root.val;
+  }
+  
+  // Recursive check for children
+  let remaining = sum - root.val;
+  return hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
+}

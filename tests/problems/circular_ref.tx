@@ -1,0 +1,11 @@
+
+class Person {
+  friend: Person | null = null;
+}
+
+function leakTest(): void {
+  let a = new Person();
+  let b = new Person();
+  a.friend = b;
+  b.friend = a;
+} // 'a' and 'b' go out of scope here.

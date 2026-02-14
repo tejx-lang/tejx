@@ -1,0 +1,30 @@
+class CacheNode {
+  key: string;
+  val: int;
+  next: CacheNode | null = null;
+  prev: CacheNode | null = null;
+  constructor(k: string, v: int) { this.key = k; this.val = v; }
+}
+
+class LRUCache {
+  capacity: int;
+  map: Map<string, CacheNode> = new Map<string, CacheNode>();
+  head: CacheNode = new CacheNode("", 0); // Dummy Head
+  tail: CacheNode = new CacheNode("", 0); // Dummy Tail
+
+  constructor(cap: int) {
+    this.capacity = cap;
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+  }
+
+  get(key: string): int {
+    if (!this.map.has(key)) return -1;
+    let node = this.map.get(key);
+    this.remove(node);
+    this.insert(node); // Move to head (most recent)
+    return node.val;
+  }
+
+  // ... (insert and remove methods follow)
+}

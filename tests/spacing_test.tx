@@ -1,0 +1,11 @@
+function main(): void {
+  print("Starting spacing test");
+  for (let i = 0 ; i < = 5 ; i + +) {
+    if (i = = 3) {
+      print("found 3");
+    }
+    print(i);
+  }
+  print("Done");
+}
+main();

@@ -1,0 +1,38 @@
+import { Map, BinaryHeap } from "std:collections";
+
+class Edge {
+  to: string;
+  weight: int;
+  constructor(t: string, w: int) { this.to = t; this.weight = w; }
+}
+
+function dijkstra(graph: Map<string, Edge[]>, start: string): Map<string, int> {
+  let distances: Map<string, int> = new Map<string, int>();
+  let pq: BinaryHeap<[int, string]> = new BinaryHeap(); // [distance, node_name]
+
+  // Initialize distances to "Infinity" (using a large int)
+  graph.forEach((node, edges) => {
+    distances.set(node, 2147483647); 
+  });
+  
+  distances.set(start, 0);
+  pq.push([0, start]);
+
+  while (!pq.isEmpty()) {
+    let [d, u] = pq.pop();
+
+    if (d > distances.get(u)) continue;
+
+    let neighbors = graph.get(u);
+    for (let i = 0; i < neighbors.length; i++) {
+      let edge = neighbors[i];
+      let newDist = distances.get(u) + edge.weight;
+      
+      if (newDist < distances.get(edge.to)) {
+        distances.set(edge.to, newDist);
+        pq.push([newDist, edge.to]);
+      }
+    }
+  }
+  return distances;
+}

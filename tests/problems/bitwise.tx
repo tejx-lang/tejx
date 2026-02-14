@@ -1,0 +1,11 @@
+function testBits(): void {
+  let a = 5;  // 0101
+  let b = 3;  // 0011
+
+  print(a & b);  // AND: 1
+  print(a | b);  // OR:  7
+  print(a ^ b);  // XOR: 6
+  print(a << 1); // Shift Left: 10
+}
+
+testBits();

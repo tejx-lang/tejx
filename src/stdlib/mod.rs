@@ -6,6 +6,7 @@ pub mod os;
 pub mod time;
 pub mod json;
 pub mod prelude;
+pub mod collections;
 
 pub struct StdLib {
     modules: HashMap<String, HashSet<String>>,
@@ -21,6 +22,17 @@ impl StdLib {
         modules.insert("os".to_string(), os::exports());
         modules.insert("time".to_string(), time::exports());
         modules.insert("json".to_string(), HashSet::from(["stringify".to_string(), "parse".to_string()]));
+        modules.insert("collections".to_string(), collections::exports());
+        
+        // Add all methods to collections
+        if let Some(funcs) = modules.get_mut("collections") {
+            let extra = [
+                "push", "pop", "peek", "enqueue", "dequeue", "insert", "extractMin",
+                "insertMax", "extractMax", "isEmpty", "size", "put", "at", "has",
+                "delete", "add", "clear", "contains", "find", "addPath"
+            ];
+            for f in extra { funcs.insert(f.to_string()); }
+        }
         
         Self {
             modules,
