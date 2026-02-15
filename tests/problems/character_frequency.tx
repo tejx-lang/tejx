@@ -1,10 +1,10 @@
 import { Map } from "std:collections";
 
 function charCount(input: string): void {
-  let counts: Map<char, int> = new Map<char, int>();
+  let counts: Map<string, int> = new Map();
   
   for (let i = 0; i < input.length; i++) {
-    let c = input[i];
+    let c = "" + input[i]; // Convert char to string
     if (counts.has(c)) {
       counts.set(c, counts.get(c) + 1);
     } else {
@@ -12,8 +12,12 @@ function charCount(input: string): void {
     }
   }
   
-  // Printing results (assuming iterator support)
-  counts.forEach((key, val) => {
-    print(key, ":", val);
-  });
+  // Check specific counts
+  print("'l' count: Expected: 3, Actual: ", counts.get("l"));
+  print("'o' count: Expected: 2, Actual: ", counts.get("o"));
+  
+  let keys = counts.keys();
+  print("Unique chars: Expected: 8, Actual: ", keys.length);
 }
+
+charCount("hello world");

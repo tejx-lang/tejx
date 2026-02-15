@@ -596,6 +596,11 @@ impl MIRLowering {
                         self.current_block = merge_block;
                         MIRValue::Variable { name: result_temp, ty: ty.clone() }
                     }
+                    TokenType::Comma => {
+                        let _l = self.lower_expression(left);
+                        let r = self.lower_expression(right);
+                        r
+                    }
                     TokenType::PipePipe => {
                         // Short-circuit OR: left || right
                         // if left then left else evaluate right

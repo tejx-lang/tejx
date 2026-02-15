@@ -1,15 +1,16 @@
 class Node<T> {
   data: T;
-  next: Node<T> | null = null;
+  next: Node<T> | None = None;
   constructor(val: T) { this.data = val; }
 }
 
-function reverseList(head: Node<int>): Node<int> {
-  let prev: Node<int> | null = null;
-  let current: Node<int> | null = head;
-  let next: Node<int> | null = null;
+// Reverse a linked list
+function reverseList(head: Node<int> | None): Node<int> | None {
+  let prev: Node<int> | None = None;
+  let current: Node<int> | None = head;
+  let next: Node<int> | None = None;
 
-  while (current != null) {
+  while (current != None) {
     next = current.next;     // Store next
     current.next = prev;     // Reverse pointer
     prev = current;          // Move prev forward
@@ -17,3 +18,23 @@ function reverseList(head: Node<int>): Node<int> {
   }
   return prev; // New head
 }
+
+function main(): void {
+  let n1 = new Node<int>(1);
+  let n2 = new Node<int>(2);
+  let n3 = new Node<int>(3);
+  n1.next = n2;
+  n2.next = n3;
+
+  print("Original: 1 -> 2 -> 3");
+  let head: Node<int> | None = reverseList(n1);
+  
+  print("Reversed:");
+  while (head != None) {
+    print(head.data); // Expected: 3, 2, 1
+    head = head.next;
+  }
+  print("Reverse List: Done (Check manually for 3, 2, 1 sequence)");
+}
+
+main();

@@ -1,12 +1,21 @@
 class SegNode {
   val: int;
-  left: SegNode | null;
-  right: SegNode | null;
+  left: SegNode | None;
+  right: SegNode | None;
   constructor(v: int, l: SegNode, r: SegNode) { /* ... */ }
 }
 
-function update(node: SegNode, start: int, end: int, idx: int, val: int): SegNode {
-  if (start == end) return new SegNode(val, null, null);
+function update(node: SegNode | None, start: int, end: int, idx: int, val: int): SegNode {
+  if (node == None) {
+     if (start == end) return new SegNode(val, None, None);
+     let mid = (start + end) / 2;
+     // Create a new node if it doesn't exist
+     let newNode: any = new SegNode(0, None, None); 
+     // Proceed to update it
+     node = newNode; 
+  }
+  
+  if (start == end) return new SegNode(node.val + val, None, None);
   
   let mid = (start + end) / 2;
   // Instead of modifying, we return a BRAND NEW path
@@ -16,3 +25,9 @@ function update(node: SegNode, start: int, end: int, idx: int, val: int): SegNod
     return new SegNode(node.val + val, node.left, update(node.right, mid + 1, end, idx, val));
   }
 }
+
+let root = new SegNode(0, None, None);
+// Note: Partial test as full ST build is missing in file
+let updated = update(root, 0, 10, 5, 10);
+print("Update returned node: Expected: valid, Actual: ", updated != None);
+print("Updated value: Expected: 10, Actual: ", updated.val);

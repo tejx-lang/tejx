@@ -1,62 +1,13 @@
-class BloomFilter {
-  bitArray: int[]; // Using ints as bit-buckets
-  size: int;
-
-  constructor(m: int) {
-    this.size = m;
-    this.bitArray = new Array(m / 32).fill(0);
-  }
-
-  add(item: string): void {
-    let h1 = this.hash1(item) % this.size;
-    let h2 = this.hash2(item) % this.size;
-    // Set bits in the array
-    this.setBit(h1);
-    this.setBit(h2);
-  }
-
-  hash1(s: string): int {
-    let h = 0;
-    for (let i = 0; i < s.length; i++) {
-        h = (h * 31 + s.charCodeAt(i)) | 0;
-    }
-    return h;
-  }
-
-  hash2(s: string): int {
-    let h = 0;
-    for (let i = 0; i < s.length; i++) {
-        h = (h * 17 + s.charCodeAt(i)) | 0;
-    }
-    return h;
-  }
-
-  setBit(index: int): void {
-    let wordIndex = index / 32;
-    let bitIndex = index % 32;
-    this.bitArray[wordIndex] |= (1 << bitIndex);
-  }
-
-  getBit(index: int): bool {
-    let wordIndex = index / 32;
-    let bitIndex = index % 32;
-    return (this.bitArray[wordIndex] & (1 << bitIndex)) != 0;
-  }
-
-  contains(item: string): bool {
-    let h1 = hash1(item) % this.size;
-    let h2 = hash2(item) % this.size;
-    return this.getBit(h1) && this.getBit(h2);
-  }
-}
+import { BloomFilter } from "std:collections";
 
 function testBloomFilter(): void {
-    let bf = new BloomFilter(1000);
+    // BloomFilter(size_bits, k_hashes)
+    let bf = new BloomFilter(1000, 3);
     bf.add("apple");
     bf.add("banana");
     
-    print(bf.contains("apple")); // true
-    print(bf.contains("orange")); // false (usually)
+    print("Contains 'apple': Expected: true, Actual: ", bf.contains("apple"));
+    print("Contains 'orange': Expected: false, Actual: ", bf.contains("orange"));
 }
 
 testBloomFilter();

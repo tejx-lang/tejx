@@ -127,6 +127,7 @@ impl Lowering {
             "strVal_trim", "trimmed_startsWith", 
             "trimmed_endsWith", "trimmed_replace", 
             "trimmed_toLowerCase", "trimmed_toUpperCase",
+            "rt_not",
             // Prelude names removed from here as they are in stdlib.prelude
              "printf"
         ];
@@ -180,8 +181,8 @@ impl Lowering {
                             ("MinHeap", vec!["insert", "extractMin", "size", "isEmpty"]),
                             ("MaxHeap", vec!["insertMax", "extractMax", "size", "isEmpty"]),
                             ("PriorityQueue", vec!["insert", "extractMin", "size", "isEmpty"]),
-                            ("Map", vec!["put", "at", "has", "size", "isEmpty"]),
-                            ("Set", vec!["add", "has", "size", "isEmpty"]),
+                            ("Map", vec!["set", "get", "put", "at", "delete", "remove", "has", "size", "isEmpty", "keys", "values"]),
+                            ("Set", vec!["add", "delete", "remove", "has", "size", "isEmpty", "values"]),
                             ("OrderedMap", vec!["put", "at", "has", "size", "isEmpty"]),
                             ("OrderedSet", vec!["add", "has", "size", "isEmpty"]),
                             ("BloomFilter", vec!["add", "contains"]),
@@ -1251,21 +1252,10 @@ impl Lowering {
                          }
                      }
                       TokenType::Bang => {
-                         HIRExpression::BinaryExpr {
-                             left: Box::new(self.lower_expression(right)),
-                             op: TokenType::BangEqual, // Hack: Use != 0 or similar? 
-                             // Wait, !x is boolean op.
-                             // HIR doesn't have UnaryExpr. BinaryExpr with special op?
-                             // Or strict BinaryExpr mapping.
-                             // Actually we have BangEqual ( != ).
-                             // To do Not, we can do (x == false) or (x == 0).
-                             // Or introduce UnaryExpr in HIR?
-                             // Existing code didn't exhibit this?
-                             // Let's check HIRExpression definition.
-                             // It has BinaryExpr, no Unary.
-                             // We can use (x == false)
-                             right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Bool }),
-                             ty: TejxType::Bool
+                         HIRExpression::Call {
+                             callee: "rt_not".to_string(),
+                             args: vec![self.lower_expression(right)],
+                             ty: TejxType::Bool,
                          }
                      }
                      TokenType::Minus => {
@@ -1329,8 +1319,9 @@ impl Lowering {
                         final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
                         final_args.extend(hir_args.clone());
                     }
-                } else if self.user_functions.borrow().contains_key(callee) {
+                } else if let Some(ret_ty) = self.user_functions.borrow().get(callee) {
                     final_callee = if callee == "main" { "f_main".to_string() } else { format!("f_{}", callee) };
+                    ty = ret_ty.clone();
                 } else if self.stdlib.is_prelude_func(&normalized) || normalized == "log" || normalized == "console_log" {
                     final_callee = if normalized == "log" || normalized == "console_log" { "print".to_string() } else { normalized.clone() };
                 } else {
@@ -1409,7 +1400,10 @@ impl Lowering {
                                     class_name_opt = Some(obj_name.to_string());
                                 }
 
-                                if let Some(class_name) = class_name_opt {
+                                if let Some(mut class_name) = class_name_opt {
+                                    if let Some(pos) = class_name.find('<') {
+                                        class_name = class_name[..pos].to_string();
+                                    }
                                     let mangled_key = format!("{}_{}", class_name, method_name);
                                     if self.user_functions.borrow().contains_key(&mangled_key) {
                                         let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"]
@@ -1732,22 +1726,33 @@ impl Lowering {
                     .map(|a| self.lower_expression(a))
                     .collect();
                 
+                let mut normalized_class = class_name.clone();
+                if let Some(pos) = normalized_class.find('<') {
+                    normalized_class = normalized_class[..pos].to_string();
+                }
+
                 // Variadic check for constructor
-                let cons_unmangled = format!("{}_constructor", class_name);
+                let cons_unmangled = format!("{}_constructor", normalized_class);
                 if let Some(&fixed_count) = self.variadic_functions.borrow().get(&cons_unmangled) {
                      if hir_args.len() >= fixed_count {
-                         let (fixed, rest) = hir_args.split_at(fixed_count);
-                         let mut new_var_args = fixed.to_vec();
-                         new_var_args.push(HIRExpression::ArrayLiteral {
-                             elements: rest.to_vec(),
-                             ty: TejxType::Any
-                         });
-                         hir_args = new_var_args;
+                          let (fixed, rest) = hir_args.split_at(fixed_count);
+                          let mut new_var_args = fixed.to_vec();
+                          new_var_args.push(HIRExpression::ArrayLiteral {
+                              elements: rest.to_vec(),
+                              ty: TejxType::Any
+                          });
+                          hir_args = new_var_args;
                      }
                 }
 
                 HIRExpression::NewExpr {
-                    class_name: class_name.clone(),
+                    class_name: normalized_class, // Keep full name for type info? Or normalized? 
+                    // Actually, HIR NewExpr's class_name is used in mir_lowering to pick constructor.
+                    // But we might need the full name for type inference elsewhere.
+                    // Let's use normalized_class for the string used in matching.
+                    // WAIT! HIR NewExpr's class_name is used in MIRLowering::lower_expression (line 533-548).
+                    // If I change it to normalized_class, MIRLowering will see "Stack".
+                    // That's exactly what it needs!
                     _args: hir_args,
                 }
             }

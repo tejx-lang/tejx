@@ -1,8 +1,8 @@
 import { Map } from "std:collections";
 
-function findTwoSum(nums: int[], target: int): int[] | null {
+function findTwoSum(nums: int[], target: int): int[] | None {
   // Map stores: Value -> Index
-  let prevMap: Map<int, int> = new Map<int, int>();
+  let prevMap: Map<int, int> = new Map();
 
   for (let i = 0; i < nums.length; i++) {
     let diff = target - nums[i];
@@ -12,14 +12,16 @@ function findTwoSum(nums: int[], target: int): int[] | null {
     }
     prevMap.set(nums[i], i);
   }
-  return null;
+  return None;
 }
 
 function main(): void {
   let result = findTwoSum([2, 7, 11, 15], 9);
-  if (result != null) {
-    print("Indices found at:", result[0], "and", result[1]);
+  if (result != None) {
+    print("Indices found: Expected: 0 and 1 (values 2+7=9), Actual: ", result[0], "and", result[1]);
+  } else {
+    print("Indices: Expected: Found, Actual: None");
   }
 }
 
-main()
+main();

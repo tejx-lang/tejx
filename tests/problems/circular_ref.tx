@@ -1,6 +1,6 @@
 
 class Person {
-  friend: Person | null = null;
+  friend: Person | None = None;
 }
 
 function leakTest(): void {
@@ -8,4 +8,8 @@ function leakTest(): void {
   let b = new Person();
   a.friend = b;
   b.friend = a;
-} // 'a' and 'b' go out of scope here.
+  print("Cycle created. Function exiting (GC should start).");
+}
+print("Constructing circular ref...");
+leakTest();
+print("Done.");

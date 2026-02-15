@@ -22,6 +22,7 @@ pub enum TokenType {
     // Logic & Comparison
     EqualEqual, EqualEqualEqual, Bang, BangEqual, BangEqualEqual, Less, LessEqual, Greater, GreaterEqual,
     AmpersandAmpersand, PipePipe,
+    Ampersand, Pipe, Caret, Tilde, LessLess, GreaterGreater,
     // Assignment & Unary Sugar
     PlusEquals, MinusEquals, StarEquals, SlashEquals,
     PlusPlus, MinusMinus,

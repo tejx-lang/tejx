@@ -1,19 +1,39 @@
 class TreeNode {
   val: int;
-  left: TreeNode | null = null;
-  right: TreeNode | null = null;
+  left: TreeNode | None = None;
+  right: TreeNode | None = None;
   constructor(v: int) { this.val = v; }
 }
 
-function hasPathSum(root: TreeNode | null, sum: int): bool {
-  if (root == null) return false;
+function hasPathSum(root: TreeNode | None, sum: int): bool {
+  if (root == None) {
+    return false;
+  }
+  
+  print("hasPathSum: val=", root.val, "sum=", sum);
   
   // If we are at a leaf node
-  if (root.left == null && root.right == null) {
-    return sum == root.val;
+  if (root.left == None && root.right == None) {
+    let res = sum == root.val;
+    print("Leaf reached. res=", res);
+    return res;
   }
   
   // Recursive check for children
   let remaining = sum - root.val;
-  return hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
+  let res = hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
+  print("Returning from val=", root.val, "res=", res);
+  return res;
 }
+
+// Test case
+let root: TreeNode = new TreeNode(5);
+root.left = new TreeNode(4);
+root.right = new TreeNode(8);
+root.left.left = new TreeNode(11);
+root.left.left.left = new TreeNode(7);
+root.left.left.right = new TreeNode(2);
+
+print("PathSum(22): Expected: true, Actual: ", hasPathSum(root, 22));
+print("PathSum(26): Expected: false, Actual: ", hasPathSum(root, 26)); 
+print("PathSum(18): Expected: false, Actual: ", hasPathSum(root, 18));

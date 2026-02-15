@@ -112,15 +112,44 @@ impl Parser {
              initializer = Some(Box::new(self.parse_expression()));
          }
          
-         self.consume(TokenType::Semicolon, "Expected ';' after variable declaration.");
+
          
-         Statement::VarDeclaration {
+         let mut declarations = vec![Statement::VarDeclaration {
              pattern,
              type_annotation,
              initializer,
              is_const,
              line: start_token.line,
              _col: start_token.column
+         }];
+
+         // Handle multiple declarations: let x = 1, y = 2;
+         while self.match_token(TokenType::Comma) {
+             let p = self.parse_binding_pattern();
+             let mut ta = "".to_string();
+             if self.match_token(TokenType::Colon) { ta = self.parse_type_annotation(); }
+             let mut init = None;
+             if self.match_token(TokenType::Equals) { init = Some(Box::new(self.parse_expression())); }
+             declarations.push(Statement::VarDeclaration {
+                 pattern: p,
+                 type_annotation: ta,
+                 initializer: init,
+                 is_const,
+                 line: start_token.line,
+                 _col: start_token.column
+             });
+         }
+         
+         self.consume(TokenType::Semicolon, "Expected ';' after variable declaration.");
+         
+         if declarations.len() == 1 {
+             return declarations.pop().unwrap();
+         } else {
+             return Statement::BlockStmt {
+                 statements: declarations,
+                 _line: start_token.line,
+                 _col: start_token.column
+             };
          }
     }
 
@@ -147,7 +176,7 @@ impl Parser {
             TokenType::String | TokenType::Number | 
             TokenType::From | TokenType::To | TokenType::Of | TokenType::Public | TokenType::Private |
             TokenType::Protected | TokenType::Static | TokenType::Abstract |
-            TokenType::Extends |
+            TokenType::Extends | TokenType::Some | TokenType::None |
             TokenType::TypeAny | TokenType::TypeVoid | TokenType::TypeInt | TokenType::TypeFloat |
             TokenType::TypeInt16 | TokenType::TypeInt64 | TokenType::TypeInt128 |
             TokenType::TypeFloat16 | TokenType::TypeFloat64 | TokenType::TypeChar |
@@ -318,7 +347,7 @@ impl Parser {
                 }
                 let mut default_val = None;
                 if self.match_token(TokenType::Equals) {
-                    default_val = Some(Box::new(self.parse_expression()));
+                    default_val = Some(Box::new(self.parse_assignment()));
                 }
                 
                 params.push(Parameter {
@@ -357,6 +386,15 @@ impl Parser {
     fn parse_class_declaration(&mut self) -> Statement {
         let start = self.consume(TokenType::Class, "Expected 'class'").clone();
         let name = self.consume_identifier("Expected class name").value.clone();
+        
+        // Support generic class: class Node<T>
+        if self.match_token(TokenType::Less) {
+            loop {
+                self.consume(TokenType::Identifier, "Expected type parameter");
+                if !self.match_token(TokenType::Comma) { break; }
+            }
+            self.consume(TokenType::Greater, "Expected '>'");
+        }
         
         // Extends...
         let mut parent_name = "".to_string();
@@ -796,15 +834,29 @@ impl Parser {
     }
     
     fn parse_type_annotation(&mut self) -> String {
+        let mut base_type = self.parse_base_type();
+        
+        // Union Type: A | B
+        while self.match_token(TokenType::Pipe) {
+            let next_type = self.parse_single_type();
+            base_type.push_str(" | ");
+            base_type.push_str(&next_type);
+        }
+        
+        base_type
+    }
+
+    fn parse_single_type(&mut self) -> String {
+         self.parse_base_type()
+    }
+
+    fn parse_base_type(&mut self) -> String {
         // Function type: (params) => returnType
         if self.match_token(TokenType::OpenParen) {
              let mut params_str = String::new();
              params_str.push('(');
              if !self.check(TokenType::CloseParen) {
                   loop {
-                      // format: name: type or just type?
-                      // features_types.tx/features_lambdas.tx: (x: number) => ...
-                      // We need to parse identifier then colon then type, OR just identifier as type
                       if self.check(TokenType::Identifier) && self.check_next(TokenType::Colon) {
                            let name = self.consume(TokenType::Identifier, "Param name").value.clone();
                            self.consume(TokenType::Colon, "Expected ':'");
@@ -869,7 +921,6 @@ impl Parser {
              }
              
         } else {
-            // Primitive keywords that might be TokenTypes
             if self.match_token(TokenType::TypeAny) { base_type = "any".to_string(); }
             else if self.match_token(TokenType::TypeVoid) { base_type = "void".to_string(); }
             else if self.match_token(TokenType::TypeInt) { base_type = "int".to_string(); }
@@ -890,7 +941,6 @@ impl Parser {
             }
         }
         
-        // Array syntax: type[] or type[size]
         while self.match_token(TokenType::OpenBracket) {
             if self.check(TokenType::Number) {
                 let size = self.consume(TokenType::Number, "Expected size").value.clone();
@@ -901,7 +951,6 @@ impl Parser {
                 base_type.push_str("[]");
             }
         }
-        
         base_type
     }
 
@@ -1255,7 +1304,24 @@ impl Parser {
     // --- Expressions ---
 
     fn parse_expression(&mut self) -> Expression {
-        self.parse_assignment()
+        self.parse_sequence()
+    }
+
+    fn parse_sequence(&mut self) -> Expression {
+        let mut expr = self.parse_assignment();
+
+        while self.match_token(TokenType::Comma) {
+             let op_token = self.previous().clone();
+             let right = self.parse_assignment();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: TokenType::Comma,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
     }
 
     fn parse_assignment(&mut self) -> Expression {
@@ -1328,8 +1394,57 @@ impl Parser {
     }
 
     fn parse_logical_and(&mut self) -> Expression {
-        let mut expr = self.parse_equality();
+        let mut expr = self.parse_bitwise_or();
         while self.match_token(TokenType::AmpersandAmpersand) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_equality();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+
+    fn parse_bitwise_or(&mut self) -> Expression {
+        let mut expr = self.parse_bitwise_xor();
+        while self.match_token(TokenType::Pipe) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_bitwise_xor();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Expression {
+        let mut expr = self.parse_bitwise_and();
+        while self.match_token(TokenType::Caret) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_bitwise_and();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+    fn parse_bitwise_and(&mut self) -> Expression {
+        let mut expr = self.parse_equality();
+        while self.match_token(TokenType::Ampersand) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_equality();
              expr = Expression::BinaryExpr {
@@ -1360,10 +1475,27 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Expression {
-        let mut expr = self.parse_term();
+        let mut expr = self.parse_shift();
          while self.match_token(TokenType::GreaterEqual) || self.match_token(TokenType::Greater) ||
                self.match_token(TokenType::LessEqual) || self.match_token(TokenType::Less) ||
                self.match_token(TokenType::Instanceof) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_term();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+
+    fn parse_shift(&mut self) -> Expression {
+        let mut expr = self.parse_term();
+        while self.match_token(TokenType::LessLess) || self.match_token(TokenType::GreaterGreater) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_term();
              expr = Expression::BinaryExpr {
@@ -1454,7 +1586,7 @@ impl Parser {
                 let mut args = Vec::new();
                 if !self.check(TokenType::CloseParen) {
                     loop {
-                        args.push(self.parse_expression());
+                        args.push(self.parse_assignment());
                         if !self.match_token(TokenType::Comma) { break; }
                     }
                 }
@@ -1473,7 +1605,7 @@ impl Parser {
                      let mut args = Vec::new();
                      if !self.check(TokenType::CloseParen) {
                         loop {
-                            args.push(self.parse_expression());
+                            args.push(self.parse_assignment());
                             if !self.match_token(TokenType::Comma) { break; }
                         }
                     }
@@ -1486,11 +1618,10 @@ impl Parser {
                     };
                 } else if self.match_token(TokenType::OpenBracket) {
                      let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
-                     // match_token(QuestionDot) advanced. match_token(OpenBracket) ?
-                     // Wait, logic above: matched QuestionDot. current is at next token.
+                     // match_token(QuestionDot) advanced. current is at next token.
                      // if next token is OpenParen -> call.
                      // else if next is OpenBracket -> index.
-                     let index = self.parse_expression();
+                     let index = self.parse_assignment();
                      self.consume(TokenType::CloseBracket, "Expected ']'");
                      expr = Expression::OptionalArrayAccessExpr {
                          target: Box::new(expr),
@@ -1515,7 +1646,7 @@ impl Parser {
                     _is_namespace: is_double_colon
                 };
             } else if self.match_token(TokenType::OpenBracket) {
-                 let index = self.parse_expression();
+                 let index = self.parse_assignment();
                  self.consume(TokenType::CloseBracket, "Expected ']'");
                  expr = Expression::ArrayAccessExpr {
                      target: Box::new(expr),
@@ -1532,15 +1663,28 @@ impl Parser {
 
     fn parse_new_expression(&mut self) -> Expression {
          let start = self.consume(TokenType::New, "Expected 'new'").clone();
-         let class_name = self.consume(TokenType::Identifier, "Expected class name").value.clone();
+         let mut class_name = self.consume(TokenType::Identifier, "Expected class name").value.clone();
+         
+         // Support generics: new MaxHeap<int>()
+         if self.match_token(TokenType::Less) {
+             class_name.push('<');
+             loop {
+                 class_name.push_str(&self.parse_type_annotation());
+                 if self.match_token(TokenType::Comma) {
+                     class_name.push_str(", ");
+                 } else { break; }
+             }
+             self.consume(TokenType::Greater, "Expected '>'");
+             class_name.push('>');
+         }
          self.consume(TokenType::OpenParen, "Expected '('");
          let mut args = Vec::new();
          if !self.check(TokenType::CloseParen) {
-             loop {
-                 args.push(self.parse_expression());
-                 if !self.match_token(TokenType::Comma) { break; }
-             }
-         }
+            loop {
+                args.push(self.parse_assignment());
+                if !self.match_token(TokenType::Comma) { break; }
+            }
+        }
          self.consume(TokenType::CloseParen, "Expected ')'");
          
          Expression::NewExpr {
@@ -1764,14 +1908,14 @@ impl Parser {
 
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             if self.match_token(TokenType::Ellipsis) {
-                let expr = self.parse_expression();
+                let expr = self.parse_assignment();
                 spreads.push(expr);
             } else {
                 let key_token = self.consume_identifier("Expected property name");
                 let key = key_token.value.clone();
                 
                 let value = if self.match_token(TokenType::Colon) {
-                    self.parse_expression()
+                    self.parse_assignment()
                 } else {
                      Expression::Identifier { 
                          name: key.clone(), 
@@ -1804,14 +1948,14 @@ impl Parser {
         while !self.check(TokenType::CloseBracket) && !self.is_at_end() {
              if self.match_token(TokenType::Ellipsis) {
                  let spread_start = self.tokens[self.current - 1].clone();
-                 let expr = self.parse_expression();
+                 let expr = self.parse_assignment();
                  elements.push(Expression::SpreadExpr {
                      _expr: Box::new(expr),
                      _line: spread_start.line,
                      _col: spread_start.column
                  });
              } else {
-                 elements.push(self.parse_expression());
+                 elements.push(self.parse_assignment());
              }
              if self.check(TokenType::Comma) { self.advance(); }
         }

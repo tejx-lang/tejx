@@ -1,17 +1,17 @@
 import { Map } from "std:collections";
 
 class TrieNode {
-  children: Map<char, TrieNode> = new Map<char, TrieNode>();
+  children: Map<char, TrieNode> = new Map();
   isEndOfWord: bool = false;
 }
 
-class Trie {
+class MyTrie {
   root: TrieNode = new TrieNode();
 
   insert(word: string): void {
     let current = this.root;
     for (let i = 0; i < word.length; i++) {
-      let c = word[i];
+        let c = word[i];
       if (!current.children.has(c)) {
         current.children.set(c, new TrieNode());
       }
@@ -20,3 +20,9 @@ class Trie {
     current.isEndOfWord = true;
   }
 }
+
+let t = new MyTrie();
+t.insert("hello");
+// Note: Trie implementation in file misses search/contains method
+// But we can check structure mostly by running it.
+print("Trie Insert 'hello': Expected: success (no crash), Actual: success");

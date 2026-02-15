@@ -180,17 +180,32 @@ pub fn exports() -> HashSet<String> {
     heap.insert(this, TaggedValue::Map(HashMap::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_put(this: i64, key: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_set(this: i64, key: i64, val: i64) -> i64 {
     let k_str = stringify_value(key);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get_mut(this) { map.insert(k_str, val); }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_at(this: i64, key: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_put(this: i64, key: i64, val: i64) -> i64 {
+    std_collections_Map_set(this, key, val)
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_get(this: i64, key: i64) -> i64 {
     let k_str = stringify_value(key);
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) { return map.get(&k_str).cloned().unwrap_or(0); }
     0
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_at(this: i64, key: i64) -> i64 {
+    std_collections_Map_get(this, key)
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_delete(this: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(map)) = heap.get_mut(this) { map.remove(&k_str); }
+    this
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_remove(this: i64, key: i64) -> i64 {
+    std_collections_Map_delete(this, key)
 }
 #[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_has(this: i64, val: i64) -> i64 {
     let k_str = stringify_value(val);
@@ -200,6 +215,29 @@ pub fn exports() -> HashSet<String> {
         else { false }
     };
     rt_box_boolean(if result { 1 } else { 0 })
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_keys(this: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(map)) = heap.get(this) {
+        let keys_str: Vec<String> = map.keys().cloned().collect();
+        drop(heap); 
+        let mut boxed_keys = Vec::new();
+        for k in keys_str {
+            let c_str = CString::new(k).unwrap();
+            unsafe { boxed_keys.push(rt_box_string(c_str.as_ptr() as i64)); }
+        }
+        let mut heap = HEAP.lock().unwrap();
+        return heap.alloc(TaggedValue::Array(boxed_keys));
+    }
+    0
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_values(this: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(map)) = heap.get(this) {
+        let vals: Vec<i64> = map.values().cloned().collect();
+        return heap.alloc(TaggedValue::Array(vals));
+    }
+    0
 }
 #[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_size(this: i64) -> i64 { std_collections_size(this) }
 #[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
@@ -222,6 +260,22 @@ pub fn exports() -> HashSet<String> {
         else { false }
     };
     rt_box_boolean(if result { 1 } else { 0 })
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_delete(this: i64, val: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.remove(&val); }
+    this
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_remove(this: i64, val: i64) -> i64 {
+    std_collections_Set_delete(this, val)
+}
+#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_values(this: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(set)) = heap.get(this) {
+        let vals: Vec<i64> = set.iter().cloned().collect();
+        return heap.alloc(TaggedValue::Array(vals));
+    }
+    0
 }
 #[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_size(this: i64) -> i64 { std_collections_size(this) }
 #[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }

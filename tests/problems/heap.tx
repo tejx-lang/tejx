@@ -1,13 +1,21 @@
-import { BinaryHeap } from "std:collections";
+import { MaxHeap } from "std:collections";
 
 function main(): void {
   // A Max-Heap: always returns the largest number
-  let pq: BinaryHeap<int> = new BinaryHeap<int>();
+  let pq: MaxHeap<int> = new MaxHeap<int>();
 
-  pq.push(10);
-  pq.push(100);
-  pq.push(50);
+  pq.insertMax(10);
+  pq.insertMax(100);
+  pq.insertMax(50);
 
-  print(pq.pop()); // Expected: 100
-  print(pq.pop()); // Expected: 50
+  let max1 = pq.extractMax();
+  print("Extract Max 1: Expected: 100, Actual: ", max1);
+  
+  let max2 = pq.extractMax();
+  print("Extract Max 2: Expected: 50, Actual: ", max2);
+  
+  let max3 = pq.extractMax();
+  print("Extract Max 3: Expected: 10, Actual: ", max3);
 }
+
+main();

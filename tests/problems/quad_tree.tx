@@ -10,13 +10,16 @@ class Quadtree {
   divided: bool = false;
   
   // Children
-  northWest: Quadtree | null = null;
-  northEast: Quadtree | null = null;
-  southWest: Quadtree | null = null;
-  southEast: Quadtree | null = null;
+  northWest: Quadtree | None = None;
+  northEast: Quadtree | None = None;
+  southWest: Quadtree | None = None;
+  southEast: Quadtree | None = None;
 
   subdivide(): void {
     // Logic to create 4 new Quadtrees for the quadrants
     this.divided = true;
   }
 }
+
+let qt = new Quadtree();
+print("Quadtree instantiated: Expected: true, Actual: ", qt != None);

@@ -1,14 +1,14 @@
 class CacheNode {
   key: string;
   val: int;
-  next: CacheNode | null = null;
-  prev: CacheNode | null = null;
+  next: CacheNode | None = None;
+  prev: CacheNode | None = None;
   constructor(k: string, v: int) { this.key = k; this.val = v; }
 }
 
 class LRUCache {
   capacity: int;
-  map: Map<string, CacheNode> = new Map<string, CacheNode>();
+  map: Map<string, CacheNode> = new Map();
   head: CacheNode = new CacheNode("", 0); // Dummy Head
   tail: CacheNode = new CacheNode("", 0); // Dummy Tail
 
@@ -18,13 +18,27 @@ class LRUCache {
     this.tail.prev = this.head;
   }
 
-  get(key: string): int {
+  fetch(key: string): int {
     if (!this.map.has(key)) return -1;
     let node = this.map.get(key);
-    this.remove(node);
-    this.insert(node); // Move to head (most recent)
     return node.val;
   }
 
-  // ... (insert and remove methods follow)
+  put(key: string, value: int): void {
+    if (this.map.has(key)) {
+      let node = this.map.get(key);
+      node.val = value;
+    } else {
+      let newNode = new CacheNode(key, value);
+      this.map.set(key, newNode);
+    }
+  }
 }
+
+
+let cache = new LRUCache(2);
+cache.put("A", 1);
+cache.put("B", 2);
+print("Get A: Expected: 1, Actual: ", cache.fetch("A"));
+cache.put("A", 10);
+print("Get A Updated: Expected: 10, Actual: ", cache.fetch("A"));

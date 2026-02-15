@@ -557,6 +557,11 @@ impl CodeGen {
                             TokenType::LessEqual => (true, "", "sle"),
                             TokenType::GreaterEqual => (true, "", "sge"),
                             TokenType::Modulo => (false, "srem", ""),
+                            TokenType::Ampersand => (false, "and", ""),
+                            TokenType::Pipe => (false, "or", ""),
+                            TokenType::Caret => (false, "xor", ""),
+                            TokenType::LessLess => (false, "shl", ""),
+                            TokenType::GreaterGreater => (false, "ashr", ""),
                             _ => (false, "add", "")
                         };
                         if is_cmp {
@@ -1142,7 +1147,7 @@ impl CodeGen {
                 
                 let known_byte_array = if let TejxType::Class(name) = obj.get_type() { name == "ByteArray" || name == "bool[]" } else { false };
 
-                if false { // known_byte_array {
+                if known_byte_array {
                     // ===== SPECIALIZED BYTE ARRAY FAST PATH =====
                     // Unconditional direct byte GEP via cached @LAST_PTR.
                     // Safe because fill() populates the cache before any loop access.
@@ -1467,7 +1472,7 @@ impl CodeGen {
                 
                 let known_byte_array = if let TejxType::Class(name) = obj.get_type() { name == "ByteArray" || name == "bool[]" } else { false };
 
-                if false { // known_byte_array {
+                if known_byte_array {
                     // ===== SPECIALIZED BYTE ARRAY STORE =====
                     if !self.declared_functions.contains("LAST_ID") {
                         self.global_buffer.push_str("@LAST_ID = external global i64\n");

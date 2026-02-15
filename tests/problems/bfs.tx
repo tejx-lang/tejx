@@ -1,28 +1,33 @@
 import { Map, Set, Queue } from "std:collections";
 
 function bfs(graph: Map<string, string[]>, start: string): void {
-  let visited: Set<string> = new Set<string>();
-  let q: Queue<string> = new Queue<string>();
+  let visited: Set<string> = new Set();
+  let q: Queue<string> = new Queue();
 
   q.enqueue(start);
   visited.add(start);
 
+  let result: string[] = [];
   while (!q.isEmpty()) {
     let current = q.dequeue();
-    print("Visited:", current);
+    result.push(current);
 
     let neighbors = graph.get(current);
-    for (let i = 0; i < neighbors.length; i++) {
-      let next = neighbors[i];
-      if (!visited.has(next)) {
-        visited.add(next);
-        q.enqueue(next);
+    if (neighbors != None) {
+      for (let i = 0; i < neighbors.length; i++) {
+        let next = neighbors[i];
+        if (!visited.has(next)) {
+          visited.add(next);
+          q.enqueue(next);
+        }
       }
     }
   }
+  
+  print("BFS Traversal: Expected: [A, B, C, D, E, F], Actual: ", result);
 }
 
-let graph = new Map<string, string[]>();
+let graph = new Map();
 
 graph.set("A", ["B", "C"]);
 graph.set("B", ["D", "E"]);

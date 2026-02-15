@@ -13,6 +13,7 @@ pub struct TypeChecker {
     current_function_is_async: bool,
     pub diagnostics: Vec<Diagnostic>, // Collect errors
     current_file: String,
+    class_hierarchy: HashMap<String, String>, // Child -> Parent
 }
 
 impl TypeChecker {
@@ -34,6 +35,7 @@ impl TypeChecker {
             current_function_is_async: false,
             diagnostics: Vec::new(),
             current_file: "unknown".to_string(),
+            class_hierarchy: HashMap::new(),
         }
     }
 
@@ -68,6 +70,9 @@ impl TypeChecker {
         match stmt {
             Statement::ClassDeclaration(class_decl) => {
                 self.define(class_decl.name.clone(), "class".to_string());
+                if !class_decl._parent_name.is_empty() {
+                    self.class_hierarchy.insert(class_decl.name.clone(), class_decl._parent_name.clone());
+                }
             }
             Statement::InterfaceDeclaration { name, .. } => {
                 self.define(name.clone(), "interface".to_string());
@@ -117,27 +122,66 @@ impl TypeChecker {
             return true;
         }
 
-        // Handle Array types: number[], Array<number>, etc.
-        if type_name.ends_with("[]") || type_name.contains("[") {
-            let base = type_name.split('[').next().unwrap_or("");
-            return self.is_valid_type(base);
-        }
-        if type_name.starts_with("Array<") && type_name.ends_with(">") {
-            let inner = &type_name[6..type_name.len() - 1];
-            return self.is_valid_type(inner);
-        }
-        if type_name.starts_with("Promise<") && type_name.ends_with(">") {
-            let inner = &type_name[8..type_name.len() - 1];
-            return self.is_valid_type(inner);
+        // Handle union types: A | B
+        if type_name.contains('|') {
+            let parts: Vec<&str> = type_name.split('|').collect();
+            for part in parts {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() && !self.is_valid_type(trimmed) {
+                    return false;
+                }
+            }
+            return true;
         }
 
-        // Handle generic types: Type<Inner>
+        // Handle generic types first: Type<Inner1, Inner2>
         if let Some(open) = type_name.find('<') {
             if type_name.ends_with('>') {
                 let base = &type_name[..open];
                 let inner = &type_name[open + 1..type_name.len() - 1];
-                // Check if base is a known generic or just any type
-                return self.is_valid_type(base) && self.is_valid_type(inner);
+                
+                if !self.is_valid_type(base) {
+                    return false;
+                }
+
+                // Split inner by comma, but respect nested < >
+                let mut parts = Vec::new();
+                let mut start = 0;
+                let mut depth = 0;
+                for (i, c) in inner.char_indices() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        ',' if depth == 0 => {
+                            parts.push(&inner[start..i]);
+                            start = i + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                parts.push(&inner[start..]);
+
+                for part in parts {
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() && !self.is_valid_type(trimmed) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        // Handle Array types: number[], etc.
+        if type_name.ends_with("[]") {
+            let base = &type_name[..type_name.len() - 2];
+            return self.is_valid_type(base);
+        }
+
+        // Handle fixed-size arrays: type[10]
+        if type_name.ends_with("]") {
+            if let Some(open) = type_name.find('[') {
+                let base = &type_name[..open];
+                return self.is_valid_type(base);
             }
         }
 
@@ -174,6 +218,63 @@ impl TypeChecker {
         self.lookup(type_name).is_some()
     }
 
+    fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
+        if expected == "any" || actual == "any" || expected == "" || actual == "" {
+            return true;
+        }
+        if expected == actual {
+            return true;
+        }
+
+        // Inheritance check
+        if let Some(parent) = self.class_hierarchy.get(actual) {
+             if self.are_types_compatible(expected, parent) {
+                 return true;
+             }
+        }
+
+        // Alias check: int == int32
+        let is_int_alias = |t: &str| t == "int" || t == "int32";
+        if is_int_alias(expected) && is_int_alias(actual) {
+            return true;
+        }
+
+        // Recursively check array types: int[] vs int32[]
+        if expected.ends_with("[]") && actual.ends_with("[]") {
+            let base_expected = &expected[..expected.len()-2];
+            let base_actual = &actual[..actual.len()-2];
+            return self.are_types_compatible(base_expected, base_actual);
+        }
+
+        // Empty array assignment
+        if actual == "[]" && expected.ends_with("[]") {
+            return true;
+        }
+
+        // Numeric compatibility (implicit casts)
+        let is_numeric = |t: &str| -> bool {
+            matches!(t, "int" | "int16" | "int32" | "int64" | "int128" | "float" | "float16" | "float32" | "float64")
+        };
+        if is_numeric(expected) && is_numeric(actual) {
+            return true;
+        }
+
+        // Check if actual is a raw type compatible with expected generic type
+        if expected.contains('<') && !actual.contains('<') {
+            let base_expected = expected.split('<').next().unwrap_or("");
+            if base_expected == actual {
+                return true;
+            }
+        }
+
+        // Check if actual is 'Array' and expected is an array type (T[])
+        if actual == "Array" && expected.ends_with("[]") {
+            return true;
+        }
+        
+        false
+    }
+
     fn check_statement(&mut self, stmt: &Statement) -> Result<(), ()> {
         match stmt {
             Statement::VarDeclaration { pattern, type_annotation, initializer, is_const: _, line, _col } => {
@@ -182,26 +283,16 @@ impl TypeChecker {
                 }
                 if let Some(expr) = initializer {
                     let init_type = self.check_expression(expr)?;
-                    let is_numeric = |t: &str| -> bool {
-                        matches!(t, "int" | "int16" | "int32" | "int64" | "int128" | "float" | "float16" | "float32" | "float64")
-                    };
-
-                    let is_array = |t: &str| -> bool {
-                        t.ends_with("[]") || t.contains("[") || t.starts_with("Array<")
-                    };
-
-                    let compatible = (is_numeric(type_annotation) && is_numeric(&init_type)) ||
-                                     (type_annotation == "bool" && init_type == "bool") ||
-                                     (is_array(type_annotation) && (init_type == "[]" || init_type == "any[]")) ||
-                                     (type_annotation == "any[]" && is_array(&init_type)) ||
-                                     (type_annotation == "any" || type_annotation == "");
-                    
-                    if type_annotation != "any" && type_annotation != "" && init_type != "any" && init_type != *type_annotation && !compatible {
+                    if !self.are_types_compatible(type_annotation, &init_type) {
                          self.report_error(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col);
                     }
 
                     if type_annotation == "any" || type_annotation == "" {
-                        self.define_pattern(pattern, "any".to_string());
+                        if type_annotation == "" && init_type != "any" {
+                             self.define_pattern(pattern, init_type.clone());
+                        } else {
+                             self.define_pattern(pattern, "any".to_string());
+                        }
                     } else {
                         self.define_pattern(pattern, type_annotation.clone());
                     }
@@ -416,6 +507,7 @@ impl TypeChecker {
     }
 
     fn check_expression(&mut self, expr: &Expression) -> Result<String, ()> {
+        // println!("DEBUG: Check Expr: {:?}", expr);
         match expr {
             Expression::NumberLiteral { value, .. } => {
                 if value.fract() == 0.0 {
@@ -461,6 +553,7 @@ impl TypeChecker {
             },
             Expression::Identifier { name, _line, _col } => {
                 if let Some(t) = self.lookup(name) {
+                     // println!("DEBUG: Lookup '{}' -> '{}'", name, t);
                     Ok(t)
                 } else {
                     if name == "console" { return Ok("Console".to_string()); }
@@ -490,8 +583,11 @@ impl TypeChecker {
                     return Ok("int32".to_string());
                 }
 
-                // Boolean result for comparisons
-                if matches!(op, TokenType::EqualEqual | TokenType::BangEqual | TokenType::Less | TokenType::LessEqual | TokenType::Greater | TokenType::GreaterEqual) {
+                // Boolean result for comparisons and logic
+                if matches!(op, TokenType::EqualEqual | TokenType::BangEqual | 
+                           TokenType::Less | TokenType::LessEqual | 
+                           TokenType::Greater | TokenType::GreaterEqual |
+                           TokenType::AmpersandAmpersand | TokenType::PipePipe) {
                     return Ok("bool".to_string());
                 }
 
@@ -501,18 +597,7 @@ impl TypeChecker {
                 let target_type = self.check_expression(target)?;
                 let value_type = self.check_expression(value)?;
                 if target_type != "any" && value_type != "any" && target_type != value_type {
-                    let is_numeric = |t: &str| -> bool {
-                         matches!(t, "int" | "int16" | "int32" | "int64" | "int128" | "float" | "float16" | "float32" | "float64")
-                    };
-                    let is_array = |t: &str| -> bool {
-                        t.ends_with("[]") || t.contains("[") || t.starts_with("Array<")
-                    };
-                    if is_numeric(&target_type) && is_numeric(&value_type) {
-                        // Allow numeric assignments for now (implicit cast)
-                    } else if (is_array(&target_type) && (value_type == "[]" || value_type == "any[]")) ||
-                              (target_type == "any[]" && is_array(&value_type)) {
-                        // Allow array compatibility
-                    } else {
+                    if !self.are_types_compatible(&target_type, &value_type) {
                         self.report_error(format!("Type mismatch in assignment: expected '{}', got '{}'", target_type, value_type), *_line, *_col);
                     }
                 }
@@ -566,6 +651,13 @@ impl TypeChecker {
                 for arg in args { self.check_expression(arg)?; }
                 Ok("any".to_string())
             },
+            Expression::NewExpr { class_name, args, _line, _col } => {
+                if !self.is_valid_type(class_name) {
+                     self.report_error(format!("Unknown class '{}'", class_name), *_line, *_col);
+                }
+                for arg in args { self.check_expression(arg)?; }
+                Ok(class_name.clone())
+            },
             _ => Ok("any".to_string()), // TODO
         }
     }
@@ -573,6 +665,7 @@ impl TypeChecker {
     fn define_pattern(&mut self, pattern: &BindingNode, type_name: String) -> Result<(), ()> {
         match pattern {
             BindingNode::Identifier(name) => {
+                // println!("DEBUG: Defining variable '{}' as type '{}'", name, type_name);
                 self.define(name.clone(), type_name);
             }
             BindingNode::ArrayBinding { elements, rest } => {

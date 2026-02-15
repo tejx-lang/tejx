@@ -177,6 +177,9 @@ impl Lexer {
                          if self.peek(1) == '=' {
                              self.advance();
                              TokenType::LessEqual
+                         } else if self.peek(1) == '<' {
+                             self.advance();
+                             TokenType::LessLess
                          } else {
                              TokenType::Less
                          }
@@ -185,6 +188,9 @@ impl Lexer {
                         if self.peek(1) == '=' {
                             self.advance();
                             TokenType::GreaterEqual
+                        } else if self.peek(1) == '>' {
+                             self.advance();
+                             TokenType::GreaterGreater
                         } else {
                             TokenType::Greater
                         }
@@ -230,7 +236,7 @@ impl Lexer {
                             self.advance();
                             TokenType::AmpersandAmpersand
                         } else {
-                            TokenType::Unknown
+                            TokenType::Ampersand
                         }
                     }
                     '|' => {
@@ -238,9 +244,11 @@ impl Lexer {
                             self.advance();
                             TokenType::PipePipe
                         } else {
-                            TokenType::Unknown
+                            TokenType::Pipe
                         }
                     }
+                    '^' => TokenType::Caret,
+                    '~' => TokenType::Tilde,
                     _ => TokenType::Unknown,
                 };
                 
@@ -261,6 +269,8 @@ impl Lexer {
                     TokenType::QuestionQuestion => "??".to_string(),
                     TokenType::AmpersandAmpersand => "&&".to_string(),
                     TokenType::PipePipe => "||".to_string(),
+                    TokenType::LessLess => "<<".to_string(),
+                    TokenType::GreaterGreater => ">>".to_string(),
                     TokenType::DoubleColon => "::".to_string(),
                     _ => c.to_string(),
                 };

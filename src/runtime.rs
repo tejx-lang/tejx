@@ -471,19 +471,31 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::Map(map) => {
                 let name_id = map.get("name").cloned();
                 let msg_id = map.get("message").cloned();
-                drop(heap); // Release lock before recursing
                 
-                let name = name_id.map(|id| stringify_value(id)).unwrap_or_else(|| "Object".to_string());
-                let message = msg_id.map(|id| stringify_value(id));
-                
-                if let Some(msg) = message {
-                    if !msg.is_empty() {
-                         format!("{}: {}", name, msg)
-                    } else {
-                         format!("[{}]", name)
+                // If it's a generic map (not an Error/Object with name/message)
+                if name_id.is_none() && msg_id.is_none() {
+                    let keys: Vec<String> = map.keys().cloned().collect();
+                    drop(heap);
+                    let mut parts = Vec::new();
+                    for k in keys {
+                        let v_id = {
+                             let h = HEAP.lock().unwrap();
+                             if let Some(TaggedValue::Map(m)) = h.get(id) { m.get(&k).cloned().unwrap_or(0) } else { 0 }
+                        };
+                        parts.push(format!("{}: {}", k, stringify_value(v_id)));
                     }
+                    format!("Map {{ {} }}", parts.join(", "))
                 } else {
-                    format!("[{}]", name)
+                    drop(heap);
+                    let name = name_id.map(|id| stringify_value(id)).unwrap_or_else(|| "Object".to_string());
+                    let message = msg_id.map(|id| stringify_value(id));
+                    
+                    if let Some(msg) = message {
+                        if !msg.is_empty() { format!("{}: {}", name, msg) }
+                        else { format!("[{}]", name) }
+                    } else {
+                        format!("[{}]", name)
+                    }
                 }
             }
             TaggedValue::Thread(_) => "[Thread]".to_string(),
@@ -493,7 +505,15 @@ pub fn stringify_value(id: i64) -> String {
             },
             TaggedValue::Boolean(b) => format!("{}", b),
             TaggedValue::String(s) => s.clone(),
-            TaggedValue::Set(_) => "[Set]".to_string(),
+            TaggedValue::Set(set) => {
+                let vals: Vec<i64> = set.iter().cloned().collect();
+                drop(heap);
+                let mut parts = Vec::new();
+                for v_id in vals {
+                    parts.push(stringify_value(v_id));
+                }
+                format!("Set {{ {} }}", parts.join(", "))
+            }
             TaggedValue::Date(t) => format!("[Date: {}]", t),
             TaggedValue::OrderedMap(_, _) => "[OrderedMap]".to_string(),
             TaggedValue::OrderedSet(_, _) => "[OrderedSet]".to_string(),
@@ -799,10 +819,22 @@ pub extern "C" fn Array_fill(id: i64, val: i64) -> i64 {
     match heap.get_mut(id) {
         Some(TaggedValue::Array(arr)) => {
             for elem in arr.iter_mut() { *elem = val; }
+            unsafe {
+                LAST_ID = id;
+                LAST_PTR = arr.as_ptr() as *mut u8;
+                LAST_LEN = arr.len();
+                LAST_ELEM_SIZE = 8;
+            }
         }
         Some(TaggedValue::ByteArray(arr)) => {
             let byte_val = if bool_val { 1 } else { 0 };
             for elem in arr.iter_mut() { *elem = byte_val; }
+            unsafe {
+                LAST_ID = id;
+                LAST_PTR = arr.as_ptr() as *mut u8;
+                LAST_LEN = arr.len();
+                LAST_ELEM_SIZE = 1;
+            }
         }
         _ => {}
     }
@@ -943,8 +975,8 @@ pub unsafe extern "C" fn rt_instanceof(obj: i64, class_name_id: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rt_not(val: i64) -> i64 {
-    if val == 0 { 1 } else { 0 }
+pub unsafe extern "C" fn rt_not(val: i64) -> i64 {
+    if rt_is_truthy(val) { 0 } else { 1 }
 }
 
 #[unsafe(no_mangle)]
