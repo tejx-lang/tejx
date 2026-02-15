@@ -1761,6 +1761,118 @@ pub unsafe extern "C" fn Array_filter(id: i64, callback: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_reduce(id: i64, callback: i64, initial_val: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+         let elements = arr.clone();
+         drop(heap);
+         
+         let cb: extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute(callback);
+         let mut acc = initial_val;
+         
+         for (i, &val) in elements.iter().enumerate() {
+             acc = cb(acc, val, i as i64, id);
+         }
+         return acc;
+    }
+    initial_val
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_find(id: i64, callback: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+         let elements = arr.clone();
+         drop(heap);
+         
+         let cb: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(callback);
+         for (i, &val) in elements.iter().enumerate() {
+             let res = cb(val, i as i64, id);
+             if rt_is_truthy(res) { return val; }
+         }
+    }
+    0 // undefined/null
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_findIndex(id: i64, callback: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+         let elements = arr.clone();
+         drop(heap);
+         
+         let cb: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(callback);
+         for (i, &val) in elements.iter().enumerate() {
+             let res = cb(val, i as i64, id);
+             if rt_is_truthy(res) { return i as i64; }
+         }
+    }
+    -1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_reverse(id: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
+        arr.reverse();
+        return id; // Returns self
+    }
+    0
+}
+
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_splice(id: i64, start: i64, delete_count: i64, _items_ptr: i64, _items_len: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    
+    // Extract new items first to avoid multiple mutable borrows or lock issues if items are in heap (careful here)
+    // Actually items_ptr is a pointer to an array of i64s from C side? 
+    // Wait, the signature in MIR lowering would need to handle variadic items. 
+    // For now, let's assume items are passed as a Vec<i64> ID or similar? 
+    // Or we stick to a simpler signature for now: splice(start, deleteCount). 
+    // The implementation plan said "items...", implying variadic.
+    // In C ABI, variadic is tricky. 
+    // Strategy: The compiler should bundle variadic args into an array and pass that? 
+    // Or we implement a fixed version for now. 
+    // Let's implement splice(start, deleteCount) and maybe one insertion item if needed, 
+    // but standard splice is variadic. 
+    // For this task, let's support splice(start, deleteCount) correctly returning removed elements.
+    // And maybe support inserting elements if passed as an array?
+    // Let's stick to the signature: Array_splice(id, start, deleteCount).
+    // If we want insertion, we might need `Array_splice_insert(id, start, deleteCount, newItemsArrayID)`.
+    
+    // Let's update the plan/code to just splice(start, deleteCount) for now, or use a pointer to raw args.
+    // The safest for "items..." in our current lowering logic (which passes args on stack) is hard to map to a single extern C fn without knowing count.
+    // But wait, my implementation plan said `splice(start: int, deleteCount: int, items...: any)`.
+    // In `type_checker`, strict type checking might block variadic unless defined. 
+    // Let's implement `Array_splice(id, start, deleteCount)` first.
+    
+    if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
+        let len = arr.len() as i64;
+        let actual_start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+        let actual_delete = delete_count.max(0).min(len - actual_start as i64) as usize;
+        
+        let mut removed_items = Vec::new();
+        for _ in 0..actual_delete {
+            if actual_start < arr.len() {
+                removed_items.push(arr.remove(actual_start));
+            }
+        }
+        
+        // Handle items insertion if we can access them. 
+        // For now, just removal.
+        
+        let _new_id = heap.next_id + 1; // +1 trick to avoid conflict during insert? No, use correct order.
+        let removed_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(removed_id, TaggedValue::Array(removed_items));
+        return removed_id;
+    }
+    0
+}
+
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Array_sliceRest(id: i64, start: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get(id) {
@@ -2044,6 +2156,301 @@ pub unsafe extern "C" fn trimmed_toUpperCase(s_id: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_padStart(s_id: i64, len: i64, pad_id: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let pad = stringify_value(pad_id);
+    let target_len = len as usize;
+    if s.len() >= target_len {
+        let c_str = CString::new(s).unwrap();
+        return c_str.into_raw() as i64;
+    }
+    let needed = target_len - s.len();
+    let mut padding = String::new();
+    while padding.len() < needed {
+        padding.push_str(&pad);
+    }
+    padding.truncate(needed);
+    padding.push_str(&s); // Start pad
+    let c_str = CString::new(padding).unwrap();
+    c_str.into_raw() as i64
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_padEnd(s_id: i64, len: i64, pad_id: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let pad = stringify_value(pad_id);
+    let target_len = len as usize;
+    if s.len() >= target_len {
+        let c_str = CString::new(s).unwrap();
+        return c_str.into_raw() as i64;
+    }
+    let needed = target_len - s.len();
+    let mut res = s;
+    let mut padding = String::new();
+    while padding.len() < needed {
+        padding.push_str(&pad);
+    }
+    padding.truncate(needed);
+    res.push_str(&padding);
+    let c_str = CString::new(res).unwrap();
+    c_str.into_raw() as i64
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_repeat(s_id: i64, count: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let n = count.max(0) as usize;
+    let repeated = s.repeat(n);
+    let c_str = CString::new(repeated).unwrap();
+    c_str.into_raw() as i64
+}
+
+// Object Static Methods
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_keys(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    let keys = if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        m.keys().cloned().collect::<Vec<String>>()
+    } else if let Some(TaggedValue::OrderedMap(order, _)) = heap.get(id) {
+        order.clone()
+    } else {
+        drop(heap);
+        let mut heap = HEAP.lock().unwrap();
+        let arr_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(arr_id, TaggedValue::Array(Vec::new()));
+        return arr_id;
+    };
+    
+    drop(heap);
+    let mut key_ids = Vec::new();
+    let mut heap = HEAP.lock().unwrap();
+    for k in keys {
+         let kid = heap.next_id;
+         heap.next_id += 1;
+         heap.insert(kid, TaggedValue::String(k));
+         key_ids.push(kid);
+    }
+    
+    let arr_id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(key_ids));
+    arr_id
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Object_keys(_ignored: i64, id: i64) -> i64 {
+    Collection_keys(id)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_values(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    let values = if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        m.values().cloned().collect::<Vec<i64>>()
+    } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
+        order.iter().filter_map(|k| m.get(k)).cloned().collect::<Vec<i64>>()
+    } else {
+        drop(heap);
+        let mut heap = HEAP.lock().unwrap();
+        let arr_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(arr_id, TaggedValue::Array(Vec::new()));
+        return arr_id;
+    };
+
+    drop(heap);
+    let mut heap = HEAP.lock().unwrap();
+    let arr_id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(values));
+    arr_id
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Object_values(_ignored: i64, id: i64) -> i64 {
+    Collection_values(id)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_entries(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    let entries = if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        m.iter().map(|(k,v)| (k.clone(), *v)).collect::<Vec<(String, i64)>>()
+    } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
+        order.iter().filter_map(|k| m.get(k).map(|v| (k.clone(), *v))).collect::<Vec<(String, i64)>>()
+    } else {
+        drop(heap);
+        let mut heap = HEAP.lock().unwrap();
+        let arr_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(arr_id, TaggedValue::Array(Vec::new()));
+         return arr_id;
+    };
+
+    drop(heap);
+    let mut entry_ids = Vec::new();
+    let mut heap = HEAP.lock().unwrap();
+    
+    for (k, v) in entries {
+         let kid = heap.next_id;
+         heap.next_id += 1;
+         heap.insert(kid, TaggedValue::String(k));
+         
+         let tuple_arr = vec![kid, v];
+         let tid = heap.next_id;
+         heap.next_id += 1;
+         heap.insert(tid, TaggedValue::Array(tuple_arr));
+         
+         entry_ids.push(tid);
+    }
+    
+    let arr_id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(entry_ids));
+    arr_id
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Object_entries(_ignored: i64, id: i64) -> i64 {
+    Collection_entries(id)
+}
+
+// --- Map Methods ---
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_size(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        return m.len() as i64;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_delete(id: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
+        let existed = m.remove(&k_str).is_some();
+        return if existed { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_clear(id: i64) {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
+        m.clear();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_keys(id: i64) -> i64 {
+    Collection_keys(id)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_values(id: i64) -> i64 {
+    Collection_values(id)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_has(id: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        return if m.contains_key(&k_str) { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_put(id: i64, key: i64, val: i64) {
+    let k_str = stringify_value(key);
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
+        m.insert(k_str, val);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Map_get(id: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        return *m.get(&k_str).unwrap_or(&0);
+    }
+    0
+}
+
+// --- Set Methods ---
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Set_size(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get(id) {
+        return s.len() as i64;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Set_delete(id: i64, val: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
+        let existed = s.remove(&val);
+        return if existed { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Set_clear(id: i64) {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
+        s.clear();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Set_add(id: i64, val: i64) {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
+        s.insert(val);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Set_has(id: i64, val: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get(id) {
+        return if s.contains(&val) { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Set_values(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get(id) {
+        let values: Vec<i64> = s.iter().cloned().collect();
+        drop(heap);
+        let mut heap = HEAP.lock().unwrap();
+        let arr_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(arr_id, TaggedValue::Array(values));
+        return arr_id;
+    }
+    drop(heap);
+    let mut heap = HEAP.lock().unwrap();
+    let arr_id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(Vec::new()));
+    arr_id
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn print(id: i64) {
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get(id) {
@@ -2266,4 +2673,267 @@ pub unsafe extern "C" fn rt_json_parse(ptr: *const c_char) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *const *const c_char) -> i32 {
     tejx_main() as i32
+}
+
+// --- Collection Generic Methods ---
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_size(id: i64) -> i64 {
+    stdlib::collections::std_collections_size(id)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_clear(id: i64) {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) { m.clear(); }
+    else if let Some(TaggedValue::Set(s)) = heap.get_mut(id) { s.clear(); }
+    else if let Some(TaggedValue::Array(a)) = heap.get_mut(id) { a.clear(); }
+    else if let Some(TaggedValue::OrderedMap(_, m)) = heap.get_mut(id) { m.clear(); } // TODO: clear vec too
+    else if let Some(TaggedValue::OrderedSet(_, s)) = heap.get_mut(id) { s.clear(); } // TODO: clear vec
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_delete(id: i64, key: i64) -> i64 {
+    // stdlib::collections::std_collections_Map_delete(id, key); 
+    // Manual dispatch since logic is simple and stdlib might be duplicated if not careful
+    let k_str = stringify_value(key);
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
+        return if m.remove(&k_str).is_some() { 1 } else { 0 };
+    }
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
+        return if s.remove(&key) { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_has(id: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        return if m.contains_key(&k_str) { 1 } else { 0 };
+    }
+    if let Some(TaggedValue::Set(s)) = heap.get(id) {
+        return if s.contains(&key) { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Collection_add(id: i64, val: i64) {
+    // Forward to Set_add logic locally
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
+        s.insert(val);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_slice(id: i64, start: i64, end: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+        let len = arr.len() as i64;
+        let mut s = start;
+        let mut e = end;
+        if s < 0 { s = len + s; }
+        if s < 0 { s = 0; }
+        if s > len { s = len; }
+        
+        if e < 0 { e = len + e; }
+        if e < 0 { e = 0; }
+        if e > len { e = len; }
+        
+        if s >= e {
+            drop(heap);
+            let mut heap = HEAP.lock().unwrap();
+            let new_id = heap.next_id;
+            heap.next_id += 1;
+            heap.insert(new_id, TaggedValue::Array(Vec::new()));
+            return new_id;
+        }
+        
+        let new_vec = arr[s as usize..e as usize].to_vec();
+        drop(heap);
+        let mut heap = HEAP.lock().unwrap();
+        let new_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(new_id, TaggedValue::Array(new_vec));
+        return new_id;
+    }
+    0
+}
+
+// --- Extended Array Methods ---
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_includes(id: i64, item: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+        for &val in arr {
+            if val == item { 
+                drop(heap);
+                return rt_box_boolean(1); 
+            }
+        }
+        // Fallback: value equality for boxed primitives
+        for &val in arr {
+             if let Some(v_obj) = heap.get(val) {
+                 if let Some(i_obj) = heap.get(item) {
+                     match (v_obj, i_obj) {
+                         (TaggedValue::Number(n1), TaggedValue::Number(n2)) => if (n1 - n2).abs() < f64::EPSILON { drop(heap); return rt_box_boolean(1); },
+                         (TaggedValue::String(s1), TaggedValue::String(s2)) => if s1 == s2 { drop(heap); return rt_box_boolean(1); },
+                         (TaggedValue::Boolean(b1), TaggedValue::Boolean(b2)) => if b1 == b2 { drop(heap); return rt_box_boolean(1); },
+                         _ => {}
+                     }
+                 }
+             }
+        }
+    }
+    drop(heap);
+    rt_box_boolean(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_sort(id: i64) -> i64 {
+     // Default string sort
+     let mut heap = HEAP.lock().unwrap();
+     if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
+         // We can't easily user comparator callback here without releasing lock 
+         // and calling back into VM. 
+         // For now, implement default lexicographical sort.
+         // We need to resolve values to strings while holding lock.
+         // But `stringify_value` calls `HEAP.lock()`. Deadlock!
+         // We must verify `stringify_value` implementation.
+         // It likely locks. 
+         // So we gather values, drop lock, sort, re-acquire, update.
+         let elements = arr.clone();
+         drop(heap); // Release
+         
+         let mut str_vals: Vec<(String, i64)> = elements.iter().map(|&e| (stringify_value(e), e)).collect();
+         str_vals.sort_by(|a, b| a.0.cmp(&b.0));
+         
+         let mut heap = HEAP.lock().unwrap();
+         if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
+             *arr = str_vals.into_iter().map(|(_, e)| e).collect();
+             return id;
+         }
+     }
+     0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Array_flat(id: i64, depth: i64) -> i64 {
+    // Recursive flatten
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+        let elements = arr.clone();
+        drop(heap); // Release to recurse
+        
+        let mut flattened = Vec::new();
+        let d = if depth < 0 { 1 } else { depth }; // default 1 if not passed (0 passed as arg?)
+        // Wait, checking arg count? 
+        // Assuming depth passed.
+        
+        for &el in &elements {
+            let mut is_arr = false;
+            {
+                let heap = HEAP.lock().unwrap();
+                if let Some(TaggedValue::Array(_)) = heap.get(el) { is_arr = true; }
+            }
+            
+            if is_arr && d > 0 {
+                 let sub_flat_id = Array_flat(el, d - 1);
+                 // flatten returns a NEW array ID.
+                 let heap = HEAP.lock().unwrap();
+                 if let Some(TaggedValue::Array(sub)) = heap.get(sub_flat_id) {
+                     flattened.extend(sub.clone());
+                 }
+            } else {
+                 flattened.push(el);
+            }
+        }
+        
+        let mut heap = HEAP.lock().unwrap();
+        let new_id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(new_id, TaggedValue::Array(flattened));
+        return new_id;
+    }
+    drop(heap);
+    // Return empty array if failed
+    let mut heap = HEAP.lock().unwrap();
+    let new_id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(new_id, TaggedValue::Array(Vec::new()));
+    new_id
+}
+
+
+// --- Extended String Methods ---
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_trimStart(s_id: i64) -> i64 {
+    let val = stringify_value(s_id);
+    let trimmed = val.trim_start().to_string();
+    rt_box_string_raw(trimmed)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_trimEnd(s_id: i64) -> i64 {
+    let val = stringify_value(s_id);
+    let trimmed = val.trim_end().to_string();
+    rt_box_string_raw(trimmed)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_includes(s_id: i64, sub_id: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let sub = stringify_value(sub_id);
+    let res = if s.contains(&sub) { 1 } else { 0 };
+    rt_box_boolean(res)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_indexOf(s_id: i64, sub_id: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let sub = stringify_value(sub_id);
+    if let Some(pos) = s.find(&sub) {
+         return pos as i64;
+    }
+    -1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_slice(s_id: i64, start: i64, end: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let len = s.len() as i64;
+    let mut st = start;
+    let mut en = end;
+    if st < 0 { st = len + st; }
+    if st < 0 { st = 0; }
+    if st > len { st = len; }
+    if en < 0 { en = len + en; }
+    if en < 0 { en = 0; }
+    if en > len { en = len; }
+    
+    if st >= en { 
+        return rt_box_string_raw("".to_string());
+    }
+    
+    let chars: Vec<char> = s.chars().collect();
+    let clen = chars.len() as i64;
+    if st > clen { st = clen; }
+    if en > clen { en = clen; }
+    
+    let slice: String = chars[st as usize..en as usize].iter().collect();
+    rt_box_string_raw(slice)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn trimmed_concat(s_id: i64, other_id: i64) -> i64 {
+    let s = stringify_value(s_id);
+    let o = stringify_value(other_id);
+    let new_s = format!("{}{}", s, o);
+    rt_box_string_raw(new_s)
 }

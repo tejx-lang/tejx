@@ -399,6 +399,11 @@ impl Expression {
                     format!("{}.{}", base, member)
                 }
             }
+            Expression::StringLiteral { .. } => "(string)".to_string(),
+            Expression::NumberLiteral { .. } => "(number)".to_string(),
+            Expression::BooleanLiteral { .. } => "(bool)".to_string(),
+            Expression::ArrayLiteral { .. } => "(array)".to_string(),
+            Expression::ObjectLiteralExpr { .. } => "(object)".to_string(),
             _ => "".to_string(),
         }
     }

@@ -1017,8 +1017,27 @@ impl CodeGen {
                                 else if method == "indexOf" { final_callee = "arrUtil_indexOf".to_string(); }
                                 else if method == "shift" { final_callee = "arrUtil_shift".to_string(); }
                                 else if method == "unshift" { final_callee = "arrUtil_unshift".to_string(); }
+                                else if method == "slice" { final_callee = "Array_slice".to_string(); }
+                                else if method == "reduce" { final_callee = "Array_reduce".to_string(); }
+                                else if method == "find" { final_callee = "Array_find".to_string(); }
+                                else if method == "findIndex" { final_callee = "Array_findIndex".to_string(); }
+                                else if method == "reverse" { final_callee = "Array_reverse".to_string(); }
+                                else if method == "splice" { final_callee = "Array_splice".to_string(); }
                                 else if method == "lock" { final_callee = "m_lock".to_string(); }
                                 else if method == "unlock" { final_callee = "m_unlock".to_string(); }
+                                else if method == "padStart" { final_callee = "trimmed_padStart".to_string(); }
+                                else if method == "padEnd" { final_callee = "trimmed_padEnd".to_string(); }
+                                else if method == "repeat" { final_callee = "trimmed_repeat".to_string(); }
+                                else if method == "keys" { final_callee = "Object_keys".to_string(); }
+                                else if method == "values" { final_callee = "Object_values".to_string(); }
+                                else if method == "entries" { final_callee = "Object_entries".to_string(); }
+                                else if method == "size" { final_callee = "Collection_size".to_string(); }
+                                else if method == "add" { final_callee = "Collection_add".to_string(); }
+                                else if method == "delete" { final_callee = "Collection_delete".to_string(); }
+                                else if method == "clear" { final_callee = "Collection_clear".to_string(); }
+                                else if method == "has" { final_callee = "Collection_has".to_string(); }
+                                else if method == "put" { final_callee = "Map_put".to_string(); } // Specific to Map usually, or Collection_put?
+                                else if method == "get" { final_callee = "Map_get".to_string(); } // Specific to Map
                                 else { final_callee = format!("{}_{}", base, method); }
                             } else {
                                 final_callee = format!("{}_{}", base, method);

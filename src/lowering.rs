@@ -433,6 +433,18 @@ impl Lowering {
         });
 
         let mut signatures = HashMap::new();
+        // Add built-in runtime signatures for proper auto-boxing in MIR
+        signatures.insert("trimmed_concat".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("trimmed_indexOf".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("trimmed_includes".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("trimmed_slice".to_string(), vec![TejxType::Any, TejxType::Any, TejxType::Any]);
+        signatures.insert("trimmed_trimStart".to_string(), vec![TejxType::Any]);
+        signatures.insert("trimmed_trimEnd".to_string(), vec![TejxType::Any]);
+        signatures.insert("Array_sort".to_string(), vec![TejxType::Any]);
+        signatures.insert("Array_flat".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("Array_includes".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("Array_concat".to_string(), vec![TejxType::Any, TejxType::Any]);
+
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
                 let param_types: Vec<TejxType> = params.iter().map(|(_, ty)| ty.clone()).collect();
@@ -1419,15 +1431,25 @@ impl Lowering {
                                     }
                                 }
 
-                                if let Some(TejxType::Class(cn)) = resolved_type {
-                                    class_name_opt = Some(cn);
+                                if let Some(ty) = resolved_type {
                                     is_instance = true;
+                                    if let TejxType::Class(cn) = ty {
+                                        class_name_opt = Some(cn);
+                                    } else if ty.is_array() {
+                                        class_name_opt = Some("Array".to_string());
+                                    } else if matches!(ty, TejxType::String) {
+                                        class_name_opt = Some("String".to_string());
+                                    }
                                 } else if self.class_methods.borrow().contains_key(parts[0]) {
-                                    // Fallback for static method on class name directly? (e.g. Math.max where Math is class)
-                                    // But parts[0] is obj_name.
                                     class_name_opt = Some(parts[0].to_string());
                                 } else if parts[0].starts_with("$new_") {
                                     class_name_opt = Some(parts[0][5..].to_string());
+                                    is_instance = true;
+                                } else if parts[0].starts_with("(string)") {
+                                    class_name_opt = Some("String".to_string());
+                                    is_instance = true;
+                                } else if parts[0].starts_with("(array)") {
+                                    class_name_opt = Some("Array".to_string());
                                     is_instance = true;
                                 }
 
@@ -1456,21 +1478,34 @@ impl Lowering {
                                     }
                                 }
 
-                                // If not resolved yet, check common methods or fallback to dynamic
-                                if final_callee == normalized {
-                                     let obj_expr = if obj_path == "this" || obj_path == "super" {
-                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
-                                     } else if obj_path.contains('.') {
+                                 // If not resolved yet, check common methods or fallback to dynamic
+                                 if final_callee == normalized {
+                                      let obj_expr = if let Expression::MemberAccessExpr { object, .. } = callee.as_ref() {
+                                           self.lower_expression(object)
+                                      } else if obj_path == "this" || obj_path == "super" {
+                                          HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                      } else if obj_path.contains('.') {
+                                          // ... existing complex path logic ...
+                                          // Actually, let's keep the existing logic but ensure it handles literals
                                           let sub_parts: Vec<&str> = obj_path.split('.').collect();
                                           let mut current = if sub_parts[0] == "this" {
                                               HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                          } else if sub_parts[0] == "(string)" {
+                                               // This is a literal that was mangled by to_callee_name
+                                               // But wait, if it's a literal, we don't have the value here.
+                                               // The best way is to look at the AST object.
+                                               if let Expression::MemberAccessExpr { object, .. } = callee.as_ref() {
+                                                   self.lower_expression(object)
+                                               } else {
+                                                   HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                               }
                                           } else {
                                               let base_ty = self.lookup(sub_parts[0]).map(|(_, t)| t).unwrap_or(TejxType::Any);
                                               HIRExpression::Variable { name: sub_parts[0].to_string(), ty: base_ty }
                                           };
+                                          // ... rest of loop ...
                                           for idx in 1..sub_parts.len() {
                                               let mut next_ty = TejxType::Any;
-                                              // Try to resolve member type
                                               if let TejxType::Class(class_name) = current.get_type() {
                                                   let fields = self.class_instance_fields.borrow();
                                                   if let Some(i_list) = fields.get(&class_name) {
@@ -1489,31 +1524,48 @@ impl Lowering {
                                               };
                                           }
                                           current
-                                     } else {
-                                         let ty = self.lookup(&obj_path).map(|(_, t)| t).unwrap_or(TejxType::Any);
-                                         HIRExpression::Variable { name: obj_path.clone(), ty }
-                                     };
+                                      } else {
+                                          if let Expression::MemberAccessExpr { object, .. } = callee.as_ref() {
+                                              self.lower_expression(object)
+                                          } else {
+                                              let ty = self.lookup(&obj_path).map(|(_, t)| t).unwrap_or(TejxType::Any);
+                                              HIRExpression::Variable { name: obj_path.clone(), ty }
+                                          }
+                                      };
 
                                      let (runtime_callee, _ret_type) = match method_name.as_str() {
-                                         "push" | "unshift" | "indexOf" | "fill" => (format!("Array_{}", method_name), TejxType::Int32),
+                                         "push" | "unshift" | "fill" => (format!("Array_{}", method_name), TejxType::Int32),
                                          "pop" | "shift" => (format!("Array_{}", method_name), TejxType::Any), 
                                          "join" => ("__join".to_string(), TejxType::Any),
                                          "lock" | "unlock" => (format!("m_{}", method_name), TejxType::Any),
-                                         "concat" | "map" | "filter" => (format!("Array_{}", method_name), TejxType::Any),
+                                         "map" | "filter" | "reduce" | "find" | "findIndex" | "reverse" | "splice" | "sort" | "flat" => (format!("Array_{}", method_name), TejxType::Any),
+                                         "concat" | "slice" | "indexOf" | "includes" => {
+                                             let base_ty = class_name_opt.as_deref().unwrap_or("any");
+                                             let base_is_array = base_ty == "Array" || base_ty.ends_with("[]") || base_ty.contains("any[]");
+                                             if base_is_array {
+                                                 (format!("Array_{}", method_name), TejxType::Any)
+                                             } else {
+                                                 (format!("trimmed_{}", method_name), TejxType::Any)
+                                             }
+                                         },
                                          "forEach" => (format!("Array_{}", method_name), TejxType::Void),
-                                         "set" => ("m_set".to_string(), TejxType::Any),
-                                         "get" => ("m_get".to_string(), TejxType::Any),
-                                         "has" => ("rt_has".to_string(), TejxType::Any),
-                                         "delete" | "del" => ("rt_del".to_string(), TejxType::Any),
-                                         "size" => ("s_size".to_string(), TejxType::Any),
-                                         "clear" => ("m_clear".to_string(), TejxType::Any),
+                                         "set" | "put" => ("Map_put".to_string(), TejxType::Any), // Map.put
+                                         "get" => ("Map_get".to_string(), TejxType::Any),
+                                         "has" => ("Collection_has".to_string(), TejxType::Any),
+                                         "delete" | "del" => ("Collection_delete".to_string(), TejxType::Any),
+                                         "size" => ("Collection_size".to_string(), TejxType::Any),
+                                         "clear" => ("Collection_clear".to_string(), TejxType::Any),
                                          "add" => {
                                              if class_name_opt.as_deref() == Some("Atomic") {
                                                   ("rt_atomic_add".to_string(), TejxType::Int32)
                                              } else if let Some(cn) = class_name_opt.as_deref() {
-                                                  (format!("std_collections_{}_add", cn), TejxType::Any)
+                                                  if cn == "Set" {
+                                                      ("Collection_add".to_string(), TejxType::Any)
+                                                  } else {
+                                                      (format!("std_collections_{}_add", cn), TejxType::Any)
+                                                  }
                                              } else {
-                                                  ("s_add".to_string(), TejxType::Any)
+                                                  ("Collection_add".to_string(), TejxType::Any)
                                              }
                                          },
                                          "sub" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_sub".to_string(), TejxType::Int32),
@@ -1525,6 +1577,41 @@ impl Lowering {
                                          "notify" if class_name_opt.as_deref() == Some("Condition") => ("rt_cond_notify".to_string(), TejxType::Int32),
                                          "notifyAll" if class_name_opt.as_deref() == Some("Condition") => ("rt_cond_notify_all".to_string(), TejxType::Int32),
                                          "trim" => ("rt_string_trim".to_string(), TejxType::Any),
+                                         "padStart" => ("trimmed_padStart".to_string(), TejxType::Any),
+                                         "padEnd" => ("trimmed_padEnd".to_string(), TejxType::Any),
+                                         "repeat" => ("trimmed_repeat".to_string(), TejxType::Any),
+                                         "trimStart" => ("trimmed_trimStart".to_string(), TejxType::Any),
+                                         "trimEnd" => ("trimmed_trimEnd".to_string(), TejxType::Any),
+                                         "keys" => {
+                                             let is_static_obj = if let HIRExpression::Variable { name, .. } = &obj_expr {
+                                                 name == "Object"
+                                             } else { false };
+                                             if is_static_obj {
+                                                 ("Object_keys".to_string(), TejxType::Any)
+                                             } else {
+                                                 ("Collection_keys".to_string(), TejxType::Any)
+                                             }
+                                         },
+                                         "values" => {
+                                             let is_static_obj = if let HIRExpression::Variable { name, .. } = &obj_expr {
+                                                 name == "Object"
+                                             } else { false };
+                                             if is_static_obj {
+                                                 ("Object_values".to_string(), TejxType::Any)
+                                             } else {
+                                                 ("Collection_values".to_string(), TejxType::Any)
+                                             }
+                                         },
+                                         "entries" => {
+                                             let is_static_obj = if let HIRExpression::Variable { name, .. } = &obj_expr {
+                                                 name == "Object"
+                                             } else { false };
+                                             if is_static_obj {
+                                                 ("Object_entries".to_string(), TejxType::Any)
+                                             } else {
+                                                 ("Collection_entries".to_string(), TejxType::Any)
+                                             }
+                                         },
                                          "toLowerCase" => ("rt_string_to_lower".to_string(), TejxType::Any),
                                          "toUpperCase" => ("rt_string_to_upper".to_string(), TejxType::Any),
                                          "startsWith" => ("rt_string_starts_with".to_string(), TejxType::Bool),
@@ -1684,7 +1771,7 @@ impl Lowering {
                         if !current_chunk.is_empty() {
                             chunks.push(HIRExpression::ArrayLiteral {
                                 elements: current_chunk.clone(),
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any[]".to_string()),
                             });
                             current_chunk.clear();
                         }
@@ -1698,13 +1785,13 @@ impl Lowering {
                 if !current_chunk.is_empty() {
                     chunks.push(HIRExpression::ArrayLiteral {
                         elements: current_chunk,
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any[]".to_string()),
                     });
                 }
                 
                 if chunks.is_empty() {
                      // Empty array []
-                     HIRExpression::ArrayLiteral { elements: vec![], ty: TejxType::Any }
+                     HIRExpression::ArrayLiteral { elements: vec![], ty: TejxType::Class("any[]".to_string()) }
                 } else {
                     // Reduce chunks with Array_concat
                     let mut expr = chunks[0].clone();
@@ -1712,7 +1799,7 @@ impl Lowering {
                          expr = HIRExpression::Call {
                              callee: "Array_concat".to_string(), // Ensure this maps to Array_concat in runtime
                              args: vec![expr, next_chunk],
-                             ty: TejxType::Any,
+                             ty: TejxType::Class("any[]".to_string()),
                          };
                     }
                     expr

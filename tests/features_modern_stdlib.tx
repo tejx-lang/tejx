@@ -1,0 +1,79 @@
+function runtest(): void {
+    print("--- Array Methods ---");
+    let arr = [1, 2, 3, 4, 5];
+
+    // reduce
+    let sum = arr.reduce((acc: int, val: int, idx: int) => {
+        return acc + val;
+    }, 0);
+    print("reduce sum: Expected: 15, Actual: ", sum);
+
+    // find
+    let found = arr.find((val: int, idx: int) => {
+        return val == 3;
+    });
+    print("find(3): Expected: 3, Actual: ", found);
+
+    // findIndex
+    let foundIdx = arr.findIndex((val: int, idx: int) => {
+        return val == 4;
+    });
+    print("findIndex(4): Expected: 3, Actual: ", foundIdx);
+
+    // reverse
+    let revArr = [1, 2, 3];
+    revArr.reverse();
+    print("reverse: Expected: 3,2,1, Actual: ", revArr);
+
+    // splice
+    let spliceArr = [1, 2, 3, 4, 5];
+    let removed = spliceArr.splice(1, 2, 9, 10);
+    print("splice removed: Expected: 2,3, Actual: ", removed);
+    print("splice modified: Expected: 1,9,10,4,5, Actual: ", spliceArr);
+
+    print("\n--- String Methods ---");
+    let s = "5";
+    print("padStart: Expected: 005, Actual: ", s.padStart(3, "0"));
+    print("padEnd: Expected: 500, Actual: ", s.padEnd(3, "0"));
+    print("repeat: Expected: 555, Actual: ", s.repeat(3));
+
+    print("\n--- Object Static Methods ---");
+    let obj = { a: 1, b: 2 };
+    let keys = Object.keys(obj);
+    print("Object.keys: Expected: a,b,toString (order may vary), Actual: ", keys);
+    
+    let values = Object.values(obj);
+    print("Object.values: Expected: 1,2 (order may vary), Actual: ", values);
+
+    // entries might return array of arrays, simplified print check
+    let entries = Object.entries(obj); 
+    print("Object.entries length: Expected: 3, Actual: ", len(entries));
+
+    print("\n--- Map/Set Methods ---");
+    let m = new Map();
+    m.put("k", "v");
+    print("Map size before clear: ", m.size());
+    // Verify instance keys() calls Collection_keys (1 arg)
+    print("Map keys: Expected: [k], Actual: ", m.keys());
+    m.clear();
+    print("Map size after clear: Expected: 0, Actual: ", m.size());
+    
+    let s2 = new Set();
+    s2.add(1);
+    s2.delete(1);
+    print("Set size after delete: Expected: 0, Actual: ", s2.size());
+
+    print("\n--- Array Slice ---");
+    let sliceArr = [1, 2, 3, 4, 5];
+    // slice(1, 4) -> index 1 to 3 (exclusive 4) -> [2, 3, 4]
+    // But implementation: arr[s..e].
+    // Rust range is exclusive at end? Yes.
+    // So slice(1, 4) means elements at 1, 2, 3.
+    let sliced = sliceArr.slice(1, 4);
+    print("Sliced length: Expected: 3, Actual: ", len(sliced));
+    print("Sliced[0]: Expected: 2, Actual: ", sliced[0]);
+    print("Sliced[2]: Expected: 4, Actual: ", sliced[2]);
+
+}
+
+runtest();
