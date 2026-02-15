@@ -131,39 +131,58 @@ impl CodeGen {
                     self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
                     return tmp;
                 }
-                if let Some(ptr) = self.value_map.get(name).cloned() {
-                    // It's a pointer (alloca), load it
-                    self.temp_counter += 1;
-                    let tmp = format!("%t{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", tmp, ptr));
-                    tmp
-                } else if name.starts_with("__arg") {
-                    // It's a function argument (value, not pointer)
-                    format!("%{}", name)
-                } else {
-                    if name.starts_with("%") {
-                         name.clone()
-                    } else {
-                         // Check if it's a known function (global or user defined)
-                         let mut target = name.clone();
-                         let f_name = format!("f_{}", name);
-                         if self.declared_functions.contains(&f_name) {
-                             target = f_name;
-                         }
-                         
-                         if self.declared_functions.contains(&target) {
-                             // Known function: Cast function pointer to i64
-                             {
-                               let count = self.function_param_counts.get(&target).cloned().unwrap_or(1);
-                               let args_sig = vec!["i64"; count].join(", ");
-                               format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, target)
-                           }
-                         } else {
-                             // Unknown global (e.g. Class name used as value) -> 0
-                             "0".to_string()
-                         }
-                    }
+                if name.starts_with("%") || name.starts_with("@") {
+                    return name.to_string();
                 }
+                
+                if let Some(reg_ref) = self.value_map.get(name) {
+                    let reg = reg_ref.clone();
+                    // It's a local variable (alloca) -> Load it
+                    self.temp_counter += 1;
+                    let val_reg = format!("%val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = load i64, i64* {}", val_reg, reg));
+                    // println!("ResolveVar: {} -> {} (from {})", name, val_reg, reg);
+                    return val_reg;
+                }
+
+                // Check for function parameter (if not mapped to alloca yet? - should be in value_map)
+                // Fallback for globals
+                if self.declared_functions.contains(name) || name == "tejx_main" {
+                     // Function pointer logic (same as before)
+                     let count = self.function_param_counts.get(name).cloned().unwrap_or(0);
+                     let args_sig = vec!["i64"; count].join(", ");
+                     return format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, name);
+                }
+                
+                // Should check globals here properly
+                if name.starts_with("g_") || self.declared_globals.contains(name) {
+                     self.temp_counter += 1;
+                     let val_reg = format!("%gval_{}", self.temp_counter);
+                     let g_name = if name.starts_with("g_") { format!("@{}", name) } else { format!("@g_{}", name) };
+                     self.emit_line(&format!("{} = load i64, i64* {}", val_reg, g_name));
+                     return val_reg;
+                }
+
+                // Treat as valid global reference if we can't find it locally?
+                // Or partial match? 
+                
+                // Existing logic for function names used as values
+                let mut target = name.clone();
+                if name.starts_with("f_") {
+                     let real_name = &name[2..]; // strip f_
+                     if self.declared_functions.contains(real_name) {
+                         target = real_name.to_string();
+                     }
+                }
+                
+                if self.declared_functions.contains(&target) {
+                     let count = self.function_param_counts.get(&target).cloned().unwrap_or(0);
+                     let args_sig = vec!["i64"; count].join(", ");
+                     return format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, target);
+                }
+
+                // Last resort: 0
+                "0".to_string()
             }
         }
     }

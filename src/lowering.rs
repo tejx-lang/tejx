@@ -1972,7 +1972,7 @@ impl Lowering {
                     HIRExpression::MemberAccess {
                         target: Box::new(lowered_object),
                         member: member.clone(),
-                        ty: TejxType::Any,
+                        ty: if member == "length" { TejxType::Int32 } else { TejxType::Any },
                     }
                 }
             }

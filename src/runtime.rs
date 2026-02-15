@@ -54,6 +54,7 @@ pub enum TaggedValue {
 pub struct Heap {
     pub next_id: i64,
     pub objects: Vec<Option<TaggedValue>>,
+    pub strings: HashMap<String, i64>,
 }
 
 impl Heap {
@@ -96,6 +97,7 @@ impl Heap {
 pub static HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
     next_id: 1000000, 
     objects: Vec::with_capacity(1000),
+    strings: HashMap::new(),
 }));
 
  static EXCEPTION_STACK: LazyLock<Mutex<Vec<usize>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -1189,9 +1191,15 @@ pub unsafe extern "C" fn rt_box_string(s_ptr: i64) -> i64 {
          CStr::from_ptr(s_ptr as *const c_char).to_string_lossy().into_owned()
      };
     let mut heap = HEAP.lock().unwrap();
+    
+    if let Some(&id) = heap.strings.get(&s) {
+        return id;
+    }
+
     let id = heap.next_id;
     heap.next_id += 1;
-    heap.insert(id, TaggedValue::String(s));
+    heap.insert(id, TaggedValue::String(s.clone()));
+    heap.strings.insert(s, id);
     id
 }
 
@@ -1215,7 +1223,7 @@ pub fn rt_to_number_internal(heap: &Heap, id: i64) -> f64 {
             TaggedValue::Number(n) => *n,
             TaggedValue::Boolean(b) => if *b { 1.0 } else { 0.0 },
             TaggedValue::String(s) => s.parse::<f64>().unwrap_or(0.0),
-            _ => 0.0
+            _ => std::f64::NAN
         }
     } else {
         // Small integer optimization: values between -1,000,000 and 1,000,000 are treated as direct numbers

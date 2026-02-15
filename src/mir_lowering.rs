@@ -59,14 +59,17 @@ impl MIRLowering {
         self.current_function.entry_block = entry;
         self.current_block = entry;
 
-        // Initialize parameters as moves from argument registers
+        // Initialize parameters as moves from argument registers - REMOVED
+        // CodeGen handles this automatically by storing %__argN into the parameter alloca.
         for (i, (pname, pty)) in params.iter().enumerate() {
-            let arg_name = format!("__arg{}", i);
+            // let arg_name = format!("__arg{}", i);
             self.current_function.variables.insert(pname.clone(), pty.clone());
+            /*
             self.emit(MIRInstruction::Move {
                 dst: pname.clone(),
                 src: MIRValue::Variable { name: arg_name, ty: pty.clone() },
             });
+            */
         }
 
         self.lower_statement(body);
@@ -824,13 +827,16 @@ impl MIRLowering {
             }
             HIRExpression::MemberAccess { target, member, ty } => {
                 let obj = self.lower_expression(target);
-                let temp = self.new_temp(ty.clone());
+                // Runtime m_get returns a TaggedValue (Any), so we must load it as Any first.
+                let temp = self.new_temp(TejxType::Any);
                 self.emit(MIRInstruction::LoadMember {
                     dst: temp.clone(),
                     obj,
                     member: member.clone(),
                 });
-                MIRValue::Variable { name: temp, ty: ty.clone() }
+                let val = MIRValue::Variable { name: temp, ty: TejxType::Any };
+                // Convert/Unbox to the expected HIR type (e.g. Int32 for length)
+                self.auto_box(val, ty)
             }
             HIRExpression::ObjectLiteral { entries, ty } => {
                 let mir_entries = entries.iter()
