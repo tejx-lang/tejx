@@ -76,7 +76,7 @@ impl Lowering {
             name.clone()
         } else {
             // Include a unique ID per scope to avoid collisions between siblings
-            let mut id = self.next_scope_id.borrow_mut();
+            let id = self.next_scope_id.borrow_mut();
             let mangled = format!("{}${}", name, *id);
             // Wait, we only need to increment if we actually define something in a NEW scope?
             // Actually, incrementing on enter_scope is better.
@@ -282,14 +282,12 @@ impl Lowering {
                     let mut i_fields = Vec::new();
                     let mut s_fields = Vec::new();
                     for member in &class_decl._members {
+                        let ty = TejxType::from_name(&member._type_name);
+                        let init = member._initializer.as_ref().map(|e| *e.clone()).unwrap_or(Expression::NumberLiteral { value: 0.0, _line: 0, _col: 0 });
                         if member._is_static {
-                            if let Some(init) = &member._initializer {
-                                s_fields.push((member._name.clone(), TejxType::from_name(&member._type_name), *init.clone()));
-                            }
+                            s_fields.push((member._name.clone(), ty, init));
                         } else {
-                            if let Some(init) = &member._initializer {
-                                i_fields.push((member._name.clone(), TejxType::from_name(&member._type_name), *init.clone()));
-                            }
+                            i_fields.push((member._name.clone(), ty, init));
                         }
                     }
                     self.class_instance_fields.borrow_mut().insert(class_decl.name.clone(), i_fields);
@@ -1275,7 +1273,7 @@ impl Lowering {
                     .map(|a| self.lower_expression(a))
                     .collect();
                 
-                let mut callee_str = callee.to_callee_name();
+                let callee_str = callee.to_callee_name();
                 
                 // If simple name resolution failed (e.g. strict indirect call), we might still want to try?
                 // But for now, reliance on string name implies we expect simple callees for builtins.
@@ -1433,9 +1431,9 @@ impl Lowering {
                                     is_instance = true;
                                 }
 
-                                if let Some(mut class_name) = class_name_opt {
+                                 if let Some(ref mut class_name) = class_name_opt {
                                     if let Some(pos) = class_name.find('<') {
-                                        class_name = class_name[..pos].to_string();
+                                        *class_name = class_name[..pos].to_string();
                                     }
                                     let mangled_key = format!("{}_{}", class_name, method_name);
                                     if self.user_functions.borrow().contains_key(&mangled_key) {
@@ -1496,7 +1494,7 @@ impl Lowering {
                                          HIRExpression::Variable { name: obj_path.clone(), ty }
                                      };
 
-                                    let (runtime_callee, ret_type) = match method_name.as_str() {
+                                     let (runtime_callee, _ret_type) = match method_name.as_str() {
                                          "push" | "unshift" | "indexOf" | "fill" => (format!("Array_{}", method_name), TejxType::Int32),
                                          "pop" | "shift" => (format!("Array_{}", method_name), TejxType::Any), 
                                          "join" => ("__join".to_string(), TejxType::Any),
@@ -1509,7 +1507,23 @@ impl Lowering {
                                          "delete" | "del" => ("rt_del".to_string(), TejxType::Any),
                                          "size" => ("s_size".to_string(), TejxType::Any),
                                          "clear" => ("m_clear".to_string(), TejxType::Any),
-                                         "add" => ("s_add".to_string(), TejxType::Any),
+                                         "add" => {
+                                             if class_name_opt.as_deref() == Some("Atomic") {
+                                                  ("rt_atomic_add".to_string(), TejxType::Int32)
+                                             } else if let Some(cn) = class_name_opt.as_deref() {
+                                                  (format!("std_collections_{}_add", cn), TejxType::Any)
+                                             } else {
+                                                  ("s_add".to_string(), TejxType::Any)
+                                             }
+                                         },
+                                         "sub" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_sub".to_string(), TejxType::Int32),
+                                         "load" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_load".to_string(), TejxType::Int32),
+                                         "store" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_store".to_string(), TejxType::Int32),
+                                         "exchange" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_exchange".to_string(), TejxType::Int32),
+                                         "compareExchange" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_compare_exchange".to_string(), TejxType::Int32),
+                                         "wait" if class_name_opt.as_deref() == Some("Condition") => ("rt_cond_wait".to_string(), TejxType::Int32),
+                                         "notify" if class_name_opt.as_deref() == Some("Condition") => ("rt_cond_notify".to_string(), TejxType::Int32),
+                                         "notifyAll" if class_name_opt.as_deref() == Some("Condition") => ("rt_cond_notify_all".to_string(), TejxType::Int32),
                                          "trim" => ("rt_string_trim".to_string(), TejxType::Any),
                                          "toLowerCase" => ("rt_string_to_lower".to_string(), TejxType::Any),
                                          "toUpperCase" => ("rt_string_to_upper".to_string(), TejxType::Any),
@@ -1715,7 +1729,7 @@ impl Lowering {
                 
                 // Enforce Any type for lambda parameters to handle boxed values from indirect calls
                 let hir_params: Vec<(String, TejxType)> = params.iter()
-                    .map(|p| (p.name.clone(), TejxType::Any))
+                    .map(|p| (p.name.clone(), if p.type_name.is_empty() { TejxType::Any } else { TejxType::from_name(&p.type_name) }))
                     .collect();
                 
                 // CRITICAL: Enter a new scope for the lambda body and define parameters

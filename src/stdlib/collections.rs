@@ -217,7 +217,7 @@ pub fn exports() -> HashSet<String> {
     rt_box_boolean(if result { 1 } else { 0 })
 }
 #[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_keys(this: i64) -> i64 {
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) {
         let keys_str: Vec<String> = map.keys().cloned().collect();
         drop(heap); 

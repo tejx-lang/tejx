@@ -64,12 +64,14 @@ let d = new Date();
 print("Current Time (ISO): Expected: ISO string, Actual: ", d.toISOString());
 
 let t = d.getTime();
+// 6. Built-in Classes (Date, Math, etc.)
+print("\n--- Built-in Classes (Date) ---");
+let currentTime = Date.now();
+print("Current timestamp (Date.now()): ", currentTime);
+// assert(currentTime > 0); // assert is not defined in this context
 print("Timestamp: Expected: Number, Actual: ", t);
 
-let now = Date.now();
-print("Date.now(): Expected: Number, Actual: ", now);
-
-if (now >= t) {
+if (currentTime >= t) {
     print("Time flow: Expected: forward, Actual: forward");
 } else {
     print("Time flow: Expected: forward, Actual: broken");

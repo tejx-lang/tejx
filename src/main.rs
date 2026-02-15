@@ -18,8 +18,7 @@ mod diagnostics;
 use std::env;
 use std::fs;
 use std::process;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use lexer::Lexer;
 use parser::Parser;

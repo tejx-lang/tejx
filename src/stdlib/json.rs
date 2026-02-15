@@ -1,5 +1,5 @@
-use crate::runtime::{rt_box_string, rt_to_number, HEAP, TaggedValue, stringify_value};
-use std::ffi::{CStr, CString};
+use crate::runtime::{rt_box_string, HEAP, TaggedValue};
+use std::ffi::CString;
 use std::collections::HashMap;
 
 fn stringify_json_recursive(id: i64) -> String {

@@ -1,9 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_char;
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
 // Compatibility module for dual-build (host/target)
 // Compatibility module for dual-build (host/target)
 pub mod runtime {
@@ -22,6 +19,14 @@ pub mod stdlib;
 use std::thread;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, Arc, Condvar, LazyLock};
+use std::sync::atomic::{AtomicI64, Ordering};
+
+#[derive(Debug, Clone)]
+pub enum PromiseState {
+    Pending,
+    Resolved(i64),
+    Rejected(i64),
+}
 
 #[derive(Debug, Clone)]
 pub enum TaggedValue {
@@ -39,6 +44,9 @@ pub enum TaggedValue {
     OrderedSet(Vec<i64>, HashSet<i64>),
     BloomFilter(Vec<u8>, usize), // bits, k
     TrieNode { children: HashMap<char, i64>, is_end: bool, value: i64 },
+    Atomic(Arc<AtomicI64>),
+    Condition(Arc<Condvar>),
+    Promise(Arc<(Mutex<PromiseState>, Condvar)>),
 }
 
 pub struct Heap {
@@ -149,6 +157,12 @@ pub static HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
  }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_div_zero_error() {
+    eprintln!("Division by zero");
+    std::process::exit(1);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn tejx_hello() {
 
 }
@@ -170,7 +184,7 @@ pub extern "C" fn Thread_new(callback: i64, arg: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Thread_join(id: i64) -> i64 {
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Thread(handle_mutex)) = heap.get(id) {
          let mut guard = handle_mutex.lock().unwrap();
          if let Some(handle) = guard.take() {
@@ -265,6 +279,25 @@ pub extern "C" fn m_new() -> i64 {
     map.insert("toString".to_string(), rt_Object_toString as *const () as i64);
     heap.insert(id, TaggedValue::Map(map));
     id
+}
+
+unsafe fn get_string_ext_internal(heap: &Heap, id: i64) -> Option<String> {
+    if let Some(obj) = heap.get(id) {
+        if let TaggedValue::String(s) = obj {
+            return Some(s.clone());
+        }
+    } else if id > 0x10000 && (id < 1000000 || id > 0x100000000) {
+        // Fallback for pointers. 0x100000000+ is common for macOS/Linux segments.
+        // We also allow small pointers above 0x10000 just in case.
+        let p = id as *const c_char;
+        if !p.is_null() {
+            let c_str = unsafe { CStr::from_ptr(p) };
+            if let Ok(s) = c_str.to_str() {
+                return Some(s.to_owned());
+            }
+        }
+    }
+    None
 }
 
 unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
@@ -391,6 +424,9 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                         let res = arr[i];
                         // println!("m_get Array index: {}, res: {}", i, res);
                         return res;
+                    } else {
+                        eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
+                        std::process::exit(1);
                     }
                 }
 
@@ -414,6 +450,9 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                 if let Some(i) = idx {
                     if i < arr.len() {
                         return (arr.get(i).cloned().unwrap_or(0) != 0) as i64;
+                    } else {
+                        eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
+                        std::process::exit(1);
                     }
                 }
 
@@ -459,7 +498,29 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
             _ => { }
         }
     } else {
-        // Drop lock before check primitives
+        // Check for raw pointer strings (literals)
+        if let Some(s) = unsafe { get_string_ext_internal(&heap, id) } {
+            let key = if key_ptr > 1000 && key_ptr < 0xFFFFFFFFFFFF { unsafe { get_string_key(&heap, key_ptr) } } else { "".to_string() };
+            if key == "length" {
+                return (s.len() as f64).to_bits() as i64;
+            }
+            
+            let idx = if key_ptr >= 0 && key_ptr < 1000000000 {
+                 Some(key_ptr as usize)
+            } else if key_ptr > 0xFFFFFFFFFFFF {
+                 Some(f64::from_bits(key_ptr as u64) as usize)
+            } else {
+                 None
+            };
+
+            if let Some(i) = idx {
+                if i < s.len() {
+                    let char_str = s[i..i+1].to_string();
+                    drop(heap);
+                    return rt_box_string_raw(char_str);
+                }
+            }
+        }
         drop(heap);
     }
     0
@@ -534,6 +595,17 @@ pub fn stringify_value(id: i64) -> String {
             }
             TaggedValue::Thread(_) => "[Thread]".to_string(),
             TaggedValue::Mutex(_) => "[Mutex]".to_string(),
+            TaggedValue::Promise(p) => {
+                let p_clone = p.clone();
+                drop(heap); 
+                let (lock, _) = &*p_clone;
+                let state = lock.lock().unwrap();
+                match &*state {
+                    PromiseState::Pending => "[Promise <Pending>]".to_string(),
+                    PromiseState::Resolved(v) => format!("[Promise <Resolved: {}>]", v),
+                    PromiseState::Rejected(r) => format!("[Promise <Rejected: {}>]", r), // Fixed closing brace
+                }
+            },
             TaggedValue::Number(n) => {
                 if n.fract() == 0.0 { format!("{:.0}", n) } else { format!("{}", n) }
             },
@@ -553,6 +625,8 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::OrderedSet(_, _) => "[OrderedSet]".to_string(),
             TaggedValue::BloomFilter(_, _) => "[BloomFilter]".to_string(),
             TaggedValue::TrieNode { .. } => "[TrieNode]".to_string(),
+            TaggedValue::Atomic(val) => format!("[Atomic: {}]", val.load(Ordering::SeqCst)),
+            TaggedValue::Condition(_) => "[Condition]".to_string(),
         };
         return res;
     }
@@ -565,17 +639,19 @@ pub fn stringify_value(id: i64) -> String {
     
     // 4. Fallbacks for non-heap IDs (unboxed values)
     if id != 0 {
-        // Optimization: Values between -1 trillion and 1 trillion are treated as direct integers.
-        // This covers the sum of 1...100k (5e9) and most loop indices.
-        if id > -1_000_000_000_000 && id < 1_000_000_000_000 {
+        // Optimization: Values between -1 billion and 1 billion are treated as direct integers.
+        // This covers most loop indices and small counts.
+        // We MUST NOT go much higher because macOS pointers start around 4GB (0x100000000).
+        if id > -1_000_000_000 && id < 1_000_000_000 {
             return id.to_string();
         }
 
         // Try treating it as a bitcasted double
         let d = f64::from_bits(id as u64);
         if d.is_finite() && (d.abs() > 1e-300 || d.abs() == 0.0) {
-             if d.fract() == 0.0 { return format!("{:.0}", d); }
-             else { return format!("{}", d); }
+             let res = if d.fract() == 0.0 { format!("{:.0}", d) }
+             else { format!("{}", d) };
+             return res;
         }
 
         // Pointers are risky. On macOS, string literals from segments are typically in this range.
@@ -738,6 +814,10 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                 } else {
                     return *(LAST_PTR as *mut i64).add(i);
                 }
+            } else {
+                let last_len = LAST_LEN;
+                eprintln!("Array index out of bounds (fast path): {} (length: {})", i, last_len);
+                std::process::exit(1);
             }
         }
     }
@@ -753,6 +833,8 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                 LAST_ELEM_SIZE = 8;
             }
             if i < arr.len() { return arr[i]; }
+            eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
+            std::process::exit(1);
         }
         Some(TaggedValue::ByteArray(arr)) => {
             unsafe {
@@ -770,8 +852,18 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                 return rt_box_string_raw(char_str);
             }
         }
-        _ => {}
+        _ => {
+            // Case: Raw pointer string (literal)
+            if let Some(s) = unsafe { get_string_ext_internal(&heap, id) } {
+                if i < s.len() {
+                    let char_str = s[i..i+1].to_string();
+                    drop(heap);
+                    return rt_box_string_raw(char_str);
+                }
+            }
+        }
     }
+    drop(heap);
     0
 }
 
@@ -836,25 +928,20 @@ pub extern "C" fn rt_array_set_fast(id: i64, idx: i64, val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-#[unsafe(no_mangle)]
 pub extern "C" fn Array_fill(id: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
 
-    // Heuristic for ID vs Boolean primitive
-    let mut bool_val = false;
-    if val == 0 || val == 1 {
-         bool_val = val != 0;
-    } else if val > 1000 || val < -1000 {
-         // Check if it's a Boxed Boolean
-         if let Some(TaggedValue::Boolean(b)) = heap.get(val) {
-             bool_val = *b;
-         } else if let Some(TaggedValue::Number(n)) = heap.get(val) {
-             bool_val = *n != 0.0;
-         } else {
-             bool_val = true; // Objects are truthy
-         }
+    let mut to_fill = val;
+    if let Some(TaggedValue::Boolean(b)) = heap.get(val) {
+        to_fill = if *b { 1 } else { 0 };
+    } else if let Some(TaggedValue::Number(n)) = heap.get(val) {
+        to_fill = if *n != 0.0 { 1 } else { 0 };
+    } else if val == 0 || val == 1 {
+        // Primitive boolean/number
+        to_fill = val;
     } else {
-         bool_val = val != 0;
+        // Any other object is truthy
+        to_fill = 1;
     }
 
     match heap.get_mut(id) {
@@ -868,7 +955,7 @@ pub extern "C" fn Array_fill(id: i64, val: i64) -> i64 {
             }
         }
         Some(TaggedValue::ByteArray(arr)) => {
-            let byte_val = if bool_val { 1 } else { 0 };
+            let byte_val = if to_fill != 0 { 1 } else { 0 };
             for elem in arr.iter_mut() { *elem = byte_val; }
             unsafe {
                 LAST_ID = id;
@@ -910,11 +997,11 @@ pub unsafe extern "C" fn __join(id: i64, sep_ptr: i64) -> i64 {
         
         let elements = {
             let heap = HEAP.lock().unwrap();
-            if let Some(TaggedValue::Array(arr)) = heap.get(id) {
-                arr.clone()
-            } else {
-                return 0;
-            }
+            let extract = match heap.get(id) {
+                Some(TaggedValue::Array(a)) => a.clone(),
+                _ => return 0,
+            };
+            extract
         };
 
         let joined = elements.iter().map(|v| stringify_value(*v)).collect::<Vec<_>>().join(&sep);
@@ -939,8 +1026,8 @@ pub unsafe extern "C" fn d_getTime(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn d_toISOString(id: i64) -> i64 {
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Date(t)) = heap.get(id) {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Date(_t)) = heap.get(id) {
         // Very basic ISO string (not full but enough for tests)
         let s = "2023-01-01T00:00:00.000Z".to_string(); // Mock for now
         let c_str = CString::new(s).unwrap();
@@ -953,10 +1040,10 @@ pub unsafe extern "C" fn d_toISOString(id: i64) -> i64 {
 
 
 #[unsafe(export_name = "Some")]
-pub extern "C" fn rt_Some(val: i64) -> i64 { val } // Stub: Just return value
+pub extern "C" fn rt_some(val: i64) -> i64 { val } // Stub: Just return value
 
 #[unsafe(export_name = "None")]
-pub extern "C" fn rt_None() -> i64 { 0 } // Stub: Null
+pub extern "C" fn rt_none() -> i64 { 0 } // Stub: Null
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
@@ -972,7 +1059,8 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
             TaggedValue::String(_) => "string",
             TaggedValue::Boolean(_) => "boolean",
             TaggedValue::Array(_) | TaggedValue::ByteArray(_) | TaggedValue::Map(_) | TaggedValue::Set(_) | TaggedValue::Date(_) | TaggedValue::Thread(_) | TaggedValue::Mutex(_) |
-            TaggedValue::OrderedMap(_, _) | TaggedValue::OrderedSet(_, _) | TaggedValue::BloomFilter(_, _) | TaggedValue::TrieNode { .. } => "object",
+            TaggedValue::OrderedMap(_, _) | TaggedValue::OrderedSet(_, _) | TaggedValue::BloomFilter(_, _) | TaggedValue::TrieNode { .. } |
+            TaggedValue::Atomic(_) | TaggedValue::Condition(_) | TaggedValue::Promise(_) => "object",
         };
         let c_str = CString::new(type_str).unwrap();
         let ptr = c_str.as_ptr() as i64;
@@ -1167,6 +1255,8 @@ pub unsafe extern "C" fn rt_str_equals(a: i64, b: i64) -> i64 {
     let sb = __callee___toString(b);
     let s_a = CStr::from_ptr(sa as *const c_char).to_string_lossy();
     let s_b = CStr::from_ptr(sb as *const c_char).to_string_lossy();
+    
+    let _ = sa; let _ = sb; // silence warnings if sa/sb unused in logs
     if s_a == s_b { 1 } else { 0 }
 }
 
@@ -1174,26 +1264,256 @@ pub unsafe extern "C" fn rt_str_equals(a: i64, b: i64) -> i64 {
 // File System functions moved to stdlib/fs.rs
 
 // Async/Await Stubs
-#[unsafe(no_mangle)] pub extern "C" fn __await(val: i64) -> i64 { val }
-#[unsafe(no_mangle)] pub extern "C" fn Promise_all(ptr: i64) -> i64 { ptr }
+// Internal helper that returns Result for safe usage in threads
+fn await_impl(val: i64) -> Result<i64, i64> {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Promise(p)) = heap.get(val) {
+        let p_clone = p.clone();
+        drop(heap); 
+
+        let (lock, cvar) = &*p_clone;
+
+        let mut state = lock.lock().unwrap();
+        loop {
+            match &*state {
+                PromiseState::Pending => {
+                    state = cvar.wait(state).unwrap();
+                }
+                PromiseState::Resolved(v) => return Ok(*v),
+                PromiseState::Rejected(r) => return Err(*r),
+            }
+        }
+    }
+    Ok(val)
+}
+
+#[unsafe(no_mangle)] 
+pub extern "C" fn __await(val: i64) -> i64 {
+    match await_impl(val) {
+        Ok(v) => v,
+        Err(r) => {
+            unsafe { tejx_throw(r); }
+            0 // unreachable
+        }
+    }
+}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Promise_new(callback: i64) -> i64 {
-    // A very basic Promise implementation for the test.
-    // In a real runtime, this would manage state and callbacks.
-    // For now, we'll just treat it as a Map to avoid linker errors.
+pub extern "C" fn Promise_new(_callback: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     let id = heap.next_id;
     heap.next_id += 1;
-    let mut map = HashMap::new();
-    map.insert("__is_promise".to_string(), 1);
-    heap.insert(id, TaggedValue::Map(map));
-    
-    // Call the callback immediately with stub resolve/reject
-    // let cb: extern "C" fn(i64, i64) = std::mem::transmute(callback);
-    // cb(0, 0); // Stubs for resolve/reject
-    
+    let promise = Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()));
+    heap.insert(id, TaggedValue::Promise(promise));
     id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Promise_resolve(val: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    let promise = Arc::new((Mutex::new(PromiseState::Resolved(val)), Condvar::new()));
+    heap.insert(id, TaggedValue::Promise(promise));
+    id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Promise_reject(reason: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    let promise = Arc::new((Mutex::new(PromiseState::Rejected(reason)), Condvar::new()));
+    heap.insert(id, TaggedValue::Promise(promise));
+    id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Promise_all(args_id: i64) -> i64 {
+    let mut promises = Vec::new();
+    {
+        let heap = HEAP.lock().unwrap();
+        if let Some(TaggedValue::Array(arr)) = heap.get(args_id) {
+            promises = arr.clone();
+        }
+    }
+    
+    // Create Pending Promise for result
+    let p_result = Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()));
+    let p_clone = p_result.clone();
+    
+    let p_id = {
+        let mut heap = HEAP.lock().unwrap();
+        let id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(id, TaggedValue::Promise(p_result));
+        id
+    };
+
+    thread::spawn(move || {
+        let mut results = Vec::new();
+        let mut rejected = None;
+        
+        for p_id in promises {
+            match await_impl(p_id) {
+                Ok(v) => results.push(v),
+                Err(r) => { 
+                    rejected = Some(r);
+                    break; 
+                }
+            }
+        }
+        
+        let (lock, cvar) = &*p_clone;
+        let mut state = lock.lock().unwrap();
+        if let Some(r) = rejected {
+            *state = PromiseState::Rejected(r);
+        } else {
+             // Store results array
+             let mut heap = HEAP.lock().unwrap();
+             let arr_id = heap.next_id;
+             heap.next_id += 1;
+             heap.insert(arr_id, TaggedValue::Array(results));
+             *state = PromiseState::Resolved(arr_id);
+        }
+        cvar.notify_all();
+    });
+    
+    p_id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rt_atomic_new(val: i64) -> i64 {
+    // println!("DEBUG: rt_atomic_new start");
+    let initial = rt_to_number(val) as i64;
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(id, TaggedValue::Atomic(Arc::new(AtomicI64::new(initial))));
+    // println!("DEBUG: rt_atomic_new end {}", id);
+    id
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_atomic_add(id: i64, val: i64) -> i64 {
+    let v = rt_to_number(val) as i64;
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Atomic(a)) = heap.get(id) {
+        let prev = a.fetch_add(v, Ordering::SeqCst);
+        return prev + v; // Return new value
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_atomic_sub(id: i64, val: i64) -> i64 {
+    let v = rt_to_number(val) as i64;
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Atomic(a)) = heap.get(id) {
+        let prev = a.fetch_sub(v, Ordering::SeqCst);
+        return prev - v;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_atomic_load(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Atomic(a)) = heap.get(id) {
+        return a.load(Ordering::SeqCst);
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_atomic_store(id: i64, val: i64) -> i64 {
+    let v = rt_to_number(val) as i64;
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Atomic(a)) = heap.get(id) {
+        a.store(v, Ordering::SeqCst);
+        return v;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_atomic_exchange(id: i64, val: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Atomic(a)) = heap.get(id) {
+        let v = rt_to_number(val) as i64;
+        return a.swap(v, Ordering::SeqCst);
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_atomic_compare_exchange(id: i64, expected: i64, val: i64) -> i64 {
+    let e = rt_to_number(expected) as i64;
+    let v = rt_to_number(val) as i64;
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Atomic(a)) = heap.get(id) {
+        match a.compare_exchange(e, v, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(prev) => return prev,
+            Err(curr) => return curr,
+        }
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rt_cond_new() -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(id, TaggedValue::Condition(Arc::new(Condvar::new())));
+    id
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_cond_wait(cond_id: i64, mutex_id: i64) -> i64 {
+    let (pair, cond) = {
+        let heap = HEAP.lock().unwrap();
+        let c = if let Some(TaggedValue::Condition(c)) = heap.get(cond_id) { c.clone() } else { return 0; };
+        let m = if let Some(TaggedValue::Mutex(m)) = heap.get(mutex_id) { m.clone() } else { return 0; };
+        (m, c)
+    };
+
+    let (lock, internal_cvar) = &*pair;
+    let mut guard = lock.lock().unwrap();
+    
+    // Release logical lock
+    *guard = false;
+    internal_cvar.notify_all();
+    
+    // Wait on external condvar
+    guard = cond.wait(guard).unwrap();
+    
+    // Re-acquire logical lock
+    while *guard {
+        guard = internal_cvar.wait(guard).unwrap();
+    }
+    *guard = true;
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_cond_notify(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Condition(c)) = heap.get(id) {
+        c.notify_one();
+        return 1;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_cond_notify_all(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Condition(c)) = heap.get(id) {
+        c.notify_all();
+        return 1;
+    }
+    0
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_to_boolean(id: i64) -> i64 {
@@ -1203,20 +1523,41 @@ pub unsafe extern "C" fn rt_to_boolean(id: i64) -> i64 {
             TaggedValue::Boolean(b) => if *b { 1 } else { 0 },
             TaggedValue::Number(n) => if *n != 0.0 { 1 } else { 0 },
             TaggedValue::String(s) => if !s.is_empty() { 1 } else { 0 },
-            TaggedValue::Array(a) => 1, // Objects/Arrays are truthy in JS
+            TaggedValue::Array(_a) => 1, 
             TaggedValue::Map(_) => 1,
+            TaggedValue::Promise(_) => 1,
             _ => 1,
         }
     } else {
-        // literal?
         if id == 0 { 0 } else { 1 }
     }
 }
-// delay moved to stdlib/time.rs
+
+// delay moved to stdlib/time.rs but we override it here for async support
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn delay(ms: i64) -> i64 {
-    unsafe extern "C" { fn std_time_sleep(ms: i64) -> i64; }
-    std_time_sleep(ms)
+    // Return a Promise that resolves after ms
+    let promise = Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()));
+    let p_clone = promise.clone();
+    
+    // Register Promise in heap
+    let p_id = {
+        let mut heap = HEAP.lock().unwrap();
+        let id = heap.next_id;
+        heap.next_id += 1;
+        heap.insert(id, TaggedValue::Promise(promise));
+        id
+    };
+
+    thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(ms as u64));
+        let (lock, cvar) = &*p_clone;
+        let mut state = lock.lock().unwrap();
+        *state = PromiseState::Resolved(0); // Resolve with 0 (void)
+        cvar.notify_all();
+    });
+    
+    p_id
 }
 #[unsafe(no_mangle)] pub extern "C" fn http_get(_url: i64) -> i64 { CString::new("<html></html>").unwrap().into_raw() as i64 }
 #[unsafe(no_mangle)]
@@ -1231,16 +1572,25 @@ pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
     let obj_a = heap.get(a);
     let obj_b = heap.get(b);
     
-    let res = match (obj_a, obj_b) {
-        (Some(TaggedValue::Number(n1)), Some(TaggedValue::Number(n2))) => if (n1 - n2).abs() < 1e-9 { 1 } else { 0 },
-        (Some(TaggedValue::String(s1)), Some(TaggedValue::String(s2))) => if s1 == s2 { 1 } else { 0 },
-        (Some(TaggedValue::Boolean(b1)), Some(TaggedValue::Boolean(b2))) => if b1 == b2 { 1 } else { 0 },
-        (None, Some(TaggedValue::Number(n))) => if let Some(v) = val_a { if (v - n).abs() < 1e-9 { 1 } else { 0 } } else { 0 },
-        (Some(TaggedValue::Number(n)), None) => if let Some(v) = val_b { if (v - n).abs() < 1e-9 { 1 } else { 0 } } else { 0 },
-        (None, None) => if let (Some(v1), Some(v2)) = (val_a, val_b) { if (v1 - v2).abs() < 1e-9 { 1 } else { 0 } } else { 0 },
-        _ => 0
-    };
-    res
+    match (obj_a, obj_b) {
+        (Some(TaggedValue::Number(n1)), Some(TaggedValue::Number(n2))) => return if (n1 - n2).abs() < 1e-9 { 1 } else { 0 },
+        (Some(TaggedValue::String(s1)), Some(TaggedValue::String(s2))) => return if s1 == s2 { 1 } else { 0 },
+        (Some(TaggedValue::Boolean(b1)), Some(TaggedValue::Boolean(b2))) => return if b1 == b2 { 1 } else { 0 },
+        (None, Some(TaggedValue::Number(n))) => if let Some(v) = val_a { if (v - n).abs() < 1e-9 { return 1; } },
+        (Some(TaggedValue::Number(n)), None) => if let Some(v) = val_b { if (v - n).abs() < 1e-9 { return 1; } },
+        (None, None) => if let (Some(v1), Some(v2)) = (val_a, val_b) { if (v1 - v2).abs() < 1e-9 { return 1; } },
+        _ => {}
+    }
+
+    // String normalization fallback (handles raw pointers vs heap IDs)
+    let sa = get_string_ext_internal(&heap, a);
+    let sb = get_string_ext_internal(&heap, b);
+
+    if let (Some(s1), Some(s2)) = (sa, sb) {
+        return if s1 == s2 { 1 } else { 0 };
+    }
+    
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -1292,7 +1642,7 @@ pub unsafe extern "C" fn rt_ge(a: i64, b: i64) -> i64 {
 pub unsafe extern "C" fn Array_concat(id_a: i64, id_b: i64) -> i64 {
     let mut new_arr = Vec::new();
     let mut heap = HEAP.lock().unwrap();
-    let mut extract = |id| {
+    let extract = |id| {
         if let Some(TaggedValue::Array(arr)) = heap.get(id) { arr.clone() } else { vec![id] }
     };
     new_arr.extend(extract(id_a));
@@ -1362,8 +1712,8 @@ pub unsafe extern "C" fn rt_is_truthy(val: i64) -> bool {
             TaggedValue::Boolean(b) => *b,
             TaggedValue::Number(n) => *n != 0.0 && !n.is_nan(),
             TaggedValue::String(s) => !s.is_empty(),
-            TaggedValue::Array(a) => true,
-            TaggedValue::Map(m) => true,
+            TaggedValue::Array(_a) => true,
+            TaggedValue::Map(_m) => true,
             _ => true
         }
     } else {
@@ -1376,7 +1726,7 @@ pub unsafe extern "C" fn rt_is_truthy(val: i64) -> bool {
 #[unsafe(no_mangle)] 
 pub unsafe extern "C" fn Array_map(id: i64, callback: i64) -> i64 {
     let mut new_arr = Vec::new();
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get(id) {
          let elements = arr.clone();
          drop(heap);
@@ -1393,7 +1743,7 @@ pub unsafe extern "C" fn Array_map(id: i64, callback: i64) -> i64 {
 #[unsafe(no_mangle)] 
 pub unsafe extern "C" fn Array_filter(id: i64, callback: i64) -> i64 {
     let mut new_arr = Vec::new();
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get(id) {
          let elements = arr.clone();
          drop(heap);
@@ -1448,7 +1798,7 @@ pub extern "C" fn Array_sliceRest(id: i64, start: i64) -> i64 {
 }
 #[unsafe(no_mangle)] pub unsafe extern "C" fn p_print(_this: i64, prefix: i64) -> i64 {
     if prefix != 0 {
-        let p = CStr::from_ptr(prefix as *const c_char).to_string_lossy();
+        let _p = CStr::from_ptr(prefix as *const c_char).to_string_lossy();
     } else {
     }
     0

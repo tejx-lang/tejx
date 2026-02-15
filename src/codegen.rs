@@ -93,7 +93,7 @@ impl CodeGen {
                     &raw_content
                 };
                 
-                let len = content.len() + 1;
+                let _len = content.len() + 1;
 
                 let mut escaped = String::new();
                 for b in content.as_bytes() {
@@ -393,7 +393,7 @@ impl CodeGen {
         self.emit("}\n\n");
     }
 
-    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, _func: &MIRFunction, bb_name: &str) {
+    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, _func: &MIRFunction, _bb_name: &str) {
         match inst {
             MIRInstruction::Move { dst, src } => {
                 let val = self.resolve_value(src);
@@ -570,6 +570,26 @@ impl CodeGen {
                             self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_res, pred, l, r));
                             self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
                         } else {
+                            if llvm_op == "sdiv" || llvm_op == "srem" {
+                                if !self.declared_functions.contains("rt_div_zero_error") {
+                                    self.global_buffer.push_str("declare void @rt_div_zero_error()\n");
+                                    self.declared_functions.insert("rt_div_zero_error".to_string());
+                                }
+                                let label_id = self.temp_counter;
+                                self.temp_counter += 1;
+                                let is_zero = format!("%is_zero{}", self.temp_counter);
+                                self.emit_line(&format!("{} = icmp eq i64 {}, 0", is_zero, r));
+                                
+                                let div_error = format!("div_zero_err{}", label_id);
+                                let div_norm = format!("div_norm{}", label_id);
+                                self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_zero, div_error, div_norm));
+                                
+                                self.emit_line(&format!("{}:", div_error));
+                                self.emit_line("call void @rt_div_zero_error()");
+                                self.emit_line("unreachable");
+                                
+                                self.emit_line(&format!("{}:", div_norm));
+                            }
                             self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
                         }
                     } else {
@@ -1673,7 +1693,7 @@ impl CodeGen {
                     let id_match = format!("%id_match{}", self.temp_counter);
                     self.emit_line(&format!("{} = icmp eq i64 {}, {}", id_match, last_id, obj_val));
 
-                    let fast_path = format!("array_set_fast{}", label_id);
+                    let _fast_path = format!("array_set_fast{}", label_id);
                     let slow_path = format!("array_set_slow{}", label_id);
                     let check_len = format!("array_set_check_len{}", label_id);
 
@@ -1801,6 +1821,7 @@ impl CodeGen {
             }
         }
     }
+
 
     fn find_block_idx(&self, func: &MIRFunction, inst: &MIRInstruction) -> Option<usize> {
         for (i, bb) in func.blocks.iter().enumerate() {

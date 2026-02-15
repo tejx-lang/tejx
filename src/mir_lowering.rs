@@ -498,6 +498,23 @@ impl MIRLowering {
                      });
                      
                      MIRValue::Variable { name: temp, ty: TejxType::Class("Mutex".to_string()) }
+                } else if class_name == "Atomic" {
+                      let initial = if !_args.is_empty() { self.lower_expression(&_args[0]) } else { MIRValue::Constant { value: "0".to_string(), ty: TejxType::Int32 } };
+                      let temp = self.new_temp(TejxType::Class("Atomic".to_string()));
+                      self.emit(MIRInstruction::Call {
+                          callee: "rt_atomic_new".to_string(),
+                          args: vec![initial],
+                          dst: temp.clone(),
+                      });
+                      MIRValue::Variable { name: temp, ty: TejxType::Class("Atomic".to_string()) }
+                } else if class_name == "Condition" {
+                      let temp = self.new_temp(TejxType::Class("Condition".to_string()));
+                      self.emit(MIRInstruction::Call {
+                          callee: "rt_cond_new".to_string(),
+                          args: vec![],
+                          dst: temp.clone(),
+                      });
+                      MIRValue::Variable { name: temp, ty: TejxType::Class("Condition".to_string()) }
                 } else if class_name == "Promise" {
                       let callback = self.lower_expression(&_args[0]);
                       let temp = self.new_temp(TejxType::Class("Promise".to_string()));
@@ -644,8 +661,8 @@ impl MIRLowering {
                     _ => {
                         let l = self.lower_expression(left);
                         let r = self.lower_expression(right);
-                        let l_ty = l.get_type();
-                        let r_ty = r.get_type();
+                        let _l_ty = l.get_type();
+                        let _r_ty = r.get_type();
                         let temp = self.new_temp(ty.clone());
                         self.emit(MIRInstruction::BinaryOp {
                             dst: temp.clone(),
@@ -698,15 +715,30 @@ impl MIRLowering {
                 let maybe_sig = self.signatures.get(callee).cloned();
                 let mir_args: Vec<MIRValue> = args.iter().enumerate()
                     .map(|(i, a)| {
-                        let mut val = self.lower_expression(a);
+                        let val = self.lower_expression(a);
                         let target_ty = maybe_sig.as_ref().and_then(|sig| sig.get(i)).unwrap_or(&TejxType::Any);
                         self.auto_box(val, target_ty)
                     })
                     .collect();
                 let temp = self.new_temp(ty.clone());
+                let mut final_callee = callee.clone();
+                // Map specialized method calls to runtime functions
+                if callee == "f_Atomic_add" { final_callee = "rt_atomic_add".to_string(); }
+                else if callee == "f_Atomic_sub" { final_callee = "rt_atomic_sub".to_string(); }
+                else if callee == "f_Atomic_load" { final_callee = "rt_atomic_load".to_string(); }
+                else if callee == "f_Atomic_store" { final_callee = "rt_atomic_store".to_string(); }
+                else if callee == "f_Atomic_exchange" { final_callee = "rt_atomic_exchange".to_string(); }
+                else if callee == "f_Atomic_compareExchange" { final_callee = "rt_atomic_compare_exchange".to_string(); }
+                else if callee == "f_Condition_wait" { final_callee = "rt_cond_wait".to_string(); }
+                else if callee == "f_Condition_notify" { final_callee = "rt_cond_notify".to_string(); }
+                else if callee == "f_Condition_notifyAll" { final_callee = "rt_cond_notify_all".to_string(); }
+                else if callee == "f_Thread_join" { final_callee = "Thread_join".to_string(); }
+                else if callee == "f_Mutex_lock" { final_callee = "m_lock".to_string(); }
+                else if callee == "f_Mutex_unlock" { final_callee = "m_unlock".to_string(); }
+
                 self.emit(MIRInstruction::Call {
                     dst: temp.clone(),
-                    callee: callee.clone(),
+                    callee: final_callee,
                     args: mir_args,
                 });
                 MIRValue::Variable {

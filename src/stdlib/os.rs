@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::ffi::CString;
-use crate::runtime::{rt_box_string, stringify_value};
+use crate::runtime::stringify_value;
 
 pub fn exports() -> HashSet<String> {
     let mut s = HashSet::new();

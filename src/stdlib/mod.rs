@@ -7,6 +7,7 @@ pub mod time;
 pub mod json;
 pub mod prelude;
 pub mod collections;
+pub mod thread;
 
 pub struct StdLib {
     modules: HashMap<String, HashSet<String>>,
@@ -23,6 +24,7 @@ impl StdLib {
         modules.insert("time".to_string(), time::exports());
         modules.insert("json".to_string(), HashSet::from(["stringify".to_string(), "parse".to_string()]));
         modules.insert("collections".to_string(), collections::exports());
+        modules.insert("thread".to_string(), thread::exports());
         
         // Add all methods to collections
         if let Some(funcs) = modules.get_mut("collections") {
@@ -53,9 +55,12 @@ impl StdLib {
     }
 
     pub fn get_runtime_name(&self, mod_name: &str, func_name: &str) -> String {
-        // Special case handling if needed, otherwise standard naming std_{mod}_{func}
-        // or just return the runtime name if it differs.
-        // For now, consistent naming:
+        if mod_name == "thread" && func_name == "sleep" {
+            return "std_time_sleep".to_string();
+        }
+        if mod_name == "thread" && func_name == "spawn" {
+            return "Thread_new".to_string();
+        }
         format!("std_{}_{}", mod_name, func_name)
     }
 
