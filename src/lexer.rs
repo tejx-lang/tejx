@@ -61,7 +61,8 @@ impl Lexer {
         keywords.insert("catch".to_string(), TokenType::Catch);
         keywords.insert("finally".to_string(), TokenType::Finally);
         keywords.insert("throw".to_string(), TokenType::Throw);
-        keywords.insert("protocol".to_string(), TokenType::Protocol);
+        // keywords.insert("protocol".to_string(), TokenType::Protocol); // Removed
+        keywords.insert("type".to_string(), TokenType::TypeAlias); // Added 'type'
         keywords.insert("enum".to_string(), TokenType::Enum);
         keywords.insert("Some".to_string(), TokenType::Some);
         keywords.insert("None".to_string(), TokenType::None);

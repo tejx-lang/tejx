@@ -18,7 +18,7 @@ pub enum Statement {
     FunctionDeclaration(FunctionDeclaration),
     ClassDeclaration(ClassDeclaration),
     #[allow(dead_code)]
-    ProtocolDeclaration(ProtocolDeclaration), // If needed
+    // ProtocolDeclaration(ProtocolDeclaration), // Removed
  
     #[allow(dead_code)]
     ExtensionDeclaration(ExtensionDeclaration), // If needed
@@ -31,7 +31,7 @@ pub enum Statement {
     },
     InterfaceDeclaration {
         name: String,
-        _methods: Vec<ProtocolMethod>,
+        _methods: Vec<InterfaceMethod>,
         _line: usize, 
         _col: usize
     },
@@ -346,19 +346,13 @@ pub struct Case {
 
 
 #[derive(Debug, Clone)]
-pub struct ProtocolMethod {
+pub struct InterfaceMethod {
     pub _name: String,
     pub _params: Vec<Parameter>,
     pub _return_type: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProtocolDeclaration {
-    pub _name: String,
-    pub _methods: Vec<ProtocolMethod>,
-    pub _line: usize,
-    pub _col: usize,
-}
+// Removed ProtocolDeclaration
 
 #[derive(Debug, Clone)]
 pub struct ExtensionDeclaration {

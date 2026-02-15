@@ -77,7 +77,8 @@ impl Parser {
             TokenType::Interface => Some(self.parse_interface_declaration()),
             TokenType::Extension => Some(self.parse_extension_declaration()),
             TokenType::Enum => Some(self.parse_enum_declaration()),
-            TokenType::Protocol => Some(self.parse_protocol_declaration()),
+            // TokenType::Protocol => Some(self.parse_protocol_declaration()), // Removed
+            TokenType::TypeAlias => Some(self.parse_type_alias_declaration()), // Added
             TokenType::Export => {
                 self.advance(); // consume export
                 let is_default = self.match_token(TokenType::Default);
@@ -584,40 +585,23 @@ impl Parser {
         })
     }
 
-    fn parse_protocol_declaration(&mut self) -> Statement {
-        let start = self.consume(TokenType::Protocol, "Expected 'protocol'").clone();
-        let name = self.consume_identifier("Expected protocol name").value.clone();
-        self.consume(TokenType::OpenBrace, "Expected '{'");
-        
-        let mut methods = Vec::new();
-        while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            let member_name = self.consume_identifier("Expected member name").value.clone();
-            
-            self.consume(TokenType::OpenParen, "Expected '('");
-            let mut params = Vec::new();
-            if !self.check(TokenType::CloseParen) {
-                    loop {
-                        let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
-                        self.consume(TokenType::Colon, "Expected ':'");
-                        let p_type = self.parse_type_annotation();
-                        params.push(Parameter { name: p_name, type_name: p_type, _default_value: None, _is_rest: false });
-                        if !self.match_token(TokenType::Comma) { break; }
-                    }
-            }
-            self.consume(TokenType::CloseParen, "Expected ')'");
-            self.consume(TokenType::Colon, "Expected ':'");
-            let ret_type = self.parse_type_annotation();
-            self.consume(TokenType::Semicolon, "Expected ';'");
-            methods.push(ProtocolMethod { _name: member_name, _params: params, _return_type: ret_type });
-        }
-        self.consume(TokenType::CloseBrace, "Expected '}'");
-        
-        Statement::ProtocolDeclaration(ProtocolDeclaration {
-            _name: name,
-            _methods: methods,
+    // Removed parse_protocol_declaration
+
+    fn parse_type_alias_declaration(&mut self) -> Statement {
+        let start = self.consume(TokenType::TypeAlias, "Expected 'type'").clone();
+        let name = self.consume_identifier("Expected type name").value.clone();
+        self.consume(TokenType::Equals, "Expected '='");
+        // For now, type alias just stores the type string, or we could parse a TypeNode if we had one.
+        // The AST has TypeAliasDeclaration { ... _type_def: String ... }
+        let type_def = self.parse_type_annotation(); 
+        self.consume(TokenType::Semicolon, "Expected ';'");
+
+        Statement::TypeAliasDeclaration {
+            name,
+            _type_def: type_def,
             _line: start.line,
             _col: start.column
-        })
+        }
     }
 
     fn parse_extension_declaration(&mut self) -> Statement {
@@ -812,7 +796,7 @@ impl Parser {
                 self.consume(TokenType::Colon, "Expected ':'");
                 let ret_type = self.parse_type_annotation();
                 self.consume(TokenType::Semicolon, "Expected ';'");
-                methods.push(ProtocolMethod { _name: member_name, _params: params, _return_type: ret_type });
+                methods.push(InterfaceMethod { _name: member_name, _params: params, _return_type: ret_type });
             } else {
                 // Field-like in interface: name: type;
                 self.consume(TokenType::Colon, "Expected ':'");

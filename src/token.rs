@@ -4,10 +4,10 @@ pub enum TokenType {
     // Keywords
     Function, Return, Let, Const, If, Else, While, For, Break, Continue,
     Class, New, This, Super, Constructor, Extends, Implements, Extension, Abstract, Switch, Case, Default, Import, Export, From, Instanceof,
-    Public, Private, Protected, Static, Protocol, Async, Await, // OOP Modifiers
+    Public, Private, Protected, Static, Async, Await, // OOP Modifiers
     Try, Catch, Finally, Throw, // Error handling
     Some, None, Option, // Option types
-    Get, Set, Interface, // Property accessors
+    Get, Set, Interface, TypeAlias, // Property accessors
     // Primitives
     TypeString, TypeBoolean, TypeVoid, TypeAny,
     TypeInt, TypeInt16, TypeInt64, TypeInt128,

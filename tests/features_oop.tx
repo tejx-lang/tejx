@@ -1,9 +1,9 @@
 // Object Oriented Programming: Classes, Protocols, Extensions
 // ==========================================================
 
-// 1. Protocols (Interfaces)
+// 1. Interfaces
 // -------------------------
-protocol Greeter {
+interface Greeter {
     greet(name: string): void;
 }
 
@@ -30,7 +30,7 @@ class Robot extends Entity {
     }
 }
 
-// 3. Extension Implementing Protocol
+// 3. Extension Implementing Interface
 // ----------------------------------
 extension Robot {
     greet(name: string): void {
@@ -49,7 +49,7 @@ print("--- OOP Demo ---");
 let r = new Robot(101, "T-800");
 
 r.identify();       // Class method
-r.greet("Human");   // Protocol method via Extension
+r.greet("Human");   // Interface method via Extension
 print("Status: Expected: Operational, Actual: ", r.status()); // Extension method
 
 class Point {
@@ -78,7 +78,7 @@ function runMemorySafety(): void {
 }
 runMemorySafety();
 
-protocol Printable {
+interface Printable {
     toString(): string;
     print(prefix: string): void;
 }
@@ -113,7 +113,7 @@ class Document implements Printable {
     }
 }
 
-// Function accepting Protocol
+// Function accepting Interface
 function printAny(p: Printable) {
     p.print(">> ");
 }

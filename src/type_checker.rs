@@ -26,6 +26,7 @@ pub struct Symbol {
     pub params: Vec<String>, // Parameter types if function
     pub members: HashMap<String, MemberInfo>, // Name -> Info
     pub is_variadic: bool,
+    pub aliased_type: Option<String>,
 }
 
 pub struct TypeChecker {
@@ -51,6 +52,7 @@ impl TypeChecker {
                 params: vec!["any".to_string(); params_count],
                 members: HashMap::new(),
                 is_variadic: variadic,
+                aliased_type: None,
             }
         };
         globals.insert("assert".to_string(), builtin_func(1, true));
@@ -124,7 +126,7 @@ impl TypeChecker {
         math_members.insert("max".to_string(), MemberInfo { type_name: "function:float64:float64,float64...".to_string(), is_static: true, access: AccessLevel::Public });
         math_members.insert("PI".to_string(), MemberInfo { type_name: "float64".to_string(), is_static: true, access: AccessLevel::Public });
         class_members.insert("Math".to_string(), math_members);
-        globals.insert("Math".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false });
+        globals.insert("Math".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
 
         // Console members
         let mut console_members = HashMap::new();
@@ -133,19 +135,19 @@ impl TypeChecker {
         console_members.insert("warn".to_string(), MemberInfo { type_name: "function:void:any...".to_string(), is_static: true, access: AccessLevel::Public });
         class_members.insert("Console".to_string(), console_members.clone());
         class_members.insert("console".to_string(), console_members);
-        globals.insert("console".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false });
+        globals.insert("console".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
 
         // JSON members
         let mut json_members = HashMap::new();
         json_members.insert("stringify".to_string(), MemberInfo { type_name: "function:string:any".to_string(), is_static: true, access: AccessLevel::Public });
         json_members.insert("parse".to_string(), MemberInfo { type_name: "function:any:string".to_string(), is_static: true, access: AccessLevel::Public });
         class_members.insert("JSON".to_string(), json_members);
-        globals.insert("JSON".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false });
-        globals.insert("json".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false });
+        globals.insert("JSON".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
+        globals.insert("json".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
         class_members.insert("json".to_string(), class_members.get("JSON").unwrap().clone());
 
         // Define them as classes in globals so is_valid_type finds them
-        let class_sym = |_name: &str| Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false };
+        let class_sym = |_name: &str| Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None };
         globals.insert("Error".to_string(), class_sym("Error"));
         globals.insert("Date".to_string(), class_sym("Date"));
         globals.insert("Array".to_string(), class_sym("Array"));
@@ -288,8 +290,19 @@ impl TypeChecker {
                 let (final_ret, _, _) = self.parse_signature(format!("function:{}", ret_ty));
                 self.define_with_params_variadic(func.name.clone(), final_ret, params, is_variadic);
             }
-            Statement::TypeAliasDeclaration { name, .. } => {
-                self.define(name.clone(), "type".to_string());
+            Statement::TypeAliasDeclaration { name, _type_def, .. } => {
+                // self.define(name.clone(), "type".to_string());
+                // Handle alias definition manually to set aliased_type
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.insert(name.clone(), Symbol { 
+                        type_name: "type".to_string(), 
+                        is_const: true,
+                        params: Vec::new(),
+                        members: HashMap::new(),
+                        is_variadic: false,
+                        aliased_type: Some(_type_def.clone()),
+                    });
+                }
             }
             Statement::EnumDeclaration(enum_decl) => {
                 self.define(enum_decl.name.clone(), "enum".to_string());
@@ -303,10 +316,10 @@ impl TypeChecker {
                 }
                 self.class_members.insert(enum_decl.name.clone(), members);
             }
-            Statement::ProtocolDeclaration(proto) => {
-                self.define(proto._name.clone(), "protocol".to_string());
-                self.interfaces.insert(proto._name.clone(), proto._methods.iter().map(|m| m._name.clone()).collect());
-            }
+            // Statement::ProtocolDeclaration(proto) => {
+            //     self.define(proto._name.clone(), "protocol".to_string());
+            //     self.interfaces.insert(proto._name.clone(), proto._methods.iter().map(|m| m._name.clone()).collect());
+            // }
             Statement::InterfaceDeclaration { name, _methods: methods, .. } => {
                 self.define(name.clone(), "interface".to_string());
                 self.interfaces.insert(name.clone(), methods.iter().map(|m| m._name.clone()).collect());
@@ -408,6 +421,7 @@ impl TypeChecker {
                 params: final_params,
                 members: HashMap::new(),
                 is_variadic,
+                aliased_type: None,
             });
         }
     }
@@ -424,6 +438,7 @@ impl TypeChecker {
                 params,
                 members: HashMap::new(),
                 is_variadic,
+                aliased_type: None,
             });
         }
     }
@@ -444,6 +459,7 @@ impl TypeChecker {
                 params: final_params,
                 members: HashMap::new(),
                 is_variadic,
+                aliased_type: None,
             });
         }
     }
@@ -582,8 +598,64 @@ impl TypeChecker {
             a_str = a_str.split('<').next().unwrap_or(&a_str).to_string();
         }
 
-        let expected = e_str.as_str();
-        let actual = a_str.as_str();
+        let mut expected = e_str.as_str();
+        let mut actual = a_str.as_str();
+        
+        // Resolve aliases
+        let mut resolved_expected = String::new();
+        if let Some(sym) = self.lookup(expected) {
+            if let Some(aliased) = &sym.aliased_type {
+                resolved_expected = aliased.clone();
+            }
+        }
+        if !resolved_expected.is_empty() {
+             // Re-parse signature if needed?
+             // Simple replacement for now. 
+             // Ideally we should fully resolve recursively, but let's stick to one level or loop?
+             // Since `lookup` finds the symbol, let's use the resolved type.
+             // But we need to handle reference holding.
+        }
+        
+        let mut resolved_actual = String::new();
+         if let Some(sym) = self.lookup(actual) {
+            if let Some(aliased) = &sym.aliased_type {
+                resolved_actual = aliased.clone();
+            }
+        }
+
+        let expected_storage; 
+        if !resolved_expected.is_empty() {
+            expected_storage = resolved_expected;
+            expected = expected_storage.as_str();
+        }
+        
+        let actual_storage;
+        if !resolved_actual.is_empty() {
+            actual_storage = resolved_actual;
+            actual = actual_storage.as_str();
+        }
+
+        // Re-check recursive aliases (simple loop)
+         let mut loops = 0;
+         while loops < 10 {
+             let mut changed = false;
+             if let Some(sym) = self.lookup(expected) {
+                 if let Some(aliased) = &sym.aliased_type {
+                     e_str = aliased.clone();
+                     expected = e_str.as_str();
+                     changed = true;
+                 }
+             }
+             if let Some(sym) = self.lookup(actual) {
+                 if let Some(aliased) = &sym.aliased_type {
+                     a_str = aliased.clone();
+                     actual = a_str.as_str();
+                     changed = true;
+                 }
+             }
+             if !changed { break; }
+             loops += 1;
+         }
 
         if expected == "any" || actual == "any" || expected == "" || actual == "" || actual == "any:" || expected == "any:" || actual == "object" {
             return true;
@@ -893,8 +965,8 @@ impl TypeChecker {
                  // For simplified type check, just defining enum name is enough to pass basic checks.
                  Ok(())
             },
-            Statement::TypeAliasDeclaration { name, .. } => {
-                 self.define(name.clone(), "type".to_string());
+            Statement::TypeAliasDeclaration { .. } => {
+                 // Already handled in collect_declarations
                  Ok(())
             },
             Statement::InterfaceDeclaration { name, .. } => {
@@ -952,7 +1024,7 @@ impl TypeChecker {
                  Ok(())
             },
             Statement::ExtensionDeclaration(_) => Ok(()), // Ignore for now
-            Statement::ProtocolDeclaration(_) => Ok(()), // Ignore for now
+            // Statement::ProtocolDeclaration(_) => Ok(()), // Removed
             _ => Ok(()), // Catch-all for others
         }
     }

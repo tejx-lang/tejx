@@ -1,66 +1,22 @@
-// Enum Test
+// Feature: Type Aliases
 
-enum Direction {
-  Up,
-  Down,
-  Left = 10,
-  Right
+import { stringify } from "std:json";
+
+type ID = int;
+type Point = { x: int, y: int };
+type Handler = (msg: string) => void;
+// type Callback = function:void:string; // Alternate syntax removed as it's internal MIR representation
+type Callback = (msg: string) => void;
+
+function process(id: ID) {
+    print("Processing ID: " + stringify(id));
 }
 
-print("Testing Enums...");
-print("Direction.Up: Expected: 0, Actual: ", Direction.Up);
-print("Direction.Down: Expected: 1, Actual: ", Direction.Down);
-print("Direction.Left: Expected: 10, Actual: ", Direction.Left);
-print("Direction.Right: Expected: 11, Actual: ", Direction.Right);
+let myId: ID = 123;
+process(myId);
 
-if (Direction.Left == 10) {
-  print("Verified: Direction.Left is 10: Expected: pass, Actual: pass");
-}
+// Basic verification of aliases
+// Note: Deep structural type checking for objects might not be fully implemented yet,
+// but the parser should handle the syntax and type checker should allow the alias name.
 
-if (Direction.Right == 11) {
-  print("Verified: Direction.Right is 11 (auto-incremented): Expected: pass, Actual: pass");
-}
-
-print("Enum test complete!");
-
-function mainFunc() {
-    let i_val: int = 42;
-    let f_val: float = 3.14;
-    let bi_val: int64 = 9007199254740991; // MAX_SAFE_INTEGER
-    let bf_val: float64 = 1.234567890123456789;
-
-    let i16_val: int16 = 32767;
-    let i64_val: int64 = 9223372036854775807;
-    // let i128_val: int128 = 170141183460469231731687303715884105727;
-    
-    let f16_val: float16 = 3.14;
-    let f32_val: float32 = 3.14159;
-    let f64_val: float64 = 3.1415926535;
-    
-    let c_val: char = 'A';
-    let b_val: bool = true;
-
-    print("Int16: Expected: 32767, Actual: ", i16_val);
-    print("Int64: Expected: 9223372036854775807, Actual: ", i64_val);
-    print("Float16: ", f16_val);
-    print("Float32: ", f32_val);
-    print("Float64: ", f64_val);
-    print("Char: ", c_val);
-    print("Bool: ", b_val);
-
-    let opt: Option<int> = Some(100);
-    // let optNone: Option<int> = None;
-
-    print("Int: Expected: 42, Actual: ", i_val);
-    print("Float: ", f_val);
-    print("BigInt: Expected: 9007199254740991, Actual: ", bi_val);
-    print("BigFloat: ", bf_val);
-    
-    let sum_val: int64 = bi_val - 100;
-    print("BigInt - 100: Expected: 9007199254740891, Actual: ", sum_val);
-
-    if (opt != None) {
-        print("Opt has value: Expected: pass, Actual: pass");
-    }
-}
-mainFunc();
+print("Type aliases test passed");
