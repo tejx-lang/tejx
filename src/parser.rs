@@ -6,6 +6,7 @@ pub struct Parser {
     current: usize,
     errors: Vec<crate::diagnostics::Diagnostic>,
     filename: String,
+    pub async_enabled: bool,
 }
 
 impl Parser {
@@ -15,6 +16,7 @@ impl Parser {
             current: 0,
             errors: Vec::new(),
             filename: filename.to_string(),
+            async_enabled: true,
         }
     }
 
@@ -53,6 +55,10 @@ impl Parser {
             TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
             TokenType::Function => Some(self.parse_function_declaration(false)),
             TokenType::Async => {
+                if !self.async_enabled {
+                    let t = self.peek();
+                    self.errors.push(crate::diagnostics::Diagnostic::new("async/await is disabled".to_string(), t.line, t.column, self.filename.clone()));
+                }
                 if self.check_next(TokenType::Function) {
                     self.advance(); // consume async
                     Some(self.parse_function_declaration(true))
@@ -1528,7 +1534,10 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Expression {
         if self.match_token(TokenType::Await) {
-            let op_token = self.tokens[self.current - 1].clone();
+            let op_token = self.previous().clone();
+            if !self.async_enabled {
+                self.errors.push(crate::diagnostics::Diagnostic::new("async/await is disabled".to_string(), op_token.line, op_token.column, self.filename.clone()));
+            }
             let right = self.parse_unary();
             return Expression::AwaitExpr {
                 expr: Box::new(right),

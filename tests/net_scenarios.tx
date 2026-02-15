@@ -1,0 +1,92 @@
+// tests/net_scenarios.tx
+// Robust Networking Scenarios
+
+import std:net; // Ensure http/https are available globally
+import std:time;
+
+async function test404() {
+    print("--- Testing HTTP 404 ---");
+    // jsonplaceholder returns 404 for non-existent resources
+    let url = "https://jsonplaceholder.typicode.com/posts/999999";
+    print("GET ", url);
+    let response = await https.get(url);
+    print("Response length: ", response.length);
+    // jsonplaceholder usually returns "{}" for 404 on this endpoint
+    print("Response body preview: ", response);
+    
+    // As observed in analysis, curl returns the body.
+    // For jsonplaceholder 404, valid JSON is returned typically.
+    assert(response.length > 0); 
+}
+
+async function testDNSFailure() {
+    print("--- Testing DNS Failure ---");
+    // Should fail and presumably return empty string or handle gracefully?
+    // Implementation returns 0 ID on curl error.
+    let url = "https://this-domain-does-not-exist-12345.com";
+    print("GET ", url);
+    
+    // This should fail. NovaJs throws on promise rejection.
+    try {
+        let response = await https.get(url);
+        print("Unexpected success: ", response);
+    } catch (e) {
+        print("Caught expected error: ", e);
+        // Error 0 is the generic error code for request failure currently
+        assert(e == 0);
+    }
+}
+
+async function testParallelRequests() {
+    print("--- Testing Parallel Requests ---");
+    let url1 = "https://jsonplaceholder.typicode.com/todos/1";
+    let url2 = "https://jsonplaceholder.typicode.com/todos/2";
+    let url3 = "https://jsonplaceholder.typicode.com/todos/3";
+    
+    print("Starting 3 parallel requests...");
+    let start = now();
+    let results = await Promise.all([
+        https.get(url1),
+        https.get(url2),
+        https.get(url3)
+    ]);
+    let end = now();
+    
+    print("All requests completed in ", end - start, "ms");
+    print("Result 1 length: ", results[0].length);
+    print("Result 2 length: ", results[1].length);
+    print("Result 3 length: ", results[2].length);
+    
+    assert(results[0].length > 0);
+    assert(results[1].length > 0);
+    assert(results[2].length > 0);
+}
+
+async function testMixedSyncAsync() {
+    print("--- Testing Mixed Sync/Async ---");
+    let url = "https://jsonplaceholder.typicode.com/posts/1";
+    
+    print("Starting Async...");
+    let p = https.get(url);
+    
+    print("Running Sync...");
+    let s = https.getSync(url);
+    print("Sync finished. Length: ", s.length);
+    
+    print("Awaiting Async...");
+    let a = await p;
+    print("Async finished. Length: ", a.length);
+    
+    assert(s.length > 0);
+    assert(a.length > 0);
+}
+
+// Run all
+await test404();
+// await testDNSFailure(); // Commenting out potentially crashing test first? 
+// Actually, let's try it. If it crashes, I fix unexpected behavior.
+await testDNSFailure(); 
+await testParallelRequests();
+await testMixedSyncAsync();
+
+print("=== Net Scenarios Complete ===");

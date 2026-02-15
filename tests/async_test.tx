@@ -1,0 +1,21 @@
+async function foo(x: int): int {
+    print("Inside foo start, x =", x);
+    let res = x + 10;
+    print("Inside foo end, returning", res);
+    return res;
+}
+
+async function test(): void {
+    print("Testing async/await...");
+    let p = foo(5);
+    print("Got promise from foo");
+    let val = await p;
+    print("Awaited foo, result =", val);
+    assert(val == 15);
+    print("Async test passed!");
+}
+
+test();
+print("Waiting for async test to complete...");
+rt_sleep(100);
+print("Main thread finishing.");

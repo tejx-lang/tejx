@@ -34,17 +34,37 @@ const RUNTIME_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libruntime.
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: tejxr <filename>");
+        eprintln!("Usage: tejxr [options] <filename>");
+        eprintln!("Options:");
+        eprintln!("  --disable-async    Disable async/await features");
         process::exit(1);
     }
 
-    let filename = &args[1];
-    let contents = fs::read_to_string(filename).unwrap_or_else(|err| {
+    let mut filename = String::new();
+    let mut async_enabled = true;
+
+    for arg in args.iter().skip(1) {
+        if arg == "--disable-async" {
+            async_enabled = false;
+        } else if arg.starts_with("--") {
+            eprintln!("Unknown option: {}", arg);
+            process::exit(1);
+        } else {
+            filename = arg.clone();
+        }
+    }
+
+    if filename.is_empty() {
+        eprintln!("Error: No input file specified.");
+        process::exit(1);
+    }
+
+    let contents = fs::read_to_string(&filename).unwrap_or_else(|err| {
         eprintln!("Error reading file {}: {}", filename, err);
         process::exit(1);
     });
 
-    let mut lexer = Lexer::new(&contents, filename);
+    let mut lexer = Lexer::new(&contents, &filename);
     let tokens = lexer.tokenize();
 
     if !lexer.errors.is_empty() {
@@ -55,7 +75,8 @@ fn main() {
         process::exit(1);
     }
 
-    let mut parser = Parser::new(tokens, filename);
+    let mut parser = Parser::new(tokens, &filename);
+    parser.async_enabled = async_enabled;
     let program = parser.parse_program();
 
     if parser.has_errors() {
@@ -67,7 +88,8 @@ fn main() {
     }
 
     let mut type_checker = TypeChecker::new();
-    if let Err(_) = type_checker.check(&program, filename) {
+    type_checker.async_enabled = async_enabled;
+    if let Err(_) = type_checker.check(&program, &filename) {
         eprintln!("Type Checking Failed:");
         for diag in &type_checker.diagnostics {
             diag.report(&contents);
@@ -75,8 +97,9 @@ fn main() {
         process::exit(1);
     }
 
-    let lowering = Lowering::new();
-    let base_path = Path::new(filename).parent().unwrap_or(Path::new("."));
+    let mut lowering = Lowering::new();
+    lowering.async_enabled = async_enabled;
+    let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
     let lowering_result = lowering.lower(&program, base_path);
 
     let mut mir_functions = Vec::new();

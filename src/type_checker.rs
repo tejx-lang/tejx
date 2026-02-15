@@ -40,6 +40,7 @@ pub struct TypeChecker {
     class_hierarchy: HashMap<String, String>, // Child -> Parent
     interfaces: HashMap<String, Vec<String>>, // Interface -> Method names
     class_members: HashMap<String, HashMap<String, MemberInfo>>, // Class -> Member info
+    pub async_enabled: bool,
 }
 
 impl TypeChecker {
@@ -63,12 +64,12 @@ impl TypeChecker {
         globals.insert("random".to_string(), builtin_func(0, false));
         globals.insert("now".to_string(), builtin_func(0, false));
         globals.insert("delay".to_string(), builtin_func(1, true));
+        globals.insert("rt_sleep".to_string(), builtin_func(1, false));
         globals.insert("parseInt".to_string(), builtin_func(1, false));
         globals.insert("parseFloat".to_string(), builtin_func(1, false));
         globals.insert("abs".to_string(), builtin_func(1, false));
         globals.insert("min".to_string(), builtin_func(2, false));
         globals.insert("max".to_string(), builtin_func(2, false));
-        globals.insert("stringify".to_string(), builtin_func(1, false));
         globals.insert("parse".to_string(), builtin_func(1, false));
 
         let mut class_members = HashMap::new();
@@ -243,6 +244,18 @@ impl TypeChecker {
         condition_members.insert("notifyAll".to_string(), MemberInfo { type_name: "function:int32".to_string(), is_static: false, access: AccessLevel::Public });
         class_members.insert("Condition".to_string(), condition_members);
 
+        // Http/Https members
+        let mut http_members = HashMap::new();
+        let methods = ["get", "post", "put", "delete", "patch", "head", "options"];
+        for m in methods {
+            let p_count = if matches!(m, "get" | "delete" | "head" | "options") { 1 } else { 2 };
+            let p_str = vec!["string".to_string(); p_count].join(",");
+            http_members.insert(m.to_string(), MemberInfo { type_name: format!("function:Promise:{}", p_str), is_static: false, access: AccessLevel::Public });
+            http_members.insert(format!("{}Sync", m), MemberInfo { type_name: format!("function:string:{}", p_str), is_static: false, access: AccessLevel::Public });
+        }
+        class_members.insert("Http".to_string(), http_members.clone());
+        class_members.insert("Https".to_string(), http_members);
+
         Self {
             scopes: vec![globals], // Global scope
             current_class: None,
@@ -254,6 +267,7 @@ impl TypeChecker {
             class_hierarchy,
             interfaces: HashMap::new(),
             class_members,
+            async_enabled: true,
         }
     }
 
@@ -400,6 +414,13 @@ impl TypeChecker {
                           self.define("Queue".to_string(), "class".to_string());
                           self.define("Map".to_string(), "class".to_string());
                           self.define("Set".to_string(), "class".to_string());
+                      } else if source == "std:net" {
+                          self.define_with_params("connect".to_string(), "function".to_string(), vec!["string".to_string()]);
+                          self.define_with_params("send".to_string(), "function".to_string(), vec!["any".to_string(), "string".to_string()]);
+                          self.define_with_params("receive".to_string(), "function".to_string(), vec!["any".to_string(), "int32".to_string()]);
+                          self.define_with_params("close".to_string(), "function".to_string(), vec!["any".to_string()]);
+                          self.define("http".to_string(), "Http".to_string());
+                          self.define("https".to_string(), "Https".to_string());
                       }
                  } else if !_names.is_empty() {
                      for name in _names {
@@ -883,7 +904,10 @@ impl TypeChecker {
                 Ok(())
             },
             Statement::FunctionDeclaration(func) => {
-                let ret_ty = if func.return_type.is_empty() { "any".to_string() } else { func.return_type.clone() };
+                let mut ret_ty = if func.return_type.is_empty() { "any".to_string() } else { func.return_type.clone() };
+                if func._is_async && !ret_ty.starts_with("Promise<") {
+                    ret_ty = format!("Promise<{}>", ret_ty);
+                }
                 let mut is_variadic = false;
                 let params = func.params.iter().map(|p| {
                     if p._is_rest { is_variadic = true; }
@@ -1060,6 +1084,13 @@ impl TypeChecker {
                           self.define("OrderedSet".to_string(), "class".to_string());
                           self.define("BloomFilter".to_string(), "class".to_string());
                           self.define("Trie".to_string(), "class".to_string());
+                      } else if source == "std:net" {
+                          self.define_with_params("connect".to_string(), "function".to_string(), vec!["string".to_string()]);
+                          self.define("http".to_string(), "Http".to_string());
+                          self.define("https".to_string(), "Https".to_string());
+                          self.define_with_params("send".to_string(), "function".to_string(), vec!["any".to_string(), "string".to_string()]);
+                          self.define_with_params("receive".to_string(), "function".to_string(), vec!["any".to_string(), "int32".to_string()]);
+                          self.define_with_params("close".to_string(), "function".to_string(), vec!["any".to_string()]);
                       }
                  } else if !_names.is_empty() {
                      for name in _names {
@@ -1333,7 +1364,7 @@ impl TypeChecker {
                 if let Some(s) = self.lookup(&callee_str) {
                     if !s.params.is_empty() || !args.is_empty() {
                          if s.is_variadic {
-                             if args.len() < s.params.len() - 1 && s.params.len() > 0 {
+                             if s.params.len() > 0 && args.len() < s.params.len() - 1 {
                                  self.report_error(format!("Function '{}' requires at least {} arguments, got {}", callee_str, s.params.len() - 1, args.len()), *_line, *_col);
                              }
                          } else if s.type_name.starts_with("function:") && args.len() != s.params.len() && !callee_str.contains('.') {
@@ -1348,17 +1379,23 @@ impl TypeChecker {
                          // Check argument types
                          for (i, arg) in args.iter().enumerate() {
                              let arg_type = self.check_expression(arg)?;
-                             let target_type = if s.is_variadic && i >= s.params.len() - 1 {
-                                 let last_param = &s.params[s.params.len() - 1];
-                                 if last_param.ends_with("[]") {
-                                     last_param[..last_param.len()-2].to_string()
+                             let target_type = if s.is_variadic {
+                                 if s.params.is_empty() {
+                                     "any".to_string()
+                                 } else if i >= s.params.len() - 1 {
+                                     let last_param = &s.params[s.params.len() - 1];
+                                     if last_param.ends_with("[]") {
+                                         last_param[..last_param.len()-2].to_string()
+                                     } else {
+                                         "any".to_string()
+                                     }
                                  } else {
-                                     "any".to_string() // Fallback
+                                     s.params[i].clone()
                                  }
                              } else if i < s.params.len() {
                                  s.params[i].clone()
                              } else {
-                                 "any".to_string() // Too many args, already reported if not variadic
+                                 "any".to_string()
                              };
 
                              if target_type != "any" && !self.are_types_compatible(&target_type, &arg_type) {
@@ -1389,8 +1426,12 @@ impl TypeChecker {
                 if !self.current_function_is_async && self.current_function_return.is_some() {
                     self.report_error("'await' can only be used inside an 'async' function".to_string(), *_line, *_col);
                 }
-                self.check_expression(expr)?;
-                Ok("any".to_string())
+                let t = self.check_expression(expr)?;
+                if t.starts_with("Promise<") {
+                    Ok(t[8..t.len()-1].to_string())
+                } else {
+                    Ok(t)
+                }
             },
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
                 self.check_expression(target)?;

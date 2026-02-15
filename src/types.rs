@@ -73,6 +73,19 @@ impl TejxType {
     }
 
     pub fn from_name(name: &str) -> TejxType {
+        let name = name.trim();
+        if name.contains('|') {
+            // Simple union handling: T | None -> T (nullable)
+            // We split by |, verify if one parts match "None" or "null"
+            let parts: Vec<&str> = name.split('|').map(|s| s.trim()).collect();
+            for part in parts {
+                if part != "None" && part != "null" {
+                    return TejxType::from_name(part);
+                }
+            }
+            return TejxType::Any;
+        }
+
         if name.ends_with("]") {
              // Handle type[size]
              if let Some(open) = name.find('[') {

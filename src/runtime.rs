@@ -12,6 +12,7 @@ pub mod runtime {
     pub use super::Heap;
     pub use super::rt_box_boolean;
     pub use super::rt_box_number;
+    pub use super::PromiseState;
 }
 
 #[path = "stdlib/mod.rs"]
@@ -47,6 +48,7 @@ pub enum TaggedValue {
     Atomic(Arc<AtomicI64>),
     Condition(Arc<Condvar>),
     Promise(Arc<(Mutex<PromiseState>, Condvar)>),
+    TCPStream(Arc<Mutex<std::net::TcpStream>>),
 }
 
 pub struct Heap {
@@ -627,6 +629,7 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::TrieNode { .. } => "[TrieNode]".to_string(),
             TaggedValue::Atomic(val) => format!("[Atomic: {}]", val.load(Ordering::SeqCst)),
             TaggedValue::Condition(_) => "[Condition]".to_string(),
+            TaggedValue::TCPStream(_) => "[TCPStream]".to_string(),
         };
         return res;
     }
@@ -931,18 +934,15 @@ pub extern "C" fn rt_array_set_fast(id: i64, idx: i64, val: i64) -> i64 {
 pub extern "C" fn Array_fill(id: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
 
-    let mut to_fill = val;
-    if let Some(TaggedValue::Boolean(b)) = heap.get(val) {
-        to_fill = if *b { 1 } else { 0 };
+    let to_fill = if let Some(TaggedValue::Boolean(b)) = heap.get(val) {
+        if *b { 1 } else { 0 }
     } else if let Some(TaggedValue::Number(n)) = heap.get(val) {
-        to_fill = if *n != 0.0 { 1 } else { 0 };
+        if *n != 0.0 { 1 } else { 0 }
     } else if val == 0 || val == 1 {
-        // Primitive boolean/number
-        to_fill = val;
+        val
     } else {
-        // Any other object is truthy
-        to_fill = 1;
-    }
+        1
+    };
 
     match heap.get_mut(id) {
         Some(TaggedValue::Array(arr)) => {
@@ -1060,7 +1060,7 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
             TaggedValue::Boolean(_) => "boolean",
             TaggedValue::Array(_) | TaggedValue::ByteArray(_) | TaggedValue::Map(_) | TaggedValue::Set(_) | TaggedValue::Date(_) | TaggedValue::Thread(_) | TaggedValue::Mutex(_) |
             TaggedValue::OrderedMap(_, _) | TaggedValue::OrderedSet(_, _) | TaggedValue::BloomFilter(_, _) | TaggedValue::TrieNode { .. } |
-            TaggedValue::Atomic(_) | TaggedValue::Condition(_) | TaggedValue::Promise(_) => "object",
+            TaggedValue::Atomic(_) | TaggedValue::Condition(_) | TaggedValue::Promise(_) | TaggedValue::TCPStream(_) => "object",
         };
         let c_str = CString::new(type_str).unwrap();
         let ptr = c_str.as_ptr() as i64;
@@ -1329,6 +1329,32 @@ pub extern "C" fn Promise_reject(reason: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn __resolve_promise(id: i64, val: i64) {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Promise(p)) = heap.get(id) {
+        let p_clone = p.clone();
+        drop(heap);
+        let (lock, cvar) = &*p_clone;
+        let mut state = lock.lock().unwrap();
+        *state = PromiseState::Resolved(val);
+        cvar.notify_all();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __reject_promise(id: i64, reason: i64) {
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Promise(p)) = heap.get(id) {
+        let p_clone = p.clone();
+        drop(heap);
+        let (lock, cvar) = &*p_clone;
+        let mut state = lock.lock().unwrap();
+        *state = PromiseState::Rejected(reason);
+        cvar.notify_all();
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Promise_all(args_id: i64) -> i64 {
     let mut promises = Vec::new();
     {
@@ -1558,6 +1584,11 @@ pub unsafe extern "C" fn delay(ms: i64) -> i64 {
     });
     
     p_id
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_sleep(ms: i64) {
+    thread::sleep(std::time::Duration::from_millis(ms as u64));
 }
 #[unsafe(no_mangle)] pub extern "C" fn http_get(_url: i64) -> i64 { CString::new("<html></html>").unwrap().into_raw() as i64 }
 #[unsafe(no_mangle)]

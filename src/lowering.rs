@@ -31,6 +31,8 @@ pub struct Lowering {
     class_getters: RefCell<HashMap<String, HashSet<String>>>,
     class_setters: RefCell<HashMap<String, HashSet<String>>>,
     class_parents: RefCell<HashMap<String, String>>,
+    pub async_enabled: bool,
+    current_async_promise_id: RefCell<Option<String>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -59,6 +61,8 @@ impl Lowering {
             class_getters: RefCell::new(HashMap::new()),
             class_setters: RefCell::new(HashMap::new()),
             class_parents: RefCell::new(HashMap::new()),
+            async_enabled: true,
+            current_async_promise_id: RefCell::new(None),
         }
     }
 
@@ -444,6 +448,11 @@ impl Lowering {
         signatures.insert("Array_flat".to_string(), vec![TejxType::Any, TejxType::Any]);
         signatures.insert("Array_includes".to_string(), vec![TejxType::Any, TejxType::Any]);
         signatures.insert("Array_concat".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("__resolve_promise".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("__reject_promise".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("Thread_new".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
+        signatures.insert("rt_sleep".to_string(), vec![TejxType::Any]);
 
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
@@ -456,6 +465,11 @@ impl Lowering {
     }
 
     fn lower_function_declaration(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
+        if self.async_enabled && func._is_async {
+            self.lower_async_function(func, functions);
+            return;
+        }
+
         let params: Vec<(String, TejxType)> = func.params.iter()
             .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
             .collect();
@@ -474,6 +488,193 @@ impl Lowering {
         let name = format!("f_{}", func.name);
         functions.push(HIRStatement::Function {
             name, params, _return_type: return_type, body: Box::new(body),
+        });
+    }
+
+    fn lower_async_function(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
+        let worker_name = format!("f_{}_worker", func.name);
+        let wrapper_name = format!("f_{}", func.name);
+
+        // --- Worker Function ---
+        // any f_worker(any args_id) {
+        //   let promise_id = args_id[0];
+        //   let p1 = args_id[1]; ...
+        //   try {
+        //     let res = body;
+        //     __resolve_promise(promise_id, res);
+        //   } catch (e) {
+        //     __reject_promise(promise_id, e);
+        //   }
+        // }
+        
+        self.enter_scope();
+        let args_id_name = "args_id".to_string();
+        self.define(args_id_name.clone(), TejxType::Any);
+
+        let mut worker_body_stmts = Vec::new();
+
+        // 1. Unpack promise_id and params
+        let promise_id_expr = HIRExpression::IndexAccess {
+            target: Box::new(HIRExpression::Variable { name: args_id_name.clone(), ty: TejxType::Any }),
+            index: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+            ty: TejxType::Any,
+        };
+        let promise_id_var = "promise_id_local".to_string();
+        worker_body_stmts.push(HIRStatement::VarDecl {
+            name: promise_id_var.clone(),
+            initializer: Some(promise_id_expr),
+            ty: TejxType::Any,
+            _is_const: true,
+        });
+        self.define(promise_id_var.clone(), TejxType::Any);
+        *self.current_async_promise_id.borrow_mut() = Some(promise_id_var.clone());
+
+        for (i, p) in func.params.iter().enumerate() {
+            let param_ty = TejxType::from_name(&p.type_name);
+            let unpack_expr = HIRExpression::IndexAccess {
+                target: Box::new(HIRExpression::Variable { name: args_id_name.clone(), ty: TejxType::Any }),
+                index: Box::new(HIRExpression::Literal { value: (i + 1).to_string(), ty: TejxType::Int32 }),
+                ty: param_ty.clone(),
+            };
+            worker_body_stmts.push(HIRStatement::VarDecl {
+                name: p.name.clone(),
+                initializer: Some(unpack_expr),
+                ty: param_ty.clone(),
+                _is_const: false,
+            });
+            self.define(p.name.clone(), param_ty);
+        }
+
+        // 2. Lower original body
+        let inner_body = self.lower_statement(&func.body)
+            .unwrap_or(HIRStatement::Block { statements: vec![] });
+
+        // 3. Wrap in Try
+        let try_block = HIRStatement::Block {
+            statements: vec![
+                inner_body,
+                // In NovaJs, we need to handle the return value of the inner body.
+                // But HIRStatement::Return in inner_body will exit the WORKER function!
+                // We need to transform Return(val) -> { __resolve_promise(p, val); return; }
+                // For simplicity, if the body doesn't return, we resolve with void/0.
+                HIRStatement::ExpressionStmt {
+                    expr: HIRExpression::Call {
+                        callee: "__resolve_promise".to_string(),
+                        args: vec![
+                            HIRExpression::Variable { name: promise_id_var.clone(), ty: TejxType::Any },
+                            HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any },
+                        ],
+                        ty: TejxType::Void,
+                    }
+                }
+            ]
+        };
+
+        let catch_block = HIRStatement::Block {
+            statements: vec![
+                HIRStatement::ExpressionStmt {
+                    expr: HIRExpression::Call {
+                        callee: "__reject_promise".to_string(),
+                        args: vec![
+                            HIRExpression::Variable { name: promise_id_var.clone(), ty: TejxType::Any },
+                            HIRExpression::Variable { name: "err".to_string(), ty: TejxType::Any },
+                        ],
+                        ty: TejxType::Void,
+                    }
+                }
+            ]
+        };
+
+        worker_body_stmts.push(HIRStatement::Try {
+            try_block: Box::new(try_block),
+            catch_var: Some("err".to_string()),
+            catch_block: Box::new(catch_block),
+            finally_block: None,
+        });
+
+        *self.current_async_promise_id.borrow_mut() = None;
+        self._exit_scope();
+
+        functions.push(HIRStatement::Function {
+            name: worker_name.clone(),
+            params: vec![(args_id_name, TejxType::Any)],
+            _return_type: TejxType::Any,
+            body: Box::new(HIRStatement::Block { statements: worker_body_stmts }),
+        });
+
+        // --- Wrapper Function ---
+        // any f(x, y) {
+        //   let p = Promise_new();
+        //   let args = [p, x, y];
+        //   Thread_new(worker_ptr, args);
+        //   return p;
+        // }
+        
+        let wrapper_params: Vec<(String, TejxType)> = func.params.iter()
+            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+            .collect();
+        
+        self.enter_scope();
+        for (name, ty) in &wrapper_params {
+            self.define(name.clone(), ty.clone());
+        }
+
+        let mut wrapper_stmts = Vec::new();
+        
+        // let p = Promise_new();
+        let promise_decl = HIRStatement::VarDecl {
+            name: "p".to_string(),
+            initializer: Some(HIRExpression::Call {
+                callee: "Promise_new".to_string(),
+                args: vec![HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any }], // Dummy callback
+                ty: TejxType::Any,
+            }),
+            ty: TejxType::Any,
+            _is_const: true,
+        };
+        wrapper_stmts.push(promise_decl);
+        self.define("p".to_string(), TejxType::Any);
+
+        // let args = [p, x, y];
+        let mut array_elements = vec![HIRExpression::Variable { name: "p".to_string(), ty: TejxType::Any }];
+        for (name, ty) in &wrapper_params {
+            array_elements.push(HIRExpression::Variable { name: name.clone(), ty: ty.clone() });
+        }
+        let args_decl = HIRStatement::VarDecl {
+            name: "args".to_string(),
+            initializer: Some(HIRExpression::ArrayLiteral {
+                elements: array_elements,
+                ty: TejxType::Class("any[]".to_string()),
+            }),
+            ty: TejxType::Class("any[]".to_string()),
+            _is_const: true,
+        };
+        wrapper_stmts.push(args_decl);
+        self.define("args".to_string(), TejxType::Class("any[]".to_string()));
+
+        // Thread_new(worker_ptr, args);
+        wrapper_stmts.push(HIRStatement::ExpressionStmt {
+            expr: HIRExpression::Call {
+                callee: "Thread_new".to_string(),
+                args: vec![
+                    HIRExpression::Literal { value: format!("@{}", worker_name), ty: TejxType::Any }, // @ prefix for function pointer literal in our IR
+                    HIRExpression::Variable { name: "args".to_string(), ty: TejxType::Any },
+                ],
+                ty: TejxType::Any,
+            }
+        });
+
+        wrapper_stmts.push(HIRStatement::Return {
+            value: Some(HIRExpression::Variable { name: "p".to_string(), ty: TejxType::Any }),
+        });
+
+        self._exit_scope();
+
+        functions.push(HIRStatement::Function {
+            name: wrapper_name,
+            params: wrapper_params,
+            _return_type: TejxType::Class(format!("Promise<{}>", func.return_type)),
+            body: Box::new(HIRStatement::Block { statements: wrapper_stmts }),
         });
     }
 
@@ -950,7 +1151,23 @@ impl Lowering {
             }
             Statement::ReturnStmt { value, .. } => {
                 let val = value.as_ref().map(|e| self.lower_expression(e));
-                Some(HIRStatement::Return { value: val })
+                if let Some(p_id) = self.current_async_promise_id.borrow().as_ref() {
+                    let mut stmts = Vec::new();
+                    stmts.push(HIRStatement::ExpressionStmt {
+                        expr: HIRExpression::Call {
+                            callee: "__resolve_promise".to_string(),
+                            args: vec![
+                                HIRExpression::Variable { name: p_id.clone(), ty: TejxType::Any },
+                                val.clone().unwrap_or(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any }),
+                            ],
+                            ty: TejxType::Void,
+                        }
+                    });
+                    stmts.push(HIRStatement::Return { value: val });
+                    Some(HIRStatement::Block { statements: stmts })
+                } else {
+                    Some(HIRStatement::Return { value: val })
+                }
             }
             Statement::BreakStmt { .. } => Some(HIRStatement::Break),
             Statement::ContinueStmt { .. } => Some(HIRStatement::Continue),
@@ -1350,6 +1567,8 @@ impl Lowering {
                                     let parts: Vec<&str> = callee_str.split('.').collect();
                                     if parts[0].eq_ignore_ascii_case(mod_name) {
                                         self.stdlib.is_std_func(mod_name, parts[1])
+                                    } else if mod_name == "net" && (parts[0] == "http" || parts[0] == "https") {
+                                        self.stdlib.is_std_func(parts[0], parts[1])
                                     } else {
                                         false
                                     }
@@ -1362,6 +1581,9 @@ impl Lowering {
                                     let parts: Vec<&str> = callee_str.split('.').collect();
                                     if parts[0].eq_ignore_ascii_case(mod_name) {
                                         set.contains(parts[1])
+                                    } else if mod_name == "net" && (parts[0] == "http" || parts[0] == "https") {
+                                        // For named imports, we might need more logic, but for now allow strict match if namespaced
+                                        true 
                                     } else {
                                         false
                                     }
@@ -1378,7 +1600,19 @@ impl Lowering {
                             } else {
                                 &callee_str
                             };
-                            final_callee = self.stdlib.get_runtime_name(mod_name, func_name);
+                            
+                            let final_mod_name = if mod_name == "net" && callee_str.contains('.') {
+                                let parts: Vec<&str> = callee_str.split('.').collect();
+                                if parts[0] == "http" || parts[0] == "https" {
+                                    parts[0]
+                                } else {
+                                    mod_name
+                                }
+                            } else {
+                                mod_name
+                            };
+
+                            final_callee = self.stdlib.get_runtime_name(final_mod_name, func_name);
                             if mod_name == "math" {
                                 ty = TejxType::Any;
                             }

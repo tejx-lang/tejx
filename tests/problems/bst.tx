@@ -10,20 +10,14 @@ function hasPathSum(root: TreeNode | None, sum: int): bool {
     return false;
   }
   
-  print("hasPathSum: val=", root.val, "sum=", sum);
-  
   // If we are at a leaf node
   if (root.left == None && root.right == None) {
-    let res = sum == root.val;
-    print("Leaf reached. res=", res);
-    return res;
+    return sum == root.val;
   }
   
   // Recursive check for children
   let remaining = sum - root.val;
-  let res = hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
-  print("Returning from val=", root.val, "res=", res);
-  return res;
+  return hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
 }
 
 // Test case

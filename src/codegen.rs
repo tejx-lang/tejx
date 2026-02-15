@@ -49,6 +49,12 @@ impl CodeGen {
         match val {
             MIRValue::Constant { value, ty } => {
                 // Handle "new Class" hack
+                if value.starts_with("@") {
+                    let name = &value[1..];
+                    let count = self.function_param_counts.get(name).cloned().unwrap_or(1); // Default to 1 for workers
+                    let args = vec!["i64"; count].join(", ");
+                    return format!("ptrtoint (i64 ({})* @{} to i64)", args, name);
+                }
                 if value.starts_with("lambda_") {
                     let count = self.function_param_counts.get(value).cloned().unwrap_or(1);
                     let args = vec!["i64"; count].join(", ");

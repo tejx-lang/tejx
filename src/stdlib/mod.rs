@@ -8,6 +8,7 @@ pub mod json;
 pub mod prelude;
 pub mod collections;
 pub mod thread;
+pub mod net;
 
 pub struct StdLib {
     modules: HashMap<String, HashSet<String>>,
@@ -25,6 +26,9 @@ impl StdLib {
         modules.insert("json".to_string(), HashSet::from(["stringify".to_string(), "parse".to_string()]));
         modules.insert("collections".to_string(), collections::exports());
         modules.insert("thread".to_string(), thread::exports());
+        modules.insert("net".to_string(), net::exports());
+        modules.insert("http".to_string(), net::http_exports());
+        modules.insert("https".to_string(), net::https_exports());
         
         // Add all methods to collections
         if let Some(funcs) = modules.get_mut("collections") {

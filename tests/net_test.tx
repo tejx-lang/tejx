@@ -1,0 +1,62 @@
+import std:net;
+
+function testTcp(): void {
+    print("Testing TCP support...");
+    let stream = connect("localhost:8080");
+    if (stream != -1) {
+        print("Connected!");
+        send(stream, "GET / HTTP/1.1\r\n\r\n");
+        let resp = receive(stream, 1024);
+        print("Received response:", resp);
+        close(stream);
+    } else {
+        print("Connect failed (expected if nothing listening on 8080)");
+    }
+}
+
+function testSyncHttp(): void {
+    print("Testing sync HTTP GET...");
+    let resp = http.getSync("http://api.zippopotam.us/us/90210");
+    if (resp != "") {
+        print("Sync HTTP Response received!");
+    } else {
+        print("Sync HTTP GET failed");
+    }
+}
+
+async function testAsyncHttp(): void {
+    print("Testing async HTTP GET...");
+    let resp = await http.get("http://httpbin.org/get");
+    if (resp != "") {
+        print("Async HTTP Response received!");
+    } else {
+        print("Async HTTP GET failed");
+    }
+}
+
+async function testHttpsAsync(): void {
+    print("Testing async HTTPS GET...");
+    let resp = await https.get("https://jsonplaceholder.typicode.com/todos/1");
+    if (resp != "") {
+        print("Async HTTPS Response received!");
+    } else {
+        print("Async HTTPS GET failed");
+    }
+}
+
+function testHttpPostSync(): void {
+    print("Testing sync HTTP POST...");
+    let resp = http.postSync("http://httpbin.org/post", "hello from tejx sync");
+    if (resp != "") {
+        print("Sync HTTP POST Response received!");
+    } else {
+        print("Sync HTTP POST failed");
+    }
+}
+
+testTcp();
+testSyncHttp();
+testHttpPostSync();
+await testAsyncHttp();
+await testHttpsAsync();
+print("std:net tests finished.");
