@@ -1,0 +1,11 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that accessing a non-existent property on a typed class causes a compile error.
+
+class Point {
+    x: int;
+    y: int;
+}
+
+let p = new Point();
+p.x = 10;
+p.z = 20; // 'z' is not defined in Point

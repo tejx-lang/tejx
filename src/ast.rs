@@ -141,7 +141,7 @@ pub enum Expression {
         _col: usize,
     },
     CallExpr {
-        callee: String, // TODO: This should probably be an Expression in a real compiler, but C++ used string
+        callee: Box<Expression>, 
         args: Vec<Expression>,
         _line: usize,
         _col: usize,
@@ -388,4 +388,24 @@ pub struct MatchArm {
     pub pattern: BindingNode,
     pub guard: Option<Box<Expression>>,
     pub body: Box<Expression>,
+}
+
+impl Expression {
+    pub fn to_callee_name(&self) -> String {
+        match self {
+            Expression::Identifier { name, .. } => name.clone(),
+            Expression::ThisExpr { .. } => "this".to_string(),
+            Expression::SuperExpr { .. } => "super".to_string(),
+            Expression::NewExpr { class_name, .. } => format!("$new_{}", class_name),
+            Expression::MemberAccessExpr { object, member, .. } => {
+                let base = object.to_callee_name();
+                if base.is_empty() {
+                    "".to_string() // Return empty if base is not a simple name
+                } else {
+                    format!("{}.{}", base, member)
+                }
+            }
+            _ => "".to_string(),
+        }
+    }
 }

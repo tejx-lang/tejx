@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that passing incorrect array types to functions causes a compile error.
+
+// Mocking the signature from anagram.tx
+function groupAnagrams(words: string[]): void {
+    // ...
+}
+
+// Passing int[] instead of string[]
+groupAnagrams([1, 2, 3]); 

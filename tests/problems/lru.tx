@@ -18,7 +18,7 @@ class LRUCache {
     this.tail.prev = this.head;
   }
 
-  fetch(key: string): int {
+  get(key: string): int {
     if (!this.map.has(key)) return -1;
     let node = this.map.get(key);
     return node.val;
@@ -39,6 +39,6 @@ class LRUCache {
 let cache = new LRUCache(2);
 cache.put("A", 1);
 cache.put("B", 2);
-print("Get A: Expected: 1, Actual: ", cache.fetch("A"));
+print("Get A: Expected: 1, Actual: ", cache.get("A"));
 cache.put("A", 10);
-print("Get A Updated: Expected: 10, Actual: ", cache.fetch("A"));
+print("Get A Updated: Expected: 10, Actual: ", cache.get("A"));

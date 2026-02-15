@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that a class must implement all methods defined in an interface.
+
+interface Greetable {
+    greet(name: string): void;
+}
+
+class Person implements Greetable {
+    name: string;
+    // Missing greet() method
+}
+
+let p = new Person();
+print(p.name);

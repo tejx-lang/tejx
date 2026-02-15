@@ -1,0 +1,5 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that circular inheritance is detected and reported as an error.
+
+class A extends B {}
+class B extends A {} // Error: Circular inheritance

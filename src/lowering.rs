@@ -1275,12 +1275,17 @@ impl Lowering {
                     .map(|a| self.lower_expression(a))
                     .collect();
                 
-                let normalized = callee.replace('.', "_").replace("::", "_").replace(":", "_");
+                let mut callee_str = callee.to_callee_name();
+                
+                // If simple name resolution failed (e.g. strict indirect call), we might still want to try?
+                // But for now, reliance on string name implies we expect simple callees for builtins.
+                
+                let normalized = callee_str.replace('.', "_").replace("::", "_").replace(":", "_");
                 let mut final_callee = normalized.clone();
                 let mut final_args = hir_args.clone();
                 let mut ty = TejxType::Any;
 
-                if callee == "typeof" {
+                if callee_str == "typeof" {
                     let r_expr = hir_args[0].clone();
                     let r_ty = r_expr.get_type();
                     if matches!(r_ty, TejxType::Any) {
@@ -1304,7 +1309,7 @@ impl Lowering {
                             ty: TejxType::String,
                         };
                     }
-                } else if callee == "sizeof" {
+                } else if callee_str == "sizeof" {
                     let r_expr = hir_args[0].clone();
                     let r_ty = r_expr.get_type();
                     return HIRExpression::Literal {
@@ -1313,14 +1318,14 @@ impl Lowering {
                     };
                 }
 
-                if callee == "super" {
+                if callee_str == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {
                         final_callee = format!("f_{}_constructor", parent);
                         final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
                         final_args.extend(hir_args.clone());
                     }
-                } else if let Some(ret_ty) = self.user_functions.borrow().get(callee) {
-                    final_callee = if callee == "main" { "f_main".to_string() } else { format!("f_{}", callee) };
+                } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
+                    final_callee = if callee_str == "main" { "f_main".to_string() } else { format!("f_{}", callee_str) };
                     ty = ret_ty.clone();
                 } else if self.stdlib.is_prelude_func(&normalized) || normalized == "log" || normalized == "console_log" {
                     final_callee = if normalized == "log" || normalized == "console_log" { "print".to_string() } else { normalized.clone() };
@@ -1331,37 +1336,37 @@ impl Lowering {
                     for (mod_name, mode) in imports.iter() {
                         let is_imported = match mode {
                             ImportMode::All => {
-                                if callee.contains('.') {
-                                    let parts: Vec<&str> = callee.split('.').collect();
+                                if callee_str.contains('.') {
+                                    let parts: Vec<&str> = callee_str.split('.').collect();
                                     if parts[0].eq_ignore_ascii_case(mod_name) {
                                         self.stdlib.is_std_func(mod_name, parts[1])
                                     } else {
                                         false
                                     }
                                 } else {
-                                    self.stdlib.is_std_func(mod_name, callee)
+                                    self.stdlib.is_std_func(mod_name, &callee_str)
                                 }
                             }
                             ImportMode::Named(set) => {
-                                if callee.contains('.') {
-                                    let parts: Vec<&str> = callee.split('.').collect();
+                                if callee_str.contains('.') {
+                                    let parts: Vec<&str> = callee_str.split('.').collect();
                                     if parts[0].eq_ignore_ascii_case(mod_name) {
                                         set.contains(parts[1])
                                     } else {
                                         false
                                     }
                                 } else {
-                                    set.contains(callee)
+                                    set.contains(&callee_str)
                                 }
                             }
                         };
                         
                         if is_imported {
                             found_std = true;
-                            let func_name = if callee.contains('.') {
-                                callee.split('.').collect::<Vec<&str>>()[1]
+                            let func_name = if callee_str.contains('.') {
+                                callee_str.split('.').collect::<Vec<&str>>()[1]
                             } else {
-                                callee
+                                &callee_str
                             };
                             final_callee = self.stdlib.get_runtime_name(mod_name, func_name);
                             if mod_name == "math" {
@@ -1371,13 +1376,13 @@ impl Lowering {
                         }
                     }
 
-                    if !found_std && callee.contains('.') && 
-                       !callee.starts_with("Math.") && 
-                       !callee.starts_with("fs.") && !callee.starts_with("Date.") && 
-                       !callee.starts_with("http.") &&
-                       !callee.starts_with("Promise.") && !callee.starts_with("Array.") {
+                    if !found_std && callee_str.contains('.') && 
+                       !callee_str.starts_with("Math.") && 
+                       !callee_str.starts_with("fs.") && !callee_str.starts_with("Date.") && 
+                       !callee_str.starts_with("http.") &&
+                       !callee_str.starts_with("Promise.") && !callee_str.starts_with("Array.") {
                         
-                        let parts: Vec<&str> = callee.split('.').collect();
+                        let parts: Vec<&str> = callee_str.split('.').collect();
                         if parts.len() >= 2 {
                             let method_name = parts.last().unwrap().to_string();
                             let obj_path = parts[0..parts.len()-1].join(".");
@@ -1393,11 +1398,39 @@ impl Lowering {
                                 // Try Static Dispatch for Classes
                                 let mut class_name_opt = None;
                                 let mut is_instance = false;
-                                if let Some((_, TejxType::Class(cn))) = self.lookup(obj_name) {
+                                // Resolve nested members (e.g. this.map.get)
+                                let mut resolved_type = None;
+                                if let Some((_, ty)) = self.lookup(parts[0]) {
+                                    resolved_type = Some(ty);
+                                }
+                                
+                                // Iterate intermediate parts
+                                if let Some(mut current_ty) = resolved_type.clone() {
+                                    for i in 1..parts.len()-1 {
+                                        if let TejxType::Class(current_class) = current_ty {
+                                            if let Some(fields) = self.class_instance_fields.borrow().get(&current_class) {
+                                                if let Some((_, field_ty, _)) = fields.iter().find(|(name, _, _)| name == parts[i]) {
+                                                    current_ty = field_ty.clone();
+                                                    resolved_type = Some(current_ty.clone());
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        resolved_type = None; // Failed to resolve path
+                                        break;
+                                    }
+                                }
+
+                                if let Some(TejxType::Class(cn)) = resolved_type {
                                     class_name_opt = Some(cn);
                                     is_instance = true;
-                                } else if self.class_methods.borrow().contains_key(obj_name) {
-                                    class_name_opt = Some(obj_name.to_string());
+                                } else if self.class_methods.borrow().contains_key(parts[0]) {
+                                    // Fallback for static method on class name directly? (e.g. Math.max where Math is class)
+                                    // But parts[0] is obj_name.
+                                    class_name_opt = Some(parts[0].to_string());
+                                } else if parts[0].starts_with("$new_") {
+                                    class_name_opt = Some(parts[0][5..].to_string());
+                                    is_instance = true;
                                 }
 
                                 if let Some(mut class_name) = class_name_opt {

@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that using an undefined type for a variable causes a compile error.
+
+let x: UnknownType = 10; // Error: UnknownType is not defined
+
+print(x);

@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that variables declared inside a block are not accessible outside.
+
+function test() {
+    if (true) {
+        let blockScopedVar = 42;
+    }
+    // This should fail compilation
+    print(blockScopedVar);
+}
+
+test();

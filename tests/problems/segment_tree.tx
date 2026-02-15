@@ -2,7 +2,11 @@ class SegNode {
   val: int;
   left: SegNode | None;
   right: SegNode | None;
-  constructor(v: int, l: SegNode, r: SegNode) { /* ... */ }
+  constructor(v: int, l: SegNode | None, r: SegNode | None) {
+    this.val = v;
+    this.left = l;
+    this.right = r;
+  }
 }
 
 function update(node: SegNode | None, start: int, end: int, idx: int, val: int): SegNode {

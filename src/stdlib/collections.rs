@@ -435,6 +435,7 @@ fn djb2_hash(s: &str, seed: usize) -> usize {
     hash
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn std_collections_size(this: i64) -> i64 {
     let sz = {
         let heap = HEAP.lock().unwrap();
@@ -450,6 +451,7 @@ pub extern "C" fn std_collections_size(this: i64) -> i64 {
     rt_box_number(sz)
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn std_collections_isEmpty(this: i64) -> i64 {
     let empty = {
         let heap = HEAP.lock().unwrap();

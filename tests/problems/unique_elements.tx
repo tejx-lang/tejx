@@ -3,16 +3,11 @@ import { Set } from "std:collections";
 function getUniqueItems(input: int[]): int[] {
   let seen: Set = new Set();
   let result: int[] = [];
-  print("Input length:", input.length);
 
   for (let i = 0; i < input.length; i++) {
-    print("Checking:", input[i]);
     if (!seen.has(input[i])) {
-      print("Adding:", input[i]);
       seen.add(input[i]);
       result.push(input[i]); // Building the unique list
-    } else {
-        print("Seen:", input[i]);
     }
   }
   return result;

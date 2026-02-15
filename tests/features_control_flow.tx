@@ -113,11 +113,11 @@ for (let i = 0; i < 10; i = i + 1) {
 
 // Test Continue
 print("--- Continue Test ---");
-for (let j = 0; j < 5; j = j + 1) {
-    if (j == 2) {
+for (let j2 = 0; j2 < 5; j2 = j2 + 1) {
+    if (j2 == 2) {
         continue;
     }
-    print("j (skip 2): Expected: != 2, Actual: ", j);
+    print("j (skip 2): Expected: != 2, Actual: ", j2);
 }
 
 // Test While Break

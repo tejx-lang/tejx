@@ -1,0 +1,8 @@
+// EXPECTED: RUNTIME_ERROR
+// Description: Verify that division by zero is handled as a runtime error.
+
+function div(a: int, b: int): int {
+    return a / b;
+}
+
+print(div(10, 0));

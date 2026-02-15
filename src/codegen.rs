@@ -614,14 +614,42 @@ impl CodeGen {
                             TokenType::Less => (true, "", "olt"),
                             TokenType::Greater => (true, "", "ogt"),
                             TokenType::EqualEqual => (true, "", "oeq"),
+                            TokenType::EqualEqualEqual => (true, "", "oeq"),
                             TokenType::BangEqual => (true, "", "one"),
+                            TokenType::BangEqualEqual => (true, "", "one"),
                             TokenType::LessEqual => (true, "", "ole"),
                             TokenType::GreaterEqual => (true, "", "oge"),
                             TokenType::Modulo => (false, "frem", ""),
                             _ => (false, "fadd", "")
                         };
 
-                        if is_cmp {
+                        // Specialized path for Any equality to use value comparison
+                        let is_equality = matches!(op, TokenType::EqualEqual | TokenType::BangEqual | 
+                                                      TokenType::EqualEqualEqual | TokenType::BangEqualEqual);
+                        
+                        if is_any_op && is_equality {
+                             let func = match op {
+                                 TokenType::EqualEqual | TokenType::BangEqual => "rt_eq",
+                                 _ => "rt_strict_equal"
+                             };
+                             if !self.declared_functions.contains(func) {
+                                 self.global_buffer.push_str(&format!("declare i64 @{}(i64, i64)\n", func));
+                                 self.declared_functions.insert(func.to_string());
+                             }
+                             let eq_res = format!("%eq_res{}", self.temp_counter);
+                             self.temp_counter += 1;
+                             self.emit_line(&format!("{} = call i64 @{}(i64 {}, i64 {})", eq_res, func, l, r));
+                             
+                             if matches!(op, TokenType::BangEqual | TokenType::BangEqualEqual) {
+                                 if !self.declared_functions.contains("rt_not") {
+                                     self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
+                                     self.declared_functions.insert("rt_not".to_string());
+                                 }
+                                 self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_res));
+                             } else {
+                                 self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, eq_res));
+                             }
+                        } else if is_cmp {
                             self.temp_counter += 1;
                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
                             self.emit_line(&format!("{} = fcmp {} double {}, {}", cmp_res, pred, l_f, r_f));
@@ -817,6 +845,25 @@ impl CodeGen {
                     return;
                 }
 
+                if callee == "rt_box_int" {
+                     let arg_val = self.resolve_value(&args[0]);
+                     
+                     if !self.declared_functions.contains("rt_box_int") {
+                         self.global_buffer.push_str("declare i64 @rt_box_int(i64)\n");
+                         self.declared_functions.insert("rt_box_int".to_string());
+                     }
+
+                     self.temp_counter += 1;
+                     let result_tmp = format!("%call{}", self.temp_counter);
+                     self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", result_tmp, arg_val));
+                     
+                     if !dst.is_empty() {
+                          let ptr = self.resolve_ptr(dst);
+                          self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                     }
+                     return;
+                }
+
                 // Handle print/eprint specifically for variadic support (like console.log)
                 if callee == "print" {
                     if !self.declared_functions.contains("print_raw") {
@@ -844,7 +891,8 @@ impl CodeGen {
                         let arg_ty = arg.get_type();
                         
                         let box_func = match arg_ty {
-                            t if t.is_numeric() => Some("rt_box_number"),
+                            t if t.is_float() => Some("rt_box_number"),
+                            t if t.is_numeric() => Some("rt_box_int"),
                             TejxType::Bool => Some("rt_box_boolean"),
                             TejxType::String if matches!(arg, MIRValue::Constant { .. }) => Some("rt_box_string"),
                             _ => None
@@ -1096,7 +1144,14 @@ impl CodeGen {
 
                 let mut idx = 0;
                 for v in elements {
-                    let v_val = self.resolve_value(v);
+                    let mut v_val = self.resolve_value(v);
+                    if v.get_type().is_float() {
+                         self.temp_counter += 1;
+                         let bc = format!("%bc_flt_{}", self.temp_counter);
+                         self.emit_line(&format!("{} = bitcast double {} to i64", bc, v_val));
+                         v_val = bc;
+                    }
+
                     if use_fixed {
                          if !self.declared_functions.contains("a_set") {
                             self.global_buffer.push_str("declare i64 @a_set(i64, i64, i64)\n");
@@ -1126,8 +1181,42 @@ impl CodeGen {
                     self.declared_functions.insert("m_get".to_string());
                 }
                 self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, k_val));
+                
+                let dst_ty = _func.variables.get(dst).unwrap_or(&TejxType::Any);
+                let final_res = if dst_ty.is_numeric() && !dst_ty.is_float() {
+                    // Expecting Int32/Int64: Unbox Any -> Double -> Int
+                    if !self.declared_functions.contains("rt_to_number") {
+                        self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                        self.declared_functions.insert("rt_to_number".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let f_val = format!("%f_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", f_val, res_tmp));
+                    
+                    self.temp_counter += 1;
+                    let i_val = format!("%i_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
+                    i_val
+                } else if dst_ty.is_float() {
+                     // Expecting Float: Unbox Any -> Double -> Bitcast to i64 (storage)
+                    if !self.declared_functions.contains("rt_to_number") {
+                        self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                        self.declared_functions.insert("rt_to_number".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let f_val = format!("%f_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", f_val, res_tmp));
+
+                    self.temp_counter += 1;
+                    let bc_val = format!("%bc_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
+                    bc_val
+                } else {
+                    res_tmp
+                };
+
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
             }
             MIRInstruction::StoreMember { obj, member, src } => {
                 let obj_val = self.resolve_value(obj);
@@ -1328,10 +1417,16 @@ impl CodeGen {
                     let is_numeric_elem = elem_type.is_numeric();
                     
                     let res64_f = format!("%res64_f{}", self.temp_counter);
-                    if is_numeric_elem {
+                    if elem_type.is_float() {
+                         self.emit_line(&format!("{} = bitcast i64 {} to double", res64_f, res64));
+                    } else if is_numeric_elem {
                         self.emit_line(&format!("{} = sitofp i64 {} to double", res64_f, res64));
                     } else {
-                        self.emit_line(&format!("{} = bitcast i64 {} to double", res64_f, res64));
+                        if !self.declared_functions.contains("rt_to_number") {
+                            self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                            self.declared_functions.insert("rt_to_number".to_string());
+                        }
+                        self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", res64_f, res64));
                     }
                     
                     self.temp_counter += 1;
@@ -1351,10 +1446,16 @@ impl CodeGen {
                     
                     self.temp_counter += 1;
                     let slow_f = format!("%slow_f{}", self.temp_counter);
-                    if is_numeric_elem {
+                    if elem_type.is_float() {
+                         self.emit_line(&format!("{} = bitcast i64 {} to double", slow_f, slow_res));
+                    } else if is_numeric_elem {
                          self.emit_line(&format!("{} = sitofp i64 {} to double", slow_f, slow_res));
                     } else {
-                         self.emit_line(&format!("{} = bitcast i64 {} to double", slow_f, slow_res));
+                         if !self.declared_functions.contains("rt_to_number") {
+                              self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                              self.declared_functions.insert("rt_to_number".to_string());
+                         }
+                         self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", slow_f, slow_res));
                     }
                     
                     self.temp_counter += 1;

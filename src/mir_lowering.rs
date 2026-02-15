@@ -160,6 +160,18 @@ impl MIRLowering {
              }
         }
 
+        // Implicit Casting for Primitives (e.g. Int -> Float)
+        if src_ty.is_numeric() && target_ty.is_numeric() && *src_ty != *target_ty {
+             // Convert src to target type
+             let cast_temp = self.new_temp(target_ty.clone());
+             self.emit(MIRInstruction::Cast { 
+                 dst: cast_temp.clone(),
+                 src: val.clone(),
+                 ty: target_ty.clone(),
+             });
+             return MIRValue::Variable { name: cast_temp, ty: target_ty.clone() };
+        }
+        
         val
     }
 
@@ -712,7 +724,8 @@ impl MIRLowering {
                         let is_primitive = src_ty.is_numeric() || matches!(src_ty, TejxType::Bool | TejxType::String);
                         if is_primitive {
                              let box_func = match src_ty {
-                                 t if t.is_numeric() => Some("rt_box_number"),
+                                 t if t.is_float() => Some("rt_box_number"),
+                                 t if t.is_numeric() => Some("rt_box_int"),
                                  TejxType::Bool => Some("rt_box_boolean"),
                                  TejxType::String if matches!(val, MIRValue::Constant { .. }) => Some("rt_box_string"),
                                  _ => None
@@ -795,7 +808,8 @@ impl MIRLowering {
                         if is_primitive {
                             let src_ty = val.get_type();
                             let box_func = match src_ty {
-                                t if t.is_numeric() => Some("rt_box_number"),
+                                t if t.is_float() => Some("rt_box_number"),
+                                t if t.is_numeric() => Some("rt_box_int"),
                                 TejxType::Bool => Some("rt_box_boolean"),
                                 TejxType::String if matches!(val, MIRValue::Constant { .. }) => Some("rt_box_string"),
                                 _ => None
@@ -822,14 +836,18 @@ impl MIRLowering {
                 MIRValue::Variable { name: temp, ty: ty.clone() }
             }
             HIRExpression::ArrayLiteral { elements, ty } => {
+                let is_numeric_array = ty.get_array_element_type().is_numeric();
                 let mir_elements = elements.iter()
                     .map(|e| {
                         let mut val = self.lower_expression(e);
-                        let is_primitive = val.get_type().is_numeric() || matches!(val.get_type(), TejxType::Bool | TejxType::String);
-                        if is_primitive {
+                        // Only box if the array itself is NOT typed as numeric (i.e. it's Any[] or Object[])
+                        // If it IS numeric (int[]), we want raw values.
+                        let should_box = !is_numeric_array && (val.get_type().is_numeric() || matches!(val.get_type(), TejxType::Bool | TejxType::String));
+                        if should_box {
                             let src_ty = val.get_type();
                             let box_func = match src_ty {
-                                t if t.is_numeric() => Some("rt_box_number"),
+                                t if t.is_float() => Some("rt_box_number"),
+                                t if t.is_numeric() => Some("rt_box_int"),
                                 TejxType::Bool => Some("rt_box_boolean"),
                                 TejxType::String if matches!(val, MIRValue::Constant { .. }) => Some("rt_box_string"),
                                 _ => None

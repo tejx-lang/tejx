@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that reserved keywords (like 'class') cannot be used as variable names.
+
+let class = 10; // Error: 'class' is a reserved keyword
+
+print(class);

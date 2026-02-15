@@ -1460,7 +1460,8 @@ impl Parser {
 
     fn parse_equality(&mut self) -> Expression {
         let mut expr = self.parse_comparison();
-        while self.match_token(TokenType::EqualEqual) || self.match_token(TokenType::BangEqual) {
+        while self.match_token(TokenType::EqualEqual) || self.match_token(TokenType::BangEqual) ||
+              self.match_token(TokenType::EqualEqualEqual) || self.match_token(TokenType::BangEqualEqual) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_comparison();
              expr = Expression::BinaryExpr {
@@ -1592,10 +1593,8 @@ impl Parser {
                 }
                 let _end_token = self.consume(TokenType::CloseParen, "Expected ')'").clone(); // unused now for loc
                 
-                let callee_name = Self::expr_to_callee_name(&expr);
-                
                 expr = Expression::CallExpr {
-                    callee: callee_name,
+                    callee: Box::new(expr),
                     args,
                     _line: start_token.line,
                     _col: start_token.column

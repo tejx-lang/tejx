@@ -131,14 +131,15 @@ fn main() {
     match linker.link() {
         Ok(_) => {
             // Success - cleanup temp files
-            let _ = fs::remove_file(&temp_ll_file);
+            // let _ = fs::remove_file(&temp_ll_file);
             let _ = fs::remove_file(&runtime_lib_path);
         },
         Err(e) => {
             eprintln!("Error: {}", e);
             let _ = fs::remove_file(&runtime_lib_path);
             // Keep .ll file for debugging
-            process::exit(1);
+            // Keep .ll file for debugging
+            // process::exit(1);
         }
     }
 }

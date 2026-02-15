@@ -1,0 +1,8 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that 'await' can only be used inside 'async' functions.
+
+function syncFunc() {
+    await delay(100); // Error: await in non-async function
+}
+
+syncFunc();

@@ -604,18 +604,20 @@ impl TypeChecker {
                 Ok(value_type)
             },
             Expression::CallExpr { callee, args, _line, _col } => {
-                if callee == "typeof" {
+                let callee_str = callee.to_callee_name();
+                
+                if callee_str == "typeof" {
                     for arg in args { self.check_expression(arg)?; }
                     return Ok("string".to_string());
                 }
-                if callee == "sizeof" {
+                if callee_str == "sizeof" {
                     for arg in args { self.check_expression(arg)?; }
                     return Ok("int32".to_string());
                 }
 
-                if !self.lookup(callee).is_some() && callee != "print" && callee != "delay" {
-                    if !callee.contains('.') {
-                        self.report_error(format!("Undefined function '{}'", callee), *_line, *_col);
+                if !self.lookup(&callee_str).is_some() && callee_str != "print" && callee_str != "delay" {
+                    if !callee_str.contains('.') {
+                        self.report_error(format!("Undefined function '{}'", callee_str), *_line, *_col);
                     }
                 }
 

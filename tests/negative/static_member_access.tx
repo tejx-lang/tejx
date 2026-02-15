@@ -1,0 +1,11 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that static members cannot be accessed via instances and instance members cannot be accessed via class name.
+
+class Config {
+    static version: string = "1.0";
+    name: string = "Nova";
+}
+
+let c = new Config();
+print(c.version); // Error: version is static
+print(Config.name); // Error: name is an instance property

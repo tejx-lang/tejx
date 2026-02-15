@@ -153,8 +153,10 @@ impl Lexer {
                             self.advance();
                             if self.peek(1) == '=' {
                                 self.advance();
+                                TokenType::EqualEqualEqual
+                            } else {
+                                TokenType::EqualEqual
                             }
-                            TokenType::EqualEqual
                         } else if self.peek(1) == '>' {
                             self.advance();
                             TokenType::Arrow
@@ -167,8 +169,10 @@ impl Lexer {
                             self.advance();
                              if self.peek(1) == '=' {
                                 self.advance();
+                                TokenType::BangEqualEqual
+                            } else {
+                                TokenType::BangEqual
                             }
-                            TokenType::BangEqual
                         } else {
                             TokenType::Bang
                         }
@@ -261,7 +265,9 @@ impl Lexer {
                     TokenType::SlashEquals => "/=".to_string(),
                     TokenType::Arrow => "=>".to_string(),
                     TokenType::EqualEqual => "==".to_string(),
+                    TokenType::EqualEqualEqual => "===".to_string(),
                     TokenType::BangEqual => "!=".to_string(),
+                    TokenType::BangEqualEqual => "!==".to_string(),
                     TokenType::LessEqual => "<=".to_string(),
                     TokenType::GreaterEqual => ">=".to_string(),
                     TokenType::Ellipsis => "...".to_string(),

@@ -302,7 +302,7 @@ unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
-
+    // println!("m_set id: {}, key_ptr: {}, val: {}", id, key_ptr, val);
     let mut heap = HEAP.lock().unwrap();
     
     // Pre-calculate boxed index to avoid borrow checker conflict
@@ -333,6 +333,7 @@ pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
                         }
                     }
                     if idx < arr.len() {
+                        // println!("m_set Array: arr[{}] = {}", idx, val);
                         arr[idx] = val;
                     }
                 }
@@ -370,9 +371,8 @@ pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
-
-    let  heap = HEAP.lock().unwrap();
-    let key = if key_ptr > 1000 && key_ptr < 0xFFFFFFFFFFFF { get_string_key(&heap, key_ptr) } else { format!("idx:{}", key_ptr) };
+    // println!("m_get id: {}, key_ptr: {}", id, key_ptr);
+    let heap = HEAP.lock().unwrap();
     if let Some(obj) = heap.get(id) {
         match obj {
             TaggedValue::Array(arr) => {
@@ -388,14 +388,16 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
 
                 if let Some(i) = idx {
                     if i < arr.len() {
-                        return arr.get(i).cloned().unwrap_or(0);
+                        let res = arr[i];
+                        // println!("m_get Array index: {}, res: {}", i, res);
+                        return res;
                     }
                 }
 
                 // Special properties (length)
                 let key = get_string_key(&heap, key_ptr);
                 if key == "length" {
-                    return arr.len() as i64;
+                    return (arr.len() as f64).to_bits() as i64;
                 }
             }
             TaggedValue::ByteArray(arr) => {
@@ -417,7 +419,7 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
 
                 let key = get_string_key(&heap, key_ptr);
                 if key == "length" {
-                    return arr.len() as i64;
+                    return (arr.len() as f64).to_bits() as i64;
                 }
             }
             TaggedValue::Map(map) => {
@@ -430,6 +432,30 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                      return 0;
                 }
             }
+            TaggedValue::String(s) => {
+                let key = if key_ptr > 1000 && key_ptr < 0xFFFFFFFFFFFF { get_string_key(&heap, key_ptr) } else { "".to_string() };
+                // println!("m_get String key: {}, length: {}", key, s.len());
+                if key == "length" {
+                    return (s.len() as f64).to_bits() as i64;
+                }
+                
+                let idx = if key_ptr >= 0 && key_ptr < 1000000000 {
+                     Some(key_ptr as usize)
+                } else if key_ptr > 0xFFFFFFFFFFFF {
+                     Some(f64::from_bits(key_ptr as u64) as usize)
+                } else {
+                     None
+                };
+
+                if let Some(i) = idx {
+                    if i < s.len() {
+                        let char_str = s[i..i+1].to_string();
+                        // println!("m_get String index: {}, char: {}", i, char_str);
+                        drop(heap); // Release lock before boxing
+                        return rt_box_string_raw(char_str);
+                    }
+                }
+            }
             _ => { }
         }
     } else {
@@ -437,6 +463,14 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
         drop(heap);
     }
     0
+}
+
+fn rt_box_string_raw(s: String) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.next_id;
+    heap.next_id += 1;
+    heap.insert(id, TaggedValue::String(s));
+    id
 }
 
 // ... Array functions ...
@@ -728,6 +762,13 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                 LAST_ELEM_SIZE = 1;
             }
             if i < arr.len() { return arr[i] as i64; }
+        }
+        Some(TaggedValue::String(s)) => {
+            if i < s.len() {
+                let char_str = s[i..i+1].to_string();
+                drop(heap);
+                return rt_box_string_raw(char_str);
+            }
         }
         _ => {}
     }
@@ -1039,6 +1080,11 @@ pub extern "C" fn rt_box_number(n: f64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rt_box_int(n: i64) -> i64 {
+    rt_box_number(n as f64)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rt_box_boolean(b: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     let id = heap.next_id;
@@ -1177,23 +1223,41 @@ pub unsafe extern "C" fn delay(ms: i64) -> i64 {
 pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
     if a == b { return 1; }
     let heap = HEAP.lock().unwrap();
+    
+    // Check if either is a bitcasted double (Any type number)
+    let val_a = if a > -1000000 && a < 1000000 { None } else if a > 0xFFFFFFFFFFFF || a < -1000000 { Some(f64::from_bits(a as u64)) } else { None };
+    let val_b = if b > -1000000 && b < 1000000 { None } else if b > 0xFFFFFFFFFFFF || b < -1000000 { Some(f64::from_bits(b as u64)) } else { None };
+
     let obj_a = heap.get(a);
     let obj_b = heap.get(b);
     
-    match (obj_a, obj_b) {
-        (Some(TaggedValue::Number(n1)), Some(TaggedValue::Number(n2))) => if n1 == n2 { 1 } else { 0 },
+    let res = match (obj_a, obj_b) {
+        (Some(TaggedValue::Number(n1)), Some(TaggedValue::Number(n2))) => if (n1 - n2).abs() < 1e-9 { 1 } else { 0 },
         (Some(TaggedValue::String(s1)), Some(TaggedValue::String(s2))) => if s1 == s2 { 1 } else { 0 },
         (Some(TaggedValue::Boolean(b1)), Some(TaggedValue::Boolean(b2))) => if b1 == b2 { 1 } else { 0 },
+        (None, Some(TaggedValue::Number(n))) => if let Some(v) = val_a { if (v - n).abs() < 1e-9 { 1 } else { 0 } } else { 0 },
+        (Some(TaggedValue::Number(n)), None) => if let Some(v) = val_b { if (v - n).abs() < 1e-9 { 1 } else { 0 } } else { 0 },
+        (None, None) => if let (Some(v1), Some(v2)) = (val_a, val_b) { if (v1 - v2).abs() < 1e-9 { 1 } else { 0 } } else { 0 },
         _ => 0
-    }
+    };
+    res
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
     if a == b { return 1; }
+    let heap = HEAP.lock().unwrap();
+    let obj_a = heap.get(a);
+    let obj_b = heap.get(b);
+    
+    if let (Some(TaggedValue::String(s1)), Some(TaggedValue::String(s2))) = (obj_a, obj_b) {
+        return (s1 == s2) as i64;
+    }
+    
+    drop(heap);
     let l_f = rt_to_number(a);
     let r_f = rt_to_number(b);
-    if l_f == r_f { 1 } else { 0 }
+    if (l_f - r_f).abs() < 1e-9 { 1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]
