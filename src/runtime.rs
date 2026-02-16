@@ -1087,6 +1087,7 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
         return rt_box_string(ptr);
     }
     
+    drop(heap); // Release lock before fallback call
     let num_str = CString::new("number").unwrap();
     rt_box_string(num_str.as_ptr() as i64)
 }
