@@ -1,0 +1,36 @@
+class Base {
+    greet(name: string): string {
+        return "Hello " + name + " from Base";
+    }
+    
+    calc(x: int): int {
+        return x * 2;
+    }
+}
+
+class Derived extends Base {
+    greet(name: string): string {
+        let base_msg = super.greet(name);
+        return base_msg + " (and Derived)";
+    }
+    
+    calc(x: int): int {
+        let base_val = super.calc(x);
+        return base_val + 1;
+    }
+}
+
+function main() {
+    let d = new Derived();
+    
+    let msg = d.greet("Alice");
+    print(msg);
+    assert(msg == "Hello Alice from Base (and Derived)");
+    
+    let val = d.calc(10);
+    print("d.calc(10) = " + val); 
+    // Base.calc(10) -> 20. Derived adds 1 -> 21.
+    assert(val == 21);
+    
+    print("Super calls test complete");
+}

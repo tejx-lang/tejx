@@ -1,0 +1,38 @@
+// async_demo.tx
+// This is a demonstration file for Async/Await syntax in NovaJs.
+// NOTE: Async/Await parsing must be enabled in the compiler for this to run.
+
+async function fetchData(id) {
+    print("Fetching data for id: " + id);
+    // Simulate network delay (in a real async impl, this wouldn't block the implementation thread if using non-blocking I/O,
+    // but in the current thread-based model, it sleeps the worker thread)
+    Thread.sleep(500); 
+    return "Data_" + id;
+}
+
+async function processData(data) {
+    print("Processing: " + data);
+    return "Processed_" + data;
+}
+
+async function main() {
+    print("App Started");
+
+    // Start async operation
+    // 'p' is a Promise
+    let p = fetchData(101);
+    
+    print("Doing other work while fetching...");
+    
+    // Await the result
+    // Note: This relies on Thread.join behavior (or condvar wait) in the runtime
+    let data = await p;
+    print("Got: " + data);
+
+    // Chain async calls
+    let result = await processData(data);
+    print("Final result: " + result);
+    return result;
+}
+
+main();

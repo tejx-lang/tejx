@@ -430,6 +430,7 @@ impl Parser {
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
              let mut is_static = false;
              let mut is_abstract_member = false;
+             let mut is_async = false;
              let mut access = AccessModifier::Public;
              
              // Modifiers
@@ -439,6 +440,7 @@ impl Parser {
                  else if self.match_token(TokenType::Protected) { access = AccessModifier::Protected; }
                  else if self.match_token(TokenType::Static) { is_static = true; }
                  else if self.match_token(TokenType::Abstract) { is_abstract_member = true; }
+                 else if self.match_token(TokenType::Async) { is_async = true; }
                  else { break; }
              }
              
@@ -525,7 +527,7 @@ impl Parser {
                  };
                  
                  methods.push(ClassMethod {
-                     func: FunctionDeclaration { name, params, return_type, body, _is_async: false, _line: 0, _col: 0 },
+                     func: FunctionDeclaration { name, params, return_type, body, _is_async: is_async, _line: 0, _col: 0 },
                      _access: access.clone(),
                      is_static: is_static,
                      _is_abstract: is_abstract_member

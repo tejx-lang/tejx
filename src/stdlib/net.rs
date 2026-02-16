@@ -89,7 +89,7 @@ pub unsafe extern "C" fn std_net_close(stream_id: i64) -> i64 {
 // Sync API Implementation
 fn std_net_http_request_sync(method: &str, url: &str, body: Option<&str>) -> i64 {
     use std::process::Command;
-    let mut cmd = Command::new("curl");
+    let mut cmd = Command::new("/usr/bin/curl");
     cmd.arg("-s").arg("-X").arg(method).arg(url);
     if let Some(b) = body {
         cmd.arg("-d").arg(b);
@@ -100,10 +100,21 @@ fn std_net_http_request_sync(method: &str, url: &str, body: Option<&str>) -> i64
                 let s = String::from_utf8_lossy(&output.stdout).to_string();
                 let mut heap = HEAP.lock().unwrap();
                 return heap.alloc(TaggedValue::String(s));
+            } else {
+                 let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
+                    use std::io::Write;
+                    let _ = writeln!(f, "Sync Request Failed ({} {}). Status: {:?}. Stderr: {}", method, url, output.status, String::from_utf8_lossy(&output.stderr));
+                });
             }
             0
         }
-        Err(_) => 0,
+        Err(e) => {
+             let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
+                use std::io::Write;
+                let _ = writeln!(f, "Sync Request execution failed: {}", e);
+            });
+            0
+        }
     }
 }
 
@@ -137,7 +148,7 @@ fn std_net_http_request_async(method: String, url: String, body: Option<String>)
 
 fn std_net_http_request_internal(method: &str, url: &str, body: Option<&str>) -> i64 {
     use std::process::Command;
-    let mut cmd = Command::new("curl");
+    let mut cmd = Command::new("/usr/bin/curl");
     cmd.arg("-s").arg("-X").arg(method).arg(url);
     if let Some(b) = body {
         cmd.arg("-d").arg(b);
@@ -147,11 +158,27 @@ fn std_net_http_request_internal(method: &str, url: &str, body: Option<&str>) ->
             if output.status.success() {
                 let s = String::from_utf8_lossy(&output.stdout).to_string();
                 let mut heap = HEAP.lock().unwrap();
-                return heap.alloc(TaggedValue::String(s));
+                let id = heap.alloc(TaggedValue::String(s));
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
+                    use std::io::Write;
+                    let _ = writeln!(f, "Request successful. Allocated ID: {}", id);
+                });
+                return id;
+            } else {
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
+                    use std::io::Write;
+                    let _ = writeln!(f, "Curl failed with status: {:?}. Stderr: {}", output.status, String::from_utf8_lossy(&output.stderr));
+                });
             }
             0
         }
-        Err(_) => 0,
+        Err(e) => {
+            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
+                use std::io::Write;
+                let _ = writeln!(f, "Failed to execute /usr/bin/curl: {}", e);
+            });
+            0
+        }
     }
 }
 

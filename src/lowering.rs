@@ -175,6 +175,11 @@ impl Lowering {
                         }
                     }
 
+                    if mod_name == "net" {
+                        imports.insert("http".to_string(), ImportMode::All);
+                        imports.insert("https".to_string(), ImportMode::All);
+                    }
+
                     if mod_name == "collections" {
                         let mut class_methods = self.class_methods.borrow_mut();
                         let mut user_functions = self.user_functions.borrow_mut();
@@ -275,7 +280,11 @@ impl Lowering {
                 Statement::ClassDeclaration(class_decl) => {
                     let mut methods = Vec::new();
                     for method in &class_decl.methods {
-                         let mangled = format!("{}_{}", class_decl.name, method.func.name);
+                         let mangled = if method.func.name.starts_with("f_") {
+                             method.func.name.clone()
+                         } else {
+                             format!("f_{}_{}", class_decl.name, method.func.name)
+                         };
                          self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
                          if !method.is_static {
                              methods.push(method.func.name.clone());
@@ -327,7 +336,11 @@ impl Lowering {
                     } else if let Statement::ClassDeclaration(class_decl) = &**declaration {
                         let mut methods = Vec::new();
                         for method in &class_decl.methods {
-                             let mangled = format!("{}_{}", class_decl.name, method.func.name);
+                             let mangled = if method.func.name.starts_with("f_") {
+                                 method.func.name.clone()
+                             } else {
+                                 format!("f_{}_{}", class_decl.name, method.func.name)
+                             };
                              self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
                              if !method.is_static {
                                  methods.push(method.func.name.clone());
@@ -351,7 +364,11 @@ impl Lowering {
                     let mut class_methods = self.class_methods.borrow_mut();
                     let methods = class_methods.entry(ext_decl._target_type.clone()).or_insert_with(Vec::new);
                     for method in &ext_decl._methods {
-                        let mangled = format!("{}_{}", ext_decl._target_type, method.name);
+                        let mangled = if method.name.starts_with("f_") {
+                            method.name.clone()
+                        } else {
+                            format!("f_{}_{}", ext_decl._target_type, method.name)
+                        };
                         self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.return_type));
                         methods.push(method.name.clone());
                     }
@@ -492,8 +509,35 @@ impl Lowering {
     }
 
     fn lower_async_function(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
-        let worker_name = format!("f_{}_worker", func.name);
-        let wrapper_name = format!("f_{}", func.name);
+        let params: Vec<(String, TejxType)> = func.params.iter()
+            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+            .collect();
+            
+        self.enter_scope();
+        for (name, ty) in &params {
+            self.define(name.clone(), ty.clone());
+        }
+
+        let (worker, _state_struct, wrapper_body) = self.lower_async_function_impl(&func.name, &params, &func.return_type, &func.body);
+        
+        self._exit_scope();
+        
+        functions.push(worker);
+        // If _state_struct was not a dummy, it would be pushed here:
+        // functions.push(_state_struct); 
+        
+        functions.push(HIRStatement::Function {
+            name: format!("f_{}", func.name),
+            params,
+            _return_type: TejxType::Any,
+            body: Box::new(wrapper_body),
+        });
+    }
+
+    // This function generates the worker function and the body of the wrapper function for an async function.
+    // It returns (worker_function_HIR, dummy_state_struct_HIR, wrapper_body_HIR_block).
+    fn lower_async_function_impl(&self, name: &str, params: &Vec<(String, TejxType)>, _return_type_str: &str, body: &Statement) -> (HIRStatement, HIRStatement, HIRStatement) {
+        let worker_name = format!("f_{}_worker", name);
 
         // --- Worker Function ---
         // any f_worker(any args_id) {
@@ -513,7 +557,7 @@ impl Lowering {
 
         let mut worker_body_stmts = Vec::new();
 
-        // 1. Unpack promise_id and params
+        // 1. Unpack promise_id
         let promise_id_expr = HIRExpression::IndexAccess {
             target: Box::new(HIRExpression::Variable { name: args_id_name.clone(), ty: TejxType::Any }),
             index: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
@@ -529,33 +573,30 @@ impl Lowering {
         self.define(promise_id_var.clone(), TejxType::Any);
         *self.current_async_promise_id.borrow_mut() = Some(promise_id_var.clone());
 
-        for (i, p) in func.params.iter().enumerate() {
-            let param_ty = TejxType::from_name(&p.type_name);
+        // 2. Unpack params
+        for (i, (pname, pty)) in params.iter().enumerate() {
             let unpack_expr = HIRExpression::IndexAccess {
                 target: Box::new(HIRExpression::Variable { name: args_id_name.clone(), ty: TejxType::Any }),
                 index: Box::new(HIRExpression::Literal { value: (i + 1).to_string(), ty: TejxType::Int32 }),
-                ty: param_ty.clone(),
+                ty: pty.clone(),
             };
             worker_body_stmts.push(HIRStatement::VarDecl {
-                name: p.name.clone(),
+                name: pname.clone(),
                 initializer: Some(unpack_expr),
-                ty: param_ty.clone(),
+                ty: pty.clone(),
                 _is_const: false,
             });
-            self.define(p.name.clone(), param_ty);
+            self.define(pname.clone(), pty.clone());
         }
 
-        // 2. Lower original body
-        let inner_body = self.lower_statement(&func.body)
+        // 3. Lower original body
+        let inner_body = self.lower_statement(body)
             .unwrap_or(HIRStatement::Block { statements: vec![] });
 
-        // 3. Wrap in Try
+        // 4. Wrap in Try/Catch
         let try_block = HIRStatement::Block {
             statements: vec![
                 inner_body,
-                // In NovaJs, we need to handle the return value of the inner body.
-                // But HIRStatement::Return in inner_body will exit the WORKER function!
-                // We need to transform Return(val) -> { __resolve_promise(p, val); return; }
                 // For simplicity, if the body doesn't return, we resolve with void/0.
                 HIRStatement::ExpressionStmt {
                     expr: HIRExpression::Call {
@@ -595,62 +636,51 @@ impl Lowering {
         *self.current_async_promise_id.borrow_mut() = None;
         self._exit_scope();
 
-        functions.push(HIRStatement::Function {
+        let worker_func = HIRStatement::Function {
             name: worker_name.clone(),
             params: vec![(args_id_name, TejxType::Any)],
             _return_type: TejxType::Any,
             body: Box::new(HIRStatement::Block { statements: worker_body_stmts }),
-        });
+        };
 
-        // --- Wrapper Function ---
-        // any f(x, y) {
-        //   let p = Promise_new();
-        //   let args = [p, x, y];
-        //   Thread_new(worker_ptr, args);
-        //   return p;
-        // }
-        
-        let wrapper_params: Vec<(String, TejxType)> = func.params.iter()
-            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
-            .collect();
-        
-        self.enter_scope();
-        for (name, ty) in &wrapper_params {
-            self.define(name.clone(), ty.clone());
-        }
-
-        let mut wrapper_stmts = Vec::new();
-        
+        // --- Wrapper Body construction ---
+        // This block assumes its parameters are already defined in the current scope.
         // let p = Promise_new();
-        let promise_decl = HIRStatement::VarDecl {
-            name: "p".to_string(),
+        // let args = [p, x, y];
+        // Thread_new(worker_ptr, args);
+        // return p;
+        
+        let mut wrapper_stmts = Vec::new();
+        let p_var = "p".to_string();
+        wrapper_stmts.push(HIRStatement::VarDecl {
+            name: p_var.clone(),
             initializer: Some(HIRExpression::Call {
                 callee: "Promise_new".to_string(),
-                args: vec![HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any }], // Dummy callback
+                args: vec![HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }],
                 ty: TejxType::Any,
             }),
             ty: TejxType::Any,
-            _is_const: true,
-        };
-        wrapper_stmts.push(promise_decl);
-        self.define("p".to_string(), TejxType::Any);
+            _is_const: false, // Can be const if not reassigned, but for simplicity, let's keep it mutable
+        });
 
         // let args = [p, x, y];
-        let mut array_elements = vec![HIRExpression::Variable { name: "p".to_string(), ty: TejxType::Any }];
-        for (name, ty) in &wrapper_params {
-            array_elements.push(HIRExpression::Variable { name: name.clone(), ty: ty.clone() });
+        let mut args_elems = vec![HIRExpression::Variable { name: p_var.clone(), ty: TejxType::Any }];
+        for (pname, pty) in params {
+            args_elems.push(HIRExpression::Variable { name: pname.clone(), ty: pty.clone() });
         }
-        let args_decl = HIRStatement::VarDecl {
-            name: "args".to_string(),
-            initializer: Some(HIRExpression::ArrayLiteral {
-                elements: array_elements,
-                ty: TejxType::Class("any[]".to_string()),
-            }),
-            ty: TejxType::Class("any[]".to_string()),
-            _is_const: true,
+
+        let args_array = HIRExpression::ArrayLiteral {
+            elements: args_elems,
+            ty: TejxType::Class("any[]".to_string()), // Type of the array
         };
-        wrapper_stmts.push(args_decl);
-        self.define("args".to_string(), TejxType::Class("any[]".to_string()));
+
+        let args_var = "args".to_string();
+        wrapper_stmts.push(HIRStatement::VarDecl {
+            name: args_var.clone(),
+            initializer: Some(args_array),
+            ty: TejxType::Class("any[]".to_string()),
+            _is_const: false,
+        });
 
         // Thread_new(worker_ptr, args);
         wrapper_stmts.push(HIRStatement::ExpressionStmt {
@@ -658,24 +688,19 @@ impl Lowering {
                 callee: "Thread_new".to_string(),
                 args: vec![
                     HIRExpression::Literal { value: format!("@{}", worker_name), ty: TejxType::Any }, // @ prefix for function pointer literal in our IR
-                    HIRExpression::Variable { name: "args".to_string(), ty: TejxType::Any },
+                    HIRExpression::Variable { name: args_var, ty: TejxType::Any },
                 ],
-                ty: TejxType::Any,
+                ty: TejxType::Void,
             }
         });
 
+        // return p;
         wrapper_stmts.push(HIRStatement::Return {
-            value: Some(HIRExpression::Variable { name: "p".to_string(), ty: TejxType::Any }),
+            value: Some(HIRExpression::Variable { name: p_var, ty: TejxType::Any }),
         });
 
-        self._exit_scope();
-
-        functions.push(HIRStatement::Function {
-            name: wrapper_name,
-            params: wrapper_params,
-            _return_type: TejxType::Class(format!("Promise<{}>", func.return_type)),
-            body: Box::new(HIRStatement::Block { statements: wrapper_stmts }),
-        });
+        // Return the worker function, a dummy state struct, and the wrapper body block
+        (worker_func, HIRStatement::Block { statements: vec![] }, HIRStatement::Block { statements: wrapper_stmts })
     }
 
     fn lower_class_declaration(&self, class_decl: &ClassDeclaration, functions: &mut Vec<HIRStatement>, main_stmts: &mut Vec<HIRStatement>) {
@@ -858,13 +883,76 @@ impl Lowering {
                  }
             }
             
-            let body = hir_body;
-            
-            self._exit_scope();
+            if func_decl._is_async {
+                 // Async method lowering
+                 // 1. Generate unique worker name: f_ClassName_MethodName_worker
+                 let worker_name = format!("{}_worker", name);
+                 
+                 // 2. Create state struct name
+                 let state_struct_name = format!("State_{}", worker_name);
+                 
+                 // 3. Prepare params for worker (needs 'this' + original params)
+                 // The wrapper method 'name' has (this, p1, p2...)
+                 // The worker needs a state object that contains these.
+                 
+                 // Let's use the existing lower_async_function logic but we need to trick it or adapt it
+                 // to handle 'this' which is implicit in AST but explicit in HIR function params.
+                 // The easiest way is to treat 'this' as just another parameter for the async transformation.
+                 
+                 // We need to define 'this' in scope before lowering body so it's captured in state.
+                 self.enter_scope();
+                 for (pname, pty) in &params {
+                     self.define(pname.clone(), pty.clone());
+                 }
+                 
+                 // We need to lower the body to HIR first to find captured vars (variables used in body)
+                 // But lower_async_function does that.
+                 // Let's call a modified version or duplicate logic. 
+                 // Duplicating logic for now to ensure 'this' handling is correct.
+                 
+                 let mangled_name = if name.starts_with("f_") {
+                     name.to_string()
+                 } else {
+                     format!("f_{}_{}", class_decl.name, name)
+                 };
+                 
+                 let (worker_func, state_struct, mut wrapper_body) = self.lower_async_function_impl(
+                     &mangled_name, &params, &func_decl.return_type, &func_decl.body
+                 );
+                 
+                 self._exit_scope();
+                 
+                 // Register the worker and state struct (which are global/top-level in HIR)
+                 // But wait, lower_async_function_impl returns HIRStatement::Function for worker
+                 // and HIRStatement::Struct for state.
+                 // We should push them to 'functions' (which ends up in global HIR functions).
+                 
+                 // The wrapper body returned is what goes into the method body.
+                 
+                 functions.push(worker_func);
+                 // functions.push(state_struct);
+                 
+                  functions.push(HIRStatement::Function {
+                    name: mangled_name, params, _return_type: TejxType::Any, body: Box::new(wrapper_body),
+                 });
 
-            functions.push(HIRStatement::Function {
-                name, params, _return_type: return_type, body: Box::new(body),
-            });
+            } else {
+                 // Sync method
+                 let hir_body = self.lower_statement(&func_decl.body)
+                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                 
+                 self._exit_scope();
+
+                 let mangled_name = if name.starts_with("f_") {
+                     name.to_string()
+                 } else {
+                     format!("f_{}_{}", class_decl.name.replace("[", "_").replace("]", "_"), name)
+                 };
+
+                 functions.push(HIRStatement::Function {
+                    name: mangled_name, params, _return_type: return_type, body: Box::new(hir_body),
+                 });
+            }
         }
         
 
@@ -942,7 +1030,11 @@ impl Lowering {
                 params.push((p.name.clone(), TejxType::from_name(&p.type_name)));
             }
             
-            let name = format!("f_{}_{}", ext_decl._target_type, func_decl.name);
+            let name = if func_decl.name.starts_with("f_") {
+                func_decl.name.clone()
+            } else {
+                format!("f_{}_{}", ext_decl._target_type.replace("[", "_").replace("]", "_"), func_decl.name)
+            };
             let return_type = TejxType::from_name(&func_decl.return_type);
             
             self.enter_scope();
@@ -1498,6 +1590,74 @@ impl Lowering {
                  }
             }
             Expression::CallExpr { callee, args, .. } => {
+                // Check for super.method()
+                if let Expression::MemberAccessExpr { object, member, .. } = callee.as_ref() {
+                    if let Expression::SuperExpr { .. } = object.as_ref() {
+                         // super.method(...)
+                         // Resolve parent class
+                         if let Some(parent) = self.parent_class.borrow().as_ref() {
+                             let method_name = format!("f_{}_{}", parent, member);
+                             
+                             let mut hir_args: Vec<HIRExpression> = args.iter()
+                                .map(|a| self.lower_expression(a))
+                                .collect();
+                             
+                             // Prepend 'this'
+                             // 'this' in class method context is available as local var "this"
+                             // (defined in lower_class_declaration or lower_async_function)
+                             let this_ty = if let Some(cls) = self.current_class.borrow().as_ref() {
+                                 TejxType::Class(cls.clone()) 
+                             } else {
+                                 TejxType::Any
+                             };
+                             hir_args.insert(0, HIRExpression::Variable { name: "this".to_string(), ty: this_ty });
+
+                             return HIRExpression::Call {
+                                 callee: method_name,
+                                 args: hir_args,
+                                 ty: TejxType::Any, // Inferred?
+                             };
+                         } else {
+                             // Error: super used but no parent?
+                             // Fallthrough or return dummy
+                         }
+                    }
+                }
+
+
+                
+                // Check for obj.method() where obj is a class instance
+                if let Expression::MemberAccessExpr { object, member, .. } = callee.as_ref() {
+                     let obj_hir = self.lower_expression(object);
+                     let obj_ty = obj_hir.get_type();
+                     
+                     if let TejxType::Class(class_name) = obj_ty {
+                         let clean_class = if let Some(pos) = class_name.find('<') { class_name[..pos].to_string() } else { class_name.clone() };
+                         let prefix = match clean_class.as_str() {
+                             "Stack" | "Queue" | "PriorityQueue" | "MinHeap" | "MaxHeap" | "Map" | "Set" | 
+                             "OrderedMap" | "OrderedSet" | "BloomFilter" | "Trie" => "rt",
+                             _ => "f",
+                         };
+                         let method_name = format!("{}_{}_{}", prefix, clean_class.replace("[", "_").replace("]", "_"), member);
+                         // Verify method exists or just assume? 
+                         // Check user_functions directly
+                         let return_ty = self.user_functions.borrow().get(&method_name).cloned().unwrap_or(TejxType::Any);
+                         
+                         let mut hir_args: Vec<HIRExpression> = args.iter()
+                            .map(|a| self.lower_expression(a))
+                            .collect();
+                         
+                         // Prepend object as 'this'
+                         hir_args.insert(0, obj_hir);
+                         
+                         return HIRExpression::Call {
+                             callee: method_name,
+                             args: hir_args,
+                             ty: return_ty,
+                         };
+                     }
+                }
+
                 let hir_args: Vec<HIRExpression> = args.iter()
                     .map(|a| self.lower_expression(a))
                     .collect();
@@ -1551,6 +1711,163 @@ impl Lowering {
                         final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
                         final_args.extend(hir_args.clone());
                     }
+                } else if let Expression::MemberAccessExpr { object, member, .. } = callee.as_ref() {
+                     if let Expression::SuperExpr { .. } = object.as_ref() {
+                         if let Some(parent) = &*self.parent_class.borrow() {
+                             final_callee = format!("f_{}_{}", parent, member);
+                             final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
+                             final_args.extend(hir_args.clone());
+                         }
+                     } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
+                         final_callee = if callee_str == "main" { "f_main".to_string() } else { format!("f_{}", callee_str) };
+                         ty = ret_ty.clone();
+                     } else {
+                         // Check stdlib imports for MemberAccess (e.g. fs.readFile)
+                         let imports = self.std_imports.borrow();
+                         let mut found_import = false;
+                         for (mod_name, mode) in imports.iter() {
+                             let is_imported = match mode {
+                                 ImportMode::All => {
+                                      if callee_str.contains('.') {
+                                          let parts: Vec<&str> = callee_str.split('.').collect();
+                                          if parts[0].eq_ignore_ascii_case(mod_name) {
+                                              self.stdlib.is_std_func(mod_name, parts[1])
+                                          } else { false }
+                                      } else { false }
+                                 }
+                                 ImportMode::Named(set) => {
+                                     // Not relevant for dot access usually, unless aliased?
+                                     // But if we have `import { readFile } from fs`, we call `readFile`, not `fs.readFile`.
+                                     false
+                                 }
+                             };
+                             
+                             if is_imported {
+                                 found_import = true;
+                                 let parts: Vec<&str> = callee_str.split('.').collect();
+                                 let func_name = parts[1];
+                                 final_callee = self.stdlib.get_runtime_name(mod_name, func_name);
+                                 break;
+                             }
+                         }
+                         drop(imports);
+                         
+                         // If not a stdlib import, handle runtime method calls
+                         // by prepending the object as the first argument
+                         if !found_import {
+                             // First: check if this.method() inside a class context
+                             let is_this = matches!(object.as_ref(), Expression::Identifier { name, .. } if name == "this");
+                             let mut did_resolve = false;
+                             
+                             if is_this {
+                                 let class_opt = self.current_class.borrow().clone();
+                                 if let Some(cn) = class_opt {
+                                     let stripped = if let Some(pos) = cn.find('<') { cn[..pos].to_string() } else { cn.clone() };
+                                     let method_key = format!("{}_{}", stripped, member);
+                                     if self.user_functions.borrow().contains_key(&method_key) {
+                                         final_callee = format!("f_{}", method_key);
+                                         let obj_hir = self.lower_expression(object);
+                                         let mut n_args = vec![obj_hir];
+                                         n_args.extend(hir_args.clone());
+                                         final_args = n_args;
+                                         did_resolve = true;
+                                     }
+                                 }
+                             }
+                             
+                             // Second: runtime method dispatch (expanded)
+                             if !did_resolve {
+                                 let obj_hir = self.lower_expression(object);
+                                 let runtime_callee = match member.as_str() {
+                                     "lock" | "unlock" | "acquire" | "release" => {
+                                         let base = match member.as_str() {
+                                             "lock" | "acquire" => "m_lock",
+                                             _ => "m_unlock",
+                                         };
+                                         base.to_string()
+                                     },
+                                     "join" => "Thread_join".to_string(),
+                                     "sleep" => "Thread_sleep".to_string(),
+                                     "then" | "catch" => format!("Promise_{}", member),
+                                     "push" | "unshift" | "fill" => format!("Array_{}", member),
+                                     "pop" | "shift" => format!("Array_{}", member),
+                                     "forEach" => "Array_forEach".to_string(),
+                                     "map" | "filter" | "reduce" | "find" | "findIndex" | "reverse" | "splice" | "sort" | "flat" => format!("Array_{}", member),
+                                     "concat" | "slice" | "indexOf" | "includes" => {
+                                         if obj_hir.get_type() == TejxType::String {
+                                             format!("rt_string_{}", member)
+                                         } else {
+                                             format!("Array_{}", member)
+                                         }
+                                     },
+                                     "get" => "Map_get".to_string(),
+                                     "set" | "put" => "Map_put".to_string(),
+                                     "has" => "Collection_has".to_string(),
+                                     "delete" | "del" => "Collection_delete".to_string(),
+                                     "size" => "rt_collections_size".to_string(),
+                                     "clear" => "Collection_clear".to_string(),
+                                     "add" => "Collection_add".to_string(),
+                                     "keys" => "Collection_keys".to_string(),
+                                     "values" => "Collection_values".to_string(),
+                                     "entries" => "Collection_entries".to_string(),
+                                     "enqueue" | "dequeue" | "peek" | "isEmpty" | "extractMin" | "extractMax" | "insertMin" | "insertMax" | "insert" => {
+                                         // Collection class methods - try user function lookup
+                                         let obj_ty_name = obj_hir.get_type();
+                                         let class_name = match &obj_ty_name {
+                                             TejxType::Class(cn) => {
+                                                 if let Some(pos) = cn.find('<') { cn[..pos].to_string() } else { cn.clone() }
+                                             }
+                                             _ => String::new(),
+                                         };
+                                         if !class_name.is_empty() {
+                                             let key = format!("{}_{}", class_name, member);
+                                             let prefix = match class_name.as_str() {
+                                                 "Stack" | "Queue" | "PriorityQueue" | "MinHeap" | "MaxHeap" | "Map" | "Set" | 
+                                                 "OrderedMap" | "OrderedSet" | "BloomFilter" | "Trie" => "rt",
+                                                 _ => "f",
+                                             };
+                                             if self.user_functions.borrow().contains_key(&key) || prefix == "rt" {
+                                                 format!("{}_{}", prefix, key)
+                                             } else { String::new() }
+                                         } else { String::new() }
+                                     },
+                                     "trim" => "rt_string_trim".to_string(),
+                                     "toLowerCase" => "rt_string_to_lower".to_string(),
+                                     "toUpperCase" => "rt_string_to_upper".to_string(),
+                                     "startsWith" => "rt_string_starts_with".to_string(),
+                                     "endsWith" => "rt_string_ends_with".to_string(),
+                                     "replace" => "rt_string_replace".to_string(),
+                                     "padStart" => "s_padStart".to_string(),
+                                     "padEnd" => "s_padEnd".to_string(),
+                                     "repeat" => "s_repeat".to_string(),
+                                     "trimStart" => "s_trimStart".to_string(),
+                                     "trimEnd" => "s_trimEnd".to_string(),
+                                     "getTime" => "d_getTime".to_string(),
+                                     "toISOString" => "d_toISOString".to_string(),
+                                     "toString" => "e_toString".to_string(),
+                                     "describe" => "n_describe".to_string(),
+                                     _ => String::new(),
+                                 };
+                                 
+                                 if !runtime_callee.is_empty() {
+                                     final_callee = runtime_callee;
+                                     
+                                     let is_static_object = match object.as_ref() {
+                                         Expression::Identifier { name, .. } => name == "Object",
+                                         _ => false,
+                                     };
+                                     
+                                     if is_static_object && matches!(member.as_str(), "keys" | "values" | "entries") {
+                                         final_args = hir_args.clone();
+                                     } else {
+                                         let mut n_args = vec![obj_hir];
+                                         n_args.extend(hir_args.clone());
+                                         final_args = n_args;
+                                     }
+                                 }
+                             }
+                         }
+                     }
                 } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
                     final_callee = if callee_str == "main" { "f_main".to_string() } else { format!("f_{}", callee_str) };
                     ty = ret_ty.clone();
@@ -1696,7 +2013,7 @@ impl Lowering {
                                         let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"]
                                             .contains(&class_name.as_str());
                                         if is_std_collection {
-                                            final_callee = format!("std_collections_{}", mangled_key);
+                                            final_callee = format!("f_{}", mangled_key);
                                         } else {
                                             final_callee = format!("f_{}", mangled_key);
                                         }
@@ -1787,7 +2104,7 @@ impl Lowering {
                                          "get" => ("Map_get".to_string(), TejxType::Any),
                                          "has" => ("Collection_has".to_string(), TejxType::Any),
                                          "delete" | "del" => ("Collection_delete".to_string(), TejxType::Any),
-                                         "size" => ("Collection_size".to_string(), TejxType::Any),
+                                         "size" => ("rt_collections_size".to_string(), TejxType::Any),
                                          "clear" => ("Collection_clear".to_string(), TejxType::Any),
                                          "add" => {
                                              if class_name_opt.as_deref() == Some("Atomic") {
@@ -1796,7 +2113,7 @@ impl Lowering {
                                                   if cn == "Set" {
                                                       ("Collection_add".to_string(), TejxType::Any)
                                                   } else {
-                                                      (format!("std_collections_{}_add", cn), TejxType::Any)
+                                                      (format!("f_{}_add", cn), TejxType::Any)
                                                   }
                                              } else {
                                                   ("Collection_add".to_string(), TejxType::Any)

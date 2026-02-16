@@ -1007,7 +1007,7 @@ impl TypeChecker {
                            };
                            let is_bool = |t: &str| -> bool { matches!(t, "bool") };
 
-                           if got == inner || (is_numeric(inner) && is_numeric(&got)) || (is_bool(inner) && is_bool(&got)) {
+                           if inner == "any" || got == "any" || got == inner || (is_numeric(inner) && is_numeric(&got)) || (is_bool(inner) && is_bool(&got)) {
                                // Implicit wrap: OK
                                return Ok(());
                            }

@@ -573,13 +573,7 @@ impl MIRLowering {
                       });
                       
                       // Initialize with constructor: f_ClassName_constructor(this, args...)
-                      let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"]
-                          .contains(&class_name.as_str());
-                      let constructor_name = if is_std_collection {
-                          format!("std_collections_{}_constructor", class_name)
-                      } else {
-                          format!("f_{}_constructor", class_name)
-                      };
+                      let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"].contains(&class_name.as_str()); let constructor_name = if is_std_collection { format!("rt_{}_constructor", class_name) } else { format!("f_{}_constructor", class_name) };
                      let mut constructor_args = vec![MIRValue::Variable { 
                          name: temp.clone(), 
                          ty: TejxType::Class(class_name.clone()) 
@@ -817,13 +811,29 @@ impl MIRLowering {
             HIRExpression::IndexAccess { target, index, ty } => {
                 let obj = self.lower_expression(target);
                 let idx = self.lower_expression(index);
-                let temp = self.new_temp(ty.clone());
+                
+                let obj_ty = obj.get_type();
+                let is_any_source = matches!(obj_ty, TejxType::Any) || 
+                                   (if let TejxType::Class(name) = &obj_ty { name == "any[]" || name == "Array" } else { false });
+
+                // If source is Any/any[], the value loaded is a TaggedValue (Any).
+                // We must load it as Any first, then unbox if necessary.
+                let load_ty = if is_any_source { TejxType::Any } else { ty.clone() };
+                
+                let temp = self.new_temp(load_ty.clone());
                 self.emit(MIRInstruction::LoadIndex {
                     dst: temp.clone(),
                     obj,
                     index: idx,
                 });
-                MIRValue::Variable { name: temp, ty: ty.clone() }
+                
+                let val = MIRValue::Variable { name: temp, ty: load_ty };
+                
+                if is_any_source && ty != &TejxType::Any {
+                    self.auto_box(val, ty)
+                } else {
+                    val
+                }
             }
             HIRExpression::MemberAccess { target, member, ty } => {
                 let obj = self.lower_expression(target);

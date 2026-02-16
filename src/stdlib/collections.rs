@@ -29,58 +29,58 @@ pub fn exports() -> HashSet<String> {
 }
 
 // --- Stack ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Stack_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Stack_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::Array(Vec::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Stack_push(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Stack_push(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) { arr.push(val); }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Stack_pop(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Stack_pop(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) { return arr.pop().unwrap_or(0); }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Stack_peek(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Stack_peek(this: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get(this) { return arr.last().cloned().unwrap_or(0); }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Stack_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Stack_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Stack_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Stack_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- Queue ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Queue_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Queue_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::Array(Vec::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Queue_enqueue(this: i64, val: i64) -> i64 {
-    std_collections_Stack_push(this, val)
+#[unsafe(no_mangle)] pub extern "C" fn rt_Queue_enqueue(this: i64, val: i64) -> i64 {
+    rt_Stack_push(this, val)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Queue_dequeue(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Queue_dequeue(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) {
         if !arr.is_empty() { return arr.remove(0); }
     }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Queue_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Queue_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Queue_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Queue_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- MinHeap / PriorityQueue ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MinHeap_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_MinHeap_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::Array(Vec::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_PriorityQueue_constructor(this: i64) -> i64 {
-    std_collections_MinHeap_constructor(this)
+#[unsafe(no_mangle)] pub extern "C" fn rt_PriorityQueue_constructor(this: i64) -> i64 {
+    rt_MinHeap_constructor(this)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MinHeap_insert(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_MinHeap_insert(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) {
         arr.push(val);
@@ -95,10 +95,10 @@ pub fn exports() -> HashSet<String> {
     }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_PriorityQueue_insert(this: i64, val: i64) -> i64 {
-    std_collections_MinHeap_insert(this, val)
+#[unsafe(no_mangle)] pub extern "C" fn rt_PriorityQueue_insert(this: i64, val: i64) -> i64 {
+    rt_MinHeap_insert(this, val)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MinHeap_extractMin(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_MinHeap_extractMin(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) {
         if arr.is_empty() { return 0; }
@@ -120,21 +120,21 @@ pub fn exports() -> HashSet<String> {
     }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_PriorityQueue_extractMin(this: i64) -> i64 {
-    std_collections_MinHeap_extractMin(this)
+#[unsafe(no_mangle)] pub extern "C" fn rt_PriorityQueue_extractMin(this: i64) -> i64 {
+    rt_MinHeap_extractMin(this)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MinHeap_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MinHeap_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_PriorityQueue_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_PriorityQueue_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_MinHeap_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_MinHeap_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_PriorityQueue_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_PriorityQueue_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- MaxHeap ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MaxHeap_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_MaxHeap_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::Array(Vec::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MaxHeap_insertMax(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_MaxHeap_insertMax(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) {
         arr.push(val);
@@ -149,7 +149,7 @@ pub fn exports() -> HashSet<String> {
     }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MaxHeap_extractMax(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_MaxHeap_extractMax(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) {
         if arr.is_empty() { return 0; }
@@ -171,43 +171,43 @@ pub fn exports() -> HashSet<String> {
     }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MaxHeap_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_MaxHeap_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_MaxHeap_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_MaxHeap_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- Map ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::Map(HashMap::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_set(this: i64, key: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_set(this: i64, key: i64, val: i64) -> i64 {
     let k_str = stringify_value(key);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get_mut(this) { map.insert(k_str, val); }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_put(this: i64, key: i64, val: i64) -> i64 {
-    std_collections_Map_set(this, key, val)
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_put(this: i64, key: i64, val: i64) -> i64 {
+    rt_Map_set(this, key, val)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_get(this: i64, key: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_get(this: i64, key: i64) -> i64 {
     let k_str = stringify_value(key);
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) { return map.get(&k_str).cloned().unwrap_or(0); }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_at(this: i64, key: i64) -> i64 {
-    std_collections_Map_get(this, key)
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_at(this: i64, key: i64) -> i64 {
+    rt_Map_get(this, key)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_delete(this: i64, key: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_delete(this: i64, key: i64) -> i64 {
     let k_str = stringify_value(key);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get_mut(this) { map.remove(&k_str); }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_remove(this: i64, key: i64) -> i64 {
-    std_collections_Map_delete(this, key)
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_remove(this: i64, key: i64) -> i64 {
+    rt_Map_delete(this, key)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_has(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_has(this: i64, val: i64) -> i64 {
     let k_str = stringify_value(val);
     let result = {
         let heap = HEAP.lock().unwrap();
@@ -216,7 +216,7 @@ pub fn exports() -> HashSet<String> {
     };
     rt_box_boolean(if result { 1 } else { 0 })
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_keys(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_keys(this: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) {
         let keys_str: Vec<String> = map.keys().cloned().collect();
@@ -231,7 +231,7 @@ pub fn exports() -> HashSet<String> {
     }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_values(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_values(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) {
         let vals: Vec<i64> = map.values().cloned().collect();
@@ -239,21 +239,21 @@ pub fn exports() -> HashSet<String> {
     }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Map_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- Set ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::Set(HashSet::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_add(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_add(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.insert(val); }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_has(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_has(this: i64, val: i64) -> i64 {
     let result = {
         let heap = HEAP.lock().unwrap();
         if let Some(TaggedValue::Set(set)) = heap.get(this) { set.contains(&val) }
@@ -261,15 +261,15 @@ pub fn exports() -> HashSet<String> {
     };
     rt_box_boolean(if result { 1 } else { 0 })
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_delete(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_delete(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.remove(&val); }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_remove(this: i64, val: i64) -> i64 {
-    std_collections_Set_delete(this, val)
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_remove(this: i64, val: i64) -> i64 {
+    rt_Set_delete(this, val)
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_values(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_values(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Set(set)) = heap.get(this) {
         let vals: Vec<i64> = set.iter().cloned().collect();
@@ -277,16 +277,16 @@ pub fn exports() -> HashSet<String> {
     }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Set_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Set_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- OrderedMap ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedMap_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::OrderedMap(Vec::new(), HashMap::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedMap_put(this: i64, key: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_put(this: i64, key: i64, val: i64) -> i64 {
     let k_str = stringify_value(key);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::OrderedMap(keys, map)) = heap.get_mut(this) {
@@ -295,13 +295,13 @@ pub fn exports() -> HashSet<String> {
     }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedMap_at(this: i64, key: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_at(this: i64, key: i64) -> i64 {
     let k_str = stringify_value(key);
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::OrderedMap(_, map)) = heap.get(this) { return map.get(&k_str).cloned().unwrap_or(0); }
     0
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedMap_has(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_has(this: i64, val: i64) -> i64 {
     let k_str = stringify_value(val);
     let result = {
         let heap = HEAP.lock().unwrap();
@@ -310,23 +310,23 @@ pub fn exports() -> HashSet<String> {
     };
     rt_box_boolean(if result { 1 } else { 0 })
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedMap_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedMap_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- OrderedSet ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedSet_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::OrderedSet(Vec::new(), HashSet::new()));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedSet_add(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_add(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::OrderedSet(elements, set)) = heap.get_mut(this) {
         if !set.contains(&val) { elements.push(val); set.insert(val); }
     }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedSet_has(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_has(this: i64, val: i64) -> i64 {
     let result = {
         let heap = HEAP.lock().unwrap();
         if let Some(TaggedValue::OrderedSet(_, set)) = heap.get(this) { set.contains(&val) }
@@ -334,11 +334,11 @@ pub fn exports() -> HashSet<String> {
     };
     rt_box_boolean(if result { 1 } else { 0 })
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedSet_size(this: i64) -> i64 { std_collections_size(this) }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_OrderedSet_isEmpty(this: i64) -> i64 { std_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_size(this: i64) -> i64 { rt_collections_size(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
 // --- BloomFilter ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_BloomFilter_constructor(this: i64, size_bits: i64, k_hashes: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_BloomFilter_constructor(this: i64, size_bits: i64, k_hashes: i64) -> i64 {
     let bits = to_f64(size_bits) as usize;
     let k = to_f64(k_hashes) as usize;
     let byte_size = (bits + 7) / 8;
@@ -346,7 +346,7 @@ pub fn exports() -> HashSet<String> {
     heap.insert(this, TaggedValue::BloomFilter(vec![0; byte_size], k));
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_BloomFilter_add(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_BloomFilter_add(this: i64, val: i64) -> i64 {
     let val_str = stringify_value(val);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::BloomFilter(bits, k)) = heap.get_mut(this) {
@@ -359,7 +359,7 @@ pub fn exports() -> HashSet<String> {
     }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_BloomFilter_contains(this: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_BloomFilter_contains(this: i64, val: i64) -> i64 {
     let s = stringify_value(val);
     let result = {
         let heap = HEAP.lock().unwrap();
@@ -377,12 +377,12 @@ pub fn exports() -> HashSet<String> {
 }
 
 // --- Trie ---
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Trie_constructor(this: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Trie_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     heap.insert(this, TaggedValue::TrieNode { children: HashMap::new(), is_end: false, value: 0 });
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Trie_addPath(this: i64, path: i64, val: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Trie_addPath(this: i64, path: i64, val: i64) -> i64 {
     let s = stringify_value(path);
     let mut curr = this;
     for c in s.chars() {
@@ -407,7 +407,7 @@ pub fn exports() -> HashSet<String> {
     }
     this
 }
-#[unsafe(no_mangle)] pub extern "C" fn std_collections_Trie_find(this: i64, path: i64) -> i64 {
+#[unsafe(no_mangle)] pub extern "C" fn rt_Trie_find(this: i64, path: i64) -> i64 {
     let s = stringify_value(path);
     let mut curr = this;
     for c in s.chars() {
@@ -436,7 +436,7 @@ fn djb2_hash(s: &str, seed: usize) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn std_collections_size(this: i64) -> i64 {
+pub extern "C" fn rt_collections_size(this: i64) -> i64 {
     let sz = {
         let heap = HEAP.lock().unwrap();
         match heap.get(this) {
@@ -452,7 +452,7 @@ pub extern "C" fn std_collections_size(this: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn std_collections_isEmpty(this: i64) -> i64 {
+pub extern "C" fn rt_collections_isEmpty(this: i64) -> i64 {
     let empty = {
         let heap = HEAP.lock().unwrap();
         match heap.get(this) {

@@ -1,0 +1,35 @@
+class AsyncCalc {
+    value: int;
+
+    constructor(v: int) {
+        this.value = v;
+    }
+
+    async doWork(x: int): Promise<int> {
+        // Test 'this' access in async method
+        let res = this.value + x;
+        return res;
+    }
+
+    async slowAdd(a: int, b: int): Promise<int> {
+        let res = a + b;
+        return res;
+    }
+}
+
+async function main() {
+    let calc = new AsyncCalc(10);
+    print("Initial value: 10");
+
+    let p1 = calc.doWork(5);
+    let v1 = await p1;
+    print("calc.doWork(5) result: " + v1);
+    assert(v1 == 15);
+
+    let p2 = calc.slowAdd(100, 200);
+    let v2 = await p2;
+    print("calc.slowAdd(100, 200) result: " + v2);
+    assert(v2 == 300);
+    
+    print("Async OOP test complete");
+}
