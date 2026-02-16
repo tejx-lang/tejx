@@ -405,8 +405,13 @@ impl TypeChecker {
                           self.define_with_params("remove".to_string(), "function".to_string(), vec!["string".to_string()]);
                           self.define_with_params("exists".to_string(), "function".to_string(), vec!["string".to_string()]);
                       } else if source == "std:time" {
-                          self.define_with_params("now".to_string(), "function".to_string(), Vec::new());
-                          self.define_with_params("sleep".to_string(), "function".to_string(), vec!["int32".to_string()]);
+                          self.define_with_params("now".to_string(), "float64".to_string(), Vec::new());
+                          self.define_with_params("sleep".to_string(), "void".to_string(), vec!["any".to_string()]);
+                          self.define_with_params("delay".to_string(), "Promise".to_string(), vec!["any".to_string()]);
+                          self.define_with_params("setTimeout".to_string(), "any".to_string(), vec!["any".to_string(), "any".to_string()]);
+                          self.define_with_params("setInterval".to_string(), "any".to_string(), vec!["any".to_string(), "any".to_string()]);
+                          self.define_with_params("clearTimeout".to_string(), "void".to_string(), vec!["any".to_string()]);
+                          self.define_with_params("clearInterval".to_string(), "void".to_string(), vec!["any".to_string()]);
                       } else if source == "std:os" {
                           self.define_with_params("args".to_string(), "function".to_string(), Vec::new());
                       } else if source == "std:collections" {
@@ -1068,8 +1073,13 @@ impl TypeChecker {
                           self.define_with_params("remove".to_string(), "function".to_string(), vec!["string".to_string()]);
                           self.define_with_params("exists".to_string(), "function".to_string(), vec!["string".to_string()]);
                       } else if source == "std:time" {
-                          self.define_with_params("now".to_string(), "function".to_string(), Vec::new());
-                          self.define_with_params("sleep".to_string(), "function".to_string(), vec!["int32".to_string()]);
+                          self.define_with_params("now".to_string(), "float64".to_string(), Vec::new());
+                          self.define_with_params("sleep".to_string(), "void".to_string(), vec!["any".to_string()]);
+                          self.define_with_params("delay".to_string(), "Promise".to_string(), vec!["any".to_string()]);
+                          self.define_with_params("setTimeout".to_string(), "any".to_string(), vec!["any".to_string(), "any".to_string()]);
+                          self.define_with_params("setInterval".to_string(), "any".to_string(), vec!["any".to_string(), "any".to_string()]);
+                          self.define_with_params("clearTimeout".to_string(), "void".to_string(), vec!["any".to_string()]);
+                          self.define_with_params("clearInterval".to_string(), "void".to_string(), vec!["any".to_string()]);
                       } else if source == "std:os" {
                           self.define_with_params("args".to_string(), "function".to_string(), Vec::new());
                       } else if source == "std:collections" {

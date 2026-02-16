@@ -1,0 +1,27 @@
+// tests/timer_test.tx
+import { setTimeout, setInterval, clearInterval, clearTimeout } from "std:time";
+
+function timeoutCallback() {
+    print("Timeout executed!");
+}
+
+function intervalCallback() {
+    print("Interval executed!");
+}
+
+async function main() {
+    print("Starting timers...");
+    
+    setTimeout(timeoutCallback, 500);
+    
+    let intervalId = setInterval(intervalCallback, 200);
+    
+    await delay(1000); // delay is already implemented and works with the event loop
+    
+    clearInterval(intervalId);
+    print("Interval cleared.");
+    
+    print("Timers test complete.");
+}
+
+main();

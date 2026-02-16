@@ -18,6 +18,7 @@ pub mod runtime {
     pub use super::a_new;
     pub use super::Array_push;
     pub use super::ACTIVE_ASYNC_OPS;
+    pub use super::tejx_enqueue_task;
 }
 
 #[path = "stdlib/mod.rs"]
