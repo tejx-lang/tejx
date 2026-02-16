@@ -36,3 +36,5 @@ function main() {
     let arr2: int64[5];
     console.log("sizeof int64[5]: " + sizeof(arr2)); // 40
 }
+
+main();

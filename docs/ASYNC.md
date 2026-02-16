@@ -1,142 +1,92 @@
 # Async/Await Implementation in NovaJs
 
-This document details the implementation of `async` and `await` in NovaJs. It explains the runtime primitives, how the compiler transforms async code, and provides examples of usage.
+This document details the transition of NovaJs from a multi-threaded blocking model to a **single-threaded event loop** architecture, similar to modern execution environments like Node.js or browsers.
 
 ## 1. Runtime Architecture
 
-NovaJs implements asynchronous programming using a **blocking thread model** backed by native OS threads. This is different from the event-loop model found in JavaScript (Node.js/Browser) but allows for true parallelism.
+NovaJs now utilizes a central **Event Queue** to manage asynchronous tasks. All `async` function execution and promise resolutions are coordinated through this loop on the main thread.
 
-### The `Promise` Primitive
+### Event Loop Components (`src/runtime.rs`)
 
-The core primitive is the `Promise`, defined in `src/runtime.rs`. It is a thread-safe wrapper around a Mutex and a Condition Variable.
+- **`Task`**: A simple structure representing a deferred function call.
+  ```rust
+  struct Task {
+      func: i64, // Function pointer
+      arg: i64,  // Argument (usually a heap-boxed array)
+  }
+  ```
+- **`EVENT_QUEUE`**: A global `VecDeque<Task>` protected by a `Mutex`.
+- **`ACTIVE_ASYNC_OPS`**: An atomic counter (`AtomicI64`) that tracks pending background operations (e.g., I/O, timers). The event loop continues running as long as this counter is greater than zero.
 
-```rust
-// src/runtime.rs
-pub enum PromiseState {
-    Pending,
-    Resolved(i64),   // Value ID
-    Rejected(i64),   // Error Value ID
-}
+### Core Runtime Functions
 
-pub enum TaggedValue {
-    // ...
-    Promise(Arc<(Mutex<PromiseState>, Condvar)>),
-}
-```
-
-### Runtime Functions
-
-The runtime exposes the following C-compatible functions for the compiler and standard library:
-
-- **`Promise_new(callback: i64)`**: Creates a new pending Promise.
-- **`Promise_resolve(val: i64)`**: Creates a Promise resolved with `val`.
-- **`Promise_reject(reason: i64)`**: Creates a Promise rejected with `reason`.
-- **`__await(val: i64)`**: The implementation of the `await` keyword.
-- **`Promise_all(args_id: i64)`**: Creates a Promise that resolves when all input promises resolve.
+- **`tejx_enqueue_task(func, arg)`**: Pushes a new task to the queue.
+- **`tejx_run_event_loop()`**: The main runner loop. It processes tasks from the queue sequentially. If the queue is empty but `ACTIVE_ASYNC_OPS > 0`, it waits (sleeps) for background operations to complete and potentially queue new tasks.
+- **`tejx_inc_async_ops()` / `tejx_dec_async_ops()`**: Used by the standard library to signal the start and end of background work.
 
 ## 2. Implementation Logic
 
 ### `async` Functions
 
-When you declare a function as `async`, the compiler transforms it into a function that returns a `Promise`.
+When the compiler lowers an `async` function, it generates a "worker" function and a "wrapper" function.
 
-**Source:**
+**Original Source:**
 
 ```typescript
-async function heavyComputation(x) {
-  return x * 2;
+async function fetchData(id) {
+  return "Data_" + id;
 }
 ```
 
-**Conceptual Lowering:**
-Since `await` is blocking, strict async functions in NovaJs are often wrapper functions that spawn a thread to execute their body, returning a Promise immediately.
+**Lowering Transformation:**
 
-```rust
-// Conceptual runtime logic for an async function call
-fn heavyComputation_async(x: i64) -> i64 { // returns Promise ID
-    let p = Promise_new(0);
-    thread::spawn(move || {
-        let result = x * 2;
-        __resolve_promise(p, result);
-    });
-    return p;
-}
-```
+1. **Worker**: Contains the original function body, wraps it in a try-catch, and ensures the promise is resolved or rejected. It also decrements `ACTIVE_ASYNC_OPS` upon completion.
+2. **Wrapper**:
+   - Creates a new `Promise`.
+   - Increments `ACTIVE_ASYNC_OPS`.
+   - Enqueues the worker function call using `tejx_enqueue_task`.
+   - Returns the `Promise` immediately.
 
 ### `await` Expression
 
-The `await` keyword is lowered to a call to the `__await` runtime intrinsic.
-
-**Source:**
-
-```typescript
-let result = await promise;
-```
-
-**Implementation (`src/runtime.rs`):**
-The `__await` function blocks the **current OS thread** until the promise state changes to `Resolved` or `Rejected`.
+The `await` keyword is lowered to a call to the `__await` runtime intrinsic. Unlike a purely blocking model, the new `__await` is **Event Loop Aware**:
 
 ```rust
 fn await_impl(val: i64) -> Result<i64, i64> {
-    // 1. Get the Promise from the heap
-    // 2. Lock the mutex
-    // 3. Loop while Pending:
-    //      state = cvar.wait(state)
-    // 4. Return value or error
+    // ... setup ...
+    loop {
+        // 1. Check if the promise is resolved/rejected
+        // 2. If Pending:
+        //    a. If EVENT_QUEUE is empty, wait for a short timeout on the Promise's Condvar.
+        //    b. Process ONE task from the EVENT_QUEUE.
+    }
 }
 ```
 
-### `Promise.all`
+This allows the program to continue processing other queued tasks while waiting for a specific promise to resolve, preventing deadlocks and maintaining responsiveness.
 
-`Promise.all` is implemented by spawning a coordinator thread that invokes `__await` on each promise in sequence (or simply correctly waits for them). In the current implementation, it spawns a thread that iterates and waits.
+## 3. Standard Library Integration
 
-## 3. Example Usage
+Background operations (I/O, timers) still use native threads for waiting, but their completion is signaled back to the event loop.
 
-Here is an example of valid NovaJs code utilizing the async/await features (once enabled in the parser).
+- **Networking (`net.rs`)**: Async requests increment the counter before spawning a background thread and decrement it when the response is received and the promise is resolved.
+- **Timers (`time.rs`)**: `delay(ms)` increments the counter, sleeps in a background thread, and decrements the counter after resolving the promise.
 
-```typescript
-// Define an async function (simulated)
-// In reality, async keyword handles the wrapping.
-function performTask(id) {
-  print("Starting task " + id);
-  // Simulate work or return a value
-  return id * 10;
-}
+## 4. Program Lifecycle
 
-async function main() {
-  print("Main started");
+The event loop is automatically started at the end of the `tejx_main` function. This ensures that even if the top-level script finishes, the process stays alive until all queued tasks and background operations are completed.
 
-  // 1. Create a promise (async execution)
-  // Note: In strict NovaJs, 'async' keyword does the thread spawning.
-  // Use Thread.spawn explicitly if you need manual control.
-  let p1 = Thread.spawn(performTask, 1);
-  let p2 = Thread.spawn(performTask, 2);
+## 5. Comparison
 
-  print("Tasks spawned, waiting...");
+| Feature         | Old NovaJs Model            | New Event Loop Model          | Node.js                  |
+| --------------- | --------------------------- | ----------------------------- | ------------------------ |
+| **Concurrency** | One thread per `async` call | Single-threaded (Main)        | Single-threaded (Main)   |
+| **Await**       | Blocks OS thread entirely   | Processes queue while waiting | Suspends (State machine) |
+| **I/O**         | Native blocking             | Native async/threaded         | Native async (libuv)     |
+| **Overhead**    | High (Native stacks)        | Low (Queue objects)           | Low (State machine)      |
 
-  // 2. Await the results (Blocks main thread)
-  let r1 = await p1;
-  let r2 = await p2;
+## 6. Current Improvements
 
-  print("Result 1: " + r1);
-  print("Result 2: " + r2);
-}
-
-main();
-```
-
-## 4. Comparisons
-
-| Feature | NovaJs | Node.js |
-|BC|---|---|
-| **Model** | Thread-based (Blocking) | Event Loop (Non-blocking) |
-| **Concurrency** | True Parallelism | Single Threaded |
-| **Await** | Blocks OS Thread | Suspends Coroutine |
-| **Overhead** | High (Stack per task) | Low (State machine) |
-
-## 5. Current Limitation
-
-The `async/await` syntax is currently disabled in `src/parser.rs` with the error `async/await is disabled`. To enable it:
-
-1.  Remove the error check in `Parser::parse_function_declaration`.
-2.  Ensure `MIRLowering` correctly handles `Expression::Await`.
+- **Reliability**: No more race conditions from multiple threads accessing the same local scopes (unless explicitly using `Thread.spawn`).
+- **Standardization**: Behaves more like traditional JavaScript environments, making it easier to port code.
+- **Scalability**: Can handle significantly more concurrent "tasks" as they are just pointers in a queue rather than full OS threads.

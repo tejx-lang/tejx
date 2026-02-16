@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::runtime::{Promise_new, __resolve_promise, rt_box_number, HEAP, TaggedValue};
+use std::sync::atomic::Ordering;
+use crate::runtime::{Promise_new, __resolve_promise, rt_box_number, HEAP, TaggedValue, ACTIVE_ASYNC_OPS};
 
 // --- Exports ---
 
@@ -51,9 +52,11 @@ pub unsafe extern "C" fn std_time_delay(ms_id: i64) -> i64 {
     let ms = unbox_ms(ms_id);
     let pid = Promise_new(0);
     
+    ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(ms));
         __resolve_promise(pid, 0);
+        ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
     });
     
     pid

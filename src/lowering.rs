@@ -450,7 +450,19 @@ impl Lowering {
             name: "tejx_main".to_string(),
             params: vec![],
             _return_type: TejxType::Int32,
-            body: Box::new(main_body),
+            body: Box::new(HIRStatement::Block {
+                statements: vec![
+                    main_body,
+                    HIRStatement::ExpressionStmt {
+                        expr: HIRExpression::Call {
+                            callee: "tejx_run_event_loop".to_string(),
+                            args: vec![],
+                            ty: TejxType::Void,
+                        }
+                    },
+                    HIRStatement::Return { value: Some(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }) }
+                ]
+            }),
         });
 
         let mut signatures = HashMap::new();
@@ -468,6 +480,10 @@ impl Lowering {
         signatures.insert("__resolve_promise".to_string(), vec![TejxType::Any, TejxType::Any]);
         signatures.insert("__reject_promise".to_string(), vec![TejxType::Any, TejxType::Any]);
         signatures.insert("Thread_new".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("tejx_enqueue_task".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("tejx_inc_async_ops".to_string(), vec![]);
+        signatures.insert("tejx_dec_async_ops".to_string(), vec![]);
+        signatures.insert("tejx_run_event_loop".to_string(), vec![]);
         signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
         signatures.insert("rt_sleep".to_string(), vec![TejxType::Any]);
 
@@ -607,6 +623,13 @@ impl Lowering {
                         ],
                         ty: TejxType::Void,
                     }
+                },
+                HIRStatement::ExpressionStmt {
+                    expr: HIRExpression::Call {
+                        callee: "tejx_dec_async_ops".to_string(),
+                        args: vec![],
+                        ty: TejxType::Void,
+                    }
                 }
             ]
         };
@@ -620,6 +643,13 @@ impl Lowering {
                             HIRExpression::Variable { name: promise_id_var.clone(), ty: TejxType::Any },
                             HIRExpression::Variable { name: "err".to_string(), ty: TejxType::Any },
                         ],
+                        ty: TejxType::Void,
+                    }
+                },
+                HIRStatement::ExpressionStmt {
+                    expr: HIRExpression::Call {
+                        callee: "tejx_dec_async_ops".to_string(),
+                        args: vec![],
                         ty: TejxType::Void,
                     }
                 }
@@ -682,10 +712,19 @@ impl Lowering {
             _is_const: false,
         });
 
-        // Thread_new(worker_ptr, args);
+        // tejx_inc_async_ops();
         wrapper_stmts.push(HIRStatement::ExpressionStmt {
             expr: HIRExpression::Call {
-                callee: "Thread_new".to_string(),
+                callee: "tejx_inc_async_ops".to_string(),
+                args: vec![],
+                ty: TejxType::Void,
+            }
+        });
+
+        // tejx_enqueue_task(worker_ptr, args);
+        wrapper_stmts.push(HIRStatement::ExpressionStmt {
+            expr: HIRExpression::Call {
+                callee: "tejx_enqueue_task".to_string(),
                 args: vec![
                     HIRExpression::Literal { value: format!("@{}", worker_name), ty: TejxType::Any }, // @ prefix for function pointer literal in our IR
                     HIRExpression::Variable { name: args_var, ty: TejxType::Any },
@@ -1252,6 +1291,13 @@ impl Lowering {
                                 HIRExpression::Variable { name: p_id.clone(), ty: TejxType::Any },
                                 val.clone().unwrap_or(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any }),
                             ],
+                            ty: TejxType::Void,
+                        }
+                    });
+                    stmts.push(HIRStatement::ExpressionStmt {
+                        expr: HIRExpression::Call {
+                            callee: "tejx_dec_async_ops".to_string(),
+                            args: vec![],
                             ty: TejxType::Void,
                         }
                     });

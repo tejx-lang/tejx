@@ -17,14 +17,23 @@ pub mod runtime {
     pub use super::__resolve_promise;
     pub use super::a_new;
     pub use super::Array_push;
+    pub use super::ACTIVE_ASYNC_OPS;
 }
 
 #[path = "stdlib/mod.rs"]
 pub mod stdlib;
 use std::thread;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, Arc, Condvar, LazyLock};
 use std::sync::atomic::{AtomicI64, Ordering};
+
+struct Task {
+    func: i64,
+    arg: i64,
+}
+
+static EVENT_QUEUE: LazyLock<Mutex<VecDeque<Task>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+pub static ACTIVE_ASYNC_OPS: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Debug, Clone)]
 pub enum PromiseState {
@@ -1288,39 +1297,47 @@ fn await_impl(val: i64) -> Result<i64, i64> {
         drop(heap); 
 
         let (lock, cvar) = &*p_clone;
-
-        let mut state = lock.lock().unwrap();
         let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
             use std::io::Write;
             let _ = writeln!(f, "Awaiting promise {}...", val);
         });
         loop {
-            match &*state {
-                PromiseState::Pending => {
-                    state = cvar.wait(state).unwrap();
+            {
+                let mut state = lock.lock().unwrap();
+                match &*state {
+                    PromiseState::Resolved(res) => return Ok(*res),
+                    PromiseState::Rejected(err) => return Err(*err),
+                    PromiseState::Pending => {
+                        // If no tasks, we wait on the condvar with a timeout to allow checking the queue
+                        // or other conditions.
+                        let task_exists = {
+                            let queue = EVENT_QUEUE.lock().unwrap();
+                            !queue.is_empty()
+                        };
+                        
+                        if !task_exists {
+                             state = cvar.wait_timeout(state, std::time::Duration::from_millis(10)).unwrap().0;
+                        }
+                    }
                 }
-                PromiseState::Resolved(v) => {
-                    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                        use std::io::Write;
-                        let _ = writeln!(f, "Promise {} resolved with {}", val, *v);
-                    });
-                    return Ok(*v);
-                }
-                PromiseState::Rejected(r) => {
-                    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                        use std::io::Write;
-                        let _ = writeln!(f, "Promise {} rejected with {}", val, *r);
-                    });
-                    return Err(*r);
+            }
+
+            // Process one task from the queue to maintain single-threaded execution
+            let task = {
+                let mut queue = EVENT_QUEUE.lock().unwrap();
+                queue.pop_front()
+            };
+
+            if let Some(t) = task {
+                unsafe {
+                    let f: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute(t.func);
+                    f(t.arg);
                 }
             }
         }
+    } else {
+        Ok(val) // Not a promise, return as is
     }
-    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-        use std::io::Write;
-        let _ = writeln!(f, "Value {} is not a promise, returning as is.", val);
-    });
-    Ok(val)
 }
 
 #[unsafe(no_mangle)] 
@@ -3272,6 +3289,44 @@ pub unsafe extern "C" fn trimmed_concat(s_id: i64, other_id: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_string_concat(s_id: i64, other_id: i64) -> i64 {
     trimmed_concat(s_id, other_id)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tejx_enqueue_task(func: i64, arg: i64) {
+    let mut queue = EVENT_QUEUE.lock().unwrap();
+    queue.push_back(Task { func, arg });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn tejx_inc_async_ops() {
+    ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn tejx_dec_async_ops() {
+    ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tejx_run_event_loop() {
+    loop {
+        let task = {
+            let mut queue = EVENT_QUEUE.lock().unwrap();
+            queue.pop_front()
+        };
+
+        if let Some(t) = task {
+            let f: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute(t.func);
+            f(t.arg);
+        } else {
+            // No tasks. Check if we have background ops.
+            if ACTIVE_ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
+                break;
+            }
+            // Sleep a bit to avoid busy wait
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
 
 // === MISSING STUBS FOR FEATURE TESTS ===

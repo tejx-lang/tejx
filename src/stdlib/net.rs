@@ -3,7 +3,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, Condvar};
-use crate::runtime::{HEAP, TaggedValue, stringify_value, PromiseState};
+use std::sync::atomic::Ordering;
+use crate::runtime::{HEAP, TaggedValue, stringify_value, PromiseState, ACTIVE_ASYNC_OPS};
 
 pub fn exports() -> HashSet<String> {
     let mut s = HashSet::new();
@@ -130,6 +131,7 @@ fn std_net_http_request_async(method: String, url: String, body: Option<String>)
         heap.alloc(TaggedValue::Promise(promise))
     };
     
+    ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
     thread::spawn(move || {
         let result = std_net_http_request_internal(&method, &url, body.as_deref());
         let lock: &Mutex<PromiseState> = &p_clone.0;
@@ -141,6 +143,7 @@ fn std_net_http_request_async(method: String, url: String, body: Option<String>)
             *state = PromiseState::Rejected(0);
         }
         cvar.notify_all();
+        ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
     });
     
     promise_id

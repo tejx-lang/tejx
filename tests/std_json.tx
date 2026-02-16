@@ -10,3 +10,5 @@ function main() {
     print("Parsed value (dummy 42 for now):");
     print(parsed);
 }
+
+main();
