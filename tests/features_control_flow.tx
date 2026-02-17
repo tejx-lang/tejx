@@ -13,57 +13,7 @@ function checkValue(n: int32): void {
     }
 }
 
-checkValue(15);
-checkValue(8);
-checkValue(3);
-
-// 2. Loops
-print("\n--- Loops ---");
-
-// While Loop
-print("While Loop:");
-let idx = 0;
-while (idx < 3) {
-    print("  idx: Expected: < 3, Actual: ", idx);
-    idx = idx + 1;
-}
-
-// For Loop (C-Style)
-print("For Loop:");
-for (let j = 0; j < 3; j = j + 1) {
-    if (j == 1) continue; // Test continue
-    print("  j: Expected: 0 or 2, Actual: ", j);
-}
-
-// For-Of Loop (using forEach as for-of on Var (inferred) is currently limited)
-print("For-Of Loop:");
-let items = ["A", "B", "C"];
-items.forEach(item => {
-    print("  Item: Expected: A|B|C, Actual: ", item);
-});
-
-// Break Statement
-print("Break Test:");
-let k1 = 0;
-while (true) {
-    if (k1 >= 3) break;
-    print("  k1: Expected: < 3, Actual: ", k1);
-    k1 = k1 + 1;
-}
-
-// Nested Loop Break
-print("Nested Loop Break Test:");
-for(let outer = 0; outer < 3; outer = outer + 1) {
-    print("Outer: ", outer);
-    for(let inner = 0; inner < 3; inner = inner + 1) {
-        if (inner == 1) break; // Should break inner only
-        print("  Inner (should be 0): ", inner);
-    }
-}
-
-
 // 3. Switch Statement
-print("\n--- Switch ---");
 function getFruitColor(fruit: string): string {
     switch (fruit) {
         case "Apple":
@@ -77,139 +27,192 @@ function getFruitColor(fruit: string): string {
     }
 }
 
-print("Apple: Expected: Red, Actual: ", getFruitColor("Apple"));
-print("Banana: Expected: Yellow, Actual: ", getFruitColor("Banana"));
-print("Kiwi: Expected: Unknown, Actual: ", getFruitColor("Kiwi"));
+function main() {
+    checkValue(15);
+    checkValue(8);
+    checkValue(3);
 
-let sumVal = 0;
-// Test +=
-sumVal += 10;
-print("Add 10: Expected: 10, Actual: ", sumVal);
+    // 2. Loops
+    print("\n--- Loops ---");
 
-sumVal -= 5;
-print("Sub 5: Expected: 5, Actual: ", sumVal);
-
-sumVal *= 2;
-print("Mul 2: Expected: 10, Actual: ", sumVal);
-
-sumVal /= 2;
-print("Div 2: Expected: 5, Actual: ", sumVal);
-
-// Test ++ / --
-let xVal = 0;
-++xVal;
-print("Inc: Expected: 1, Actual: ", xVal);
---xVal;
-print("Dec: Expected: 0, Actual: ", xVal);
-
-// Test Break
-print("--- Break Test ---");
-for (let i = 0; i < 10; i = i + 1) {
-    if (i == 5) {
-        break;
+    // While Loop
+    print("While Loop:");
+    let idx = 0;
+    while (idx < 3) {
+        print("  idx: Expected: < 3, Actual: ", idx);
+        idx = idx + 1;
     }
-    print("i (break at 5): Expected: < 5, Actual: ", i);
-}
 
-// Test Continue
-print("--- Continue Test ---");
-for (let j2 = 0; j2 < 5; j2 = j2 + 1) {
-    if (j2 == 2) {
-        continue;
+    // For Loop (C-Style)
+    print("For Loop:");
+    for (let j = 0; j < 3; j = j + 1) {
+        if (j == 1) continue; // Test continue
+        print("  j: Expected: 0 or 2, Actual: ", j);
     }
-    print("j (skip 2): Expected: != 2, Actual: ", j2);
-}
 
-// Test While Break
-print("--- While Break Test ---");
-let k = 0;
-while (k < 10) {
-    if (k == 3) {
-        break;
+    // For-Of Loop (using forEach as for-of on Var (inferred) is currently limited)
+    print("For-Of Loop:");
+    let items = ["A", "B", "C"];
+    items.forEach(item => {
+        print("  Item: Expected: A|B|C, Actual: ", item);
+    });
+
+    // Break Statement
+    print("Break Test:");
+    let k1 = 0;
+    while (true) {
+        if (k1 >= 3) break;
+        print("  k1: Expected: < 3, Actual: ", k1);
+        k1 = k1 + 1;
     }
-    print("k (break at 3): Expected: < 3, Actual: ", k);
-    k = k + 1;
+
+    // Nested Loop Break
+    print("Nested Loop Break Test:");
+    for(let outer = 0; outer < 3; outer = outer + 1) {
+        print("Outer: ", outer);
+        for(let inner = 0; inner < 3; inner = inner + 1) {
+            if (inner == 1) break; // Should break inner only
+            print("  Inner (should be 0): ", inner);
+        }
+    }
+
+
+    print("\n--- Switch ---");
+
+    print("Apple: Expected: Red, Actual: ", getFruitColor("Apple"));
+    print("Banana: Expected: Yellow, Actual: ", getFruitColor("Banana"));
+    print("Kiwi: Expected: Unknown, Actual: ", getFruitColor("Kiwi"));
+
+    let sumVal = 0;
+    // Test +=
+    sumVal += 10;
+    print("Add 10: Expected: 10, Actual: ", sumVal);
+
+    sumVal -= 5;
+    print("Sub 5: Expected: 5, Actual: ", sumVal);
+
+    sumVal *= 2;
+    print("Mul 2: Expected: 10, Actual: ", sumVal);
+
+    sumVal /= 2;
+    print("Div 2: Expected: 5, Actual: ", sumVal);
+
+    // Test ++ / --
+    let xVal = 0;
+    ++xVal;
+    print("Inc: Expected: 1, Actual: ", xVal);
+    --xVal;
+    print("Dec: Expected: 0, Actual: ", xVal);
+
+    // Test Break
+    print("--- Break Test ---");
+    for (let i = 0; i < 10; i = i + 1) {
+        if (i == 5) {
+            break;
+        }
+        print("i (break at 5): Expected: < 5, Actual: ", i);
+    }
+
+    // Test Continue
+    print("--- Continue Test ---");
+    for (let j2 = 0; j2 < 5; j2 = j2 + 1) {
+        if (j2 == 2) {
+            continue;
+        }
+        print("j (skip 2): Expected: != 2, Actual: ", j2);
+    }
+
+    // Test While Break
+    print("--- While Break Test ---");
+    let k = 0;
+    while (k < 10) {
+        if (k == 3) {
+            break;
+        }
+        print("k (break at 3): Expected: < 3, Actual: ", k);
+        k = k + 1;
+    }
+
+    print("Testing for-of loop (as forEach)...");
+
+    let numbers = [1, 2, 3, 4, 5];
+    let sum = 0;
+
+    for (let n of numbers) {
+        print("Number: Expected: 1-5, Actual: ", n);
+        sum = sum + n;
+    }
+
+    print("Sum: Expected: 15, Actual: ", sum);
+
+    print("For-of loop test complete!");
+
+    let a = true;
+    let b = false;
+    let c = true;
+
+    // AND
+    if (a && c) {
+        print("a && c: Expected: true, Actual: true");
+    } else {
+        print("a && c: Expected: true, Actual: false");
+    }
+
+    // OR
+    if (a || b) {
+        print("a || b: Expected: true, Actual: true");
+    }
+
+    if (b || b) {
+        print("b || b: Expected: false, Actual: true");
+    } else {
+        print("b || b: Expected: false, Actual: false");
+    }
+
+    // Complex
+    if ((a && b) || c) {
+        print("(a && b) || c: Expected: true, Actual: true");
+    }
+
+    // Not Equal
+    let x2 = 10;
+    if (x2 != 20) {
+        print("x != 20: Expected: true, Actual: true");
+    }
+
+    // Short-circuit Test
+    if (true || (1/0 == 0)) {
+       print("Short-circuit OR: Expected: No crash, Actual: No crash");
+    }
+
+    // Test Compound Assignments
+    let val = 10;
+    val += 5; // 15
+    print("val += 5: Expected: 15, Actual: ", val);
+    val -= 5; // 10
+    print("val -= 5: Expected: 10, Actual: ", val);
+    val *= 2; // 20
+    print("val *= 2: Expected: 20, Actual: ", val);
+    val /= 2; // 10
+    print("val /= 2: Expected: 10, Actual: ", val);
+
+    // Test Logical Operators
+    let t = true;
+    let f = false;
+    if (t && t) { print("true && true: Expected: success, Actual: success"); }
+    if (t || f) { print("true || false: Expected: success, Actual: success"); }
+    if (f || t) { print("false || true: Expected: success, Actual: success"); }
+    if (f && t) { print("FAIL: false && t (unexpected)"); } else { print("false && t: Expected: false, Actual: false"); }
+
+    let logicSum = 0;
+    // Short circuit check
+    if (true || (logicSum += 1) > 0) {
+        print("Short-circuit OR: Expected: worked, Actual: worked");
+    }
+    if (logicSum == 0) { print("logicSum (OR): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (OR) is ", logicSum); }
+
+    if (false && (logicSum += 1) > 0) {
+        print("FAIL: Short-circuit AND (unexpected)");
+    }
+    if (logicSum == 0) { print("logicSum (AND): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (AND) is ", logicSum); }
 }
-
-print("Testing for-of loop (as forEach)...");
-
-let numbers = [1, 2, 3, 4, 5];
-let sum = 0;
-
-for (let n of numbers) {
-    print("Number: Expected: 1-5, Actual: ", n);
-    sum = sum + n;
-}
-
-print("Sum: Expected: 15, Actual: ", sum);
-
-print("For-of loop test complete!");
-
-let a = true;
-let b = false;
-let c = true;
-
-// AND
-if (a && c) {
-    print("a && c: Expected: true, Actual: true");
-} else {
-    print("a && c: Expected: true, Actual: false");
-}
-
-// OR
-if (a || b) {
-    print("a || b: Expected: true, Actual: true");
-}
-
-if (b || b) {
-    print("b || b: Expected: false, Actual: true");
-} else {
-    print("b || b: Expected: false, Actual: false");
-}
-
-// Complex
-if ((a && b) || c) {
-    print("(a && b) || c: Expected: true, Actual: true");
-}
-
-// Not Equal
-let x2 = 10;
-if (x2 != 20) {
-    print("x != 20: Expected: true, Actual: true");
-}
-
-// Short-circuit Test
-if (true || (1/0 == 0)) {
-   print("Short-circuit OR: Expected: No crash, Actual: No crash");
-}
-
-// Test Compound Assignments
-let val = 10;
-val += 5; // 15
-print("val += 5: Expected: 15, Actual: ", val);
-val -= 5; // 10
-print("val -= 5: Expected: 10, Actual: ", val);
-val *= 2; // 20
-print("val *= 2: Expected: 20, Actual: ", val);
-val /= 2; // 10
-print("val /= 2: Expected: 10, Actual: ", val);
-
-// Test Logical Operators
-let t = true;
-let f = false;
-if (t && t) { print("true && true: Expected: success, Actual: success"); }
-if (t || f) { print("true || false: Expected: success, Actual: success"); }
-if (f || t) { print("false || true: Expected: success, Actual: success"); }
-if (f && t) { print("FAIL: false && t (unexpected)"); } else { print("false && t: Expected: false, Actual: false"); }
-
-let logicSum = 0;
-// Short circuit check
-if (true || (logicSum += 1) > 0) {
-    print("Short-circuit OR: Expected: worked, Actual: worked");
-}
-if (logicSum == 0) { print("logicSum (OR): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (OR) is ", logicSum); }
-
-if (false && (logicSum += 1) > 0) {
-    print("FAIL: Short-circuit AND (unexpected)");
-}
-if (logicSum == 0) { print("logicSum (AND): Expected: 0, Actual: ", logicSum); } else { print("FAIL: logicSum (AND) is ", logicSum); }

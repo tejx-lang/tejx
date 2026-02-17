@@ -6,4 +6,6 @@ function infinite(n: int) {
     infinite(n + 1);
 }
 
-infinite(1);
+function main() {
+    infinite(1);
+}

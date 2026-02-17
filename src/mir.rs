@@ -24,6 +24,7 @@ impl MIRValue {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_name(&self) -> String {
         match self {
             MIRValue::Variable { name, .. } => name.clone(),
@@ -69,6 +70,7 @@ pub enum MIRInstruction {
     ObjectLiteral {
         dst: String,
         entries: Vec<(String, MIRValue)>,
+        #[allow(dead_code)]
         ty: Option<TejxType>,
     },
     ArrayLiteral {

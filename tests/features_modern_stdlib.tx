@@ -1,4 +1,4 @@
-function runtest(): void {
+function main(): void {
     print("--- Array Methods ---");
     let arr = [1, 2, 3, 4, 5];
 
@@ -75,5 +75,3 @@ function runtest(): void {
     print("Sliced[2]: Expected: 4, Actual: ", sliced[2]);
 
 }
-
-runtest();

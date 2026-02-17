@@ -1,8 +1,10 @@
 // EXPECTED: COMPILE_ERROR
 // Description: Verify that binary operators (like '-') cannot be applied to strings.
 
-let a = "hello";
-let b = "world";
-let c = a - b; // Error: '-' cannot be applied to strings
-
-print(c);
+function main() {
+    let a = "hello";
+    let b = "world";
+    let c = a - b; // Error: '-' cannot be applied to strings
+    
+    print(c);
+}

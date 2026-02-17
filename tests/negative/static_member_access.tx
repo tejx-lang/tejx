@@ -6,6 +6,8 @@ class Config {
     name: string = "Nova";
 }
 
-let c = new Config();
-print(c.version); // Error: version is static
-print(Config.name); // Error: name is an instance property
+function main() {
+    let c = new Config();
+    print(c.version); // Error: version is static
+    print(Config.name); // Error: name is an instance property
+}

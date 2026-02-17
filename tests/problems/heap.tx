@@ -17,5 +17,3 @@ function main(): void {
   let max3 = pq.extractMax();
   print("Extract Max 3: Expected: 10, Actual: ", max3);
 }
-
-main();

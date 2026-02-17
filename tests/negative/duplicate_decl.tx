@@ -1,7 +1,9 @@
 // EXPECTED: COMPILE_ERROR
 // Description: Verify that redeclaring a variable in the same scope causes a compile error.
 
-let x = 10;
-let x = 20; // Error: x already defined
-
-print(x);
+function main() {
+    let x = 10;
+    let x = 20; // Error: x already defined
+    
+    print(x);
+}

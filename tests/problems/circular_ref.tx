@@ -10,6 +10,9 @@ function leakTest(): void {
   b.friend = a;
   print("Cycle created. Function exiting (GC should start).");
 }
-print("Constructing circular ref...");
-leakTest();
-print("Done.");
+
+function main() {
+  print("Constructing circular ref...");
+  leakTest();
+  print("Done.");
+}

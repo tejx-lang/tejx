@@ -9,4 +9,6 @@ function test() {
     print(blockScopedVar);
 }
 
-test();
+function main() {
+    test();
+}

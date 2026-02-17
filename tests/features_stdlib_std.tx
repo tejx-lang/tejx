@@ -5,108 +5,110 @@ import std:fs;
 import std:os;
 import std:time;
 
-print("=== NovaJs Stdlib Comprehensive Test Suite ===");
+function main() {
+    print("=== NovaJs Stdlib Comprehensive Test Suite ===");
 
-// --- PRELUDE & CONSTANTS ---
-print("\n[1/4] Testing Prelude & Math...");
-let pi = 3.14159;
-let e = 2.718;
+    // --- PRELUDE & CONSTANTS ---
+    print("\n[1/4] Testing Prelude & Math...");
+    let pi = 3.14159;
+    let e = 2.718;
 
-// Math: Basic Arithmetic & Rounding
-print(`  abs(-42) = ${abs(-42)}`);
-assert(abs(-42) == 42);
+    // Math: Basic Arithmetic & Rounding
+    print(`  abs(-42) = ${abs(-42)}`);
+    assert(abs(-42) == 42);
 
-print(`  min(10, -5) = ${min(10, -5)}`);
-assert(min(10, -5) == -5);
+    print(`  min(10, -5) = ${min(10, -5)}`);
+    assert(min(10, -5) == -5);
 
-print(`  max(10, -5) = ${max(10, -5)}`);
-assert(max(10, -5) == 10);
+    print(`  max(10, -5) = ${max(10, -5)}`);
+    assert(max(10, -5) == 10);
 
-print(`  round(3.4) = ${round(3.4)}`);
-assert(round(3.4) == 3);
+    print(`  round(3.4) = ${round(3.4)}`);
+    assert(round(3.4) == 3);
 
-print(`  round(3.6) = ${round(3.6)}`);
-assert(round(3.6) == 4);
+    print(`  round(3.6) = ${round(3.6)}`);
+    assert(round(3.6) == 4);
 
-print(`  floor(3.9) = ${floor(3.9)}`);
-assert(floor(3.9) == 3);
+    print(`  floor(3.9) = ${floor(3.9)}`);
+    assert(floor(3.9) == 3);
 
-print(`  ceil(3.1) = ${ceil(3.1)}`);
-assert(ceil(3.1) == 4);
+    print(`  ceil(3.1) = ${ceil(3.1)}`);
+    assert(ceil(3.1) == 4);
 
-print(`  pow(2, 10) = ${pow(2, 10)}`);
-assert(pow(2, 10) == 1024);
+    print(`  pow(2, 10) = ${pow(2, 10)}`);
+    assert(pow(2, 10) == 1024);
 
-print(`  sqrt(25) = ${sqrt(25)}`);
-assert(sqrt(25) == 5);
+    print(`  sqrt(25) = ${sqrt(25)}`);
+    assert(sqrt(25) == 5);
 
-// --- FILESYSTEM ---
-print("\n[2/4] Testing Filesystem (Lifecycle)...");
-let fname = "test_lifecycle.txt";
+    // --- FILESYSTEM ---
+    print("\n[2/4] Testing Filesystem (Lifecycle)...");
+    let fname = "test_lifecycle.txt";
 
-// 1. Clean state
-if (exists(fname)) {
+    // 1. Clean state
+    if (exists(fname)) {
+        remove(fname);
+    }
+
+    // 2. Write
+    print("  Writing initial content...");
+    write(fname, "Initial Content");
+    assert(exists(fname));
+
+    // 3. Read & Verify
+    let content1 = read_to_string(fname);
+    print(`  Read content: '${content1}'`);
+    // assert(content1 == "Initial Content"); // String equality might not be fully supported in assert yet
+
+    // 4. Overwrite
+    print("  Overwriting content...");
+    write(fname, "New Content");
+
+    // 5. Read Again
+    let content2 = read_to_string(fname);
+    print(`  Read updated: '${content2}'`);
+    // assert(content2 == "New Content");
+
+    // 6. Delete
+    print("  Deleting file...");
     remove(fname);
+    if (exists(fname)) {
+        print("  FAIL: File should not exist after remove");
+        assert(0); // Fail
+    } else {
+        print("  PASS: File successfully removed");
+    }
+
+    // --- TIME ---
+    print("\n[3/4] Testing Time & Sleep...");
+    let t0 = now();
+    print(`  Start time: ${t0}`);
+
+    sleep(200); // Sleep 200ms
+
+    let t1 = now();
+    print(`  End time:   ${t1}`);
+
+    let delta = t1 - t0;
+    print(`  Delta: ${delta}ms`);
+
+    // Allow some variance (e.g., > 180ms)
+    if (delta >= 180) {
+        print("  PASS: Sleep duration valid");
+    } else {
+        print("  FAIL: Sleep returned too early");
+    }
+
+    // --- OS ---
+    print("\n[4/4] Testing OS args...");
+    let argv = args();
+    print(`  Args count: ${len(argv)}`);
+    // print args loop
+    let k = 0;
+    // while loop not fully working in all contexts, using manual check or assumption
+    if (len(argv) > 0) {
+        print("  Args available");
+    }
+
+    print("\n=== Test Suite Completed ===");
 }
-
-// 2. Write
-print("  Writing initial content...");
-write(fname, "Initial Content");
-assert(exists(fname));
-
-// 3. Read & Verify
-let content1 = read_to_string(fname);
-print(`  Read content: '${content1}'`);
-// assert(content1 == "Initial Content"); // String equality might not be fully supported in assert yet
-
-// 4. Overwrite
-print("  Overwriting content...");
-write(fname, "New Content");
-
-// 5. Read Again
-let content2 = read_to_string(fname);
-print(`  Read updated: '${content2}'`);
-// assert(content2 == "New Content");
-
-// 6. Delete
-print("  Deleting file...");
-remove(fname);
-if (exists(fname)) {
-    print("  FAIL: File should not exist after remove");
-    assert(0); // Fail
-} else {
-    print("  PASS: File successfully removed");
-}
-
-// --- TIME ---
-print("\n[3/4] Testing Time & Sleep...");
-let t0 = now();
-print(`  Start time: ${t0}`);
-
-sleep(200); // Sleep 200ms
-
-let t1 = now();
-print(`  End time:   ${t1}`);
-
-let delta = t1 - t0;
-print(`  Delta: ${delta}ms`);
-
-// Allow some variance (e.g., > 180ms)
-if (delta >= 180) {
-    print("  PASS: Sleep duration valid");
-} else {
-    print("  FAIL: Sleep returned too early");
-}
-
-// --- OS ---
-print("\n[4/4] Testing OS args...");
-let argv = args();
-print(`  Args count: ${len(argv)}`);
-// print args loop
-let i = 0;
-// while loop not fully working in all contexts, using manual check or assumption
-if (len(argv) > 0) {
-    print("  Args available");
-}
-
-print("\n=== Test Suite Completed ===");

@@ -18,5 +18,3 @@ function main(): void {
   let unique = getUniqueItems(data);
   print("Unique items count: Expected: 5, Actual: ", unique.length);
 }
-
-main();

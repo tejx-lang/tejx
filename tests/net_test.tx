@@ -54,9 +54,11 @@ function testHttpPostSync(): void {
     }
 }
 
-testTcp();
-testSyncHttp();
-testHttpPostSync();
-await testAsyncHttp();
-await testHttpsAsync();
-print("std:net tests finished.");
+async function main() {
+    testTcp();
+    testSyncHttp();
+    testHttpPostSync();
+    await testAsyncHttp();
+    await testHttpsAsync();
+    print("std:net tests finished.");
+}

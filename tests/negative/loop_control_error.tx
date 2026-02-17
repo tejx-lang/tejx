@@ -5,4 +5,6 @@ function test() {
     break; // Error: break outside of loop
 }
 
-test();
+function main() {
+    test();
+}

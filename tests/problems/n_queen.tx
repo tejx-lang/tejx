@@ -29,5 +29,11 @@ function solveNQueens(n: int): void {
       // Validating first row for 4-queens (usually . Q . . or . . Q .)
       // One solution is . Q . . / ...
       print("Board generated."); 
-  }
-}solveNQueens(4);
+}
+
+}
+
+function main() {
+  solveNQueens(4);
+}
+

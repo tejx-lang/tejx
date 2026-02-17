@@ -61,7 +61,7 @@ impl MIRLowering {
 
         // Initialize parameters as moves from argument registers - REMOVED
         // CodeGen handles this automatically by storing %__argN into the parameter alloca.
-        for (i, (pname, pty)) in params.iter().enumerate() {
+        for (_i, (pname, pty)) in params.iter().enumerate() {
             // let arg_name = format!("__arg{}", i);
             self.current_function.variables.insert(pname.clone(), pty.clone());
             /*
@@ -573,7 +573,7 @@ impl MIRLowering {
                       });
                       
                       // Initialize with constructor: f_ClassName_constructor(this, args...)
-                      let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"].contains(&class_name.as_str()); let constructor_name = if is_std_collection { format!("rt_{}_constructor", class_name) } else { format!("f_{}_constructor", class_name) };
+                      let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie", "SharedQueue"].contains(&class_name.as_str()); let constructor_name = if is_std_collection { format!("rt_{}_constructor", class_name) } else { format!("f_{}_constructor", class_name) };
                      let mut constructor_args = vec![MIRValue::Variable { 
                          name: temp.clone(), 
                          ty: TejxType::Class(class_name.clone()) 

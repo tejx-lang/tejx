@@ -9,4 +9,6 @@ class Dog {
     bark: boolean;
 }
 
-let myCat: Cat = new Dog(); // Error: Dog is not assignable to Cat
+function main() {
+    let myCat: Cat = new Dog(); // Error: Dog is not assignable to Cat
+}

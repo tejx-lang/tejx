@@ -21,4 +21,7 @@ function lcs(text1: string, text2: string): int {
   return dp[m][n];
 }
 
-print("LCS('abcde', 'ace'): Expected: 3, Actual: ", lcs("abcde", "ace"));
+
+function main() {
+  print("LCS('abcde', 'ace'): Expected: 3, Actual: ", lcs("abcde", "ace"));
+}

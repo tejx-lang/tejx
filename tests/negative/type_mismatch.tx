@@ -1,5 +1,7 @@
 // EXPECTED: COMPILE_ERROR
 // Description: Verify that primitive type mismatches in assignment are caught by the compiler.
 
-let x: int32 = 10;
-x = "Hello"; // Error: Cannot assign String to Int32
+function main() {
+    let x: int32 = 10;
+    x = "Hello"; // Error: Cannot assign String to Int32
+}

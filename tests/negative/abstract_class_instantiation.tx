@@ -1,0 +1,20 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that abstract classes cannot be instantiated directly.
+
+abstract class Shape {
+    abstract area(): float;
+}
+
+class Circle extends Shape {
+    radius: float;
+    constructor(r: float) {
+        this.radius = r;
+    }
+    area(): float {
+        return 3.14 * this.radius * this.radius;
+    }
+}
+
+function main() {
+    let s = new Shape(); // Error: Cannot instantiate abstract class
+}

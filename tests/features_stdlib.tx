@@ -24,8 +24,8 @@ function run(): void {
     let y: int32 = 10;
     let velocity: int32 = 0;
     
-    let i: int32 = 0;
-    while (i < 5) {
+    let j: int32 = 0;
+    while (j < 5) {
         velocity = velocity - 1; // Gravity
         y = y + velocity;
         
@@ -34,119 +34,123 @@ function run(): void {
             velocity = -velocity * 0.8; // Bounce with energy loss
         }
         
-        print("Step ", i, ": Expected height (descending then bounce or 0), Actual: ", round(y));
-        i = i + 1;
+        print("Step ", j, ": Expected height (descending then bounce or 0), Actual: ", round(y));
+        j = j + 1;
     }
 }
-run();
 
-print("Testing console methods...");
+function main() {
+    run();
 
-// Console methods
-print("This is a log message");
-eprint("This is a warning");
-eprint("This is an error");
+    print("Testing console methods...");
 
-// Math API
-print("min(5, 3): Expected: 3, Actual: ", min(5, 3));
-print("max(5, 3): Expected: 5, Actual: ", max(5, 3));
-print("abs(-10): Expected: 10, Actual: ", abs(-10));
-print("sqrt(16): Expected: 4, Actual: ", sqrt(16));
-print("pow(2, 8): Expected: 256, Actual: ", pow(2, 8));
-print("floor(4.7): Expected: 4.0, Actual: ", floor(4.7));
-print("ceil(4.2): Expected: 5.0, Actual: ", ceil(4.2));
-print("round(4.5): Expected: 5.0, Actual: ", round(4.5));
-print("round(4.4): Expected: 4.0, Actual: ", round(4.4));
+    // Console methods
+    print("This is a log message");
+    eprint("This is a warning");
+    eprint("This is an error");
 
-print("Console and Math test complete!");
+    // Math API
+    print("min(5, 3): Expected: 3, Actual: ", min(5, 3));
+    print("max(5, 3): Expected: 5, Actual: ", max(5, 3));
+    print("abs(-10): Expected: 10, Actual: ", abs(-10));
+    print("sqrt(16): Expected: 4, Actual: ", sqrt(16));
+    print("pow(2, 8): Expected: 256, Actual: ", pow(2, 8));
+    print("floor(4.7): Expected: 4.0, Actual: ", floor(4.7));
+    print("ceil(4.2): Expected: 5.0, Actual: ", ceil(4.2));
+    print("round(4.5): Expected: 5.0, Actual: ", round(4.5));
+    print("round(4.4): Expected: 4.0, Actual: ", round(4.4));
 
-let d = new Date();
-print("Current Time (ISO): Expected: ISO string, Actual: ", d.toISOString());
+    print("Console and Math test complete!");
 
-let t = d.getTime();
-// 6. Built-in Classes (Date, Math, etc.)
-print("\n--- Built-in Classes (Date) ---");
-let currentTime = Date.now();
-print("Current timestamp (Date.now()): ", currentTime);
-// assert(currentTime > 0); // assert is not defined in this context
-print("Timestamp: Expected: Number, Actual: ", t);
+    let d = new Date();
+    print("Current Time (ISO): Expected: ISO string, Actual: ", d.toISOString());
 
-if (currentTime >= t) {
-    print("Time flow: Expected: forward, Actual: forward");
-} else {
-    print("Time flow: Expected: forward, Actual: broken");
+    let t = d.getTime();
+    // 6. Built-in Classes (Date, Math, etc.)
+    print("\n--- Built-in Classes (Date) ---");
+    let currentTime = Date.now();
+    print("Current timestamp (Date.now()): ", currentTime);
+    // assert(currentTime > 0); // assert is not defined in this context
+    print("Timestamp: Expected: Number, Actual: ", t);
+
+    if (currentTime >= t) {
+        print("Time flow: Expected: forward, Actual: forward");
+    } else {
+        print("Time flow: Expected: forward, Actual: broken");
+    }
+
+    let obj = {
+        x: 10,
+        y: "hello",
+        z: [1, 2, 3],
+        w: { nested: true }
+    };
+
+    try{
+    let json_str = json.stringify(obj);
+
+    // Test parsing
+    let parsed = json.parse(json_str);
+    print("Parsed x: Expected: 10, Actual: ", parsed["x"]);
+    print("Parsed y: Expected: hello, Actual: ", parsed["y"]);
+    print("Parsed z length: Expected: 3, Actual: ", parsed["z"].length);
+    print("Parsed w.nested: Expected: 1/true, Actual: ", parsed["w"]["nested"]);
+    }catch(e){
+        print("Caught error: ", e);
+    }
+    // Test Globals
+    print("parseInt('123')+1: Expected: 124, Actual: ", (parseInt("123") + 1));
+    print("parseFloat('12.34')+1: Expected: 13.34, Actual: ", (parseFloat("12.34") + 1));
+    print("parseInt('abc'): Expected: 0/NaN, Actual: ", parseInt("abc"));
+
+    print("Testing Map and Set types...");
+
+    // Test Map
+    let m = new Map();
+    m.put("name", "TejX");
+    m.put("version", 1);
+
+    print("Map.has('name'): Expected: 1/true, Actual: ", m.has("name"));
+    print("Map.get('name'): Expected: TejX, Actual: ", m.at("name"));
+    print("Map.size(): Expected: 2, Actual: ", m.size());
+
+    // del not yet in std:collections, skip
+    // print("After del size: Expected: 1, Actual: ", size(m));
+
+    // Test Set
+    let setObj = new Set();
+    setObj.add(1);
+    setObj.add(2);
+    setObj.add(2);  // Duplicate
+    setObj.add(3);
+
+    print("Set.has(1): Expected: 1/true, Actual: ", setObj.has(1));
+    print("Set.has(99): Expected: 0/false, Actual: ", setObj.has(99));
+    print("Set.size(): Expected: 3, Actual: ", setObj.size());
+
+    print("Map and Set test complete!");
+
+    let strVal = "  Hello, TejX!  ";
+    print("Original String: Expected: '  Hello, TejX!  ', Actual: '", strVal, "'");
+
+    let trimmed = strVal.trim();
+    print("Trimmed: Expected: 'Hello, TejX!', Actual: ", trimmed);
+
+    let lower = trimmed.toLowerCase();
+    print("Lower: Expected: 'hello, tejx!', Actual: ", lower);
+
+    let upper = trimmed.toUpperCase();
+    print("Upper: Expected: 'HELLO, TEJX!', Actual: ", upper);
+
+    if (trimmed.startsWith("Hello")) {
+        print("startsWith('Hello'): Expected: pass, Actual: pass");
+    }
+
+    if (trimmed.endsWith("!")) {
+        print("endsWith('!'): Expected: pass, Actual: pass");
+    }
+
+    let replaced = trimmed.replace("TejX", "World");
+    print("Replaced: Expected: 'Hello, World!', Actual: ", replaced);
 }
 
-let obj = {
-    x: 10,
-    y: "hello",
-    z: [1, 2, 3],
-    w: { nested: true }
-};
-
-try{
-let json_str = json.stringify(obj);
-
-// Test parsing
-let parsed = json.parse(json_str);
-print("Parsed x: Expected: 10, Actual: ", parsed["x"]);
-print("Parsed y: Expected: hello, Actual: ", parsed["y"]);
-print("Parsed z length: Expected: 3, Actual: ", parsed["z"].length);
-print("Parsed w.nested: Expected: 1/true, Actual: ", parsed["w"]["nested"]);
-}catch(e){
-    print("Caught error: ", e);
-}
-// Test Globals
-print("parseInt('123')+1: Expected: 124, Actual: ", (parseInt("123") + 1));
-print("parseFloat('12.34')+1: Expected: 13.34, Actual: ", (parseFloat("12.34") + 1));
-print("parseInt('abc'): Expected: 0/NaN, Actual: ", parseInt("abc"));
-
-print("Testing Map and Set types...");
-
-// Test Map
-let m = new Map();
-m.put("name", "TejX");
-m.put("version", 1);
-
-print("Map.has('name'): Expected: 1/true, Actual: ", m.has("name"));
-print("Map.get('name'): Expected: TejX, Actual: ", m.at("name"));
-print("Map.size(): Expected: 2, Actual: ", m.size());
-
-// del not yet in std:collections, skip
-// print("After del size: Expected: 1, Actual: ", size(m));
-
-// Test Set
-let s = new Set();
-s.add(1);
-s.add(2);
-s.add(2);  // Duplicate
-s.add(3);
-
-print("Set.has(1): Expected: 1/true, Actual: ", s.has(1));
-print("Set.has(99): Expected: 0/false, Actual: ", s.has(99));
-print("Set.size(): Expected: 3, Actual: ", s.size());
-
-print("Map and Set test complete!");
-
-let strVal = "  Hello, TejX!  ";
-print("Original String: Expected: '  Hello, TejX!  ', Actual: '", strVal, "'");
-
-let trimmed = strVal.trim();
-print("Trimmed: Expected: 'Hello, TejX!', Actual: ", trimmed);
-
-let lower = trimmed.toLowerCase();
-print("Lower: Expected: 'hello, tejx!', Actual: ", lower);
-
-let upper = trimmed.toUpperCase();
-print("Upper: Expected: 'HELLO, TEJX!', Actual: ", upper);
-
-if (trimmed.startsWith("Hello")) {
-    print("startsWith('Hello'): Expected: pass, Actual: pass");
-}
-
-if (trimmed.endsWith("!")) {
-    print("endsWith('!'): Expected: pass, Actual: pass");
-}
-
-let replaced = trimmed.replace("TejX", "World");
-print("Replaced: Expected: 'Hello, World!', Actual: ", replaced);

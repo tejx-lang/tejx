@@ -3019,10 +3019,15 @@ pub unsafe extern "C" fn rt_json_parse(ptr: *const c_char) -> i64 {
     42
 }
 
+
 #[cfg(runtime_build)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *const *const c_char) -> i32 {
-    tejx_main() as i32
+    unsafe {
+        tejx_main(); // Ignore return value
+        tejx_run_event_loop();
+    }
+    0
 }
 
 // --- Collection Generic Methods ---

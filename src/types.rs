@@ -14,6 +14,7 @@ pub enum TejxType {
     Float64,
     Bool,
     String,
+    #[allow(dead_code)]
     Char,    // 4-byte
     Class(String),
     FixedArray(Box<TejxType>, usize),

@@ -29,15 +29,19 @@ function dijkstra(graph: Map<string, Edge[]>, start: string): Map<string, int> {
   return distances;
 }
 
-let graph = new Map();
-// A -> B (4), A -> C (2)
-graph.set("A", [new Edge("B", 4), new Edge("C", 2)]);
-graph.set("B", [new Edge("C", 5), new Edge("D", 10)]);
-graph.set("C", [new Edge("E", 3)]);
-graph.set("D", []);
-graph.set("E", [new Edge("D", 4)]);
 
-print("Dijkstra A->C: Expected: 0/Depends (Simple PQ doesn't use weights yet), but Code Runs.");
-// Since logic is simplified/stubbed in the file, we mostly check it runs.
-let dists = dijkstra(graph, "A");
-print("Key C exists: Expected: true, Actual: ", dists.has("C"));
+function main() {
+  let graph = new Map();
+  // A -> B (4), A -> C (2)
+  graph.set("A", [new Edge("B", 4), new Edge("C", 2)]);
+  graph.set("B", [new Edge("C", 5), new Edge("D", 10)]);
+  graph.set("C", [new Edge("E", 3)]);
+  graph.set("D", []);
+  graph.set("E", [new Edge("D", 4)]);
+
+  print("Dijkstra A->C: Expected: 0/Depends (Simple PQ doesn't use weights yet), but Code Runs.");
+  // Since logic is simplified/stubbed in the file, we mostly check it runs.
+  let dists = dijkstra(graph, "A");
+  print("Key C exists: Expected: true, Actual: ", dists.has("C"));
+}
+

@@ -2,7 +2,7 @@
 import std:fs;
 import std:time;
 
-async function run_test() {
+async function main() {
     print("--- Testing FS Sync ---");
     
     // Cleanup marker
@@ -79,23 +79,4 @@ async function run_test() {
     print("Dir deleted");
     
     print("\nFS Tests Passed!");
-    fs.writeFileSync("done.marker", "done");
-}
-
-run_test();
-
-// Wait for async completion
-let i = 0;
-while (i < 50) { // Wait 5 seconds max
-    if (fs.existsSync("done.marker")) {
-        print("Async test completed successfully.");
-        fs.unlinkSync("done.marker"); // verify cleanup
-        break;
-    }
-    sleep(100);
-    i = i + 1;
-}
-
-if (i >= 50) {
-    print("TIMEOUT: Async test did not complete.");
 }

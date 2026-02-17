@@ -23,5 +23,3 @@ function main(): void {
     print("Indices: Expected: Found, Actual: None");
   }
 }
-
-main();

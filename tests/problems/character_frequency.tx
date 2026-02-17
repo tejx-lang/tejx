@@ -20,4 +20,7 @@ function charCount(input: string): void {
   print("Unique chars: Expected: 8, Actual: ", keys.length);
 }
 
-charCount("hello world");
+
+function main(): void {
+  charCount("hello world");
+}

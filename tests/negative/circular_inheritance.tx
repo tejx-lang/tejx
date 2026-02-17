@@ -9,4 +9,6 @@ class B extends A {
     y: int;
 }
 
-let a = new A();
+function main() {
+    let a = new A();
+}

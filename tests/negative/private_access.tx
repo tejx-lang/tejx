@@ -5,5 +5,7 @@ class Secret {
     private code: int = 1234;
 }
 
-let s = new Secret();
-print(s.code); // Error: code is private
+function main() {
+    let s = new Secret();
+    print(s.code); // Error: code is private
+}

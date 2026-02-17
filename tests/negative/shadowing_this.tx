@@ -1,0 +1,13 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that 'this' cannot be shadowed or declared as a variable.
+
+class Test {
+    check(): void {
+        let this = 10; // Error: 'this' is a reserved keyword
+    }
+}
+
+function main() {
+    let t = new Test();
+    t.check();
+}

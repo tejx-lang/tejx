@@ -12,11 +12,13 @@ function process(id: ID) {
     print("Processing ID: " + stringify(id));
 }
 
-let myId: ID = 123;
-process(myId);
+function main() {
+    let myId: ID = 123;
+    process(myId);
 
-// Basic verification of aliases
-// Note: Deep structural type checking for objects might not be fully implemented yet,
-// but the parser should handle the syntax and type checker should allow the alias name.
+    // Basic verification of aliases
+    // Note: Deep structural type checking for objects might not be fully implemented yet,
+    // but the parser should handle the syntax and type checker should allow the alias name.
 
-print("Type aliases test passed");
+    print("Type aliases test passed");
+}

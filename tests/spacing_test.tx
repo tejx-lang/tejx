@@ -8,4 +8,4 @@ function main(): void {
   }
   print("Done");
 }
-main();
+

@@ -15,7 +15,9 @@ async function test(): void {
     print("Async test passed!");
 }
 
-test();
-print("Waiting for async test to complete...");
-rt_sleep(100);
-print("Main thread finishing.");
+async function main() {
+    await test();
+    print("Waiting for async test to complete...");
+    rt_sleep(100);
+    print("Main thread finishing.");
+}

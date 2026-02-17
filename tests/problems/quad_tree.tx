@@ -21,5 +21,8 @@ class Quadtree {
   }
 }
 
-let qt = new Quadtree();
-print("Quadtree instantiated: Expected: true, Actual: ", qt != None);
+
+function main() {
+  let qt = new Quadtree();
+  print("Quadtree instantiated: Expected: true, Actual: ", qt != None);
+}

@@ -19,27 +19,6 @@ function process(x: int32) {
     return 100 / x;
 }
 
-print("Testing Proper Error Handling...");
-
-// Scenario 1: Throwing a string
-try {
-    process(0);
-} catch (e) {
-    print("Caught string: Expected: Zero is not allowed, Actual: ", e);
-} finally {
-    print("Cleanup 1: Expected: pass, Actual: pass");
-}
-
-// Scenario 2: Throwing an object (CustomError)
-try {
-    process(-5);
-} catch (e) {
-    print("Caught object: Expected: Negative input (Code: 400), Actual: ", e.message, " (Code: ", e.code, ")");
-    print("ToString: Expected: Error: Negative input, Actual: ", e.toString());
-} finally {
-    print("Cleanup 2: Expected: pass, Actual: pass");
-}
-
 // Scenario 3: Nested try/catch and RAII finally
 function nestedTest() {
     print("\n--- Nested Try/Catch ---");
@@ -62,17 +41,40 @@ function nestedTest() {
     }
 }
 
-nestedTest();
+function main() {
+    print("Testing Proper Error Handling...");
 
-// Scenario 4: Error in Loop
-print("\n--- Error in Loop ---");
-for (let i = -2; i <= 2; i = i + 1) {
+    // Scenario 1: Throwing a string
     try {
-        if (i == 0) throw "Zero!";
-        print("Result: ", 10/i);
+        process(0);
     } catch (e) {
-        print("Loop catch: ", e);
+        print("Caught string: Expected: Zero is not allowed, Actual: ", e);
+    } finally {
+        print("Cleanup 1: Expected: pass, Actual: pass");
     }
-}
 
-print("Error handling test complete!");
+    // Scenario 2: Throwing an object (CustomError)
+    try {
+        process(-5);
+    } catch (e) {
+        print("Caught object: Expected: Negative input (Code: 400), Actual: ", e.message, " (Code: ", e.code, ")");
+        print("ToString: Expected: Error: Negative input, Actual: ", e.toString());
+    } finally {
+        print("Cleanup 2: Expected: pass, Actual: pass");
+    }
+
+    nestedTest();
+
+    // Scenario 4: Error in Loop
+    print("\n--- Error in Loop ---");
+    for (let i = -2; i <= 2; i = i + 1) {
+        try {
+            if (i == 0) throw "Zero!";
+            print("Result: ", 10/i);
+        } catch (e) {
+            print("Loop catch: ", e);
+        }
+    }
+
+    print("Error handling test complete!");
+}

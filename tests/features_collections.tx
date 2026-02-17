@@ -1,36 +1,38 @@
 import { Stack, Queue, PriorityQueue } from "std:collections";
 
-print("--- Testing Stack ---");
-let s = new Stack();
-print("isEmpty (new): ", s.isEmpty());
-s.push(10);
-s.push(20);
-s.push(30);
-print("size (3): ", s.size());
-print("peek (30): ", s.peek());
-print("pop (30): ", s.pop());
-print("pop (20): ", s.pop());
-print("size (1): ", s.size());
+function main() {
+    print("--- Testing Stack ---");
+    let s = new Stack();
+    print("isEmpty (new): ", s.isEmpty());
+    s.push(10);
+    s.push(20);
+    s.push(30);
+    print("size (3): ", s.size());
+    print("peek (30): ", s.peek());
+    print("pop (30): ", s.pop());
+    print("pop (20): ", s.pop());
+    print("size (1): ", s.size());
 
-print("\n--- Testing Queue ---");
-let q = new Queue();
-q.enqueue(100);
-q.enqueue(200);
-print("dequeue (100): ", q.dequeue());
-print("dequeue (200): ", q.dequeue());
-print("isEmpty (true): ", q.isEmpty());
+    print("\n--- Testing Queue ---");
+    let q = new Queue();
+    q.enqueue(100);
+    q.enqueue(200);
+    print("dequeue (100): ", q.dequeue());
+    print("dequeue (200): ", q.dequeue());
+    print("isEmpty (true): ", q.isEmpty());
 
-print("\n--- Testing PriorityQueue ---");
-let pq = new PriorityQueue();
-pq.insert(30);
-pq.insert(10);
-pq.insert(20);
-pq.insert(5);
-print("size (4): ", pq.size());
-print("extractMin (5): ", pq.extractMin());
-print("extractMin (10): ", pq.extractMin());
-print("extractMin (20): ", pq.extractMin());
-print("extractMin (30): ", pq.extractMin());
-print("isEmpty (true): ", pq.isEmpty());
+    print("\n--- Testing PriorityQueue ---");
+    let pq = new PriorityQueue();
+    pq.insert(30);
+    pq.insert(10);
+    pq.insert(20);
+    pq.insert(5);
+    print("size (4): ", pq.size());
+    print("extractMin (5): ", pq.extractMin());
+    print("extractMin (10): ", pq.extractMin());
+    print("extractMin (20): ", pq.extractMin());
+    print("extractMin (30): ", pq.extractMin());
+    print("isEmpty (true): ", pq.isEmpty());
 
-print("\nCollections test complete!");
+    print("\nCollections test complete!");
+}

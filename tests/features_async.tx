@@ -1,8 +1,6 @@
 // Async Features: Async/Await, Promises
 // =======================================
 
-print("--- Async Functions & Promises ---");
-
 // 1. Basic Async Function
 async function fetchData(id: int32): Promise<string> {
     return "Data for ID: " + id;
@@ -13,8 +11,32 @@ async function formatData(data: string): Promise<string> {
     return "Formatted: [" + data + "]";
 }
 
-// 3. Main execution using await
-async function runAsyncDemo(): Promise<void> {
+async function compute(x: int32): Promise<int32> {
+    return x * 2;
+}
+
+async function delayedHello(): Promise<string> {
+    return "Hello from async!";
+}
+
+// Basic async function with Promise<int32>
+async function computeDouble(x: int32): Promise<int32> {
+    return x * 2;
+}
+
+// Async function with Promise<string>
+async function fetchGreeting(name: string): Promise<string> {
+    return "Hello, " + name + "!";
+}
+
+// Async function with delayed computation
+async function slowAdd(a: int32, b: int32): Promise<int32> {
+    return a + b;
+}
+
+async function main(): Promise<void> {
+    print("--- Async Functions & Promises ---");
+
     print("Fetching data...");
     
     // Await expression
@@ -36,126 +58,63 @@ async function runAsyncDemo(): Promise<void> {
     
     print("R1: Expected: Data for ID: 1, Actual: ", r1);
     print("R2: Expected: Data for ID: 2, Actual: ", r2);
-}
 
-runAsyncDemo();
+    print("=== Async/Await Tests ===");
 
-async function compute(x: int32): Promise<int32> {
-    return x * 2;
-}
+    // Test 1: Un-awaited promise (should show [Promise])
+    let unawaitedResult = compute(21);
+    print("Un-awaited result: Expected: [Promise]/[Object], Actual: ", unawaitedResult); 
 
-async function delayedHello(): Promise<string> {
-    return "Hello from async!";
-}
+    // Test 2: Awaited promise (should show actual value)
+    let awaitedResult = await compute(21);
+    print("Awaited result: Expected: 42, Actual: ", awaitedResult);
 
-print("=== Async/Await Tests ===");
+    // Test 3: String promise un-awaited
+    let unawaitedStr = delayedHello();
+    print("Un-awaited string: Expected: [Promise]/[Object], Actual: ", unawaitedStr);
 
-// Test 1: Un-awaited promise (should show [Promise])
-let unawaitedResult = compute(21);
-print("Un-awaited result: Expected: [Promise]/[Object], Actual: ", unawaitedResult); 
+    // Test 4: String promise awaited
+    let awaitedStr = await delayedHello();
+    print("Awaited string: Expected: Hello from async!, Actual: ", awaitedStr);
 
-// Test 2: Awaited promise (should show actual value)
-let awaitedResult = await compute(21);
-print("Awaited result: Expected: 42, Actual: ", awaitedResult);
+    print("=== Async Tests Complete ===");
 
-// Test 3: String promise un-awaited
-let unawaitedStr = delayedHello();
-print("Un-awaited string: Expected: [Promise]/[Object], Actual: ", unawaitedStr);
+    print("=== Promise Features Test ===");
 
-// Test 4: String promise awaited
-let awaitedStr = await delayedHello();
-print("Awaited string: Expected: Hello from async!, Actual: ", awaitedStr);
+    // === Test Un-awaited Promises ===
+    print("--- Un-awaited Promises ---");
+    let promise1 = computeDouble(5);
+    print("promise1 (not awaited): Expected: [Promise]/[Object], Actual: ", promise1);
 
-print("=== Async Tests Complete ===");
+    let promise2 = fetchGreeting("TejX");
+    print("promise2 (not awaited): Expected: [Promise]/[Object], Actual: ", promise2);
 
-print("=== Promise Features Test ===");
+    // === Test Awaited Promises ===
+    print("--- Awaited Promises ---");
+    let result1 = await computeDouble(5);
+    print("result1 (awaited): Expected: 10, Actual: ", result1);
 
-// Basic async function with Promise<int32>
-async function computeDouble(x: int32): Promise<int32> {
-    return x * 2;
-}
+    let result2 = await fetchGreeting("TejX");
+    print("result2 (awaited): Expected: Hello, TejX!, Actual: ", result2);
 
-// Async function with Promise<string>
-async function fetchGreeting(name: string): Promise<string> {
-    return "Hello, " + name + "!";
-}
+    let result3 = await slowAdd(10, 20);
+    print("result3 (awaited): Expected: 30, Actual: ", result3);
 
-// Async function with delayed computation
-async function slowAdd(a: int32, b: int32): Promise<int32> {
-    return a + b;
-}
+    // === Test Chained Promises ===
+    print("--- Chained Promises ---");
+    let chainResult = await computeDouble(await computeDouble(5));
+    print("chainResult: Expected: 20, Actual: ", chainResult);
 
-// === Test Un-awaited Promises ===
-print("--- Un-awaited Promises ---");
-let promise1 = computeDouble(5);
-print("promise1 (not awaited): Expected: [Promise]/[Object], Actual: ", promise1);
+    // === Test Promise in Expression ===
+    print("--- Promise in Expression ---");
+    let exprResult = await computeDouble(3) + await computeDouble(7);
+    print("exprResult (3*2 + 7*2): Expected: 20, Actual: ", exprResult);
 
-let promise2 = fetchGreeting("TejX");
-print("promise2 (not awaited): Expected: [Promise]/[Object], Actual: ", promise2);
+    print("=== Promise Features Test Complete ===");
 
-// === Test Awaited Promises ===
-print("--- Awaited Promises ---");
-let result1 = await computeDouble(5);
-print("result1 (awaited): Expected: 10, Actual: ", result1);
+    print("=== Promise Constructor Test ===");
+    print("=== Promise Constructor Test Complete ===");
 
-let result2 = await fetchGreeting("TejX");
-print("result2 (awaited): Expected: Hello, TejX!, Actual: ", result2);
-
-let result3 = await slowAdd(10, 20);
-print("result3 (awaited): Expected: 30, Actual: ", result3);
-
-// === Test Chained Promises ===
-print("--- Chained Promises ---");
-let chainResult = await computeDouble(await computeDouble(5));
-print("chainResult: Expected: 20, Actual: ", chainResult);
-
-// === Test Promise in Expression ===
-print("--- Promise in Expression ---");
-let exprResult = await computeDouble(3) + await computeDouble(7);
-print("exprResult (3*2 + 7*2): Expected: 20, Actual: ", exprResult);
-
-print("=== Promise Features Test Complete ===");
-
-print("=== Promise Constructor Test ===");
-
-/*
-// Test 1: Basic Promise with immediate resolve
-print("--- Test 1: Immediate resolve ---");
-let p1 = new Promise((resolve) => {
-    resolve(42);
-});
-let r1 = await p1;
-print("Resolved: Expected: 42, Actual: ", r1);
-
-// Test 2: Promise with computation before resolve
-print("--- Test 2: Computed resolve ---");
-let p2 = new Promise((resolve) => {
-    let x = 10;
-    let y = 20;
-    resolve(x + y);
-});
-let r2 = await p2;
-print("Computed result: Expected: 30, Actual: ", r2);
-
-// Test 3: Promise with string
-print("--- Test 3: String resolve ---");
-let p3 = new Promise((resolve) => {
-    resolve("Hello from Promise!");
-});
-let r3 = await p3;
-print("String: Expected: Hello from Promise!, Actual: ", r3);
-
-// Test 4: Un-awaited promise shows [Promise]
-print("--- Test 4: Un-awaited shows [Promise] ---");
-let p4 = new Promise((resolve) => {
-    resolve(100);
-});
-print("Un-awaited: Expected: [Promise]/[Object], Actual: ", p4);
-*/
-
-print("=== Promise Constructor Test Complete ===");
-
-async function testConcurrency() {
     print("Start (Timestamp): ", Date.now());
     
     // Test Delay
@@ -183,5 +142,3 @@ async function testConcurrency() {
         print("Fetch failed or empty: Actual: empty/0");
     }
 }
-
-testConcurrency();

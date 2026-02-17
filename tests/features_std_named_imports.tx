@@ -4,20 +4,22 @@ import { sqrt } from "std:math";
 import std:fs;
 import { now } from "std:time";
 
-print("--- Named Import Verification ---");
-print(`Sqrt(25): ${sqrt(25)}`);
-assert(sqrt(25) == 5);
+function main() {
+    print("--- Named Import Verification ---");
+    print(`Sqrt(25): ${sqrt(25)}`);
+    assert(sqrt(25) == 5);
 
-print("--- FS (All Impor) Verification ---");
-let exists_test = exists("Cargo.toml");
-print(`Cargo.toml exists: ${exists_test}`);
+    print("--- FS (All Impor) Verification ---");
+    let exists_test = exists("Cargo.toml");
+    print(`Cargo.toml exists: ${exists_test}`);
 
-print("--- Time (Named) Verification ---");
-let t = now();
-print(`Current time: ${t}`);
+    print("--- Time (Named) Verification ---");
+    let t = now();
+    print(`Current time: ${t}`);
 
-// Note: calling pow(2,3) should fail or result in linking error if strictly enforced
-// but we won't put it here to avoid breaking the test suite run.
-// print(`Pow: ${pow(2, 3)}`); 
+    // Note: calling pow(2,3) should fail or result in linking error if strictly enforced
+    // but we won't put it here to avoid breaking the test suite run.
+    // print(`Pow: ${pow(2, 3)}`); 
 
-print("Done");
+    print("Done");
+}

@@ -81,12 +81,14 @@ async function testMixedSyncAsync() {
     assert(a.length > 0);
 }
 
-// Run all
-await test404();
-// await testDNSFailure(); // Commenting out potentially crashing test first? 
-// Actually, let's try it. If it crashes, I fix unexpected behavior.
-await testDNSFailure(); 
-await testParallelRequests();
-await testMixedSyncAsync();
+async function main() {
+    // Run all
+    await test404();
+    // await testDNSFailure(); // Commenting out potentially crashing test first? 
+    // Actually, let's try it. If it crashes, I fix unexpected behavior.
+    await testDNSFailure(); 
+    await testParallelRequests();
+    await testMixedSyncAsync();
 
-print("=== Net Scenarios Complete ===");
+    print("=== Net Scenarios Complete ===");
+}

@@ -35,4 +35,4 @@ function main() {
     print("Super calls test complete");
 }
 
-main();
+

@@ -19,8 +19,11 @@ class DSU {
   }
 }
 
-let dsu = new DSU(5);
-dsu.union(0, 1);
-dsu.union(1, 2);
-print("Find(0) == Find(2): Expected: true, Actual: ", dsu.find(0) == dsu.find(2));
-print("Find(0) == Find(3): Expected: false, Actual: ", dsu.find(0) == dsu.find(3));
+
+function main() {
+  let dsu = new DSU(5);
+  dsu.union(0, 1);
+  dsu.union(1, 2);
+  print("Find(0) == Find(2): Expected: true, Actual: ", dsu.find(0) == dsu.find(2));
+  print("Find(0) == Find(3): Expected: false, Actual: ", dsu.find(0) == dsu.find(3));
+}

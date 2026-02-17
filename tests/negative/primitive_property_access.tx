@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that properties cannot be accessed on primitive types (int).
+
+function main() {
+    let x: int = 10;
+    print(x.toString()); // Error: Property access on primitive type 'int' (unless boxed/supported)
+    // Note: If auto-boxing is supported, this might pass. 
+    // But assuming strict primitive handling for 'int'.
+    
+    // Testing a definitely invalid property
+    print(x.nonExistentProp); 
+}

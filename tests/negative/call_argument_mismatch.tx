@@ -5,5 +5,7 @@ function add(a: int32, b: int32): int32 {
     return a + b;
 }
 
-add(10); // Error: Too few arguments
-add(10, "20"); // Error: Type mismatch for argument 2
+function main() {
+    add(10); // Error: Too few arguments
+    add(10, "20"); // Error: Type mismatch for argument 2
+}

@@ -7,4 +7,6 @@ function groupAnagrams(words: string[]): void {
 }
 
 // Passing int[] instead of string[]
-groupAnagrams([1, 2, 3]); 
+function main() {
+    groupAnagrams([1, 2, 3]); 
+}

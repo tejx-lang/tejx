@@ -6,6 +6,8 @@ class Point {
     y: int;
 }
 
-let p = new Point();
-p.x = 10;
-p.z = 20; // 'z' is not defined in Point
+function main() {
+    let p = new Point();
+    p.x = 10;
+    p.z = 20; // 'z' is not defined in Point
+}

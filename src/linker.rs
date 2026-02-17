@@ -21,6 +21,7 @@ impl Linker {
         self.obj_paths.push(path.to_path_buf());
     }
 
+    #[allow(dead_code)]
     pub fn add_lib(&mut self, lib: &str) {
         self.libs.push(lib.to_string());
     }

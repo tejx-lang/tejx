@@ -13,5 +13,8 @@ class SparseMatrix {
   }
 }
 
-let sm = new SparseMatrix();
-print("SparseMatrix instantiated. Expected: true, Actual: ", sm != None);
+
+function main() {
+  let sm = new SparseMatrix();
+  print("SparseMatrix instantiated. Expected: true, Actual: ", sm != None);
+}

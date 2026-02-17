@@ -21,8 +21,11 @@ class MyTrie {
   }
 }
 
-let t = new MyTrie();
-t.insert("hello");
-// Note: Trie implementation in file misses search/contains method
-// But we can check structure mostly by running it.
-print("Trie Insert 'hello': Expected: success (no crash), Actual: success");
+
+function main() {
+  let t = new MyTrie();
+  t.insert("hello");
+  // Note: Trie implementation in file misses search/contains method
+  // But we can check structure mostly by running it.
+  print("Trie Insert 'hello': Expected: success (no crash), Actual: success");
+}

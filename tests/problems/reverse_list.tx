@@ -36,5 +36,3 @@ function main(): void {
   }
   print("Reverse List: Done (Check manually for 3, 2, 1 sequence)");
 }
-
-main();

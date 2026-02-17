@@ -37,4 +37,4 @@ function main() {
     console.log("sizeof int64[5]: " + sizeof(arr2)); // 40
 }
 
-main();
+

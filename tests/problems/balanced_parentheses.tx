@@ -28,4 +28,4 @@ function main(): void {
   print("isBalancedInvalid: Expected: false, Actual: ", res2);
 }
 
-main();
+

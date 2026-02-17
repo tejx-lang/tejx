@@ -103,6 +103,7 @@ impl Lowering {
         None
     }
 
+    #[allow(dead_code)]
     fn is_runtime_func(&self, name: &str) -> bool {
         // Delegate std functions to stdlib
         if let Some(_) = self.stdlib.resolve_runtime_func(name) {
@@ -434,34 +435,49 @@ impl Lowering {
         functions.append(&mut lambdas);
 
         // Add a "tejx_main" wrapper for non-function top-level statements
-        let main_body = if self.user_functions.borrow().contains_key("mainFunc") {
-            HIRStatement::ExpressionStmt {
-                expr: HIRExpression::Call {
-                    callee: "f_mainFunc".to_string(),
-                    args: vec![],
-                    ty: TejxType::Void,
-                },
+        // Check for user-defined main function (lowered as "f_main")
+        let mut main_func_idx = None;
+        for (i, func) in functions.iter().enumerate() {
+            if let HIRStatement::Function { name, .. } = func {
+                if name == "f_main" {
+                    main_func_idx = Some(i);
+                    break;
+                }
             }
-        } else {
-            HIRStatement::Block { statements: main_stmts }
-        };
+        }
 
+        let mut entry_body_stmts = main_stmts;
+
+        if let Some(idx) = main_func_idx {
+            // Found a user-defined main. Use its body as the entry point base.
+            let main_func = functions.remove(idx);
+            
+            if let HIRStatement::Function { body, .. } = main_func {
+                if let HIRStatement::Block { statements } = *body {
+                    entry_body_stmts.extend(statements);
+                } else {
+                    entry_body_stmts.push(*body);
+                }
+            }
+        } 
+        
+        // Finalize entry point: Run event loop (moved to runtime.rs)
+        // entry_body_stmts.push(HIRStatement::ExpressionStmt {
+        //     expr: HIRExpression::Call {
+        //         callee: "tejx_run_event_loop".to_string(),
+        //         args: vec![],
+        //         ty: TejxType::Void,
+        //     }
+        // });
+        // entry_body_stmts.push(HIRStatement::Return { value: Some(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }) });
+
+        // Create the actual entry point function
         functions.push(HIRStatement::Function {
             name: "tejx_main".to_string(),
             params: vec![],
-            _return_type: TejxType::Int32,
+            _return_type: TejxType::Void,
             body: Box::new(HIRStatement::Block {
-                statements: vec![
-                    main_body,
-                    HIRStatement::ExpressionStmt {
-                        expr: HIRExpression::Call {
-                            callee: "tejx_run_event_loop".to_string(),
-                            args: vec![],
-                            ty: TejxType::Void,
-                        }
-                    },
-                    HIRStatement::Return { value: Some(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }) }
-                ]
+                statements: entry_body_stmts
             }),
         });
 
@@ -928,7 +944,7 @@ impl Lowering {
                  let worker_name = format!("{}_worker", name);
                  
                  // 2. Create state struct name
-                 let state_struct_name = format!("State_{}", worker_name);
+                 let _state_struct_name = format!("State_{}", worker_name);
                  
                  // 3. Prepare params for worker (needs 'this' + original params)
                  // The wrapper method 'name' has (this, p1, p2...)
@@ -955,7 +971,7 @@ impl Lowering {
                      format!("f_{}_{}", class_decl.name, name)
                  };
                  
-                 let (worker_func, state_struct, mut wrapper_body) = self.lower_async_function_impl(
+                 let (worker_func, _state_struct, wrapper_body) = self.lower_async_function_impl(
                      &mangled_name, &params, &func_decl.return_type, &func_decl.body
                  );
                  
@@ -1781,7 +1797,7 @@ impl Lowering {
                                           } else { false }
                                       } else { false }
                                  }
-                                 ImportMode::Named(set) => {
+                                 ImportMode::Named(_set) => {
                                      // Not relevant for dot access usually, unless aliased?
                                      // But if we have `import { readFile } from fs`, we call `readFile`, not `fs.readFile`.
                                      false
@@ -1915,7 +1931,7 @@ impl Lowering {
                          }
                      }
                 } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
-                    final_callee = if callee_str == "main" { "f_main".to_string() } else { format!("f_{}", callee_str) };
+                    final_callee = if callee_str == "main" { "tejx_main".to_string() } else { format!("f_{}", callee_str) };
                     ty = ret_ty.clone();
                 } else if self.stdlib.is_prelude_func(&normalized) || normalized == "log" || normalized == "console_log" {
                     final_callee = if normalized == "log" || normalized == "console_log" { "print".to_string() } else { normalized.clone() };
@@ -2487,33 +2503,8 @@ impl Lowering {
                     _args: hir_args,
                 }
             }
-            Expression::OptionalCallExpr { callee, args, .. } => {
-                let mut hir_args: Vec<HIRExpression> = args.iter()
-                    .map(|a| self.lower_expression(a))
-                    .collect();
-                
+            Expression::OptionalCallExpr { callee, args: _args, .. } => {
                 let callee_expr = self.lower_expression(callee);
-                
-                // Attempt variadic packing if callee is an identifier
-                let callee_name = match callee.as_ref() {
-                    Expression::Identifier { name, .. } => Some(name.clone()),
-                    _ => None
-                };
-                
-                if let Some(name) = callee_name {
-                    let lookup_name = if name.starts_with("f_") { &name[2..] } else { &name };
-                    if let Some(&fixed_count) = self.variadic_functions.borrow().get(lookup_name) {
-                        if hir_args.len() >= fixed_count {
-                            let (fixed, rest) = hir_args.split_at(fixed_count);
-                            let mut new_var_args = fixed.to_vec();
-                            new_var_args.push(HIRExpression::ArrayLiteral {
-                                elements: rest.to_vec(),
-                                ty: TejxType::Any
-                            });
-                            hir_args = new_var_args;
-                        }
-                    }
-                }
 
                 HIRExpression::OptionalChain {
                     target: Box::new(callee_expr),

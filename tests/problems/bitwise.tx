@@ -8,4 +8,7 @@ function testBits(): void {
   print("5 << 1: Expected: 10, Actual: ", a << 1);
 }
 
-testBits();
+
+function main(): void {
+  testBits();
+}

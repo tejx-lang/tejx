@@ -27,13 +27,16 @@ function bfs(graph: Map<string, string[]>, start: string): void {
   print("BFS Traversal: Expected: [A, B, C, D, E, F], Actual: ", result);
 }
 
-let graph = new Map();
 
-graph.set("A", ["B", "C"]);
-graph.set("B", ["D", "E"]);
-graph.set("C", ["F"]);
-graph.set("D", []);
-graph.set("E", ["F"]);
-graph.set("F", []);
+function main() {
+  let graph = new Map();
 
-bfs(graph, "A");
+  graph.set("A", ["B", "C"]);
+  graph.set("B", ["D", "E"]);
+  graph.set("C", ["F"]);
+  graph.set("D", []);
+  graph.set("E", ["F"]);
+  graph.set("F", []);
+
+  bfs(graph, "A");
+}

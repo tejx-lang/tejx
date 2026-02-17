@@ -34,4 +34,4 @@ async function main() {
     print("Async OOP test complete");
 }
 
-main();
+

@@ -1,0 +1,17 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that constructors cannot return a value.
+
+class Point {
+    x: int;
+    y: int;
+
+    constructor(x: int, y: int) {
+        this.x = x;
+        this.y = y;
+        return 10; // Error: Constructor cannot return a value
+    }
+}
+
+function main() {
+    let p = new Point(10, 20);
+}

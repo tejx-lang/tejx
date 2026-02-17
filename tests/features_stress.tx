@@ -1,8 +1,6 @@
 // tests/features_stress.tx
 // Complex scenarios and stress tests for NovaJs feature set.
 
-print("=== NovaJs Stress Test ===");
-
 // 1. Deep Recursion (Ackermann Function)
 // A(m, n) =
 //   n + 1                  if m = 0
@@ -18,17 +16,6 @@ function ackermann(m: int32, n: int32): int32 {
         return ackermann(m - 1, ackermann(m, n - 1));
     }
 }
-
-print("\n--- Deep Recursion (Ackermann) ---");
-// A(3, 2) -> 29. A(3, 3) -> 61. A(4, 1) -> 65533 (too deep for stack?)
-// Let's try A(3, 2) safe for standard stack.
-let m = 2;
-let n = 2;
-print("Calculating Ackermann(2, 2)...");
-let result = ackermann(2, 2);
-print("Ackermann(2, 2) =", result);
-assert(result == 7);
-
 
 // 3. Higher-Order Functions / Closures (Simulated with Class)
 // Closures capturing variables are not fully supported yet in lowering.
@@ -55,66 +42,82 @@ function makeCounter(start: int32): Counter {
     return new Counter(start);
 }
 
-// Simple Arrow Function (Stateless)
-let doubler = (x: int32) => x * 2;
-print(`Arrow Function Test: doubler(10) = ${doubler(10)}`);
-assert(doubler(10) == 20);
-
-let counter = makeCounter(10);
-print(`Initial: ${counter.getValue()}`);
-print(`Inc 1: ${counter.increment()}`);
-print(`Inc 2: ${counter.increment()}`);
-assert(counter.getValue() == 12);
-
-
-// 3. Complex Object & Array Manipulation
-print("\n--- Complex Data Structures ---");
-let matrix = [
-    [1, 2, 3],
-    [4, 5, 6],
-    [7, 8, 9]
-];
-
-// Matrix multiplication with vector v = [1, 2, 3]
-let v = [1, 2, 3];
-let matrix_result = [0, 0, 0];
-
-for (let r = 0; r < 3; r++) {
-    let row = matrix[r];
-    let sum = 0;
-    for (let c = 0; c < 3; c++) {
-        sum = sum + (row[c] * v[c]);
-    }
-    matrix_result[r] = sum;
-}
-
-print(`Matrix * Vector result: [${matrix_result[0]}, ${matrix_result[1]}, ${matrix_result[2]}]`);
-// Expected:
-// 1*1 + 2*2 + 3*3 = 1+4+9 = 14
-// 4*1 + 5*2 + 6*3 = 4+10+18 = 32
-// 7*1 + 8*2 + 9*3 = 7+16+27 = 50
-assert(matrix_result[0] == 14);
-assert(matrix_result[1] == 32);
-assert(matrix_result[2] == 50);
-
-// 4. Large Loop Performance (Stress)
-print("\n--- Large Loop Performance ---");
-let total_sum = 0;
-let loop_limit = 100000;
 import std:time;
-let startTime = now();
 
-for (let i = 1; i <= loop_limit; i++) {
-    total_sum = total_sum + i;
+function main() {
+    print("=== NovaJs Stress Test ===");
+
+    print("\n--- Deep Recursion (Ackermann) ---");
+    // A(3, 2) -> 29. A(3, 3) -> 61. A(4, 1) -> 65533 (too deep for stack?)
+    // Let's try A(3, 2) safe for standard stack.
+    let m = 2;
+    let n = 2;
+    print("Calculating Ackermann(2, 2)...");
+    let result = ackermann(2, 2);
+    print("Ackermann(2, 2) =", result);
+    assert(result == 7);
+
+
+    // Simple Arrow Function (Stateless)
+    let doubler = (x: int32) => x * 2;
+    print(`Arrow Function Test: doubler(10) = ${doubler(10)}`);
+    assert(doubler(10) == 20);
+
+    let counter = makeCounter(10);
+    print(`Initial: ${counter.getValue()}`);
+    print(`Inc 1: ${counter.increment()}`);
+    print(`Inc 2: ${counter.increment()}`);
+    assert(counter.getValue() == 12);
+
+
+    // 3. Complex Object & Array Manipulation
+    print("\n--- Complex Data Structures ---");
+    let matrix = [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9]
+    ];
+
+    // Matrix multiplication with vector v = [1, 2, 3]
+    let v = [1, 2, 3];
+    let matrix_result = [0, 0, 0];
+
+    for (let r = 0; r < 3; r++) {
+        let row = matrix[r];
+        let sum = 0;
+        for (let c = 0; c < 3; c++) {
+            sum = sum + (row[c] * v[c]);
+        }
+        matrix_result[r] = sum;
+    }
+
+    print(`Matrix * Vector result: [${matrix_result[0]}, ${matrix_result[1]}, ${matrix_result[2]}]`);
+    // Expected:
+    // 1*1 + 2*2 + 3*3 = 1+4+9 = 14
+    // 4*1 + 5*2 + 6*3 = 4+10+18 = 32
+    // 7*1 + 8*2 + 9*3 = 7+16+27 = 50
+    assert(matrix_result[0] == 14);
+    assert(matrix_result[1] == 32);
+    assert(matrix_result[2] == 50);
+
+    // 4. Large Loop Performance (Stress)
+    print("\n--- Large Loop Performance ---");
+    let total_sum = 0;
+    let loop_limit = 100000;
+    let startTime = now();
+
+    for (let i = 1; i <= loop_limit; i++) {
+        total_sum = total_sum + i;
+    }
+    let endTime = now();
+    let loop_duration = endTime - startTime;
+
+    print(`Sum 1 to ${loop_limit}: ${total_sum}`);
+    // Sum = n(n+1)/2 = 100000 * 100001 / 2 = 5000050000
+    // Note: 5 billion fits in 64-bit int/float.
+    print(`Time: ${loop_duration}ms`);
+    // assert(total_sum == 5000050000); // Check formatting/precision
+
+
+    print("\n=== Stress Test Complete ===");
 }
-let endTime = now();
-let loop_duration = endTime - startTime;
-
-print(`Sum 1 to ${loop_limit}: ${total_sum}`);
-// Sum = n(n+1)/2 = 100000 * 100001 / 2 = 5000050000
-// Note: 5 billion fits in 64-bit int/float.
-print(`Time: ${loop_duration}ms`);
-// assert(total_sum == 5000050000); // Check formatting/precision
-
-
-print("\n=== Stress Test Complete ===");

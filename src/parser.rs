@@ -67,15 +67,11 @@ impl Parser {
                     Some(self.parse_statement()) 
                 }
             }
-            TokenType::Class => Some(self.parse_class_declaration()),
+            TokenType::Class => Some(self.parse_class_declaration(false)),
             TokenType::Abstract => {
                 if self.check_next(TokenType::Class) {
                      self.advance(); // consume abstract
-                     let mut decl = self.parse_class_declaration();
-                     if let Statement::ClassDeclaration(ref mut c) = decl {
-                         c._is_abstract = true;
-                     }
-                     Some(decl)
+                     Some(self.parse_class_declaration(true))
                 } else {
                      Some(self.parse_statement())
                 }
@@ -269,6 +265,7 @@ impl Parser {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_match_expression(&mut self) -> Expression {
         let start = self.previous().clone(); // 'match' consumed by caller
         self.consume(TokenType::OpenParen, "Expected '(' after match");
@@ -390,7 +387,7 @@ impl Parser {
         })
     }
 
-    fn parse_class_declaration(&mut self) -> Statement {
+    fn parse_class_declaration(&mut self, is_abstract: bool) -> Statement {
         let start = self.consume(TokenType::Class, "Expected 'class'").clone();
         let name = self.consume_identifier("Expected class name").value.clone();
         
@@ -417,7 +414,7 @@ impl Parser {
             }
         }
         
-        let is_abstract_class = false; // TODO support abstract class decl
+        let is_abstract_class = is_abstract; 
         
         self.consume(TokenType::OpenBrace, "Expected '{' before class body.");
         
@@ -1801,6 +1798,7 @@ impl Parser {
         }
     }
     
+    #[allow(dead_code)]
     fn expr_to_callee_name(expr: &Expression) -> String {
         match expr {
             Expression::Identifier { name, .. } => name.clone(),

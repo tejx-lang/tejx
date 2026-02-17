@@ -10,4 +10,7 @@ function testBloomFilter(): void {
     print("Contains 'orange': Expected: false, Actual: ", bf.contains("orange"));
 }
 
-testBloomFilter();
+
+function main(): void {
+  testBloomFilter();
+}

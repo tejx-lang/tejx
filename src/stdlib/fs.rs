@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::ffi::CString;
 use std::fs;
 use std::path::Path;
 use crate::runtime::{stringify_value, HEAP, TaggedValue, Promise_new, __resolve_promise, a_new, Array_push};

@@ -5,4 +5,6 @@ function syncFunc() {
     await delay(100); // Error: await in non-async function
 }
 
-syncFunc();
+function main() {
+    syncFunc();
+}

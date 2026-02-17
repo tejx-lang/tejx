@@ -9,8 +9,11 @@ function orientation(p: Point, q: Point, r: Point): int {
   return (val > 0.0) ? 1 : 2; // Clockwise or Counter-clockwise
 }
 
-let p1 = new Point(0.0, 0.0);
-let p2 = new Point(2.0, 0.0);
-let p3 = new Point(1.0, 1.0);
 
-print("Orientation: Expected: 1/2, Actual: ", orientation(p1, p2, p3));
+function main() {
+  let p1 = new Point(0.0, 0.0);
+  let p2 = new Point(2.0, 0.0);
+  let p3 = new Point(1.0, 1.0);
+
+  print("Orientation: Expected: 1/2, Actual: ", orientation(p1, p2, p3));
+}

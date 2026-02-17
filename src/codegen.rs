@@ -371,7 +371,7 @@ impl CodeGen {
         }
 
         // Generate blocks with block name resolution
-        for (i, bb) in func.blocks.iter().enumerate() {
+        for (_i, bb) in func.blocks.iter().enumerate() {
             self.emit(&format!("{}:\n", bb.name));
             
             let mut has_handler = false;

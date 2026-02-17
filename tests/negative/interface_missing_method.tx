@@ -10,5 +10,7 @@ class Person implements Greetable {
     // Missing greet() method
 }
 
-let p = new Person();
-print(p.name);
+function main() {
+    let p = new Person();
+    print(p.name);
+}

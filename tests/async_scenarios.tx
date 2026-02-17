@@ -1,7 +1,7 @@
 // tests/async_scenarios.tx
 // Complex Async/Await Scenarios
 
-print("=== Async Scenarios Test ===");
+
 
 // 1. Nested Awaits
 // Validates that await correctly pauses execution at each level.
@@ -88,9 +88,12 @@ async function testRecursion() {
     assert(fact5 == 120);
 }
 
-// Run all
-await testNested();
-await testLoopSequence();
-await testPromiseAllMixed();
-await testRecursion();
-print("=== Async Scenarios Complete ===");
+async function main() {
+    print("=== Async Scenarios Test ===");
+    // Run all
+    await testNested();
+    await testLoopSequence();
+    await testPromiseAllMixed();
+    await testRecursion();
+    print("=== Async Scenarios Complete ===");
+}

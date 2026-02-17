@@ -2,13 +2,11 @@
 // ==========================================================
 
 // 1. Interfaces
-// -------------------------
 interface Greeter {
     greet(name: string): void;
 }
 
 // 2. Classes
-// ----------
 class Entity {
     id: int32;
     constructor(id: int32) {
@@ -31,7 +29,6 @@ class Robot extends Entity {
 }
 
 // 3. Extension Implementing Interface
-// ----------------------------------
 extension Robot {
     greet(name: string): void {
         print("BEEP BOOP. Hello ", name, ". Expected: Human, Actual: ", name);
@@ -42,15 +39,6 @@ extension Robot {
         return "Operational";
     }
 }
-
-// 4. Usage
-// --------
-print("--- OOP Demo ---");
-let r = new Robot(101, "T-800");
-
-r.identify();       // Class method
-r.greet("Human");   // Interface method via Extension
-print("Status: Expected: Operational, Actual: ", r.status()); // Extension method
 
 class Point {
     x: int32;
@@ -76,7 +64,6 @@ function runMemorySafety(): void {
     }
     print("Block exited. Point should be freed.");
 }
-runMemorySafety();
 
 interface Printable {
     toString(): string;
@@ -118,12 +105,6 @@ function printAny(p: Printable) {
     p.print(">> ");
 }
 
-let uProto = new User("TejX");
-let dProto = new Document("Hello World");
-
-printAny(uProto);
-printAny(dProto);
-
 // Extensions Feature Test
 class ExtensibleUser {
     name: string;
@@ -145,12 +126,6 @@ extension ExtensibleUser {
         }
     }
 }
-
-let uExt = new ExtensibleUser("Tej");
-uExt.sayHello();
-uExt.greet(3);
-
-print("Extensions test complete!");
 
 // OOP Polish Test
 class BankAccount {
@@ -176,13 +151,6 @@ class BankAccount {
         return BankAccount.bankName;
     }
 }
-
-print("Bank: Expected: TejXBank, Actual: ", BankAccount.getBankName());
-
-let acc = new BankAccount("Alice", 100);
-print("Owner: Expected: Alice, Actual: ", acc.owner);
-acc.deposit(50);
-print("Balance: Expected: 150, Actual: ", acc.getBalance());
 
 // Getter/Setter Test
 class Person {
@@ -222,44 +190,6 @@ class Person {
     }
 }
 
-print("=== Getter/Setter Test ===");
-
-let p = new Person("Alice", 30);
-
-// Test getters
-print("Name: Expected: Alice, Actual: ", p.name);
-print("Age: Expected: 30, Actual: ", p.age);
-print("Info: Expected: Alice is 30 years old, Actual: ", p.info);
-
-// Test setters
-p.name = "Bob";
-p.age = 25;
-print("After update - Name: Expected: Bob, Actual: ", p.name);
-print("After update - Age: Expected: 25, Actual: ", p.age);
-
-print("=== Getter/Setter Test Complete ===");
-
-print("--- Ternary Operator ---");
-let age = 18;
-let status = age >= 18 ? "Adult" : "Minor";
-print("Status: Expected: Adult, Actual: ", status);
-print("10 > 5: Expected: 10 is bigger, Actual: ", (10 > 5 ? "10 is bigger" : "5 is bigger"));
-
-print("--- Switch (Desugared) ---");
-let fruit = "Apple";
-
-switch (fruit) {
-    case "Banana":
-        print("Result: Expected: it is an apple, Actual: banana (wrong)");
-        break;
-    case "Apple":
-        print("Result: Expected: it is an apple, Actual: it is an apple");
-        break;
-    default:
-        print("Result: Unknown fruit.");
-}
-
-print("--- Inheritance ---");
 class Animal {
     name: string;
     constructor(n: string) {
@@ -287,11 +217,6 @@ class Dog extends Animal {
         super.speak();
     }
 }
-
-let dDog = new Dog("Rex");
-dDog.speak(); // Makes noise
-dDog.bark();  // Barks
-print("Dog Name: Expected: Rex, Actual: ", dDog.name);
 
 abstract class Shape {
     protected name: string;
@@ -327,38 +252,114 @@ class Circle extends Shape {
 }
 
 function run_shape() {
-    let c = new Circle(2);
-    c.printDetails();
+    let circle = new Circle(2);
+    circle.printDetails();
 }
-
-run_shape();
 
 class Cat extends Animal {
     constructor(n: string) { super(n); }
 }
 
-let d = new Dog("Buddy");
-let c = new Cat("Whiskers");
+function main() {
+    // 4. Usage
+    print("--- OOP Demo ---");
+    let r = new Robot(101, "T-800");
 
-print("d is Dog: Expected: 1, Actual: ", (d instanceof Dog));      
-print("d is Animal: Expected: 1, Actual: ", (d instanceof Animal)); 
-print("d is Cat: Expected: 0, Actual: ", (d instanceof Cat));       
+    r.identify();       // Class method
+    r.greet("Human");   // Interface method via Extension
+    print("Status: Expected: Operational, Actual: ", r.status()); // Extension method
 
-if (d instanceof Dog) {
-    print("Verified: d is a Dog: Expected: pass, Actual: pass");
+    runMemorySafety();
+
+    let uProto = new User("TejX");
+    let dProto = new Document("Hello World");
+
+    printAny(uProto);
+    printAny(dProto);
+
+    let uExt = new ExtensibleUser("Tej");
+    uExt.sayHello();
+    uExt.greet(3);
+
+    print("Extensions test complete!");
+
+
+    print("Bank: Expected: TejXBank, Actual: ", BankAccount.getBankName());
+
+    let acc = new BankAccount("Alice", 100);
+    print("Owner: Expected: Alice, Actual: ", acc.owner);
+    acc.deposit(50);
+    print("Balance: Expected: 150, Actual: ", acc.getBalance());
+
+    print("=== Getter/Setter Test ===");
+
+    let p = new Person("Alice", 30);
+
+    // Test getters
+    print("Name: Expected: Alice, Actual: ", p.name);
+    print("Age: Expected: 30, Actual: ", p.age);
+    print("Info: Expected: Alice is 30 years old, Actual: ", p.info);
+
+    // Test setters
+    p.name = "Bob";
+    p.age = 25;
+    print("After update - Name: Expected: Bob, Actual: ", p.name);
+    print("After update - Age: Expected: 25, Actual: ", p.age);
+
+    print("=== Getter/Setter Test Complete ===");
+
+    print("--- Ternary Operator ---");
+    let age = 18;
+    let ternaryStatus = age >= 18 ? "Adult" : "Minor";
+    print("Status: Expected: Adult, Actual: ", ternaryStatus);
+    print("10 > 5: Expected: 10 is bigger, Actual: ", (10 > 5 ? "10 is bigger" : "5 is bigger"));
+
+    print("--- Switch (Desugared) ---");
+    let fruit = "Apple";
+
+    switch (fruit) {
+        case "Banana":
+            print("Result: Expected: it is an apple, Actual: banana (wrong)");
+            break;
+        case "Apple":
+            print("Result: Expected: it is an apple, Actual: it is an apple");
+            break;
+        default:
+            print("Result: Unknown fruit.");
+    }
+
+    print("--- Inheritance ---");
+
+    let dDog = new Dog("Rex");
+    dDog.speak(); // Makes noise
+    dDog.bark();  // Barks
+    print("Dog Name: Expected: Rex, Actual: ", dDog.name);
+
+    run_shape();
+
+    let d = new Dog("Buddy");
+    let c = new Cat("Whiskers");
+
+    print("d is Dog: Expected: 1, Actual: ", (d instanceof Dog));      
+    print("d is Animal: Expected: 1, Actual: ", (d instanceof Animal)); 
+    print("d is Cat: Expected: 0, Actual: ", (d instanceof Cat));       
+
+    if (d instanceof Dog) {
+        print("Verified: d is a Dog: Expected: pass, Actual: pass");
+    }
+
+    if (c instanceof Animal) {
+        print("Verified: c is an Animal: Expected: pass, Actual: pass");
+    }
+
+    print("Instanceof test complete!");
+
+    // Polymorphism Check
+    let animals: Animal[] = [d, c];
+    print("\n--- Polymorphism Check ---");
+    animals.forEach(an => {
+        print("Item is Animal: ", (an instanceof Animal));
+    });
+
+    print("=== OOP Test Complete ===");
 }
-
-if (c instanceof Animal) {
-    print("Verified: c is an Animal: Expected: pass, Actual: pass");
-}
-
-print("Instanceof test complete!");
-
-// Polymorphism Check
-let animals: Animal[] = [d, c];
-print("\n--- Polymorphism Check ---");
-animals.forEach(a => {
-    print("Item is Animal: ", (a instanceof Animal));
-});
-
-print("=== OOP Test Complete ===");

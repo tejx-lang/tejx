@@ -192,6 +192,7 @@ pub enum Expression {
     },
     // TypeofExpr removed
 
+    #[allow(dead_code)]
     MatchExpr {
         target: Box<Expression>,
         arms: Vec<MatchArm>,
@@ -205,6 +206,7 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    #[allow(dead_code)]
     UndefinedExpr { _line: usize, _col: usize },
     NoneExpr { _line: usize, _col: usize },
     SomeExpr {
@@ -242,6 +244,7 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    #[allow(dead_code)]
     BlockExpr {
         statements: Vec<Statement>, // For match arms with blocks
         _line: usize,
@@ -405,6 +408,60 @@ impl Expression {
             Expression::ArrayLiteral { .. } => "(array)".to_string(),
             Expression::ObjectLiteralExpr { .. } => "(object)".to_string(),
             _ => "".to_string(),
+        }
+    }
+}
+
+impl Statement {
+    pub fn get_line(&self) -> usize {
+        match self {
+            Statement::VarDeclaration { line, .. } => *line,
+            Statement::FunctionDeclaration(f) => f._line,
+            Statement::ClassDeclaration(c) => c._line,
+            Statement::EnumDeclaration(e) => e._line,
+            Statement::TypeAliasDeclaration { _line, .. } => *_line,
+            Statement::InterfaceDeclaration { _line, .. } => *_line,
+            Statement::ReturnStmt { _line, .. } => *_line,
+            Statement::BreakStmt { _line, .. } => *_line,
+            Statement::ContinueStmt { _line, .. } => *_line,
+            Statement::BlockStmt { _line, .. } => *_line,
+            Statement::IfStmt { _line, .. } => *_line,
+            Statement::WhileStmt { _line, .. } => *_line,
+            Statement::ForStmt { _line, .. } => *_line,
+            Statement::ForOfStmt { _line, .. } => *_line,
+            Statement::SwitchStmt { _line, .. } => *_line,
+            Statement::ExpressionStmt { _line, .. } => *_line,
+            Statement::TryStmt { _line, .. } => *_line,
+            Statement::ThrowStmt { _line, .. } => *_line,
+            Statement::ImportDecl { _line, .. } => *_line,
+            Statement::ExportDecl { _line, .. } => *_line,
+            Statement::ExtensionDeclaration(_) => 0, // Todo
+        }
+    }
+
+    pub fn get_col(&self) -> usize {
+        match self {
+            Statement::VarDeclaration { _col, .. } => *_col,
+            Statement::FunctionDeclaration(f) => f._col,
+            Statement::ClassDeclaration(c) => c._col,
+            Statement::EnumDeclaration(e) => e._col,
+            Statement::TypeAliasDeclaration { _col, .. } => *_col,
+            Statement::InterfaceDeclaration { _col, .. } => *_col,
+            Statement::ReturnStmt { _col, .. } => *_col,
+            Statement::BreakStmt { _col, .. } => *_col,
+            Statement::ContinueStmt { _col, .. } => *_col,
+            Statement::BlockStmt { _col, .. } => *_col,
+            Statement::IfStmt { _col, .. } => *_col,
+            Statement::WhileStmt { _col, .. } => *_col,
+            Statement::ForStmt { _col, .. } => *_col,
+            Statement::ForOfStmt { _col, .. } => *_col,
+            Statement::SwitchStmt { _col, .. } => *_col,
+            Statement::ExpressionStmt { _col, .. } => *_col,
+            Statement::TryStmt { _col, .. } => *_col,
+            Statement::ThrowStmt { _col, .. } => *_col,
+            Statement::ImportDecl { _col, .. } => *_col,
+            Statement::ExportDecl { _col, .. } => *_col,
+            Statement::ExtensionDeclaration(_) => 0, // Todo
         }
     }
 }

@@ -1,7 +1,10 @@
-let s = "Escape \"quote\" test";
-let s2 = 'Single \'quote\' test';
-print(s);
-print(s2);
 
-let err = "unclosed multi-line";
-print("Recovered?");
+function main() {
+    let s = "Escape \"quote\" test";
+    let s2 = 'Single \'quote\' test';
+    print(s);
+    print(s2);
+
+    let err = "unclosed multi-line";
+    print("Recovered?");
+}

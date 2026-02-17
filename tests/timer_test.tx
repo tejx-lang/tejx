@@ -24,4 +24,4 @@ async function main() {
     print("Timers test complete.");
 }
 
-main();
+
