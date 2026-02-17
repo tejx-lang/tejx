@@ -6,3 +6,6 @@ build = "build.rs"
 
 [dependencies]
 colored = "3.1.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(runtime_build)'] }

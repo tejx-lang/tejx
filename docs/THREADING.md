@@ -1,107 +1,94 @@
-# Thread Implementation in NovaJs
+# Multi-Threading in NovaJs
 
-NovaJs provides native multi-threading support through its runtime, leveraging Rust's `std::thread` and synchronization primitives. This allows for parallel execution of code, distinguishing it from the single-threaded event loop model of JavaScript.
+NovaJs provides native support for **OS-level threads**, allowing you to execute code in parallel on multiple CPU cores. This is distinct from the single-threaded Async/Await model and is intended for CPU-intensive tasks.
 
-## 1. Runtime Primitives
+## 1. Usage Guide
 
-The threading support is implemented in `src/runtime.rs` and exposed via the `std:thread` module.
+### Spawning Threads
 
-### Core Functions
-
-- **`Thread.spawn(callback, arg)`**:
-  - **Runtime Name**: `Thread_new`
-  - **Description**: Spawns a new OS thread that executes `callback(arg)`.
-  - **Returns**: A Thread ID (handle).
-  - **Implementation**:
-    ```rust
-    pub extern "C" fn Thread_new(callback: i64, arg: i64) -> i64 {
-        let handle = thread::spawn(move || {
-            // Transmute callback ID to function pointer and execute
-            let cb: unsafe extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(callback) };
-            cb(arg)
-        });
-        // Store handle in Heap...
-    }
-    ```
-
-- **`Thread.join(thread_id)`**:
-  - **Runtime Name**: `Thread_join`
-  - **Description**: Blocks the current thread until the specified thread terminates. Returns the result of the thread's function.
-
-- **`Thread.sleep(ms)`**:
-  - **Runtime Name**: `std_time_sleep`
-  - **Description**: Puts the current thread to sleep for `ms` milliseconds.
-
-### Synchronization
-
-- **`Mutex`**:
-  - **Usage**: `let m = Mutex.new();`
-  - **Locking**: `m.lock()` blocks until acquired.
-  - **Unlocking**: `m.unlock()` releases the lock.
-  - **Condvar**: Associated with the mutex for `wait` and `notify`.
-
-## 2. Example Usage
+The `Thread` class is used to create and manage threads.
 
 ```typescript
-// Define a worker function
-// Note: Variable capture is not fully supported across threads yet; pass data via arguments.
-function worker(id) {
-  print("Worker " + id + " started");
-  Thread.sleep(1000);
-  print("Worker " + id + " finished");
-  return id * 100;
+// 1. Define a worker function
+function heavyTask(limit: int): int {
+  let sum = 0;
+  for (let i = 0; i < limit; i++) {
+    sum += i;
+  }
+  return sum;
 }
 
 function main() {
-  print("Main started");
+  print("Main thread working...");
 
-  // Spawn two threads
-  let t1 = Thread.spawn(worker, 1);
-  let t2 = Thread.spawn(worker, 2);
+  // 2. Spawn a thread
+  // Thread.spawn(function, argument)
+  let t = Thread.spawn(heavyTask, 1000000);
 
-  // Wait for them to finish
-  let r1 = Thread.join(t1);
-  let r2 = Thread.join(t2);
+  print("Thread spawned, continuing main work...");
 
-  print("Results: " + r1 + ", " + r2);
+  // 3. Wait for result (Join)
+  let result = t.join();
+  print("Result:", result);
 }
-
-main();
 ```
 
-## 3. Memory Safety & Data Races
+### Supported APIs (`std:thread`)
 
-NovaJs is currently implementing a "Shared Heap" model protected by a global lock (GIL-like) or fine-grained locks on objects.
+- `Thread.spawn(func, arg)`: Starts a new thread. Returns a `Thread` handle.
+- `thread.join()`: Blocks until the thread finishes and returns its result.
+- `Thread.sleep(ms)`: Puts the _current_ thread to sleep (blocking).
 
-- **Heap Access**: The `HEAP` global in `runtime.rs` is a `Mutex<Heap>`. Every property access (`m_get`, `m_set`) acquires this lock.
-- **Implication**: This ensures memory safety (no segfaults from concurrent implementation map modifications), but heavy contention can reduce parallelism benefits for shared object manipulation.
-- **Best Practice**: Perform heavy computations using local variables (stack-based) or distinct objects before merging results to minimize lock contention.
+## 2. Synchronization (`std:sync`)
 
-## 4. Source Locations
+When threads need to share data or coordinate, you **must** use synchronization primitives to avoid race conditions.
 
-- **`src/runtime.rs`**: implementation of `Thread_new`, `Thread_join`, `Mutex_new`.
+### Mutex (Mutual Exclusion)
 
-## 5. Async/Await Implementation
+Protects shared data by ensuring only one thread can access it at a time.
 
-Async/Await is built on top of the threading primitives but abstracts away manual thread management.
+```typescript
+import { Mutex } from "std:sync";
 
-### Async Function Lowering
+let lock = new Mutex();
+// ... inside a thread ...
+lock.acquire();
+// Critical Section: Safe to modify shared variables
+lock.release();
+```
 
-When an `async` function is defined, the compiler lowers it into two components:
+### SharedQueue
 
-1.  **Wrapper Function**: A function that creates a `Promise`, spawns a worker thread, and returns the Promise ID.
-2.  **Worker Function**: A simulated state machine that executes the body of the async function.
+A thread-safe queue implementation, useful for Producer-Consumer patterns.
 
-### Argument Passing
+```typescript
+import { SharedQueue, Mutex } from "std:sync";
 
-Arguments to async functions are boxed and passed to the worker thread via an `any[]` array. The worker function automatically unboxes these arguments back to their primitive types (e.g., `int`, `float`) to ensure correct logic execution.
+let q = new SharedQueue<int>();
+let lock = new Mutex();
 
-### Return Values
+// Check 'tests/problems/producer_consumer.tx' for a full example
+```
 
-- **Wrapper**: Uses `TejxType::Any` as the return type to ensure the `Promise ID` is passed correctly without invalid unboxing by `codegen`.
-- **Worker**: Resolves the promise using `__resolve_promise(id, val)` upon completion or `__reject_promise(id, error)` on exception.
+## 3. Constraints & Memory Model
 
-### Runtime Support
+### ⚠️ Shared State Safety
 
-- **`Promise`**: A synchronization primitive wrapping a `Mutex<PromiseState>` and `Condvar`.
-- **`__await(promise_id)`**: Blocks the current thread (using `Condvar::wait`) until the target promise is resolved, then returns the value.
+- **Memory Isolation**: Threads share the same Heap but have their own Stacks.
+- **Race Conditions**: Modifying standard collections (`Array`, `Map`) or objects from multiple threads simultaneously **without locks** leads to Undefined Behavior (crashes or corruption).
+- **ARC Safety**: The Atomic Reference Counting in NovaJs is thread-safe, so passing objects between threads will not cause memory leaks, but the _contents_ of those objects are not automatically protected from race conditions.
+
+### ⚠️ Usage Limits
+
+- **Argument Passing**: Currently, `Thread.spawn` accepts a single argument. Wrap multiple arguments in an object or array (e.g., `Thread.spawn(worker, {start: 0, end: 100})`).
+- **`this` Binding**: Passing an instance method to `Thread.spawn` disconnects it from its `this` context. Use an arrow function or static method if possible, or manually pass the instance `this` as the argument.
+
+## 4. Internal Architecture (Advanced)
+
+_This section details the internal mechanics of the runtime._
+
+### Runtime Primitives (`src/runtime.rs`)
+
+- **`Thread_new`**: Uses Rust's `std::thread::spawn`. It transmutes the function ID to a function pointer and executes it.
+- **`Mutex`**: Wraps a `std::sync::Mutex` and `Condvar`.
+- **Global Lock**: The runtime currently employs a global lock on the main `HEAP` map to prevent memory corruption during allocation/deallocation, providing a baseline of safety (similar to a GIL for allocation), but individual object properties are not locked.

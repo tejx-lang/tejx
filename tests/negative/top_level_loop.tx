@@ -1,0 +1,6 @@
+// Description: Verify that top-level loops are disallowed.
+// Expected: COMPILE_ERROR
+
+while (true) { // Error: Top-level loops are not allowed.
+    break;
+}

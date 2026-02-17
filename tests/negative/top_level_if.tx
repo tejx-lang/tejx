@@ -1,0 +1,6 @@
+// Description: Verify that top-level if statements are disallowed.
+// Expected: COMPILE_ERROR
+
+if (true) { // Error: Top-level if statements are not allowed.
+    print("Hello");
+}

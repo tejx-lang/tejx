@@ -1,0 +1,5 @@
+// Description: Verify that top-level assignments are disallowed.
+// Expected: COMPILE_ERROR
+
+let x = 10;
+x = 20; // Error: Top-level assignment is an executable statement.

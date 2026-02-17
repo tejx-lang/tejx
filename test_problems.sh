@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================
-# TejX Rust Compiler - Test All Script
+# TejX Rust Compiler - Test Problems Script
 # ============================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,24 +22,24 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}   TejX Rust Compiler - Test Suite${NC}"
+echo -e "${CYAN}   TejX Rust Compiler - Problems Suite${NC}"
 echo -e "${CYAN}============================================${NC}"
 echo ""
 
-# 1. Build the compiler
-./build.sh
+# 1. Build the compiler (ensure it is up to date)
+# ./build.sh # Skip full build, assume it's built or use existing
 
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Compiler Build Failed!${NC}"
+if [ ! -f "$TEJXR_BIN" ]; then
+    echo -e "${RED}❌ Compiler binary not found at $TEJXR_BIN${NC}"
+    echo "Please run ./build.sh first."
     exit 1
 fi
-echo ""
 
 # 2. Create build directory
-mkdir -p "$BUILD_DIR/tests"
+mkdir -p "$BUILD_DIR"
 
-# 3. Run all test files
-echo -e "${YELLOW}>>> Running All Tests...${NC}"
+# 3. Run all problem files
+echo -e "${YELLOW}>>> Running Problem Tests...${NC}"
 echo "----------------------------------------"
 
 for FILE in "$TESTS_DIR"/*.tx; do
@@ -58,13 +58,13 @@ for FILE in "$TESTS_DIR"/*.tx; do
         
         if [ -f "$BINARY" ]; then
             # Move binary to build folder
-            mv "$BINARY" "$BUILD_DIR/tests/$FILENAME"
+            mv "$BINARY" "$BUILD_DIR/$FILENAME"
             
             # Run the binary
             echo -e "  Running $FILENAME..."
-            # Create a temporary file for output to avoid buffering issues and still capture it
+            # Create a temporary file for output
             OUT_FILE=$(mktemp)
-            "$BUILD_DIR/tests/$FILENAME" 2>&1 | tee "$OUT_FILE"
+            "$BUILD_DIR/$FILENAME" 2>&1 | tee "$OUT_FILE"
             RUN_EXIT=${PIPESTATUS[0]}
             OUTPUT=$(cat "$OUT_FILE")
             rm "$OUT_FILE"
@@ -78,11 +78,11 @@ for FILE in "$TESTS_DIR"/*.tx; do
                 ERRORS+=("$FILENAME (runtime error, exit: $RUN_EXIT)")
             fi
         else
-            # Check if .ll file exists (compilation succeeded but linking failed)
+             # Check if .ll file exists (compilation succeeded but linking failed)
             LL_FILE="${FILE%.*}.ll"
             if [ -f "$LL_FILE" ]; then
                 echo -e "  ${YELLOW}⚠️  LINK ERROR${NC} (LLVM IR generated, clang linking failed)"
-                mv "$LL_FILE" "$BUILD_DIR/tests/${FILENAME}.ll"
+                mv "$LL_FILE" "$BUILD_DIR/${FILENAME}.ll"
                 FAILED=$((FAILED + 1))
                 ERRORS+=("$FILENAME (linking failed)")
             else
@@ -94,8 +94,8 @@ for FILE in "$TESTS_DIR"/*.tx; do
         # Check if .ll was left behind
         LL_FILE="${FILE%.*}.ll"
         if [ -f "$LL_FILE" ]; then
-            mv "$LL_FILE" "$BUILD_DIR/tests/${FILENAME}.ll"
-            echo -e "  ${YELLOW}⚠️  LINK ERROR${NC} (LLVM IR saved to build/tests/${FILENAME}.ll)"
+            mv "$LL_FILE" "$BUILD_DIR/${FILENAME}.ll"
+            echo -e "  ${YELLOW}⚠️  LINK ERROR${NC} (LLVM IR saved to build/problems/${FILENAME}.ll)"
         else
             echo -e "  ${RED}❌ COMPILE ERROR${NC}"
         fi
@@ -113,7 +113,7 @@ done
 TOTAL=$((PASSED + FAILED))
 echo ""
 echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}   Test Results Summary${NC}"
+echo -e "${CYAN}   Problem Test Results Summary${NC}"
 echo -e "${CYAN}============================================${NC}"
 echo -e "  Total:  $TOTAL"
 echo -e "  ${GREEN}Passed: $PASSED${NC}"
@@ -129,7 +129,7 @@ fi
 
 echo ""
 if [ $FAILED -eq 0 ]; then
-    echo -e "${GREEN}>>> All Tests Passed! <<<${NC}"
+    echo -e "${GREEN}>>> All Problem Tests Passed! <<<${NC}"
 else
     echo -e "${YELLOW}>>> $FAILED test(s) failed <<<${NC}"
 fi
