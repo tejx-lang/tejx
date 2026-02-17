@@ -1,5 +1,6 @@
 // Async Features: Async/Await, Promises
 // =======================================
+import { http } from "std:net";
 
 // 1. Basic Async Function
 async function fetchData(id: int32): Promise<string> {
@@ -112,8 +113,6 @@ async function main(): Promise<void> {
 
     print("=== Promise Features Test Complete ===");
 
-    print("=== Promise Constructor Test ===");
-    print("=== Promise Constructor Test Complete ===");
 
     print("Start (Timestamp): ", Date.now());
     

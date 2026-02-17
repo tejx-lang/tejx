@@ -1,0 +1,10 @@
+class Box {
+    value: int;
+}
+
+function main() {
+    let a = new Box();
+    a.value = 10;
+    let b = a; // 'a' moved to 'b'
+    print(a.value); // Error: Use of moved variable 'a'
+}

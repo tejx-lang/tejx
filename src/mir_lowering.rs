@@ -24,6 +24,7 @@ pub struct MIRLowering {
     expected_ty: Option<TejxType>,
     signatures: HashMap<String, Vec<TejxType>>,
     current_return_type: TejxType,
+    current_line: usize,
 }
 
 impl MIRLowering {
@@ -38,6 +39,7 @@ impl MIRLowering {
             expected_ty: None,
             signatures,
             current_return_type: TejxType::Void,
+            current_line: 0,
         }
     }
 
@@ -65,9 +67,8 @@ impl MIRLowering {
             // let arg_name = format!("__arg{}", i);
             self.current_function.variables.insert(pname.clone(), pty.clone());
             /*
-            self.emit(MIRInstruction::Move {
-                dst: pname.clone(),
-                src: MIRValue::Variable { name: arg_name, ty: pty.clone() },
+            self.emit(MIRInstruction::Move { line: 0,  dst: pname.clone(),
+                src: MIRValue::Variable { name: arg_name, ty: pty.clone()  },
             });
             */
         }
@@ -77,7 +78,7 @@ impl MIRLowering {
         // Ensure last block is terminated
         let cb = self.current_block;
         if !self.current_function.blocks[cb].is_terminated() {
-            self.emit(MIRInstruction::Return { value: None });
+            self.emit(MIRInstruction::Return { line: 0,  value: None  });
         }
 
         self.current_function.clone()
@@ -99,7 +100,8 @@ impl MIRLowering {
         name
     }
 
-    fn emit(&mut self, inst: MIRInstruction) {
+    fn emit(&mut self, mut inst: MIRInstruction) {
+        inst.set_line(self.current_line);
         let cb = self.current_block;
         self.current_function.blocks[cb].add_instruction(inst);
     }
@@ -119,11 +121,11 @@ impl MIRLowering {
 
             if let Some(func) = box_func {
                 let temp = self.new_temp(target_ty.clone());
-                self.emit(MIRInstruction::Call {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                     callee: func.to_string(),
                     args: vec![val],
-                });
+                    
+                 });
                 return MIRValue::Variable { name: temp, ty: target_ty.clone() };
             }
         }
@@ -139,21 +141,19 @@ impl MIRLowering {
              
              if let Some(func) = unbox_func {
                  let temp = self.new_temp(TejxType::Float64);
-                 self.emit(MIRInstruction::Call {
-                     dst: temp.clone(),
+                 self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                      callee: func.to_string(),
                      args: vec![val],
-                 });
+                  });
                  let mut final_val = MIRValue::Variable { name: temp, ty: TejxType::Float64 };
                  
                  // If target is not Float64, we need a cast
                  if target_ty.is_numeric() && *target_ty != TejxType::Float64 {
                       let cast_temp = self.new_temp(target_ty.clone());
-                      self.emit(MIRInstruction::Cast {
-                          dst: cast_temp.clone(),
+                      self.emit(MIRInstruction::Cast { line: 0,  dst: cast_temp.clone(),
                           src: final_val,
                           ty: target_ty.clone(),
-                      });
+                       });
                       final_val = MIRValue::Variable { name: cast_temp, ty: target_ty.clone() };
                  } else if *target_ty == TejxType::Bool {
                       // Bool case: already handled by rt_is_truthy which returns bool?
@@ -167,11 +167,10 @@ impl MIRLowering {
         if src_ty.is_numeric() && target_ty.is_numeric() && *src_ty != *target_ty {
              // Convert src to target type
              let cast_temp = self.new_temp(target_ty.clone());
-             self.emit(MIRInstruction::Cast { 
-                 dst: cast_temp.clone(),
+             self.emit(MIRInstruction::Cast { line: 0,  dst: cast_temp.clone(),
                  src: val.clone(),
                  ty: target_ty.clone(),
-             });
+              });
              return MIRValue::Variable { name: cast_temp, ty: target_ty.clone() };
         }
         
@@ -179,8 +178,9 @@ impl MIRLowering {
     }
 
     fn lower_statement(&mut self, stmt: &HIRStatement) {
+        self.current_line = stmt.get_line();
         match stmt {
-            HIRStatement::Block { statements } => {
+            HIRStatement::Block { statements, .. } => {
                 for s in statements {
                     self.lower_statement(s);
                 }
@@ -194,10 +194,10 @@ impl MIRLowering {
                     
                     src = self.auto_box(src, ty);
 
-                    self.emit(MIRInstruction::Move {
-                        dst: name.clone(),
+                    self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
                         src,
-                    });
+                        
+                     });
                 }
             }
             HIRStatement::Loop { condition, body, increment, .. } => {
@@ -215,16 +215,16 @@ impl MIRLowering {
                     break_target: loop_exit,
                 });
 
-                self.emit(MIRInstruction::Jump { target: loop_header });
+                self.emit(MIRInstruction::Jump { line: 0,  target: loop_header  });
 
                 // Header: check condition
                 self.current_block = loop_header;
                 let cond_val = self.lower_expression(condition);
-                self.emit(MIRInstruction::Branch {
-                    condition: cond_val,
+                self.emit(MIRInstruction::Branch { line: 0,  condition: cond_val,
                     true_target: loop_body,
                     false_target: loop_exit,
-                });
+                    
+                 });
 
                 // Body
                 self.current_block = loop_body;
@@ -232,7 +232,7 @@ impl MIRLowering {
                 // Fallthrough to latch (or header if no latch)
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
-                     self.emit(MIRInstruction::Jump { target: loop_latch });
+                     self.emit(MIRInstruction::Jump { line: 0,  target: loop_latch  });
                 }
 
                 // Latch (Increment)
@@ -241,41 +241,41 @@ impl MIRLowering {
                     self.lower_statement(inc);
                     let cb = self.current_block;
                     if !self.current_function.blocks[cb].is_terminated() {
-                        self.emit(MIRInstruction::Jump { target: loop_header });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: loop_header  });
                     }
                 }
 
                 self.loop_stack.pop();
                 self.current_block = loop_exit;
             }
-            HIRStatement::Break => {
+            HIRStatement::Break { .. } => {
                 if let Some(ctx) = self.loop_stack.last() {
-                    self.emit(MIRInstruction::Jump { target: ctx.break_target });
+                    self.emit(MIRInstruction::Jump { line: 0,  target: ctx.break_target  });
                 }
             }
-            HIRStatement::Continue => {
+            HIRStatement::Continue { .. } => {
                  if let Some(ctx) = self.loop_stack.last() {
-                    self.emit(MIRInstruction::Jump { target: ctx.continue_target });
+                    self.emit(MIRInstruction::Jump { line: 0,  target: ctx.continue_target  });
                 }
             }
-            HIRStatement::If { condition, then_branch, else_branch } => {
+            HIRStatement::If { condition, then_branch, else_branch, .. } => {
                 let then_block = self.new_block("if_then");
                 let else_block = self.new_block("if_else");
                 let merge_block = self.new_block("if_merge");
 
                 let cond_val = self.lower_expression(condition);
-                self.emit(MIRInstruction::Branch {
-                    condition: cond_val,
+                self.emit(MIRInstruction::Branch { line: 0,  condition: cond_val,
                     true_target: then_block,
                     false_target: else_block,
-                });
+                    
+                 });
 
                 // Then
                 self.current_block = then_block;
                 self.lower_statement(then_branch);
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
-                    self.emit(MIRInstruction::Jump { target: merge_block });
+                    self.emit(MIRInstruction::Jump { line: 0,  target: merge_block  });
                 }
 
                 // Else
@@ -285,27 +285,27 @@ impl MIRLowering {
                 }
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
-                    self.emit(MIRInstruction::Jump { target: merge_block });
+                    self.emit(MIRInstruction::Jump { line: 0,  target: merge_block  });
                 }
 
                 self.current_block = merge_block;
             }
-            HIRStatement::Return { value } => {
+            HIRStatement::Return { value, .. } => {
                 let mut val = value.as_ref().map(|e| self.lower_expression(e));
                 
                 if let Some(ret_val) = val {
                      val = Some(self.auto_box(ret_val, &self.current_return_type.clone()));
                 }
 
-                self.emit(MIRInstruction::Return { value: val });
+                self.emit(MIRInstruction::Return { line: 0,  value: val  });
             }
-            HIRStatement::ExpressionStmt { expr } => {
+            HIRStatement::ExpressionStmt { expr, .. } => {
                 self.lower_expression(expr);
             }
             HIRStatement::Function { body, .. } => {
                self.lower_statement(body);
             }
-            HIRStatement::Switch { condition, cases } => {
+            HIRStatement::Switch { condition, cases, .. } => {
                 let switch_val = self.lower_expression(condition);
                 let switch_exit = self.new_block("switch_exit");
                 
@@ -325,7 +325,7 @@ impl MIRLowering {
                 // default: body -> exit
                 
                 let mut next_check_block = self.new_block("case_check");
-                self.emit(MIRInstruction::Jump { target: next_check_block });
+                self.emit(MIRInstruction::Jump { line: 0,  target: next_check_block  });
 
                 for case in cases {
                     self.current_block = next_check_block;
@@ -338,24 +338,23 @@ impl MIRLowering {
                         // Compare
                         // Compare: switch_val == case_val
                         let cmp_res = self.new_temp(TejxType::Bool);
-                        self.emit(MIRInstruction::BinaryOp {
-                            dst: cmp_res.clone(),
+                        self.emit(MIRInstruction::BinaryOp { line: 0,  dst: cmp_res.clone(),
                             left: switch_val.clone(),
                             op: TokenType::EqualEqual,
                             right: case_val,
-                        });
-                        self.emit(MIRInstruction::Branch {
-                            condition: MIRValue::Variable { name: cmp_res, ty: TejxType::Bool },
+                            
+                         });
+                        self.emit(MIRInstruction::Branch { line: 0,  condition: MIRValue::Variable { name: cmp_res, ty: TejxType::Bool  },
                             true_target: body_block,
                             false_target: next_c,
-                        });
+                            });
                         
                         // Body
                         self.current_block = body_block;
                         self.lower_statement(&case.body);
                         let cb = self.current_block;
                         if !self.current_function.blocks[cb].is_terminated() {
-                            self.emit(MIRInstruction::Jump { target: switch_exit });
+                            self.emit(MIRInstruction::Jump { line: 0,  target: switch_exit  });
                         }
                         
                         next_check_block = next_c;
@@ -365,13 +364,13 @@ impl MIRLowering {
                         // We are at next_check_block (which was previous Loop's false_target).
                         // wait, logic above sets current_block to next_check_block at start of loop.
                         // So here we are at 'next_check_block'.
-                        self.emit(MIRInstruction::Jump { target: default_block });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: default_block  });
                         
                         self.current_block = default_block;
                         self.lower_statement(&case.body);
                         let cb = self.current_block;
                         if !self.current_function.blocks[cb].is_terminated() {
-                           self.emit(MIRInstruction::Jump { target: switch_exit });
+                           self.emit(MIRInstruction::Jump { line: 0,  target: switch_exit  });
                         }
                         
                         // Default should be last in HIR usually? 
@@ -386,12 +385,12 @@ impl MIRLowering {
                 
                 // If fall through all cases (no default or default didn't match?), jump to exit
                 self.current_block = next_check_block;
-                self.emit(MIRInstruction::Jump { target: switch_exit });
+                self.emit(MIRInstruction::Jump { line: 0,  target: switch_exit  });
                 
                 self.loop_stack.pop();
                 self.current_block = switch_exit;
             }
-            HIRStatement::Try { try_block, catch_var, catch_block, finally_block } => {
+            HIRStatement::Try { try_block, catch_var, catch_block, finally_block, .. } => {
                 let catch_block_idx = self.new_block("catch");
                 let finally_block_idx = finally_block.as_ref().map(|_| self.new_block("finally"));
                 let exit_block_idx = self.new_block("try_exit");
@@ -400,7 +399,7 @@ impl MIRLowering {
                 self.exception_handler_stack.push(catch_block_idx);
                 // We need to start a new block for the try body to ensure it has the exception handler
                 let try_start_idx = self.new_block("try_start");
-                self.emit(MIRInstruction::Jump { target: try_start_idx });
+                self.emit(MIRInstruction::Jump { line: 0,  target: try_start_idx  });
                 self.current_block = try_start_idx;
                 
                 self.lower_statement(try_block);
@@ -408,9 +407,9 @@ impl MIRLowering {
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
                     if let Some(f) = finally_block_idx {
-                        self.emit(MIRInstruction::Jump { target: f });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: f  });
                     } else {
-                        self.emit(MIRInstruction::Jump { target: exit_block_idx });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
                     }
                 }
                 self.exception_handler_stack.pop();
@@ -420,23 +419,22 @@ impl MIRLowering {
                 if let Some(var) = catch_var {
                     // Extract exception into variable
                     let temp = self.new_temp(TejxType::Any);
-                    self.emit(MIRInstruction::Call {
-                        dst: temp.clone(),
+                    self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                         callee: "tejx_get_exception".to_string(),
                         args: vec![],
-                    });
-                    self.emit(MIRInstruction::Move {
-                        dst: var.clone(),
-                        src: MIRValue::Variable { name: temp, ty: TejxType::Any },
-                    });
+                        
+                     });
+                    self.emit(MIRInstruction::Move { line: 0,  dst: var.clone(),
+                        src: MIRValue::Variable { name: temp, ty: TejxType::Any  },
+                        });
                 }
                 self.lower_statement(catch_block);
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
                     if let Some(f) = finally_block_idx {
-                        self.emit(MIRInstruction::Jump { target: f });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: f  });
                     } else {
-                        self.emit(MIRInstruction::Jump { target: exit_block_idx });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
                     }
                 }
 
@@ -448,34 +446,35 @@ impl MIRLowering {
                     }
                     let cb = self.current_block;
                     if !self.current_function.blocks[cb].is_terminated() {
-                        self.emit(MIRInstruction::Jump { target: exit_block_idx });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
                     }
                 }
 
                 self.current_block = exit_block_idx;
             }
-            HIRStatement::Throw { value } => {
+            HIRStatement::Throw { value, .. } => {
                 let val = self.lower_expression(value);
-                self.emit(MIRInstruction::Throw { value: val });
+                self.emit(MIRInstruction::Throw { line: 0,  value: val  });
             }
         }
     }
 
     fn lower_expression(&mut self, expr: &HIRExpression) -> MIRValue {
+        self.current_line = expr.get_line();
         match expr {
-            HIRExpression::Literal { value, ty } => {
+            HIRExpression::Literal { value, ty, .. } => {
                 MIRValue::Constant {
                     value: value.clone(),
                     ty: ty.clone(),
                 }
             }
-            HIRExpression::Variable { name, ty } => {
+            HIRExpression::Variable { name, ty, .. } => {
                 MIRValue::Variable {
                     name: name.clone(),
                     ty: ty.clone(),
                 }
             }
-            HIRExpression::NewExpr { class_name, _args } => {
+            HIRExpression::NewExpr { class_name, _args, .. } => {
                 if class_name == "Thread" {
                      let callback = self.lower_expression(&_args[0]);
                      let arg = if _args.len() > 1 {
@@ -485,47 +484,46 @@ impl MIRLowering {
                      };
                      
                      let temp = self.new_temp(TejxType::Int32);
-                     self.emit(MIRInstruction::Call {
-                         callee: "Thread_new".to_string(),
+                     self.emit(MIRInstruction::Call { line: 0,  callee: "Thread_new".to_string(),
                          args: vec![callback, arg],
                          dst: temp.clone(),
-                     });
+                         
+                      });
                      
                      MIRValue::Variable { name: temp, ty: TejxType::Class("Thread".to_string()) }
                 } else if class_name == "Mutex" {
                      let temp = self.new_temp(TejxType::Class("Mutex".to_string()));
-                     self.emit(MIRInstruction::Call {
-                         callee: "Mutex_new".to_string(),
+                     self.emit(MIRInstruction::Call { line: 0,  callee: "Mutex_new".to_string(),
                          args: vec![],
                          dst: temp.clone(),
-                     });
+                      });
                      
                      MIRValue::Variable { name: temp, ty: TejxType::Class("Mutex".to_string()) }
                 } else if class_name == "Atomic" {
                       let initial = if !_args.is_empty() { self.lower_expression(&_args[0]) } else { MIRValue::Constant { value: "0".to_string(), ty: TejxType::Int32 } };
                       let temp = self.new_temp(TejxType::Class("Atomic".to_string()));
-                      self.emit(MIRInstruction::Call {
-                          callee: "rt_atomic_new".to_string(),
+                      self.emit(MIRInstruction::Call { line: 0,  callee: "rt_atomic_new".to_string(),
                           args: vec![initial],
                           dst: temp.clone(),
-                      });
+                          
+                       });
                       MIRValue::Variable { name: temp, ty: TejxType::Class("Atomic".to_string()) }
                 } else if class_name == "Condition" {
                       let temp = self.new_temp(TejxType::Class("Condition".to_string()));
-                      self.emit(MIRInstruction::Call {
-                          callee: "rt_cond_new".to_string(),
+                      self.emit(MIRInstruction::Call { line: 0,  callee: "rt_cond_new".to_string(),
                           args: vec![],
                           dst: temp.clone(),
-                      });
+                          
+                       });
                       MIRValue::Variable { name: temp, ty: TejxType::Class("Condition".to_string()) }
                 } else if class_name == "Promise" {
                       let callback = self.lower_expression(&_args[0]);
                       let temp = self.new_temp(TejxType::Class("Promise".to_string()));
-                      self.emit(MIRInstruction::Call {
-                          callee: "Promise_new".to_string(),
+                      self.emit(MIRInstruction::Call { line: 0,  callee: "Promise_new".to_string(),
                           args: vec![callback],
                           dst: temp.clone(),
-                      });
+                          
+                       });
                       
                       MIRValue::Variable { name: temp, ty: TejxType::Class("Promise".to_string()) }
                 } else if class_name == "Array" || class_name == "ByteArray" {
@@ -536,11 +534,11 @@ impl MIRLowering {
                            if ety.is_array() && matches!(ety.get_array_element_type(), TejxType::Bool) { 1 } else { 8 }
                        } else { 8 };
                        
-                       self.emit(MIRInstruction::Call {
-                           callee: "m_new".to_string(),
+                       self.emit(MIRInstruction::Call { line: 0,  callee: "m_new".to_string(),
                            args: vec![],
                            dst: temp.clone(),
-                       });
+                           
+                        });
                        
                        let constructor_name = "f_Array_constructor".to_string();
                        let mut constructor_args = vec![
@@ -556,21 +554,19 @@ impl MIRLowering {
                        constructor_args.push(MIRValue::Constant { value: elem_size.to_string(), ty: TejxType::Int32 });
                        
                        let void_temp = self.new_temp(TejxType::Void);
-                       self.emit(MIRInstruction::Call {
-                           callee: constructor_name,
+                       self.emit(MIRInstruction::Call { line: 0,  callee: constructor_name,
                            args: constructor_args,
                            dst: void_temp,
-                       });
+                        });
                        
                        MIRValue::Variable { name: temp, ty: TejxType::Class(class_name.clone()) }
                  } else {
                       // Default: create a generic object (Map)
                       let temp = self.new_temp(TejxType::Class(class_name.clone()));
-                      self.emit(MIRInstruction::Call {
-                          callee: "m_new".to_string(),
+                      self.emit(MIRInstruction::Call { line: 0,  callee: "m_new".to_string(),
                           args: vec![],
                           dst: temp.clone(),
-                      });
+                       });
                       
                       // Initialize with constructor: f_ClassName_constructor(this, args...)
                       let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie", "SharedQueue"].contains(&class_name.as_str()); let constructor_name = if is_std_collection { format!("rt_{}_constructor", class_name) } else { format!("f_{}_constructor", class_name) };
@@ -583,16 +579,15 @@ impl MIRLowering {
                      }
                      
                      let void_temp = self.new_temp(TejxType::Void);
-                     self.emit(MIRInstruction::Call {
-                         callee: constructor_name,
+                     self.emit(MIRInstruction::Call { line: 0,  callee: constructor_name,
                          args: constructor_args,
                          dst: void_temp,
-                     });
+                      });
                      
                      MIRValue::Variable { name: temp, ty: TejxType::Class(class_name.clone()) }
                 }
             }
-            HIRExpression::BinaryExpr { left, op, right, ty } => {
+            HIRExpression::BinaryExpr { left, op, right, ty, .. } => {
                 match op {
                     TokenType::AmpersandAmpersand => {
                         // Short-circuit AND: left && right
@@ -604,20 +599,20 @@ impl MIRLowering {
                         let false_block = self.new_block("and_false");
                         let merge_block = self.new_block("and_merge");
                         
-                        self.emit(MIRInstruction::Branch {
-                            condition: l_val.clone(),
+                        self.emit(MIRInstruction::Branch { line: 0,  condition: l_val.clone(),
                             true_target: right_block,
                             false_target: false_block,
-                        });
+                            
+                         });
                         
                         self.current_block = right_block;
                         let r_val = self.lower_expression(right);
-                        self.emit(MIRInstruction::Move { dst: result_temp.clone(), src: r_val });
-                        self.emit(MIRInstruction::Jump { target: merge_block });
+                        self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(), src: r_val  });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: merge_block  });
                         
                         self.current_block = false_block;
-                        self.emit(MIRInstruction::Move { dst: result_temp.clone(), src: l_val });
-                        self.emit(MIRInstruction::Jump { target: merge_block });
+                        self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(), src: l_val  });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: merge_block  });
                         
                         self.current_block = merge_block;
                         MIRValue::Variable { name: result_temp, ty: ty.clone() }
@@ -637,20 +632,20 @@ impl MIRLowering {
                         let right_block = self.new_block("or_falsy");
                         let merge_block = self.new_block("or_merge");
                         
-                        self.emit(MIRInstruction::Branch {
-                            condition: l_val.clone(),
+                        self.emit(MIRInstruction::Branch { line: 0,  condition: l_val.clone(),
                             true_target: true_block,
                             false_target: right_block,
-                        });
+                            
+                         });
                         
                         self.current_block = true_block;
-                        self.emit(MIRInstruction::Move { dst: result_temp.clone(), src: l_val });
-                        self.emit(MIRInstruction::Jump { target: merge_block });
+                        self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(), src: l_val  });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: merge_block  });
                         
                         self.current_block = right_block;
                         let r_val = self.lower_expression(right);
-                        self.emit(MIRInstruction::Move { dst: result_temp.clone(), src: r_val });
-                        self.emit(MIRInstruction::Jump { target: merge_block });
+                        self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(), src: r_val  });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: merge_block  });
                         
                         self.current_block = merge_block;
                         MIRValue::Variable { name: result_temp, ty: ty.clone() }
@@ -661,12 +656,12 @@ impl MIRLowering {
                         let _l_ty = l.get_type();
                         let _r_ty = r.get_type();
                         let temp = self.new_temp(ty.clone());
-                        self.emit(MIRInstruction::BinaryOp {
-                            dst: temp.clone(),
+                        self.emit(MIRInstruction::BinaryOp { line: 0,  dst: temp.clone(),
                             left: l,
                             op: op.clone(),
                             right: r,
-                        });
+                            
+                         });
                         MIRValue::Variable {
                             name: temp,
                             ty: ty.clone(),
@@ -678,37 +673,37 @@ impl MIRLowering {
                 let mut val = self.lower_expression(value);
                 
                 match target.as_ref() {
-                    HIRExpression::Variable { name, ty } => {
+                    HIRExpression::Variable { name, ty, .. } => {
                         val = self.auto_box(val, ty);
-                        self.emit(MIRInstruction::Move {
-                            dst: name.clone(),
+                        self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
                             src: val.clone(),
-                        });
+                            
+                         });
                     }
                     HIRExpression::MemberAccess { target: obj_expr, member, ty, .. } => {
                         let obj_val = self.lower_expression(obj_expr);
                         val = self.auto_box(val, ty);
-                        self.emit(MIRInstruction::StoreMember {
-                            obj: obj_val,
+                        self.emit(MIRInstruction::StoreMember { line: 0,  obj: obj_val,
                             member: member.clone(),
                             src: val.clone(),
-                        });
+                            
+                         });
                     }
                     HIRExpression::IndexAccess { target: obj_expr, index: idx_expr, ty, .. } => {
                         let obj_val = self.lower_expression(obj_expr);
                         let idx_val = self.lower_expression(idx_expr);
                         val = self.auto_box(val, ty);
-                        self.emit(MIRInstruction::StoreIndex {
-                            obj: obj_val,
+                        self.emit(MIRInstruction::StoreIndex { line: 0,  obj: obj_val,
                             index: idx_val,
                             src: val.clone(),
-                        });
+                            
+                         });
                     }
                     _ => {}
                 }
                 val
             }
-            HIRExpression::Call { callee, args, ty } => {
+            HIRExpression::Call { callee, args, ty, .. } => {
                 let maybe_sig = self.signatures.get(callee).cloned();
                 let mir_args: Vec<MIRValue> = args.iter().enumerate()
                     .map(|(i, a)| {
@@ -733,17 +728,17 @@ impl MIRLowering {
                 else if callee == "f_Mutex_lock" { final_callee = "m_lock".to_string(); }
                 else if callee == "f_Mutex_unlock" { final_callee = "m_unlock".to_string(); }
 
-                self.emit(MIRInstruction::Call {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                     callee: final_callee,
                     args: mir_args,
-                });
+                    
+                 });
                 MIRValue::Variable {
                     name: temp,
                     ty: ty.clone(),
                 }
             }
-            HIRExpression::IndirectCall { callee, args, ty } => {
+            HIRExpression::IndirectCall { callee, args, ty, .. } => {
                 let mir_callee = self.lower_expression(callee);
                 let mir_args: Vec<MIRValue> = args.iter()
                     .map(|a| {
@@ -761,11 +756,11 @@ impl MIRLowering {
                              };
                              if let Some(f) = box_func {
                                  let temp = self.new_temp(TejxType::Any);
-                                 self.emit(MIRInstruction::Call {
-                                     dst: temp.clone(),
+                                 self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                                      callee: f.to_string(),
                                      args: vec![val],
-                                 });
+                                     
+                                  });
                                  val = MIRValue::Variable { name: temp, ty: TejxType::Any };
                              }
                         }
@@ -773,42 +768,40 @@ impl MIRLowering {
                     })
                     .collect();
                 let temp = self.new_temp(ty.clone());
-                self.emit(MIRInstruction::IndirectCall {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::IndirectCall { line: 0,  dst: temp.clone(),
                     callee: mir_callee,
                     args: mir_args,
-                });
+                    
+                 });
                 MIRValue::Variable {
                     name: temp,
                     ty: ty.clone(),
                 }
             }
-            HIRExpression::Await { expr, ty } => {
+            HIRExpression::Await { expr, ty, .. } => {
                  // Lower to runtime call: __await(expr)
                  let val = self.lower_expression(expr);
                  let temp = self.new_temp(ty.clone());
-                 self.emit(MIRInstruction::Call {
-                     dst: temp.clone(),
+                 self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                      callee: "__await".to_string(),
                      args: vec![val],
-                 });
+                  });
                  MIRValue::Variable { name: temp, ty: ty.clone() }
             }
-            HIRExpression::OptionalChain { target, operation, ty } => {
+            HIRExpression::OptionalChain { target, operation, ty, .. } => {
                  // Lower to runtime call: __optional_chain(target, "operation")
                  let val = self.lower_expression(target);
                  let op_str = MIRValue::Constant { 
                      value: format!("\"{}\"", operation), // Quote string
                       ty: TejxType::String                 };
                  let temp = self.new_temp(ty.clone());
-                 self.emit(MIRInstruction::Call {
-                     dst: temp.clone(),
+                 self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                      callee: "__optional_chain".to_string(),
                      args: vec![val, op_str],
-                 });
+                  });
                  MIRValue::Variable { name: temp, ty: ty.clone() }
             }
-            HIRExpression::IndexAccess { target, index, ty } => {
+            HIRExpression::IndexAccess { target, index, ty, .. } => {
                 let obj = self.lower_expression(target);
                 let idx = self.lower_expression(index);
                 
@@ -821,11 +814,11 @@ impl MIRLowering {
                 let load_ty = if is_any_source { TejxType::Any } else { ty.clone() };
                 
                 let temp = self.new_temp(load_ty.clone());
-                self.emit(MIRInstruction::LoadIndex {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::LoadIndex { line: 0,  dst: temp.clone(),
                     obj,
                     index: idx,
-                });
+                    
+                 });
                 
                 let val = MIRValue::Variable { name: temp, ty: load_ty };
                 
@@ -835,20 +828,20 @@ impl MIRLowering {
                     val
                 }
             }
-            HIRExpression::MemberAccess { target, member, ty } => {
+            HIRExpression::MemberAccess { target, member, ty, .. } => {
                 let obj = self.lower_expression(target);
                 // Runtime m_get returns a TaggedValue (Any), so we must load it as Any first.
                 let temp = self.new_temp(TejxType::Any);
-                self.emit(MIRInstruction::LoadMember {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::LoadMember { line: 0,  dst: temp.clone(),
                     obj,
                     member: member.clone(),
-                });
+                    
+                 });
                 let val = MIRValue::Variable { name: temp, ty: TejxType::Any };
                 // Convert/Unbox to the expected HIR type (e.g. Int32 for length)
                 self.auto_box(val, ty)
             }
-            HIRExpression::ObjectLiteral { entries, ty } => {
+            HIRExpression::ObjectLiteral { entries, ty, .. } => {
                 let mir_entries = entries.iter()
                     .map(|(k, v)| {
                         let mut val = self.lower_expression(v);
@@ -864,11 +857,10 @@ impl MIRLowering {
                             };
                             if let Some(f) = box_func {
                                 let temp = self.new_temp(TejxType::Any);
-                                self.emit(MIRInstruction::Call {
-                                    dst: temp.clone(),
+                                self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                                     callee: f.to_string(),
                                     args: vec![val],
-                                });
+                                 });
                                 val = MIRValue::Variable { name: temp, ty: TejxType::Any };
                             }
                         }
@@ -876,14 +868,14 @@ impl MIRLowering {
                     })
                     .collect();
                 let temp = self.new_temp(ty.clone());
-                self.emit(MIRInstruction::ObjectLiteral {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::ObjectLiteral { line: 0,  dst: temp.clone(),
                     entries: mir_entries,
                     ty: Some(ty.clone()),
-                });
+                    
+                 });
                 MIRValue::Variable { name: temp, ty: ty.clone() }
             }
-            HIRExpression::ArrayLiteral { elements, ty } => {
+            HIRExpression::ArrayLiteral { elements, ty, .. } => {
                 let is_numeric_array = ty.get_array_element_type().is_numeric();
                 let mir_elements = elements.iter()
                     .map(|e| {
@@ -902,11 +894,10 @@ impl MIRLowering {
                             };
                             if let Some(f) = box_func {
                                 let temp = self.new_temp(TejxType::Any);
-                                self.emit(MIRInstruction::Call {
-                                    dst: temp.clone(),
+                                self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                                     callee: f.to_string(),
                                     args: vec![val],
-                                });
+                                 });
                                 val = MIRValue::Variable { name: temp, ty: TejxType::Any };
                             }
                         }
@@ -914,14 +905,14 @@ impl MIRLowering {
                     })
                     .collect();
                 let temp = self.new_temp(ty.clone());
-                self.emit(MIRInstruction::ArrayLiteral {
-                    dst: temp.clone(),
+                self.emit(MIRInstruction::ArrayLiteral { line: 0,  dst: temp.clone(),
                     elements: mir_elements,
                     ty: Some(ty.clone()),
-                });
+                    
+                 });
                 MIRValue::Variable { name: temp, ty: ty.clone() }
             }
-            HIRExpression::Match { target, arms, ty } => {
+            HIRExpression::Match { target, arms, ty, .. } => {
                  // Match is an expression -> returns a value.
                  // Evaluating target
                  let val = self.lower_expression(target);
@@ -929,7 +920,7 @@ impl MIRLowering {
                  let match_exit = self.new_block("match_exit");
                  
                  let mut next_arm_block = self.new_block("match_check");
-                 self.emit(MIRInstruction::Jump { target: next_arm_block });
+                 self.emit(MIRInstruction::Jump { line: 0,  target: next_arm_block  });
                  
                  for arm in arms {
                      self.current_block = next_arm_block;
@@ -971,9 +962,9 @@ impl MIRLowering {
                      };
                      
                      if is_match {
-                          self.emit(MIRInstruction::Jump { target: match_body });
+                          self.emit(MIRInstruction::Jump { line: 0,  target: match_body  });
                      } else {
-                          self.emit(MIRInstruction::Jump { target: next });
+                          self.emit(MIRInstruction::Jump { line: 0,  target: next  });
                      }
                                           // Body
                       self.current_block = match_body;
@@ -981,34 +972,30 @@ impl MIRLowering {
                       // Bind variables from pattern to val
                       match &arm.pattern {
                           BindingNode::Identifier(name) => {
-                              self.emit(MIRInstruction::Move {
-                                  dst: name.clone(),
+                              self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
                                   src: val.clone(),
-                              });
+                               });
                           }
                           BindingNode::ArrayBinding { elements, rest } => {
                               // [x, y, ...rest] = val
                               for (i, el) in elements.iter().enumerate() {
                                   if let BindingNode::Identifier(name) = el {
                                       let temp = self.new_temp(TejxType::Any);
-                                      self.emit(MIRInstruction::LoadIndex {
-                                          dst: temp.clone(),
+                                      self.emit(MIRInstruction::LoadIndex { line: 0,  dst: temp.clone(),
                                           obj: val.clone(),
-                                           index: MIRValue::Constant { value: i.to_string(), ty: TejxType::Int32 },
+                                           index: MIRValue::Constant { value: i.to_string(), ty: TejxType::Int32  },
                                       });
-                                      self.emit(MIRInstruction::Move {
-                                          dst: name.clone(),
-                                          src: MIRValue::Variable { name: temp, ty: TejxType::Any },
+                                      self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
+                                          src: MIRValue::Variable { name: temp, ty: TejxType::Any  },
                                       });
                                   }
                               }
                               if let Some(r) = rest {
                                   if let BindingNode::Identifier(name) = r.as_ref() {
                                        // simplified: rest = val (should be slice)
-                                       self.emit(MIRInstruction::Move {
-                                          dst: name.clone(),
+                                       self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
                                           src: val.clone(),
-                                      });
+                                       });
                                   }
                               }
                           }
@@ -1016,14 +1003,12 @@ impl MIRLowering {
                               for (key, val_pat) in entries {
                                   if let BindingNode::Identifier(name) = val_pat {
                                       let temp = self.new_temp(TejxType::Any);
-                                      self.emit(MIRInstruction::LoadMember {
-                                          dst: temp.clone(),
+                                      self.emit(MIRInstruction::LoadMember { line: 0,  dst: temp.clone(),
                                           obj: val.clone(),
                                           member: key.clone(),
-                                      });
-                                      self.emit(MIRInstruction::Move {
-                                          dst: name.clone(),
-                                          src: MIRValue::Variable { name: temp, ty: TejxType::Any },
+                                       });
+                                      self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
+                                          src: MIRValue::Variable { name: temp, ty: TejxType::Any  },
                                       });
                                   }
                               }
@@ -1036,34 +1021,33 @@ impl MIRLowering {
                          let g_val = self.lower_expression(guard);
                           // Branch if true -> continue body, else -> next
                           let real_body = self.new_block("match_real_body");
-                          self.emit(MIRInstruction::Branch {
-                              condition: g_val,
+                          self.emit(MIRInstruction::Branch { line: 0,  condition: g_val,
                               true_target: real_body,
                               false_target: next,
-                          });
+                           });
                           self.current_block = real_body;
                      }
                      
                      let res_val = self.lower_expression(&arm.body);
                      // Move result to temp
-                     self.emit(MIRInstruction::Move {
-                         dst: result_temp.clone(),
+                     self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(),
                          src: res_val,
-                     });
-                     self.emit(MIRInstruction::Jump { target: match_exit });
+                         
+                      });
+                     self.emit(MIRInstruction::Jump { line: 0,  target: match_exit  });
                      
                      next_arm_block = next;
                  }
                  
                  self.current_block = next_arm_block;
                  // No match? Return 0/undefined
-                 // self.emit(MIRInstruction::Move { dst: result_temp.clone(), src: MIRValue::Constant("0") });
-                 self.emit(MIRInstruction::Jump { target: match_exit });
+                 // self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(), src: MIRValue::Constant("0")  });
+                 self.emit(MIRInstruction::Jump { line: 0,  target: match_exit  });
                  
                  self.current_block = match_exit;
                  MIRValue::Variable { name: result_temp, ty: ty.clone() }
             }
-            HIRExpression::BlockExpr { statements, ty } => {
+            HIRExpression::BlockExpr { statements, ty, .. } => {
                 for stmt in statements {
                     self.lower_statement(stmt);
                 }
@@ -1075,7 +1059,7 @@ impl MIRLowering {
                     ty: ty.clone() 
                 }
             }
-            HIRExpression::If { condition, then_branch, else_branch, ty } => {
+            HIRExpression::If { condition, then_branch, else_branch, ty, .. } => {
                 let cond_val = self.lower_expression(condition);
                 let result_temp = self.new_temp(ty.clone());
                 
@@ -1083,29 +1067,29 @@ impl MIRLowering {
                 let else_block = self.new_block("ternary_else");
                 let exit_block = self.new_block("ternary_exit");
                 
-                self.emit(MIRInstruction::Branch {
-                    condition: cond_val,
+                self.emit(MIRInstruction::Branch { line: 0,  condition: cond_val,
                     true_target: then_block,
                     false_target: else_block,
-                });
+                    
+                 });
                 
                 // Then
                 self.current_block = then_block;
                 let then_val = self.lower_expression(then_branch);
-                self.emit(MIRInstruction::Move {
-                    dst: result_temp.clone(),
+                self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(),
                     src: then_val,
-                });
-                self.emit(MIRInstruction::Jump { target: exit_block });
+                    
+                 });
+                self.emit(MIRInstruction::Jump { line: 0,  target: exit_block  });
                 
                 // Else
                 self.current_block = else_block;
                 let else_val = self.lower_expression(else_branch);
-                self.emit(MIRInstruction::Move {
-                    dst: result_temp.clone(),
+                self.emit(MIRInstruction::Move { line: 0,  dst: result_temp.clone(),
                     src: else_val,
-                });
-                self.emit(MIRInstruction::Jump { target: exit_block });
+                    
+                 });
+                self.emit(MIRInstruction::Jump { line: 0,  target: exit_block  });
                 
                 self.current_block = exit_block;
                 MIRValue::Variable { name: result_temp, ty: ty.clone() }

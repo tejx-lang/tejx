@@ -1009,6 +1009,9 @@ impl TypeChecker {
 
                  self.enter_scope();
                  self.define("this".to_string(), class_decl.name.clone());
+                 if !class_decl._parent_name.is_empty() {
+                     self.define("super".to_string(), class_decl._parent_name.clone());
+                 }
                  
                  for method in &class_decl.methods {
                      self.enter_scope();
@@ -1033,6 +1036,38 @@ impl TypeChecker {
                      self.current_function_is_async = prev_async;
                      self.exit_scope();
                  }
+
+                 if let Some(constructor) = &class_decl._constructor {
+                     self.enter_scope();
+                     for param in &constructor.params {
+                         self.define(param.name.clone(), param.type_name.clone());
+                     }
+                     let prev_return = self.current_function_return.take();
+                     self.current_function_return = Some("void".to_string());
+                     self.check_statement(&constructor.body)?;
+                     self.current_function_return = prev_return;
+                     self.exit_scope();
+                 }
+
+                 for getter in &class_decl._getters {
+                     self.enter_scope();
+                     let prev_return = self.current_function_return.take();
+                     self.current_function_return = Some(getter._return_type.clone());
+                     self.check_statement(&getter._body)?;
+                     self.current_function_return = prev_return;
+                     self.exit_scope();
+                 }
+
+                 for setter in &class_decl._setters {
+                     self.enter_scope();
+                     self.define(setter._param_name.clone(), setter._param_type.clone());
+                     let prev_return = self.current_function_return.take();
+                     self.current_function_return = Some("void".to_string());
+                     self.check_statement(&setter._body)?;
+                     self.current_function_return = prev_return;
+                     self.exit_scope();
+                 }
+                 
                  
                  self.exit_scope();
                  self.current_class = None;
@@ -1412,7 +1447,7 @@ impl TypeChecker {
                              // Static access??
                              if let Expression::Identifier { name, .. } = &**object {
                                  if let Some(s) = self.lookup(name) {
-                                     if (s.type_name == "class" || s.type_name == "enum") {
+                                     if s.type_name == "class" || s.type_name == "enum" {
                                          if let Some(members) = self.class_members.get(name) {
                                              if let Some(info) = members.get(member) {
                                                  if info.is_readonly {
@@ -1445,6 +1480,17 @@ impl TypeChecker {
                 if callee_str == "sizeof" {
                     for arg in args { self.check_expression(arg)?; }
                     return Ok("int32".to_string());
+                }
+                if callee_str == "super" {
+                    if let Some(Symbol { type_name, .. }) = self.lookup("super") {
+                         // Check parent constructor?
+                         // For now, let's treat it as a void call to parent constructor
+                         for arg in args { self.check_expression(arg)?; }
+                         return Ok("void".to_string());
+                    } else {
+                        self.report_error("Cannot use 'super' here".to_string(), *_line, *_col);
+                        return Ok("any".to_string());
+                    }
                 }
 
                 if let Some(s) = self.lookup(&callee_str) {

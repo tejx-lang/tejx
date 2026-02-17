@@ -27,6 +27,15 @@ impl TejxType {
         matches!(self, TejxType::Class(_))
     }
 
+    pub fn needs_drop(&self) -> bool {
+        match self {
+            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |
+            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 |
+            TejxType::Bool | TejxType::Char | TejxType::Void => false,
+            TejxType::String | TejxType::Class(_) | TejxType::Any | TejxType::FixedArray(_, _) => true,
+        }
+    }
+
     pub fn is_numeric(&self) -> bool {
         matches!(self, 
             TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |

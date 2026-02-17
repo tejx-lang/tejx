@@ -65,31 +65,37 @@ pub enum TaggedValue {
     TCPStream(Arc<Mutex<std::net::TcpStream>>),
 }
 
+const HEAP_OFFSET: i64 = 1000000;
+
 pub struct Heap {
     pub next_id: i64,
     pub objects: Vec<Option<TaggedValue>>,
     pub strings: HashMap<String, i64>,
+    pub free_list: Vec<i64>,
 }
 
 impl Heap {
     pub fn get(&self, id: i64) -> Option<&TaggedValue> {
-        if id >= 0 && id < self.objects.len() as i64 {
-            self.objects[id as usize].as_ref()
+        let idx = (id - HEAP_OFFSET) as usize;
+        if id >= HEAP_OFFSET && idx < self.objects.len() {
+            self.objects[idx].as_ref()
         } else {
             None
         }
     }
 
     pub fn get_mut(&mut self, id: i64) -> Option<&mut TaggedValue> {
-        if id >= 0 && id < self.objects.len() as i64 {
-            self.objects[id as usize].as_mut()
+        let idx = (id - HEAP_OFFSET) as usize;
+        if id >= HEAP_OFFSET && idx < self.objects.len() {
+            self.objects[idx].as_mut()
         } else {
             None
         }
     }
 
     pub fn insert(&mut self, id: i64, val: TaggedValue) {
-        let idx = id as usize;
+        let idx = (id - HEAP_OFFSET) as usize;
+        if id < HEAP_OFFSET { return; }
         if idx >= self.objects.len() {
             self.objects.resize(idx + 1, None);
         }
@@ -97,21 +103,28 @@ impl Heap {
     }
 
     pub fn contains_key(&self, id: i64) -> bool {
-        id >= 0 && id < self.objects.len() as i64 && self.objects[id as usize].is_some()
+        let idx = (id - HEAP_OFFSET) as usize;
+        id >= HEAP_OFFSET && idx < self.objects.len() && self.objects[idx].is_some()
     }
 
     pub fn alloc(&mut self, val: TaggedValue) -> i64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.insert(id, val);
-        id
+        if let Some(id) = self.free_list.pop() {
+            self.insert(id, val);
+            id
+        } else {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.insert(id, val);
+            id
+        }
     }
 }
 
 pub static HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
-    next_id: 1000000, 
+    next_id: HEAP_OFFSET, 
     objects: Vec::with_capacity(1000),
     strings: HashMap::new(),
+    free_list: Vec::new(),
 }));
 
  static EXCEPTION_STACK: LazyLock<Mutex<Vec<usize>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -194,9 +207,7 @@ pub extern "C" fn Thread_new(callback: i64, arg: i64) -> i64 {
     });
 
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Thread(Arc::new(Mutex::new(Some(handle)))));
+    let id = heap.alloc(TaggedValue::Thread(Arc::new(Mutex::new(Some(handle)))));
     id
 }
 
@@ -275,9 +286,7 @@ pub extern "C" fn m_unlock(id: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn a_new() -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Array(Vec::new()));
+    let id = heap.alloc(TaggedValue::Array(Vec::new()));
     id
 }
 
@@ -556,9 +565,7 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
 
 fn rt_box_string_raw(s: String) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::String(s));
+    let id = heap.alloc(TaggedValue::String(s));
     id
 }
 
@@ -705,9 +712,7 @@ pub unsafe extern "C" fn f_Error_constructor(this: i64, message: i64) {
     let mut heap = HEAP.lock().unwrap();
     
     // Create a boxed "Error" string for the name if not present
-    let name_id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(name_id, TaggedValue::String("Error".to_string()));
+    let name_id = heap.alloc(TaggedValue::String("Error".to_string()));
 
     if let Some(TaggedValue::Map(map)) = heap.get_mut(this) {
         map.insert("message".to_string(), message);
@@ -723,9 +728,7 @@ pub unsafe extern "C" fn rt_Object_toString(this: i64) -> i64 {
     
     // Create a new boxed string from the result
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::String(s));
+    let id = heap.alloc(TaggedValue::String(s));
     id
 }
 
@@ -1182,9 +1185,7 @@ pub extern "C" fn rt_box_number(n: f64) -> i64 {
     }
 
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Number(n));
+    let id = heap.alloc(TaggedValue::Number(n));
     id
 }
 
@@ -1196,9 +1197,7 @@ pub extern "C" fn rt_box_int(n: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_box_boolean(b: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Boolean(b != 0));
+    let id = heap.alloc(TaggedValue::Boolean(b != 0));
     id
 }
 
@@ -1215,9 +1214,7 @@ pub unsafe extern "C" fn rt_box_string(s_ptr: i64) -> i64 {
         return id;
     }
 
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::String(s.clone()));
+    let id = heap.alloc(TaggedValue::String(s.clone()));
     heap.strings.insert(s, id);
     id
 }
@@ -1307,8 +1304,12 @@ fn await_impl(val: i64) -> Result<i64, i64> {
             {
                 let mut state = lock.lock().unwrap();
                 match &*state {
-                    PromiseState::Resolved(res) => return Ok(*res),
-                    PromiseState::Rejected(err) => return Err(*err),
+                PromiseState::Resolved(res) => {
+                    return Ok(*res);
+                },
+                PromiseState::Rejected(err) => {
+                    return Err(*err);
+                },
                     PromiseState::Pending => {
                         // If no tasks, we wait on the condvar with a timeout to allow checking the queue
                         // or other conditions.
@@ -1356,44 +1357,49 @@ pub extern "C" fn __await(val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn Promise_new(_callback: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    let promise = Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()));
-    heap.insert(id, TaggedValue::Promise(promise));
+    let id = heap.alloc(TaggedValue::Promise(Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()))));
     id
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Promise_resolve(val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    let promise = Arc::new((Mutex::new(PromiseState::Resolved(val)), Condvar::new()));
-    heap.insert(id, TaggedValue::Promise(promise));
+    let id = heap.alloc(TaggedValue::Promise(Arc::new((Mutex::new(PromiseState::Resolved(val)), Condvar::new()))));
     id
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Promise_reject(reason: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    let promise = Arc::new((Mutex::new(PromiseState::Rejected(reason)), Condvar::new()));
-    heap.insert(id, TaggedValue::Promise(promise));
+    let id = heap.alloc(TaggedValue::Promise(Arc::new((Mutex::new(PromiseState::Rejected(reason)), Condvar::new()))));
     id
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __resolve_promise(id: i64, val: i64) {
-    let heap = HEAP.lock().unwrap();
+pub extern "C" fn tejx_Promise_clone(id: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Promise(p)) = heap.get(id) {
         let p_clone = p.clone();
-        drop(heap);
-        let (lock, cvar) = &*p_clone;
-        let mut state = lock.lock().unwrap();
-        *state = PromiseState::Resolved(val);
-        cvar.notify_all();
+        return heap.alloc(TaggedValue::Promise(p_clone));
     }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __resolve_promise(id: i64, val: i64) {
+    let p_arc = {
+        let heap = HEAP.lock().unwrap();
+        if let Some(TaggedValue::Promise(p)) = heap.get(id) {
+            p.clone()
+        } else {
+            return;
+        }
+    };
+    
+    let (lock, cvar) = &*p_arc;
+    let mut state = lock.lock().unwrap();
+    *state = PromiseState::Resolved(val);
+    cvar.notify_all();
 }
 
 #[unsafe(no_mangle)]
@@ -1425,10 +1431,7 @@ pub extern "C" fn Promise_all(args_id: i64) -> i64 {
     
     let p_id = {
         let mut heap = HEAP.lock().unwrap();
-        let id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(id, TaggedValue::Promise(p_result));
-        id
+       heap.alloc(TaggedValue::Promise(p_result))
     };
 
     thread::spawn(move || {
@@ -1436,7 +1439,32 @@ pub extern "C" fn Promise_all(args_id: i64) -> i64 {
         let mut rejected = None;
         
         for p_id in promises {
-            match await_impl(p_id) {
+            // Use a simple blocking wait here, NOT await_impl (which processes tasks)
+            // Background threads MUST NOT process the main task queue.
+            let wait_res = {
+                let p_arc = {
+                    let heap = HEAP.lock().unwrap();
+                    heap.get(p_id).and_then(|obj| if let TaggedValue::Promise(p) = obj { Some(p.clone()) } else { None })
+                };
+
+                if let Some(p) = p_arc {
+                    let (lock, cvar) = &*p;
+                    let mut state = lock.lock().unwrap();
+                    loop {
+                        match &*state {
+                            PromiseState::Resolved(v) => break Ok(*v),
+                            PromiseState::Rejected(r) => break Err(*r),
+                            PromiseState::Pending => {
+                                state = cvar.wait(state).unwrap();
+                            }
+                        }
+                    }
+                } else {
+                    Ok(p_id) // Not a promise
+                }
+            };
+
+            match wait_res {
                 Ok(v) => results.push(v),
                 Err(r) => { 
                     rejected = Some(r);
@@ -1452,9 +1480,7 @@ pub extern "C" fn Promise_all(args_id: i64) -> i64 {
         } else {
              // Store results array
              let mut heap = HEAP.lock().unwrap();
-             let arr_id = heap.next_id;
-             heap.next_id += 1;
-             heap.insert(arr_id, TaggedValue::Array(results));
+             let arr_id = heap.alloc(TaggedValue::Array(results));
              *state = PromiseState::Resolved(arr_id);
         }
         cvar.notify_all();
@@ -1468,9 +1494,7 @@ pub extern "C" fn rt_atomic_new(val: i64) -> i64 {
     // println!("DEBUG: rt_atomic_new start");
     let initial = rt_to_number(val) as i64;
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Atomic(Arc::new(AtomicI64::new(initial))));
+    let id = heap.alloc(TaggedValue::Atomic(Arc::new(AtomicI64::new(initial))));
     // println!("DEBUG: rt_atomic_new end {}", id);
     id
 }
@@ -1544,9 +1568,7 @@ pub unsafe extern "C" fn rt_atomic_compare_exchange(id: i64, expected: i64, val:
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_cond_new() -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Condition(Arc::new(Condvar::new())));
+    let id = heap.alloc(TaggedValue::Condition(Arc::new(Condvar::new())));
     id
 }
 
@@ -1596,6 +1618,145 @@ pub unsafe extern "C" fn rt_cond_notify_all(id: i64) -> i64 {
     }
     0
 }
+// ============================================
+// MEMORY MANAGEMENT (Strict Ownership)
+// ============================================
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_free(id: i64) {
+    if id < 1000000 { return; } // Don't free primitives/small-ints
+
+    // Recursive Free
+    // We need to extract the object to drop it, and if it's a container, recurse.
+    let val = {
+        let mut heap = HEAP.lock().unwrap();
+        let idx = (id - HEAP_OFFSET) as usize;
+        if id >= HEAP_OFFSET && idx < heap.objects.len() {
+            if let Some(obj) = &heap.objects[idx] {
+                let type_str = match obj {
+                    TaggedValue::Array(_) => "Array",
+                    TaggedValue::ByteArray(_) => "ByteArray",
+                    TaggedValue::Map(_) => "Map",
+                    TaggedValue::Thread(_) => "Thread",
+                    TaggedValue::Mutex(_) => "Mutex",
+                    TaggedValue::Number(_) => "Number",
+                    TaggedValue::Boolean(_) => "Boolean",
+                    TaggedValue::String(_) => "String",
+                    TaggedValue::Set(_) => "Set",
+                    TaggedValue::Date(_) => "Date",
+                    TaggedValue::OrderedMap(_, _) => "OrderedMap",
+                    TaggedValue::OrderedSet(_, _) => "OrderedSet",
+                    TaggedValue::BloomFilter(_, _) => "BloomFilter",
+                    TaggedValue::TrieNode { .. } => "TrieNode",
+                    TaggedValue::Atomic(_) => "Atomic",
+                    TaggedValue::Condition(_) => "Condition",
+                    TaggedValue::Promise(_) => "Promise",
+                    TaggedValue::TCPStream(_) => "TCPStream",
+                };
+                
+                // Invalidate Fast-Path Cache
+                unsafe {
+                    if LAST_ID == id {
+                        LAST_ID = -1;
+                        LAST_PTR = std::ptr::null_mut();
+                        LAST_LEN = 0;
+                        LAST_ELEM_SIZE = 0;
+                    }
+                }
+
+                heap.free_list.push(id);
+                heap.objects[idx].take()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some(obj) = val {
+        match obj {
+            TaggedValue::Array(arr) => {
+                for &child_id in &arr { rt_free(child_id); }
+            },
+            TaggedValue::Map(map) => {
+                for (_, &child_id) in &map { 
+                    rt_free(child_id); 
+                }
+            },
+            TaggedValue::Set(set) => {
+                for &child_id in &set { rt_free(child_id); }
+            },
+            TaggedValue::OrderedMap(_, map) => {
+                 for (_, &child_id) in &map { rt_free(child_id); }
+            },
+            TaggedValue::String(s) => {
+                 let mut heap = HEAP.lock().unwrap();
+                 heap.strings.remove(&s);
+            },
+            // Primitives (Number, etc) don't reference others
+            _ => {}
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_move_member(id: i64, key_ptr: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    
+    // Resolve key
+    let key = if let Some(TaggedValue::String(s)) = heap.get(key_ptr) {
+        s.clone()
+    } else {
+        // Simple keys
+        get_string_key(&heap, key_ptr)
+    };
+    // println!("DEBUG: rt_move_member obj={} key='{}'", id, key);
+
+    // Extract and return value, removing from source
+    if let Some(obj) = heap.get_mut(id) {
+        match obj {
+            TaggedValue::Map(map) => {
+                // Check if we should move or copy
+                if let Some(&val) = map.get(&key) {
+                     if val < 1000000 {
+                         // Primitive: Copy (Keep in map)
+                         return val;
+                     } else {
+                         // Object: Move (Remove from map)
+                         map.remove(&key);
+                         return val;
+                     }
+                }
+            },
+            TaggedValue::OrderedMap(_, map) => {
+                // Same logic for OrderedMap (keys order vector is left as is, effectively "sparse" if removed)
+                 if let Some(&val) = map.get(&key) {
+                     if val < 1000000 {
+                         return val;
+                     } else {
+                         map.remove(&key);
+                         return val;
+                     }
+                }
+            },
+            TaggedValue::Array(arr) => {
+                 // Array destructive read? Index...
+                 // Treat key as index
+                 if let Ok(idx) = key.parse::<usize>() {
+                     if idx < arr.len() {
+                         let val = arr[idx];
+                         arr[idx] = 0; // Nullify slot
+                         return val;
+                     }
+                 }
+            },
+            _ => {}
+        }
+    }
+    0
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_to_boolean(id: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
@@ -1624,10 +1785,7 @@ pub unsafe extern "C" fn delay(ms: i64) -> i64 {
     // Register Promise in heap
     let p_id = {
         let mut heap = HEAP.lock().unwrap();
-        let id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(id, TaggedValue::Promise(promise));
-        id
+        heap.alloc(TaggedValue::Promise(promise))
     };
 
     thread::spawn(move || {
@@ -1737,9 +1895,7 @@ pub unsafe extern "C" fn Array_concat(id_a: i64, id_b: i64) -> i64 {
     };
     new_arr.extend(extract(id_a));
     new_arr.extend(extract(id_b));
-    let id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(id, TaggedValue::Array(new_arr));
+    let id = heap.alloc(TaggedValue::Array(new_arr));
     id
 }
 
@@ -3316,6 +3472,7 @@ pub extern "C" fn tejx_dec_async_ops() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tejx_run_event_loop() {
+    let mut idle_count = 0;
     loop {
         let task = {
             let mut queue = EVENT_QUEUE.lock().unwrap();
@@ -3323,14 +3480,21 @@ pub unsafe extern "C" fn tejx_run_event_loop() {
         };
 
         if let Some(t) = task {
+            idle_count = 0;
             let f: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute(t.func);
             f(t.arg);
         } else {
             // No tasks. Check if we have background ops.
-            if ACTIVE_ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
+            let ops = ACTIVE_ASYNC_OPS.load(Ordering::SeqCst);
+            if ops <= 0 {
                 break;
             }
-            // Sleep a bit to avoid busy wait
+            
+            idle_count += 1;
+            if ops == 0 {
+                break;
+            }
+            // Idle
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }

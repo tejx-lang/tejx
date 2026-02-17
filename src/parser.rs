@@ -168,6 +168,8 @@ impl Parser {
         } else {
              let t = self.peek().clone();
              self.errors.push(crate::diagnostics::Diagnostic::new(error_msg.to_string(), t.line, t.column, self.filename.clone()));
+             // Advance to avoid infinite loops
+             self.advance();
              t
         }
     }
@@ -2071,8 +2073,8 @@ impl Parser {
                 self.filename.clone()
             ));
             
-            // Return current token as a dummy
-            &self.tokens[self.current.min(self.tokens.len() - 1)]
+            // Advance to avoid infinite loops
+            self.advance()
         }
     }
 

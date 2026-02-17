@@ -1,0 +1,10 @@
+class A {
+    id: int;
+}
+
+function main() {
+    let a = new A();
+    a.id = 10;
+    let b = a; // Move
+    print(a.id); // Should be error
+}

@@ -1,0 +1,43 @@
+
+class Resource {
+    id: int;
+    constructor(id: int) {
+        this.id = id;
+        print("Constructed Resource", this.id);
+    }
+}
+
+function basic_lifecycle() {
+    print("--- Basic Lifecycle ---");
+    let r1 = new Resource(1);
+    print("Using Resource", r1.id);
+    // r1 should be freed here
+}
+
+function move_semantics() {
+    print("--- Move Semantics ---");
+    let r2 = new Resource(2);
+    let r3 = r2; // r2 moved to r3
+    print("Using moved Resource", r3.id);
+    // r3 freed. r2 is dead (not freed again).
+}
+
+function field_consumption() {
+    print("--- Field Consumption ---");
+    let container = new Resource(3);
+    container.id = 100;
+    
+    // Strict move: Accessing container.id is valid for primitive (Copy)
+    print("Primitive field access:", container.id);
+    
+    // If we had object field, accessing it would consume it.
+}
+
+function main() {
+    basic_lifecycle();
+    move_semantics();
+    field_consumption();
+    print("End Main");
+}
+
+

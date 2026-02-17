@@ -179,17 +179,18 @@ TejX is built on the belief that code should be as expressive as JavaScript but 
 
 ### 8. System & Runtime
 
-| Feature         | Granularity        | Status | Notes                                    |
-| :-------------- | :----------------- | :----: | :--------------------------------------- |
-| **Memory**      | ARC                |   ✅   | Deterministic cleanup. No GC pauses.     |
-|                 | Manual Management  |   ⛔   | Safe by default. `unsafe` block planned. |
-| **Concurrency** | OS Threads         |   ✅   | `Thread.spawn`. True parallelism.        |
-|                 | Atomic Types       |   🔮   | Thread-safe primitives.                  |
-|                 | Mutex / Locks      |   ✅   | `Mutex` for synchronization.             |
-|                 | Channels / Actors  |   🔮   | Message passing concurrency.             |
-| **IO**          | File System        |   ✅   | Read/Write/Exists/Delete.                |
-|                 | Network (TCP/HTTP) |   🔮   | Native networking stack.                 |
-| **Interop**     | FFI (C/C++)        |   🔮   | Zero-cost calls to native libs.          |
+| Feature         | Granularity        | Status | Notes                                                           |
+| :-------------- | :----------------- | :----: | :-------------------------------------------------------------- |
+| **Memory**      | ARC                |   ✅   | Deterministic cleanup. No GC pauses.                            |
+|                 | Manual Management  |   ⛔   | Safe by default. `unsafe` block planned.                        |
+| **Concurrency** | OS Threads         |   ✅   | `Thread.spawn`. True parallelism. [See Docs](docs/THREADING.md) |
+|                 | Async/Await        |   ✅   | Event Loop I/O. [See Docs](docs/ASYNC.md)                       |
+|                 | Atomic Types       |   🔮   | Thread-safe primitives.                                         |
+|                 | Mutex / Locks      |   ✅   | `Mutex` for synchronization.                                    |
+|                 | Channels / Actors  |   🔮   | Message passing concurrency.                                    |
+| **IO**          | File System        |   ✅   | Read/Write/Exists/Delete.                                       |
+|                 | Network (TCP/HTTP) |   🔮   | Native networking stack.                                        |
+| **Interop**     | FFI (C/C++)        |   🔮   | Zero-cost calls to native libs.                                 |
 
 ### 9. Tooling & Ecosystem
 

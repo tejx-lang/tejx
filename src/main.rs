@@ -24,6 +24,7 @@ use lexer::Lexer;
 use parser::Parser;
 use type_checker::TypeChecker;
 use lowering::Lowering;
+use mir::{MIRInstruction, MIRValue};
 use mir_lowering::MIRLowering;
 use borrow_checker::BorrowChecker;
 use codegen::CodeGen;
@@ -43,9 +44,15 @@ fn main() {
     let mut filename = String::new();
     let mut async_enabled = true;
 
+    let mut emit_mir = false;
+    let mut emit_llvm = false;
     for arg in args.iter().skip(1) {
         if arg == "--disable-async" {
             async_enabled = false;
+        } else if arg == "--emit-mir" {
+             emit_mir = true;
+        } else if arg == "--emit-llvm" {
+             emit_llvm = true;
         } else if arg.starts_with("--") {
             eprintln!("Unknown option: {}", arg);
             process::exit(1);
@@ -64,8 +71,10 @@ fn main() {
         process::exit(1);
     });
 
+
     let mut lexer = Lexer::new(&contents, &filename);
     let tokens = lexer.tokenize();
+
 
     if !lexer.errors.is_empty() {
         eprintln!("Lexing failed with errors:");
@@ -75,9 +84,11 @@ fn main() {
         process::exit(1);
     }
 
+
     let mut parser = Parser::new(tokens, &filename);
     parser.async_enabled = async_enabled;
     let program = parser.parse_program();
+
 
     if parser.has_errors() {
         eprintln!("Parsing failed with errors:");
@@ -86,6 +97,7 @@ fn main() {
         }
         process::exit(1);
     }
+
 
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
@@ -96,6 +108,7 @@ fn main() {
         }
         process::exit(1);
     }
+
 
     let mut lowering = Lowering::new();
     lowering.async_enabled = async_enabled;
@@ -110,19 +123,51 @@ fn main() {
     }
 
     let mut borrow_checker = BorrowChecker::new();
-    for mir_func in &mir_functions {
-        borrow_checker.check(mir_func);
+    for mir_func in &mut mir_functions {
+        let drops = borrow_checker.check(mir_func, &filename);
+        for (block_idx, var_names) in drops {
+            let bb = &mut mir_func.blocks[block_idx];
+            let mut insert_idx = bb.instructions.len();
+            if insert_idx > 0 {
+                match bb.instructions[insert_idx - 1] {
+                    MIRInstruction::Return { .. } | MIRInstruction::Jump { .. } | MIRInstruction::Branch { .. } | MIRInstruction::Throw { .. } => {
+                        insert_idx -= 1;
+                    }
+                    _ => {}
+                }
+            }
+            for var_name in var_names {
+                if let Some(ty) = mir_func.variables.get(&var_name) {
+                    let line = if insert_idx > 0 { bb.instructions[insert_idx - 1].get_line() } else { 0 };
+                    bb.instructions.insert(insert_idx, MIRInstruction::Free {
+                        value: MIRValue::Variable { name: var_name, ty: ty.clone() },
+                        line,
+                    });
+                    insert_idx += 1;
+                }
+            }
+        }
     }
+
+    if emit_mir {
+        for mir_func in &mir_functions {
+            eprintln!("{:?}", mir_func);
+        }
+    }
+
     if !borrow_checker.errors.is_empty() {
-        eprintln!("Borrow Checker Found Errors!");
-        for err in &borrow_checker.errors {
-            eprintln!("  - {}", err);
+        for diag in &borrow_checker.errors {
+            diag.report(&contents);
         }
         process::exit(1);
     }
 
-    let mut code_gen = CodeGen::new();
-    let llvm_code = code_gen.generate_with_blocks(&mir_functions);
+    let mut codegen = CodeGen::new();
+    let llvm_code = codegen.generate_with_blocks(&mir_functions);
+
+    if emit_llvm {
+        eprintln!("{}", llvm_code);
+    }
 
     let output_name = if let Some(pos) = filename.rfind('.') {
         &filename[..pos]

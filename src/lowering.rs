@@ -141,6 +141,7 @@ impl Lowering {
     }
 
     pub fn lower(&self, program: &Program, base_path: &std::path::Path) -> LoweringResult {
+        let line = 0; // Top level
         let mut functions = Vec::new();
         let mut main_stmts = Vec::new();
         let mut merged_statements = program.statements.clone();
@@ -436,6 +437,7 @@ impl Lowering {
 
         // Add a "tejx_main" wrapper for non-function top-level statements
         // Check for user-defined main function (lowered as "f_main")
+        // Identify main function
         let mut main_func_idx = None;
         for (i, func) in functions.iter().enumerate() {
             if let HIRStatement::Function { name, .. } = func {
@@ -448,35 +450,33 @@ impl Lowering {
 
         let mut entry_body_stmts = main_stmts;
 
-        if let Some(idx) = main_func_idx {
-            // Found a user-defined main. Use its body as the entry point base.
-            let main_func = functions.remove(idx);
-            
-            if let HIRStatement::Function { body, .. } = main_func {
-                if let HIRStatement::Block { statements } = *body {
-                    entry_body_stmts.extend(statements);
-                } else {
-                    entry_body_stmts.push(*body);
+        if let Some(_) = main_func_idx {
+            // Call the main function (f_main)
+            entry_body_stmts.push(HIRStatement::ExpressionStmt { line: 0, 
+                expr: HIRExpression::Call { line: 0, 
+                    callee: "f_main".to_string(),
+                    args: vec![],
+                    ty: TejxType::Any,
                 }
-            }
+            });
         } 
         
         // Finalize entry point: Run event loop (moved to runtime.rs)
-        // entry_body_stmts.push(HIRStatement::ExpressionStmt {
-        //     expr: HIRExpression::Call {
+        // entry_body_stmts.push(HIRStatement::ExpressionStmt { line: line, 
+        //     expr: HIRExpression::Call { line: line, 
         //         callee: "tejx_run_event_loop".to_string(),
         //         args: vec![],
         //         ty: TejxType::Void,
         //     }
         // });
-        // entry_body_stmts.push(HIRStatement::Return { value: Some(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }) });
+        // entry_body_stmts.push(HIRStatement::Return { line: line,  value: Some(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }) });
 
         // Create the actual entry point function
-        functions.push(HIRStatement::Function {
+        functions.push(HIRStatement::Function { line: line, 
             name: "tejx_main".to_string(),
             params: vec![],
             _return_type: TejxType::Void,
-            body: Box::new(HIRStatement::Block {
+            body: Box::new(HIRStatement::Block { line: line, 
                 statements: entry_body_stmts
             }),
         });
@@ -496,10 +496,12 @@ impl Lowering {
         signatures.insert("__resolve_promise".to_string(), vec![TejxType::Any, TejxType::Any]);
         signatures.insert("__reject_promise".to_string(), vec![TejxType::Any, TejxType::Any]);
         signatures.insert("Thread_new".to_string(), vec![TejxType::Any, TejxType::Any]);
-        signatures.insert("tejx_enqueue_task".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("rt_move_member".to_string(), vec![TejxType::Int64, TejxType::String]);
+        signatures.insert("tejx_enqueue_task".to_string(), vec![TejxType::Int64, TejxType::Int64]);
         signatures.insert("tejx_inc_async_ops".to_string(), vec![]);
         signatures.insert("tejx_dec_async_ops".to_string(), vec![]);
         signatures.insert("tejx_run_event_loop".to_string(), vec![]);
+        signatures.insert("tejx_Promise_clone".to_string(), vec![TejxType::Any]);
         signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
         signatures.insert("rt_sleep".to_string(), vec![TejxType::Any]);
 
@@ -514,6 +516,7 @@ impl Lowering {
     }
 
     fn lower_function_declaration(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
+        let line = func._line;
         if self.async_enabled && func._is_async {
             self.lower_async_function(func, functions);
             return;
@@ -530,17 +533,18 @@ impl Lowering {
         }
         
         let body = self.lower_statement(&func.body)
-            .unwrap_or(HIRStatement::Block { statements: vec![] });
+            .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
         
         self._exit_scope();
         
         let name = format!("f_{}", func.name);
-        functions.push(HIRStatement::Function {
+        functions.push(HIRStatement::Function { line: line, 
             name, params, _return_type: return_type, body: Box::new(body),
         });
     }
 
     fn lower_async_function(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
+        let line = func._line;
         let params: Vec<(String, TejxType)> = func.params.iter()
             .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
             .collect();
@@ -558,7 +562,7 @@ impl Lowering {
         // If _state_struct was not a dummy, it would be pushed here:
         // functions.push(_state_struct); 
         
-        functions.push(HIRStatement::Function {
+        functions.push(HIRStatement::Function { line: line, 
             name: format!("f_{}", func.name),
             params,
             _return_type: TejxType::Any,
@@ -569,6 +573,7 @@ impl Lowering {
     // This function generates the worker function and the body of the wrapper function for an async function.
     // It returns (worker_function_HIR, dummy_state_struct_HIR, wrapper_body_HIR_block).
     fn lower_async_function_impl(&self, name: &str, params: &Vec<(String, TejxType)>, _return_type_str: &str, body: &Statement) -> (HIRStatement, HIRStatement, HIRStatement) {
+        let line = body.get_line();
         let worker_name = format!("f_{}_worker", name);
 
         // --- Worker Function ---
@@ -590,13 +595,13 @@ impl Lowering {
         let mut worker_body_stmts = Vec::new();
 
         // 1. Unpack promise_id
-        let promise_id_expr = HIRExpression::IndexAccess {
-            target: Box::new(HIRExpression::Variable { name: args_id_name.clone(), ty: TejxType::Any }),
-            index: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+        let promise_id_expr = HIRExpression::IndexAccess { line: line, 
+            target: Box::new(HIRExpression::Variable { line: line,  name: args_id_name.clone(), ty: TejxType::Int64 }),
+            index: Box::new(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }),
             ty: TejxType::Any,
         };
         let promise_id_var = "promise_id_local".to_string();
-        worker_body_stmts.push(HIRStatement::VarDecl {
+        worker_body_stmts.push(HIRStatement::VarDecl { line: line, 
             name: promise_id_var.clone(),
             initializer: Some(promise_id_expr),
             ty: TejxType::Any,
@@ -607,12 +612,18 @@ impl Lowering {
 
         // 2. Unpack params
         for (i, (pname, pty)) in params.iter().enumerate() {
-            let unpack_expr = HIRExpression::IndexAccess {
-                target: Box::new(HIRExpression::Variable { name: args_id_name.clone(), ty: TejxType::Any }),
-                index: Box::new(HIRExpression::Literal { value: (i + 1).to_string(), ty: TejxType::Int32 }),
+            // Use rt_move_member to MOVE the value out of the array (destructive read).
+            // This prevents double-free (once by args array, once by local var).
+            let unpack_expr = HIRExpression::Call { line: line, 
+                callee: "rt_move_member".to_string(),
+                args: vec![
+                    HIRExpression::Variable { line: line,  name: args_id_name.clone(), ty: TejxType::Int64 },
+                    HIRExpression::Literal { line: line,  value: format!("\"{}\"", i + 1), ty: TejxType::String }
+                ],
                 ty: pty.clone(),
             };
-            worker_body_stmts.push(HIRStatement::VarDecl {
+            
+            worker_body_stmts.push(HIRStatement::VarDecl { line: line, 
                 name: pname.clone(),
                 initializer: Some(unpack_expr),
                 ty: pty.clone(),
@@ -623,25 +634,25 @@ impl Lowering {
 
         // 3. Lower original body
         let inner_body = self.lower_statement(body)
-            .unwrap_or(HIRStatement::Block { statements: vec![] });
+            .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
 
         // 4. Wrap in Try/Catch
-        let try_block = HIRStatement::Block {
+        let try_block = HIRStatement::Block { line: line, 
             statements: vec![
                 inner_body,
                 // For simplicity, if the body doesn't return, we resolve with void/0.
-                HIRStatement::ExpressionStmt {
-                    expr: HIRExpression::Call {
+                HIRStatement::ExpressionStmt { line: line, 
+                    expr: HIRExpression::Call { line: line, 
                         callee: "__resolve_promise".to_string(),
                         args: vec![
-                            HIRExpression::Variable { name: promise_id_var.clone(), ty: TejxType::Any },
-                            HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any },
+                            HIRExpression::Variable { line: line,  name: promise_id_var.clone(), ty: TejxType::Any },
+                            HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Any },
                         ],
                         ty: TejxType::Void,
                     }
                 },
-                HIRStatement::ExpressionStmt {
-                    expr: HIRExpression::Call {
+                HIRStatement::ExpressionStmt { line: line, 
+                    expr: HIRExpression::Call { line: line, 
                         callee: "tejx_dec_async_ops".to_string(),
                         args: vec![],
                         ty: TejxType::Void,
@@ -650,20 +661,20 @@ impl Lowering {
             ]
         };
 
-        let catch_block = HIRStatement::Block {
+        let catch_block = HIRStatement::Block { line: line, 
             statements: vec![
-                HIRStatement::ExpressionStmt {
-                    expr: HIRExpression::Call {
+                HIRStatement::ExpressionStmt { line: line, 
+                    expr: HIRExpression::Call { line: line, 
                         callee: "__reject_promise".to_string(),
                         args: vec![
-                            HIRExpression::Variable { name: promise_id_var.clone(), ty: TejxType::Any },
-                            HIRExpression::Variable { name: "err".to_string(), ty: TejxType::Any },
+                            HIRExpression::Variable { line: line,  name: promise_id_var.clone(), ty: TejxType::Any },
+                            HIRExpression::Variable { line: line,  name: "err".to_string(), ty: TejxType::Any },
                         ],
                         ty: TejxType::Void,
                     }
                 },
-                HIRStatement::ExpressionStmt {
-                    expr: HIRExpression::Call {
+                HIRStatement::ExpressionStmt { line: line, 
+                    expr: HIRExpression::Call { line: line, 
                         callee: "tejx_dec_async_ops".to_string(),
                         args: vec![],
                         ty: TejxType::Void,
@@ -672,7 +683,7 @@ impl Lowering {
             ]
         };
 
-        worker_body_stmts.push(HIRStatement::Try {
+        worker_body_stmts.push(HIRStatement::Try { line: line, 
             try_block: Box::new(try_block),
             catch_var: Some("err".to_string()),
             catch_block: Box::new(catch_block),
@@ -682,11 +693,11 @@ impl Lowering {
         *self.current_async_promise_id.borrow_mut() = None;
         self._exit_scope();
 
-        let worker_func = HIRStatement::Function {
+        let worker_func = HIRStatement::Function { line: line, 
             name: worker_name.clone(),
-            params: vec![(args_id_name, TejxType::Any)],
-            _return_type: TejxType::Any,
-            body: Box::new(HIRStatement::Block { statements: worker_body_stmts }),
+            params: vec![(args_id_name, TejxType::Int64)],
+            _return_type: TejxType::Void,
+            body: Box::new(HIRStatement::Block { line: line,  statements: worker_body_stmts }),
         };
 
         // --- Wrapper Body construction ---
@@ -697,31 +708,44 @@ impl Lowering {
         // return p;
         
         let mut wrapper_stmts = Vec::new();
-        let p_var = "p".to_string();
-        wrapper_stmts.push(HIRStatement::VarDecl {
+        let p_var = format!("__p_{}", line);
+        wrapper_stmts.push(HIRStatement::VarDecl { line: line, 
             name: p_var.clone(),
-            initializer: Some(HIRExpression::Call {
+            initializer: Some(HIRExpression::Call { line: line, 
                 callee: "Promise_new".to_string(),
-                args: vec![HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }],
+                args: vec![HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }],
                 ty: TejxType::Any,
             }),
             ty: TejxType::Any,
             _is_const: false, // Can be const if not reassigned, but for simplicity, let's keep it mutable
         });
 
+        // Clone promise for the worker (avoid double free)
+        let p_clone_var = format!("__p_clone_{}", line);
+        wrapper_stmts.push(HIRStatement::VarDecl { line: line, 
+            name: p_clone_var.clone(),
+            initializer: Some(HIRExpression::Call { line: line, 
+                callee: "tejx_Promise_clone".to_string(),
+                args: vec![HIRExpression::Variable { line: line,  name: p_var.clone(), ty: TejxType::Any }],
+                ty: TejxType::Any,
+            }),
+            ty: TejxType::Any,
+            _is_const: false,
+        });
+
         // let args = [p, x, y];
-        let mut args_elems = vec![HIRExpression::Variable { name: p_var.clone(), ty: TejxType::Any }];
+        let mut args_elems = vec![HIRExpression::Variable { line: line,  name: p_clone_var.clone(), ty: TejxType::Any }];
         for (pname, pty) in params {
-            args_elems.push(HIRExpression::Variable { name: pname.clone(), ty: pty.clone() });
+            args_elems.push(HIRExpression::Variable { line: line,  name: pname.clone(), ty: pty.clone() });
         }
 
-        let args_array = HIRExpression::ArrayLiteral {
+        let args_array = HIRExpression::ArrayLiteral { line: line, 
             elements: args_elems,
             ty: TejxType::Class("any[]".to_string()), // Type of the array
         };
 
-        let args_var = "args".to_string();
-        wrapper_stmts.push(HIRStatement::VarDecl {
+        let args_var = format!("__args_{}", line);
+        wrapper_stmts.push(HIRStatement::VarDecl { line: line, 
             name: args_var.clone(),
             initializer: Some(args_array),
             ty: TejxType::Class("any[]".to_string()),
@@ -729,8 +753,8 @@ impl Lowering {
         });
 
         // tejx_inc_async_ops();
-        wrapper_stmts.push(HIRStatement::ExpressionStmt {
-            expr: HIRExpression::Call {
+        wrapper_stmts.push(HIRStatement::ExpressionStmt { line: line, 
+            expr: HIRExpression::Call { line: line, 
                 callee: "tejx_inc_async_ops".to_string(),
                 args: vec![],
                 ty: TejxType::Void,
@@ -738,27 +762,28 @@ impl Lowering {
         });
 
         // tejx_enqueue_task(worker_ptr, args);
-        wrapper_stmts.push(HIRStatement::ExpressionStmt {
-            expr: HIRExpression::Call {
+        wrapper_stmts.push(HIRStatement::ExpressionStmt { line: line, 
+            expr: HIRExpression::Call { line: line, 
                 callee: "tejx_enqueue_task".to_string(),
                 args: vec![
-                    HIRExpression::Literal { value: format!("@{}", worker_name), ty: TejxType::Any }, // @ prefix for function pointer literal in our IR
-                    HIRExpression::Variable { name: args_var, ty: TejxType::Any },
+                    HIRExpression::Literal { line: line,  value: format!("@{}", worker_name), ty: TejxType::Int64 }, // @ prefix for function pointer literal in our IR
+                    HIRExpression::Variable { line: line,  name: args_var, ty: TejxType::Int64 },
                 ],
                 ty: TejxType::Void,
             }
         });
 
         // return p;
-        wrapper_stmts.push(HIRStatement::Return {
-            value: Some(HIRExpression::Variable { name: p_var, ty: TejxType::Any }),
+        wrapper_stmts.push(HIRStatement::Return { line: line, 
+            value: Some(HIRExpression::Variable { line: line,  name: p_var, ty: TejxType::Any }),
         });
 
         // Return the worker function, a dummy state struct, and the wrapper body block
-        (worker_func, HIRStatement::Block { statements: vec![] }, HIRStatement::Block { statements: wrapper_stmts })
+        (worker_func, HIRStatement::Block { line: line,  statements: vec![] }, HIRStatement::Block { line: line,  statements: wrapper_stmts })
     }
 
     fn lower_class_declaration(&self, class_decl: &ClassDeclaration, functions: &mut Vec<HIRStatement>, main_stmts: &mut Vec<HIRStatement>) {
+        let line = class_decl._line;
         *self.current_class.borrow_mut() = Some(class_decl.name.clone());
         let p_name = if class_decl._parent_name.is_empty() { None } else { Some(class_decl._parent_name.clone()) };
         *self.parent_class.borrow_mut() = p_name;
@@ -805,9 +830,9 @@ impl Lowering {
             }
             
             let mut hir_body = self.lower_statement(&func_decl.body)
-                .unwrap_or(HIRStatement::Block { statements: vec![] });
+                .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
             
-            if let HIRStatement::Block { ref mut statements } = hir_body {
+            if let HIRStatement::Block { line: line,  ref mut statements } = hir_body {
                  // Inject method attachments for constructor
                  if func_decl.name == "constructor" {
                      // Instance fields
@@ -816,10 +841,10 @@ impl Lowering {
                          for (f_name, f_ty, f_init) in i_list {
                              let hir_init = self.lower_expression(f_init);
                              // Insert before other logic
-                             statements.insert(0, HIRStatement::ExpressionStmt {
-                                 expr: HIRExpression::Assignment {
-                                     target: Box::new(HIRExpression::MemberAccess {
-                                         target: Box::new(HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) }),
+                             statements.insert(0, HIRStatement::ExpressionStmt { line: line, 
+                                 expr: HIRExpression::Assignment { line: line, 
+                                     target: Box::new(HIRExpression::MemberAccess { line: line, 
+                                         target: Box::new(HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) }),
                                          member: f_name.clone(),
                                          ty: f_ty.clone(),
                                      }),
@@ -835,13 +860,13 @@ impl Lowering {
                          for m_name in m_list {
                              let mangled_func = format!("f_{}_{}", class_decl.name, m_name);
                              // Insert after debug print
-                             statements.insert(0, HIRStatement::ExpressionStmt {
-                                 expr: HIRExpression::Call {
+                             statements.insert(0, HIRStatement::ExpressionStmt { line: line, 
+                                 expr: HIRExpression::Call { line: line, 
                                      callee: "m_set".to_string(),
                                      args: vec![
-                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
-                                         HIRExpression::Literal { value: m_name.clone(), ty: TejxType::String },
-                                         HIRExpression::Variable { name: mangled_func, ty: TejxType::Any }
+                                         HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                         HIRExpression::Literal { line: line,  value: m_name.clone(), ty: TejxType::String },
+                                         HIRExpression::Variable { line: line,  name: mangled_func, ty: TejxType::Any }
                                      ],
                                      ty: TejxType::Void
                                  }
@@ -854,13 +879,13 @@ impl Lowering {
                      if let Some(g_list) = getters_borrow.get(&class_decl.name) {
                          for g_name in g_list {
                              let mangled_func = format!("f_{}_get_{}", class_decl.name, g_name);
-                             statements.insert(0, HIRStatement::ExpressionStmt {
-                                 expr: HIRExpression::Call {
+                             statements.insert(0, HIRStatement::ExpressionStmt { line: line, 
+                                 expr: HIRExpression::Call { line: line, 
                                      callee: "m_set".to_string(),
                                      args: vec![
-                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
-                                         HIRExpression::Literal { value: format!("get_{}", g_name), ty: TejxType::String },
-                                         HIRExpression::Variable { name: mangled_func, ty: TejxType::Any }
+                                         HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                         HIRExpression::Literal { line: line,  value: format!("get_{}", g_name), ty: TejxType::String },
+                                         HIRExpression::Variable { line: line,  name: mangled_func, ty: TejxType::Any }
                                      ],
                                      ty: TejxType::Void
                                  }
@@ -873,13 +898,13 @@ impl Lowering {
                      if let Some(s_list) = setters_borrow.get(&class_decl.name) {
                          for s_name in s_list {
                              let mangled_func = format!("f_{}_set_{}", class_decl.name, s_name);
-                             statements.insert(0, HIRStatement::ExpressionStmt {
-                                 expr: HIRExpression::Call {
+                             statements.insert(0, HIRStatement::ExpressionStmt { line: line, 
+                                 expr: HIRExpression::Call { line: line, 
                                      callee: "m_set".to_string(),
                                      args: vec![
-                                         HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
-                                         HIRExpression::Literal { value: format!("set_{}", s_name), ty: TejxType::String },
-                                         HIRExpression::Variable { name: mangled_func, ty: TejxType::Any }
+                                         HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                         HIRExpression::Literal { line: line,  value: format!("set_{}", s_name), ty: TejxType::String },
+                                         HIRExpression::Variable { line: line,  name: mangled_func, ty: TejxType::Any }
                                      ],
                                      ty: TejxType::Void
                                  }
@@ -889,13 +914,13 @@ impl Lowering {
 
                      // Inject class metadata for instanceof support
                      // Set __class__ = "ClassName" on this
-                     statements.push(HIRStatement::ExpressionStmt {
-                         expr: HIRExpression::Call {
+                     statements.push(HIRStatement::ExpressionStmt { line: line, 
+                         expr: HIRExpression::Call { line: line, 
                              callee: "m_set".to_string(),
                              args: vec![
-                                 HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
-                                 HIRExpression::Literal { value: "__class__".to_string(), ty: TejxType::String },
-                                 HIRExpression::Literal { value: class_decl.name.clone(), ty: TejxType::String },
+                                 HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                 HIRExpression::Literal { line: line,  value: "__class__".to_string(), ty: TejxType::String },
+                                 HIRExpression::Literal { line: line,  value: class_decl.name.clone(), ty: TejxType::String },
                              ],
                              ty: TejxType::Void
                          }
@@ -923,13 +948,13 @@ impl Lowering {
                          }
                          drop(class_parents_borrow);
                          let parents_str = parents.join(",");
-                         statements.push(HIRStatement::ExpressionStmt {
-                             expr: HIRExpression::Call {
+                         statements.push(HIRStatement::ExpressionStmt { line: line, 
+                             expr: HIRExpression::Call { line: line, 
                                  callee: "m_set".to_string(),
                                  args: vec![
-                                     HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
-                                     HIRExpression::Literal { value: "__parents__".to_string(), ty: TejxType::String },
-                                     HIRExpression::Literal { value: parents_str, ty: TejxType::String },
+                                     HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Class(class_decl.name.clone()) },
+                                     HIRExpression::Literal { line: line,  value: "__parents__".to_string(), ty: TejxType::String },
+                                     HIRExpression::Literal { line: line,  value: parents_str, ty: TejxType::String },
                                  ],
                                  ty: TejxType::Void
                              }
@@ -987,14 +1012,14 @@ impl Lowering {
                  functions.push(worker_func);
                  // functions.push(state_struct);
                  
-                  functions.push(HIRStatement::Function {
+                  functions.push(HIRStatement::Function { line: line, 
                     name: mangled_name, params, _return_type: TejxType::Any, body: Box::new(wrapper_body),
                  });
 
             } else {
                  // Sync method
                  let hir_body = self.lower_statement(&func_decl.body)
-                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                    .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
                  
                  self._exit_scope();
 
@@ -1004,7 +1029,7 @@ impl Lowering {
                      format!("f_{}_{}", class_decl.name.replace("[", "_").replace("]", "_"), name)
                  };
 
-                 functions.push(HIRStatement::Function {
+                 functions.push(HIRStatement::Function { line: line, 
                     name: mangled_name, params, _return_type: return_type, body: Box::new(hir_body),
                  });
             }
@@ -1025,10 +1050,10 @@ impl Lowering {
             }
             
             let hir_body = self.lower_statement(&getter._body)
-                .unwrap_or(HIRStatement::Block { statements: vec![] });
+                .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
 
             self._exit_scope();
-            functions.push(HIRStatement::Function {
+            functions.push(HIRStatement::Function { line: line, 
                 name, params, _return_type: return_type, body: Box::new(hir_body),
             });
         }
@@ -1047,10 +1072,10 @@ impl Lowering {
             }
             
             let hir_body = self.lower_statement(&setter._body)
-                .unwrap_or(HIRStatement::Block { statements: vec![] });
+                .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
 
             self._exit_scope();
-            functions.push(HIRStatement::Function {
+            functions.push(HIRStatement::Function { line: line, 
                 name, params, _return_type: TejxType::Void, body: Box::new(hir_body),
             });
         }
@@ -1062,9 +1087,9 @@ impl Lowering {
                 let hir_init = self.lower_expression(f_init);
                 // Static fields are mangled as g_Class_Field
                 let mangled_name = format!("g_{}_{}", class_decl.name, f_name);
-                main_stmts.push(HIRStatement::ExpressionStmt {
-                    expr: HIRExpression::Assignment {
-                        target: Box::new(HIRExpression::Variable { name: mangled_name, ty: f_ty.clone() }),
+                main_stmts.push(HIRStatement::ExpressionStmt { line: line, 
+                    expr: HIRExpression::Assignment { line: line, 
+                        target: Box::new(HIRExpression::Variable { line: line,  name: mangled_name, ty: f_ty.clone() }),
                         value: Box::new(hir_init),
                         ty: TejxType::Any
                     }
@@ -1077,6 +1102,7 @@ impl Lowering {
     }
 
     fn lower_extension_declaration(&self, ext_decl: &ExtensionDeclaration, functions: &mut Vec<HIRStatement>) {
+        let line = ext_decl._line;
         for func_decl in &ext_decl._methods {
             let mut params: Vec<(String, TejxType)> = Vec::new();
             params.push(("this".to_string(), TejxType::Class(ext_decl._target_type.clone())));
@@ -1098,17 +1124,18 @@ impl Lowering {
             }
             
             let hir_body = self.lower_statement(&func_decl.body)
-                .unwrap_or(HIRStatement::Block { statements: vec![] });
+                .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
             
             self._exit_scope();
 
-            functions.push(HIRStatement::Function {
+            functions.push(HIRStatement::Function { line: line, 
                 name, params, _return_type: return_type, body: Box::new(hir_body),
             });
         }
     }
 
     fn lower_statement(&self, stmt: &Statement) -> Option<HIRStatement> {
+        let line = stmt.get_line();
         match stmt {
             Statement::BlockStmt { statements, .. } => {
                 self.enter_scope();
@@ -1119,7 +1146,7 @@ impl Lowering {
                     }
                 }
                 self._exit_scope();
-                Some(HIRStatement::Block { statements: hir_stmts })
+                Some(HIRStatement::Block { line: line,  statements: hir_stmts })
             }
             Statement::VarDeclaration { pattern, type_annotation, initializer, is_const, .. } => {
                 let init = initializer.as_ref().map(|e| self.lower_expression(e));
@@ -1131,16 +1158,16 @@ impl Lowering {
                 
                 let mut stmts = Vec::new();
                 self.lower_binding_pattern(pattern, init, &ty, *is_const, &mut stmts);
-                Some(HIRStatement::Block { statements: stmts })
+                Some(HIRStatement::Block { line: line,  statements: stmts })
             }
             Statement::ExpressionStmt { _expression, .. } => {
                 let expr = self.lower_expression(_expression);
-                Some(HIRStatement::ExpressionStmt { expr })
+                Some(HIRStatement::ExpressionStmt { line: line,  expr })
             }
             Statement::WhileStmt { condition, body, .. } => {
                 let cond = self.lower_expression(condition);
                 let body_hir = self.lower_statement_as_block(body);
-                Some(HIRStatement::Loop {
+                Some(HIRStatement::Loop { line: line, 
                     condition: cond,
                     body: Box::new(body_hir),
                     increment: None,
@@ -1156,7 +1183,7 @@ impl Lowering {
                 }
                 let cond = condition.as_ref()
                     .map(|c| self.lower_expression(c))
-                    .unwrap_or(HIRExpression::Literal {
+                    .unwrap_or(HIRExpression::Literal { line: line, 
                         value: "true".to_string(),
                         ty: TejxType::Bool,
                     });
@@ -1165,19 +1192,19 @@ impl Lowering {
 
                 let inc = increment.as_ref().map(|e| {
                      let expr = self.lower_expression(e);
-                     Box::new(HIRStatement::ExpressionStmt {
+                     Box::new(HIRStatement::ExpressionStmt { line: line, 
                         expr,
                     })
                 });
 
-                outer_stmts.push(HIRStatement::Loop {
+                outer_stmts.push(HIRStatement::Loop { line: line, 
                     condition: cond,
                     body: Box::new(body_hir),
                     increment: inc,
                     _is_do_while: false,
                 });
 
-                Some(HIRStatement::Block { statements: outer_stmts })
+                Some(HIRStatement::Block { line: line,  statements: outer_stmts })
             }
              Statement::ForOfStmt { variable, iterable, body, .. } => {
                 // Desugar: 
@@ -1197,7 +1224,7 @@ impl Lowering {
                     // 1. Evaluate iterable once
                     let iter_expr = self.lower_expression(iterable);
                     let arr_name = format!("__arr_{}", var_name); 
-                    stmts.push(HIRStatement::VarDecl {
+                    stmts.push(HIRStatement::VarDecl { line: line, 
                         name: arr_name.clone(),
                         initializer: Some(iter_expr),
                         ty: TejxType::Any,
@@ -1206,10 +1233,10 @@ impl Lowering {
                     
                     // 2. Length
                     let len_name = format!("__len_{}", var_name);
-                    stmts.push(HIRStatement::VarDecl {
+                    stmts.push(HIRStatement::VarDecl { line: line, 
                         name: len_name.clone(),
-                        initializer: Some(HIRExpression::MemberAccess {
-                            target: Box::new(HIRExpression::Variable { name: arr_name.clone(), ty: TejxType::Any }),
+                        initializer: Some(HIRExpression::MemberAccess { line: line, 
+                            target: Box::new(HIRExpression::Variable { line: line,  name: arr_name.clone(), ty: TejxType::Any }),
                             member: "length".to_string(),
                             ty: TejxType::Int32
                         }),
@@ -1219,19 +1246,19 @@ impl Lowering {
                     
                     // 3. Index
                     let idx_name = format!("__idx_{}", var_name);
-                    stmts.push(HIRStatement::VarDecl {
+                    stmts.push(HIRStatement::VarDecl { line: line, 
                         name: idx_name.clone(),
-                        initializer: Some(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                        initializer: Some(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }),
                         ty: TejxType::Int32,
                         _is_const: false,
                     });
                     
                     // 4. Loop
                     // Condition: idx < len
-                    let cond = HIRExpression::BinaryExpr {
-                        left: Box::new(HIRExpression::Variable { name: idx_name.clone(), ty: TejxType::Int32 }),
+                    let cond = HIRExpression::BinaryExpr { line: line, 
+                        left: Box::new(HIRExpression::Variable { line: line,  name: idx_name.clone(), ty: TejxType::Int32 }),
                         op: TokenType::Less,
-                        right: Box::new(HIRExpression::Variable { name: len_name, ty: TejxType::Int32 }),
+                        right: Box::new(HIRExpression::Variable { line: line,  name: len_name, ty: TejxType::Int32 }),
                         ty: TejxType::Bool,
                     };
                     
@@ -1239,12 +1266,12 @@ impl Lowering {
                     let mut body_stmts = Vec::new();
                     
                     // let var_name = _arr[_idx];
-                    let val_expr = HIRExpression::IndexAccess {
-                        target: Box::new(HIRExpression::Variable { name: arr_name, ty: TejxType::Any }),
-                        index: Box::new(HIRExpression::Variable { name: idx_name.clone(), ty: TejxType::Int32 }),
+                    let val_expr = HIRExpression::IndexAccess { line: line, 
+                        target: Box::new(HIRExpression::Variable { line: line,  name: arr_name, ty: TejxType::Any }),
+                        index: Box::new(HIRExpression::Variable { line: line,  name: idx_name.clone(), ty: TejxType::Int32 }),
                         ty: TejxType::Any,
                     };
-                    body_stmts.push(HIRStatement::VarDecl {
+                    body_stmts.push(HIRStatement::VarDecl { line: line, 
                         name: var_name.clone(),
                         initializer: Some(val_expr),
                         ty: TejxType::Any, // Inferred?
@@ -1258,27 +1285,27 @@ impl Lowering {
                     }
                     
                     // Increment: idx = idx + 1
-                    let inc_stmt = Box::new(HIRStatement::ExpressionStmt {
-                        expr: HIRExpression::Assignment {
-                            target: Box::new(HIRExpression::Variable { name: idx_name.clone(), ty: TejxType::Int32 }),
-                            value: Box::new(HIRExpression::BinaryExpr {
-                                left: Box::new(HIRExpression::Variable { name: idx_name.clone(), ty: TejxType::Int32 }),
+                    let inc_stmt = Box::new(HIRStatement::ExpressionStmt { line: line, 
+                        expr: HIRExpression::Assignment { line: line, 
+                            target: Box::new(HIRExpression::Variable { line: line,  name: idx_name.clone(), ty: TejxType::Int32 }),
+                            value: Box::new(HIRExpression::BinaryExpr { line: line, 
+                                left: Box::new(HIRExpression::Variable { line: line,  name: idx_name.clone(), ty: TejxType::Int32 }),
                                 op: TokenType::Plus,
-                                right: Box::new(HIRExpression::Literal { value: "1".to_string(), ty: TejxType::Int32 }),
+                                right: Box::new(HIRExpression::Literal { line: line,  value: "1".to_string(), ty: TejxType::Int32 }),
                                 ty: TejxType::Int32
                             }),
                             ty: TejxType::Int32
                         }
                     });
                     
-                    stmts.push(HIRStatement::Loop {
+                    stmts.push(HIRStatement::Loop { line: line, 
                         condition: cond,
-                        body: Box::new(HIRStatement::Block { statements: body_stmts }),
+                        body: Box::new(HIRStatement::Block { line: line,  statements: body_stmts }),
                         increment: Some(inc_stmt),
                         _is_do_while: false,
                     });
                     
-                    Some(HIRStatement::Block { statements: stmts })
+                    Some(HIRStatement::Block { line: line,  statements: stmts })
                 } else {
                     None // Destructuring in for-of not supported yet
                 }
@@ -1286,11 +1313,11 @@ impl Lowering {
             Statement::IfStmt { condition, then_branch, else_branch, .. } => {
                 let cond = self.lower_expression(condition);
                 let then_hir = self.lower_statement(then_branch)
-                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                    .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
                 let else_hir = else_branch.as_ref()
                     .and_then(|e| self.lower_statement(e));
 
-                Some(HIRStatement::If {
+                Some(HIRStatement::If { line: line, 
                     condition: cond,
                     then_branch: Box::new(then_hir),
                     else_branch: else_hir.map(Box::new),
@@ -1300,31 +1327,31 @@ impl Lowering {
                 let val = value.as_ref().map(|e| self.lower_expression(e));
                 if let Some(p_id) = self.current_async_promise_id.borrow().as_ref() {
                     let mut stmts = Vec::new();
-                    stmts.push(HIRStatement::ExpressionStmt {
-                        expr: HIRExpression::Call {
+                    stmts.push(HIRStatement::ExpressionStmt { line: line, 
+                        expr: HIRExpression::Call { line: line, 
                             callee: "__resolve_promise".to_string(),
                             args: vec![
-                                HIRExpression::Variable { name: p_id.clone(), ty: TejxType::Any },
-                                val.clone().unwrap_or(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Any }),
+                                HIRExpression::Variable { line: line,  name: p_id.clone(), ty: TejxType::Any },
+                                val.clone().unwrap_or(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Any }),
                             ],
                             ty: TejxType::Void,
                         }
                     });
-                    stmts.push(HIRStatement::ExpressionStmt {
-                        expr: HIRExpression::Call {
+                    stmts.push(HIRStatement::ExpressionStmt { line: line, 
+                        expr: HIRExpression::Call { line: line, 
                             callee: "tejx_dec_async_ops".to_string(),
                             args: vec![],
                             ty: TejxType::Void,
                         }
                     });
-                    stmts.push(HIRStatement::Return { value: val });
-                    Some(HIRStatement::Block { statements: stmts })
+                    stmts.push(HIRStatement::Return { line: line,  value: val });
+                    Some(HIRStatement::Block { line: line,  statements: stmts })
                 } else {
-                    Some(HIRStatement::Return { value: val })
+                    Some(HIRStatement::Return { line: line,  value: val })
                 }
             }
-            Statement::BreakStmt { .. } => Some(HIRStatement::Break),
-            Statement::ContinueStmt { .. } => Some(HIRStatement::Continue),
+            Statement::BreakStmt { .. } => Some(HIRStatement::Break { line }),
+            Statement::ContinueStmt { .. } => Some(HIRStatement::Continue { line }),
             Statement::SwitchStmt { condition, cases, .. } => {
                 let cond = self.lower_expression(condition);
                 let mut hir_cases = Vec::new();
@@ -1339,23 +1366,23 @@ impl Lowering {
                     }
                     hir_cases.push(HIRCase {
                         value: val,
-                        body: Box::new(HIRStatement::Block { statements: stmts }),
+                        body: Box::new(HIRStatement::Block { line: line,  statements: stmts }),
                     });
                 }
-                Some(HIRStatement::Switch {
+                Some(HIRStatement::Switch { line: line, 
                     condition: cond,
                     cases: hir_cases,
                 })
             }
             Statement::TryStmt { _try_block, _catch_var, _catch_block, _finally_block, .. } => {
                 let try_hir = self.lower_statement(_try_block)
-                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                    .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
                 let catch_hir = self.lower_statement(_catch_block)
-                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                    .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
                 let finally_hir = _finally_block.as_ref()
                     .and_then(|f| self.lower_statement(f));
                 
-                Some(HIRStatement::Try {
+                Some(HIRStatement::Try { line: line, 
                     try_block: Box::new(try_hir),
                     catch_var: if _catch_var.is_empty() { None } else { Some(_catch_var.clone()) },
                     catch_block: Box::new(catch_hir),
@@ -1364,7 +1391,7 @@ impl Lowering {
             }
             Statement::ThrowStmt { _expression, .. } => {
                 let val = self.lower_expression(_expression);
-                Some(HIRStatement::Throw { value: val })
+                Some(HIRStatement::Throw { line: line,  value: val })
             }
             Statement::FunctionDeclaration(func) => {
                 let params: Vec<(String, TejxType)> = func.params.iter()
@@ -1378,11 +1405,11 @@ impl Lowering {
                 }
                 
                 let body = self.lower_statement(&func.body)
-                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                    .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
                 
                 self._exit_scope();
                 
-                Some(HIRStatement::Function {
+                Some(HIRStatement::Function { line: line, 
                     name: format!("f_{}", func.name),
                     params,
                     _return_type: return_type,
@@ -1395,14 +1422,16 @@ impl Lowering {
     }
 
     fn lower_statement_as_block(&self, stmt: &Statement) -> HIRStatement {
+        let line = stmt.get_line();
         match self.lower_statement(stmt) {
-            Some(HIRStatement::Block { .. }) => self.lower_statement(stmt).unwrap(),
-            Some(other) => HIRStatement::Block { statements: vec![other] },
-            None => HIRStatement::Block { statements: vec![] },
+            Some(HIRStatement::Block { statements, ..  }) => HIRStatement::Block { line,  statements },
+            Some(other) => HIRStatement::Block { line,  statements: vec![other] },
+            None => HIRStatement::Block { line,  statements: vec![] },
         }
     }
 
     fn lower_expression(&self, expr: &Expression) -> HIRExpression {
+        let line = expr.get_line();
         match expr {
             Expression::NumberLiteral { value, .. } => {
                 let (val_str, ty) = if value.fract() == 0.0 {
@@ -1410,31 +1439,31 @@ impl Lowering {
                 } else {
                     (value.to_string(), TejxType::Float32)
                 };
-                HIRExpression::Literal {
+                HIRExpression::Literal { line: line, 
                     value: val_str,
                     ty,
                 }
             }
             Expression::StringLiteral { value, .. } => {
-                HIRExpression::Literal {
+                HIRExpression::Literal { line: line, 
                     value: value.clone(),
                     ty: TejxType::String,
                 }
             }
             Expression::BooleanLiteral { value, .. } => {
-                HIRExpression::Literal {
+                HIRExpression::Literal { line: line, 
                     value: value.to_string(),
                     ty: TejxType::Bool,
                 }
             }
             Expression::ThisExpr { .. } => {
-                HIRExpression::Variable {
+                HIRExpression::Variable { line: line, 
                     name: "this".to_string(),
                     ty: TejxType::Any,
                 }
             }
             Expression::SuperExpr { .. } => {
-                HIRExpression::Variable {
+                HIRExpression::Variable { line: line, 
                     name: "super".to_string(),
                     ty: TejxType::Any,
                 }
@@ -1446,13 +1475,13 @@ impl Lowering {
                 } else {
                     name.clone()
                 };
-                HIRExpression::Variable {
+                HIRExpression::Variable { line: line, 
                     name: final_name,
                     ty,
                 }
             }
             Expression::NoneExpr { .. } | Expression::UndefinedExpr { .. } => {
-                 HIRExpression::Literal {
+                 HIRExpression::Literal { line: line, 
                     value: "0".to_string(),
                     ty: TejxType::Int32, // Or Any? Using Int32 for 0 is safer for now.
                  }
@@ -1465,7 +1494,7 @@ impl Lowering {
                 let left_hir = self.lower_expression(_left);
                 let right_hir = self.lower_expression(_right);
                 
-                HIRExpression::BinaryExpr {
+                HIRExpression::BinaryExpr { line: line, 
                     op: TokenType::PipePipe,
                     left: Box::new(left_hir),
                     right: Box::new(right_hir),
@@ -1476,19 +1505,19 @@ impl Lowering {
                  let target_hir = self.lower_expression(target);
                  let index_hir = self.lower_expression(index);
                  
-                 HIRExpression::If {
-                     condition: Box::new(HIRExpression::BinaryExpr {
+                 HIRExpression::If { line: line, 
+                     condition: Box::new(HIRExpression::BinaryExpr { line: line, 
                          op: TokenType::BangEqual,
                          left: Box::new(target_hir.clone()), 
-                         right: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                         right: Box::new(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }),
                          ty: TejxType::Bool
                      }),
-                     then_branch: Box::new(HIRExpression::IndexAccess {
+                     then_branch: Box::new(HIRExpression::IndexAccess { line: line, 
                          target: Box::new(target_hir),
                          index: Box::new(index_hir),
                          ty: TejxType::Any
                      }),
-                     else_branch: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                     else_branch: Box::new(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }),
                      ty: TejxType::Any
                  }
             }
@@ -1501,11 +1530,11 @@ impl Lowering {
                         Expression::Identifier { name, .. } => name.clone(),
                         _ => "__unknown__".to_string(),
                     };
-                    return HIRExpression::Call {
+                    return HIRExpression::Call { line: line, 
                         callee: "rt_instanceof".to_string(),
                         args: vec![
                             obj,
-                            HIRExpression::Literal { value: class_name, ty: TejxType::String },
+                            HIRExpression::Literal { line: line,  value: class_name, ty: TejxType::String },
                         ],
                         ty: TejxType::Int32,
                     };
@@ -1516,7 +1545,7 @@ impl Lowering {
                 // Desugar === and !== to runtime calls
                 if matches!(op, TokenType::EqualEqualEqual) || matches!(op, TokenType::BangEqualEqual) {
                      let callee = if matches!(op, TokenType::EqualEqualEqual) { "rt_strict_equal" } else { "rt_strict_ne" };
-                     return HIRExpression::Call {
+                     return HIRExpression::Call { line: line, 
                          callee: callee.to_string(),
                          args: vec![l, r],
                          ty: TejxType::Bool
@@ -1524,7 +1553,7 @@ impl Lowering {
                 }
 
                 let bin_ty = self.infer_hir_binary_type(&l, op, &r);
-                HIRExpression::BinaryExpr {
+                HIRExpression::BinaryExpr { line: line, 
                     left: Box::new(l),
                     op: op.clone(),
                     right: Box::new(r),
@@ -1538,7 +1567,7 @@ impl Lowering {
                 // Desugar compound assignments: a += b  ->  a = a + b
                 let final_value = match _op {
                     TokenType::PlusEquals => {
-                         HIRExpression::BinaryExpr {
+                         HIRExpression::BinaryExpr { line: line, 
                              left: Box::new(self.lower_expression(target)),
                              op: TokenType::Plus,
                              right: Box::new(v),
@@ -1546,7 +1575,7 @@ impl Lowering {
                          }
                     }
                     TokenType::MinusEquals => {
-                         HIRExpression::BinaryExpr {
+                         HIRExpression::BinaryExpr { line: line, 
                              left: Box::new(self.lower_expression(target)),
                              op: TokenType::Minus,
                              right: Box::new(v),
@@ -1554,7 +1583,7 @@ impl Lowering {
                          }
                     }
                     TokenType::StarEquals => {
-                         HIRExpression::BinaryExpr {
+                         HIRExpression::BinaryExpr { line: line, 
                              left: Box::new(self.lower_expression(target)),
                              op: TokenType::Star,
                              right: Box::new(v),
@@ -1562,7 +1591,7 @@ impl Lowering {
                          }
                     }
                     TokenType::SlashEquals => {
-                         HIRExpression::BinaryExpr {
+                         HIRExpression::BinaryExpr { line: line, 
                              left: Box::new(self.lower_expression(target)),
                              op: TokenType::Slash,
                              right: Box::new(v),
@@ -1578,7 +1607,7 @@ impl Lowering {
                         let setters = self.class_setters.borrow();
                         if let Some(s_set) = setters.get(&class_name) {
                             if s_set.contains(member) {
-                                return HIRExpression::Call {
+                                return HIRExpression::Call { line: line, 
                                     callee: format!("f_{}_set_{}", class_name, member),
                                     args: vec![self.lower_expression(object), final_value],
                                     ty: TejxType::Void
@@ -1591,7 +1620,7 @@ impl Lowering {
                 match target.as_ref() {
                     Expression::Identifier { .. } | Expression::MemberAccessExpr { .. } | Expression::ArrayAccessExpr { .. } => {
                         let t = self.lower_expression(target);
-                        HIRExpression::Assignment {
+                        HIRExpression::Assignment { line: line, 
                             target: Box::new(t),
                             value: Box::new(final_value),
                             ty,
@@ -1599,7 +1628,7 @@ impl Lowering {
                     }
                     _ => {
                         let t = self.lower_expression(target);
-                        HIRExpression::Assignment {
+                        HIRExpression::Assignment { line: line, 
                             target: Box::new(t),
                             value: Box::new(final_value),
                             ty,
@@ -1621,19 +1650,19 @@ impl Lowering {
                          // Reconstruct Assignment: right = right op 1
                          // Need to clone target handling from AssignmentExpr logic ideally.
                          // Simplification:
-                         HIRExpression::Assignment {
+                         HIRExpression::Assignment { line: line, 
                              target: Box::new(r_expr.clone()),
-                             value: Box::new(HIRExpression::BinaryExpr {
+                             value: Box::new(HIRExpression::BinaryExpr { line: line, 
                                  left: Box::new(r_expr),
                                  op: bin_op,
-                                 right: Box::new(HIRExpression::Literal { value: delta.to_string(), ty: TejxType::Int32 }),
+                                 right: Box::new(HIRExpression::Literal { line: line,  value: delta.to_string(), ty: TejxType::Int32 }),
                                  ty: TejxType::Int32
                              }),
                              ty: TejxType::Int32
                          }
                      }
                       TokenType::Bang => {
-                         HIRExpression::Call {
+                         HIRExpression::Call { line: line, 
                              callee: "rt_not".to_string(),
                              args: vec![self.lower_expression(right)],
                              ty: TejxType::Bool,
@@ -1641,8 +1670,8 @@ impl Lowering {
                      }
                      TokenType::Minus => {
                          // -x -> 0 - x
-                         HIRExpression::BinaryExpr {
-                             left: Box::new(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 }),
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }),
                              op: TokenType::Minus,
                              right: Box::new(self.lower_expression(right)),
                              ty: TejxType::Int32
@@ -1672,9 +1701,9 @@ impl Lowering {
                              } else {
                                  TejxType::Any
                              };
-                             hir_args.insert(0, HIRExpression::Variable { name: "this".to_string(), ty: this_ty });
+                             hir_args.insert(0, HIRExpression::Variable { line: line,  name: "this".to_string(), ty: this_ty });
 
-                             return HIRExpression::Call {
+                             return HIRExpression::Call { line: line, 
                                  callee: method_name,
                                  args: hir_args,
                                  ty: TejxType::Any, // Inferred?
@@ -1712,7 +1741,7 @@ impl Lowering {
                          // Prepend object as 'this'
                          hir_args.insert(0, obj_hir);
                          
-                         return HIRExpression::Call {
+                         return HIRExpression::Call { line: line, 
                              callee: method_name,
                              args: hir_args,
                              ty: return_ty,
@@ -1738,7 +1767,7 @@ impl Lowering {
                     let r_expr = hir_args[0].clone();
                     let r_ty = r_expr.get_type();
                     if matches!(r_ty, TejxType::Any) {
-                        return HIRExpression::Call {
+                        return HIRExpression::Call { line: line, 
                             callee: "rt_typeof".to_string(),
                             args: vec![r_expr],
                             ty: TejxType::Any,
@@ -1753,7 +1782,7 @@ impl Lowering {
                             TejxType::Class(c) => c,
                             _ => "object",
                         };
-                        return HIRExpression::Literal {
+                        return HIRExpression::Literal { line: line, 
                             value: format!("\"{}\"", type_name),
                             ty: TejxType::String,
                         };
@@ -1761,7 +1790,7 @@ impl Lowering {
                 } else if callee_str == "sizeof" {
                     let r_expr = hir_args[0].clone();
                     let r_ty = r_expr.get_type();
-                    return HIRExpression::Literal {
+                    return HIRExpression::Literal { line: line, 
                         value: r_ty.size().to_string(),
                         ty: TejxType::Int32,
                     };
@@ -1770,14 +1799,14 @@ impl Lowering {
                 if callee_str == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {
                         final_callee = format!("f_{}_constructor", parent);
-                        final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
+                        final_args = vec![HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Any }];
                         final_args.extend(hir_args.clone());
                     }
                 } else if let Expression::MemberAccessExpr { object, member, .. } = callee.as_ref() {
                      if let Expression::SuperExpr { .. } = object.as_ref() {
                          if let Some(parent) = &*self.parent_class.borrow() {
                              final_callee = format!("f_{}_{}", parent, member);
-                             final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
+                             final_args = vec![HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Any }];
                              final_args.extend(hir_args.clone());
                          }
                      } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
@@ -2014,7 +2043,7 @@ impl Lowering {
                             if obj_name == "super" {
                                 if let Some(parent) = &*self.parent_class.borrow() {
                                     final_callee = format!("f_{}_{}", parent, method_name);
-                                    final_args = vec![HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }];
+                                    final_args = vec![HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Any }];
                                     final_args.extend(hir_args.clone());
                                 }
                             } else {
@@ -2081,7 +2110,7 @@ impl Lowering {
                                         }
                                         let mut m_args = Vec::new();
                                         if is_instance {
-                                            m_args.push(HIRExpression::Variable { 
+                                            m_args.push(HIRExpression::Variable { line: line,  
                                                 name: obj_name.to_string(), 
                                                 ty: TejxType::Class(class_name.clone())
                                             });
@@ -2096,13 +2125,13 @@ impl Lowering {
                                       let obj_expr = if let Expression::MemberAccessExpr { object, .. } = callee.as_ref() {
                                            self.lower_expression(object)
                                       } else if obj_path == "this" || obj_path == "super" {
-                                          HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                          HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Any }
                                       } else if obj_path.contains('.') {
                                           // ... existing complex path logic ...
                                           // Actually, let's keep the existing logic but ensure it handles literals
                                           let sub_parts: Vec<&str> = obj_path.split('.').collect();
                                           let mut current = if sub_parts[0] == "this" {
-                                              HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                              HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Any }
                                           } else if sub_parts[0] == "(string)" {
                                                // This is a literal that was mangled by to_callee_name
                                                // But wait, if it's a literal, we don't have the value here.
@@ -2110,11 +2139,11 @@ impl Lowering {
                                                if let Expression::MemberAccessExpr { object, .. } = callee.as_ref() {
                                                    self.lower_expression(object)
                                                } else {
-                                                   HIRExpression::Variable { name: "this".to_string(), ty: TejxType::Any }
+                                                   HIRExpression::Variable { line: line,  name: "this".to_string(), ty: TejxType::Any }
                                                }
                                           } else {
                                               let base_ty = self.lookup(sub_parts[0]).map(|(_, t)| t).unwrap_or(TejxType::Any);
-                                              HIRExpression::Variable { name: sub_parts[0].to_string(), ty: base_ty }
+                                              HIRExpression::Variable { line: line,  name: sub_parts[0].to_string(), ty: base_ty }
                                           };
                                           // ... rest of loop ...
                                           for idx in 1..sub_parts.len() {
@@ -2130,7 +2159,7 @@ impl Lowering {
                                                       }
                                                   }
                                               }
-                                              current = HIRExpression::MemberAccess {
+                                              current = HIRExpression::MemberAccess { line: line, 
                                                   target: Box::new(current),
                                                   member: sub_parts[idx].to_string(),
                                                   ty: next_ty,
@@ -2142,7 +2171,7 @@ impl Lowering {
                                               self.lower_expression(object)
                                           } else {
                                               let ty = self.lookup(&obj_path).map(|(_, t)| t).unwrap_or(TejxType::Any);
-                                              HIRExpression::Variable { name: obj_path.clone(), ty }
+                                              HIRExpression::Variable { line: line,  name: obj_path.clone(), ty }
                                           }
                                       };
 
@@ -2240,15 +2269,15 @@ impl Lowering {
                                         let mut n_args = vec![obj_expr];
                                         n_args.extend(hir_args.clone());
                                         if final_callee == "__join" && n_args.len() < 2 {
-                                             n_args.push(HIRExpression::Literal { value: "0".to_string(), ty: TejxType::Int32 });
+                                             n_args.push(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 });
                                         }
                                         final_args = n_args;
                                     } else {
                                          // Indirect Call fallback
                                          let mut i_args = vec![obj_expr.clone()];
                                          i_args.extend(hir_args.clone());
-                                         return HIRExpression::IndirectCall {
-                                             callee: Box::new(HIRExpression::MemberAccess {
+                                         return HIRExpression::IndirectCall { line: line, 
+                                             callee: Box::new(HIRExpression::MemberAccess { line: line, 
                                                  target: Box::new(obj_expr),
                                                  member: method_name.clone(),
                                                  ty: TejxType::Any
@@ -2274,7 +2303,7 @@ impl Lowering {
                      if final_args.len() >= fixed_count {
                          let (fixed, rest) = final_args.split_at(fixed_count);
                          let mut new_var_args = fixed.to_vec();
-                         new_var_args.push(HIRExpression::ArrayLiteral {
+                         new_var_args.push(HIRExpression::ArrayLiteral { line: line, 
                              elements: rest.to_vec(),
                              ty: TejxType::Any
                          });
@@ -2282,7 +2311,7 @@ impl Lowering {
                      }
                 }
 
-                HIRExpression::Call {
+                HIRExpression::Call { line: line, 
                     callee: final_callee,
                     args: final_args,
                     ty,
@@ -2299,7 +2328,7 @@ impl Lowering {
                     let s_fields = self.class_static_fields.borrow();
                     if let Some(f_list) = s_fields.get(&obj_name) {
                         if let Some((_name, f_ty, _)) = f_list.iter().find(|(n, _, _)| n == member) {
-                            return HIRExpression::Variable {
+                            return HIRExpression::Variable { line: line, 
                                 name: format!("g_{}_{}", obj_name, member),
                                 ty: f_ty.clone(),
                             };
@@ -2313,7 +2342,7 @@ impl Lowering {
                     let getters = self.class_getters.borrow();
                     if let Some(g_set) = getters.get(&class_name) {
                         if g_set.contains(member) {
-                            return HIRExpression::Call {
+                            return HIRExpression::Call { line: line, 
                                 callee: format!("f_{}_get_{}", class_name, member),
                                 args: vec![self.lower_expression(object)],
                                 ty: TejxType::Any
@@ -2330,7 +2359,7 @@ impl Lowering {
                     if let Some(i_list) = fields.get(&class_name) {
                         for (f_name, f_ty, _) in i_list {
                             if f_name == member {
-                                return HIRExpression::MemberAccess {
+                                return HIRExpression::MemberAccess { line: line, 
                                     target: Box::new(lowered_object),
                                     member: member.clone(),
                                     ty: f_ty.clone(),
@@ -2343,12 +2372,12 @@ impl Lowering {
 
                 let combined = format!("{}_{}", obj_name, member);
                 if self.user_functions.borrow().contains_key(&combined) {
-                    HIRExpression::Variable {
+                    HIRExpression::Variable { line: line, 
                         name: format!("f_{}", combined),
                         ty: TejxType::Any,
                     }
                 } else {
-                    HIRExpression::MemberAccess {
+                    HIRExpression::MemberAccess { line: line, 
                         target: Box::new(lowered_object),
                         member: member.clone(),
                         ty: if member == "length" { TejxType::Int32 } else { TejxType::Any },
@@ -2358,7 +2387,7 @@ impl Lowering {
             Expression::ArrayAccessExpr { target, index, .. } => {
                 let lowered_target = self.lower_expression(target);
                 let ty = lowered_target.get_type().get_array_element_type();
-                HIRExpression::IndexAccess {
+                HIRExpression::IndexAccess { line: line, 
                     target: Box::new(lowered_target),
                     index: Box::new(self.lower_expression(index)),
                     ty,
@@ -2368,7 +2397,7 @@ impl Lowering {
                 let hir_entries = entries.iter()
                     .map(|(k, v)| (k.clone(), self.lower_expression(v)))
                     .collect();
-                HIRExpression::ObjectLiteral {
+                HIRExpression::ObjectLiteral { line: line, 
                     entries: hir_entries,
                     ty: TejxType::Any,
                 }
@@ -2382,7 +2411,7 @@ impl Lowering {
                     if let Expression::SpreadExpr { _expr, .. } = e {
                         // Push accumulated static chunk if any
                         if !current_chunk.is_empty() {
-                            chunks.push(HIRExpression::ArrayLiteral {
+                            chunks.push(HIRExpression::ArrayLiteral { line: line, 
                                 elements: current_chunk.clone(),
                                 ty: TejxType::Class("any[]".to_string()),
                             });
@@ -2396,7 +2425,7 @@ impl Lowering {
                 }
                 // Push final chunk
                 if !current_chunk.is_empty() {
-                    chunks.push(HIRExpression::ArrayLiteral {
+                    chunks.push(HIRExpression::ArrayLiteral { line: line, 
                         elements: current_chunk,
                         ty: TejxType::Class("any[]".to_string()),
                     });
@@ -2404,12 +2433,12 @@ impl Lowering {
                 
                 if chunks.is_empty() {
                      // Empty array []
-                     HIRExpression::ArrayLiteral { elements: vec![], ty: TejxType::Class("any[]".to_string()) }
+                     HIRExpression::ArrayLiteral { line: line,  elements: vec![], ty: TejxType::Class("any[]".to_string()) }
                 } else {
                     // Reduce chunks with Array_concat
                     let mut expr = chunks[0].clone();
                     for next_chunk in chunks.into_iter().skip(1) {
-                         expr = HIRExpression::Call {
+                         expr = HIRExpression::Call { line: line, 
                              callee: "Array_concat".to_string(), // Ensure this maps to Array_concat in runtime
                              args: vec![expr, next_chunk],
                              ty: TejxType::Class("any[]".to_string()),
@@ -2439,30 +2468,30 @@ impl Lowering {
                 }
                 
                 let hir_body = self.lower_statement(body)
-                    .unwrap_or(HIRStatement::Block { statements: vec![] });
+                    .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
                 
                 self._exit_scope();
                 
-                self.lambda_functions.borrow_mut().push(HIRStatement::Function {
+                self.lambda_functions.borrow_mut().push(HIRStatement::Function { line: line, 
                     name: lambda_name.clone(),
                     params: hir_params,
                     _return_type: TejxType::Any,
                     body: Box::new(hir_body),
                 });
                 
-                HIRExpression::Literal {
+                HIRExpression::Literal { line: line, 
                     value: lambda_name,
                     ty: TejxType::Any, // Actually function type
                 }
             }
             Expression::AwaitExpr { expr, .. } => {
-                HIRExpression::Await {
+                HIRExpression::Await { line: line, 
                     expr: Box::new(self.lower_expression(expr)),
                     ty: TejxType::Any,
                 }
             }
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
-                HIRExpression::OptionalChain {
+                HIRExpression::OptionalChain { line: line, 
                     target: Box::new(self.lower_expression(object)),
                     operation: format!(".{}", member),
                     ty: TejxType::Any,
@@ -2484,7 +2513,7 @@ impl Lowering {
                      if hir_args.len() >= fixed_count {
                           let (fixed, rest) = hir_args.split_at(fixed_count);
                           let mut new_var_args = fixed.to_vec();
-                          new_var_args.push(HIRExpression::ArrayLiteral {
+                          new_var_args.push(HIRExpression::ArrayLiteral { line: line, 
                               elements: rest.to_vec(),
                               ty: TejxType::Any
                           });
@@ -2492,7 +2521,7 @@ impl Lowering {
                      }
                 }
 
-                HIRExpression::NewExpr {
+                HIRExpression::NewExpr { line: line, 
                     class_name: normalized_class, // Keep full name for type info? Or normalized? 
                     // Actually, HIR NewExpr's class_name is used in mir_lowering to pick constructor.
                     // But we might need the full name for type inference elsewhere.
@@ -2506,7 +2535,7 @@ impl Lowering {
             Expression::OptionalCallExpr { callee, args: _args, .. } => {
                 let callee_expr = self.lower_expression(callee);
 
-                HIRExpression::OptionalChain {
+                HIRExpression::OptionalChain { line: line, 
                     target: Box::new(callee_expr),
                     operation: "()".to_string(), // In HIR/MIR, OptionalChain "()" means call
                     ty: TejxType::Any,
@@ -2516,7 +2545,7 @@ impl Lowering {
                 let cond = self.lower_expression(_condition);
                 let t_branch = self.lower_expression(_true_branch);
                 let f_branch = self.lower_expression(_false_branch);
-                HIRExpression::If {
+                HIRExpression::If { line: line, 
                     condition: Box::new(cond),
                     then_branch: Box::new(t_branch),
                     else_branch: Box::new(f_branch),
@@ -2535,7 +2564,7 @@ impl Lowering {
                          body,
                      });
                 }
-                HIRExpression::Match {
+                HIRExpression::Match { line: line, 
                     target: Box::new(tgt),
                     arms: hir_arms,
                     ty: TejxType::Any,
@@ -2548,13 +2577,13 @@ impl Lowering {
                         hir_stmts.push(h);
                     }
                 }
-                HIRExpression::BlockExpr {
+                HIRExpression::BlockExpr { line: line, 
                     statements: hir_stmts,
                     ty: TejxType::Void,
                 }
             }
 
-            _ => HIRExpression::Literal {
+            _ => HIRExpression::Literal { line: line, 
                 value: "0".to_string(),
                 ty: TejxType::Any,
             },
@@ -2562,10 +2591,12 @@ impl Lowering {
     }
 
     fn lower_binding_pattern(&self, pattern: &BindingNode, initializer: Option<HIRExpression>, ty: &TejxType, is_const: bool, stmts: &mut Vec<HIRStatement>) {
+        let line = 0; // Default or pass as arg? Let us pass as arg maybe. 
+        // Actually, many callers don't have a line here.
         match pattern {
             BindingNode::Identifier(name) => {
                 self.define(name.clone(), ty.clone());
-                stmts.push(HIRStatement::VarDecl {
+                stmts.push(HIRStatement::VarDecl { line: line, 
                     name: name.clone(),
                     initializer,
                     ty: ty.clone(),
@@ -2581,7 +2612,7 @@ impl Lowering {
                 let tmp_id = format!("destructure_tmp_{}", self.lambda_counter.borrow());
                 *self.lambda_counter.borrow_mut() += 1;
                 
-                stmts.push(HIRStatement::VarDecl {
+                stmts.push(HIRStatement::VarDecl { line: line, 
                     name: tmp_id.clone(),
                     initializer,
                     ty: ty.clone(),
@@ -2589,9 +2620,9 @@ impl Lowering {
                 });
                 
                 for (i, el) in elements.iter().enumerate() {
-                    let el_init = HIRExpression::IndexAccess {
-                        target: Box::new(HIRExpression::Variable { name: tmp_id.clone(), ty: ty.clone() }),
-                        index: Box::new(HIRExpression::Literal { value: i.to_string(), ty: TejxType::Int32 }),
+                    let el_init = HIRExpression::IndexAccess { line: line, 
+                        target: Box::new(HIRExpression::Variable { line: line,  name: tmp_id.clone(), ty: ty.clone() }),
+                        index: Box::new(HIRExpression::Literal { line: line,  value: i.to_string(), ty: TejxType::Int32 }),
                         ty: TejxType::Any,
                     };
                     self.lower_binding_pattern(el, Some(el_init), &TejxType::Any, is_const, stmts);
@@ -2600,11 +2631,11 @@ impl Lowering {
                 if let Some(r) = rest {
                     // handle rest ...tail
                      // let tail = Array_sliceRest(tmp, elements.len());
-                     let slice_init = HIRExpression::Call {
+                     let slice_init = HIRExpression::Call { line: line, 
                          callee: "Array_sliceRest".to_string(),
                          args: vec![
-                             HIRExpression::Variable { name: tmp_id.clone(), ty: ty.clone() },
-                             HIRExpression::Literal { value: elements.len().to_string(), ty: TejxType::Int32 }
+                             HIRExpression::Variable { line: line,  name: tmp_id.clone(), ty: ty.clone() },
+                             HIRExpression::Literal { line: line,  value: elements.len().to_string(), ty: TejxType::Int32 }
                          ],
                          ty: TejxType::Any,
                      };
@@ -2615,7 +2646,7 @@ impl Lowering {
                 let tmp_id = format!("destructure_tmp_{}", self.lambda_counter.borrow());
                 *self.lambda_counter.borrow_mut() += 1;
                 
-                stmts.push(HIRStatement::VarDecl {
+                stmts.push(HIRStatement::VarDecl { line: line, 
                     name: tmp_id.clone(),
                     initializer,
                     ty: ty.clone(),
@@ -2623,8 +2654,8 @@ impl Lowering {
                 });
                 
                 for (key, target) in entries {
-                    let el_init = HIRExpression::MemberAccess {
-                        target: Box::new(HIRExpression::Variable { name: tmp_id.clone(), ty: ty.clone() }),
+                    let el_init = HIRExpression::MemberAccess { line: line, 
+                        target: Box::new(HIRExpression::Variable { line: line,  name: tmp_id.clone(), ty: ty.clone() }),
                         member: key.clone(),
                         ty: TejxType::Any,
                     };

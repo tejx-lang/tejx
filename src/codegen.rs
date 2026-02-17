@@ -17,6 +17,7 @@ pub struct CodeGen {
     declared_globals: HashSet<String>,
     current_function_params: HashSet<String>,
     local_vars: HashSet<String>,
+    local_moved_flags: HashMap<String, String>, // var name -> alloca i1 ptr
 }
 
 impl CodeGen {
@@ -32,6 +33,7 @@ impl CodeGen {
             declared_globals: HashSet::new(),
             current_function_params: HashSet::new(),
             local_vars: HashSet::new(),
+            local_moved_flags: HashMap::new(),
         }
     }
 
@@ -233,7 +235,7 @@ impl CodeGen {
             for bb in &func.blocks {
                 for inst in &bb.instructions {
                     match inst {
-                        MIRInstruction::Move { dst, src } => {
+                        MIRInstruction::Move { dst, src, .. } => {
                             if dst.starts_with("g_") { globals.insert(dst.clone()); }
                             if let MIRValue::Variable { name, .. } = src { if name.starts_with("g_") { globals.insert(name.clone()); } }
                         }
@@ -355,11 +357,35 @@ impl CodeGen {
         
         // Allocas for all local variables
         let locals: Vec<String> = self.local_vars.iter().cloned().collect();
-        for name in locals {
-            if !self.value_map.contains_key(&name) {
+        for name in &locals {
+            if !self.value_map.contains_key(name) {
                 let reg_name = format!("%{}_ptr", name);
                 self.emit_line(&format!("{} = alloca i64", reg_name));
-                self.value_map.insert(name, reg_name);
+                self.value_map.insert(name.clone(), reg_name);
+            }
+        }
+        
+        // Initialize moved flags for all variables (params + locals) that obey ownership
+        // Primitives (Int, Bool, Float) are Copy. Others (Class, Any, String, Array) are Move/Drop.
+        self.local_moved_flags.clear();
+        let all_vars: HashSet<String> = self.current_function_params.union(&self.local_vars).cloned().collect();
+        for name in all_vars {
+            let ty = func.variables.get(&name).cloned().unwrap_or(TejxType::Any);
+             let needs_drop = match ty {
+                t if t.is_numeric() => false,
+                TejxType::Bool | TejxType::Void | TejxType::Char => false,
+                _ => true // Class, String, Any, Array, Map, etc.
+            };
+            
+            if needs_drop {
+                let flag_name = format!("%moved_{}", name);
+                self.emit_line(&format!("{} = alloca i1", flag_name));
+                
+                // Params are Live (0). Locals are Dead/Uninit (1) initially.
+                let initial_state = if self.current_function_params.contains(&name) { "0" } else { "1" };
+                self.emit_line(&format!("store i1 {}, i1* {}", initial_state, flag_name));
+                
+                self.local_moved_flags.insert(name, flag_name);
             }
         }
 
@@ -418,14 +444,54 @@ impl CodeGen {
         self.emit("}\n\n");
     }
 
-    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, _func: &MIRFunction, _bb_name: &str) {
+    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, func: &MIRFunction, _bb_name: &str) {
         match inst {
-            MIRInstruction::Move { dst, src } => {
+            MIRInstruction::Move { dst, src, .. } => {
                 let val = self.resolve_value(src);
+                
+                // 1. Free DST if it is currently Live (and not Primitive)
+                if let Some(flag_ptr) = self.local_moved_flags.get(dst).cloned() {
+                    self.temp_counter += 1;
+                    let is_dead = format!("%is_dead_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = load i1, i1* {}", is_dead, flag_ptr));
+                    
+                    let free_lbl = format!("free_{}", self.temp_counter);
+                    let skip_lbl = format!("skip_{}", self.temp_counter);
+                    
+                    self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_dead, skip_lbl, free_lbl));
+                    
+                    self.emit_line(&format!("{}:", free_lbl));
+                    if let Some(val_ptr) = self.value_map.get(dst) {
+                         self.temp_counter += 1;
+                         let old_val = format!("%old_{}", self.temp_counter);
+                         self.emit_line(&format!("{} = load i64, i64* {}", old_val, val_ptr));
+                         if !self.declared_functions.contains("rt_free") {
+                             self.global_buffer.push_str("declare void @rt_free(i64)\n");
+                             self.declared_functions.insert("rt_free".to_string());
+                         }
+                         self.emit_line(&format!("call void @rt_free(i64 {})", old_val));
+                    }
+                    self.emit_line(&format!("br label %{}", skip_lbl));
+                    self.emit_line(&format!("{}:", skip_lbl));
+                }
+
+                // 2. Store new value
                 let ptr = self.resolve_ptr(dst);
                 self.emit_line(&format!("store i64 {}, i64* {}", val, ptr));
+                
+                // 3. Set DST to Live (0)
+                if let Some(flag_ptr) = self.local_moved_flags.get(dst) {
+                     self.emit_line(&format!("store i1 0, i1* {}", flag_ptr));
+                }
+
+                // 4. Set SRC to Moved (1) if it is a tracked variable
+                if let MIRValue::Variable { name, .. } = src {
+                    if let Some(flag_ptr) = self.local_moved_flags.get(name).cloned() {
+                        self.emit_line(&format!("store i1 1, i1* {}", flag_ptr));
+                    }
+                }
             }
-            MIRInstruction::BinaryOp { dst, left, op, right } => {
+            MIRInstruction::BinaryOp { dst, left, op, right, .. } => {
                 let l = self.resolve_value(left);
                 let r = self.resolve_value(right);
                 self.temp_counter += 1;
@@ -705,7 +771,7 @@ impl CodeGen {
                             self.emit_line(&format!("{} = {} double {}, {}", res_f, llvm_op, l_f, r_f));
                             
                             // Does the destination expect a raw integer or a bitcasted double?
-                            let dst_ty = _func.variables.get(dst).unwrap_or(&TejxType::Any);
+                            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
                             if dst_ty.is_numeric() && !dst_ty.is_float() {
                                 self.emit_line(&format!("{} = fptosi double {} to i64", tmp, res_f));
                             } else if matches!(dst_ty, TejxType::Any) {
@@ -747,7 +813,7 @@ impl CodeGen {
                         let res_i = format!("%res_i{}", self.temp_counter);
                         self.emit_line(&format!("{} = {} i64 {}, {}", res_i, llvm_op, l, r));
                         
-                        let dst_ty = _func.variables.get(dst).unwrap_or(&TejxType::Any);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
                         if matches!(dst_ty, TejxType::Any) {
                              if !self.declared_functions.contains("rt_box_number") {
                                  self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
@@ -766,22 +832,22 @@ impl CodeGen {
                 }
             }
 
-            MIRInstruction::Jump { target } => {
-                let current_bb_idx = self.find_block_idx(_func, inst);
+            MIRInstruction::Jump { target, .. } => {
+                let current_bb_idx = self.find_block_idx(func, inst);
                 if let Some(idx) = current_bb_idx {
-                    if _func.blocks[idx].exception_handler.is_some() {
+                    if func.blocks[idx].exception_handler.is_some() {
                         self.emit_line("call void @tejx_pop_handler()");
                     }
                 }
 
-                if *target < _func.blocks.len() {
-                    self.emit_line(&format!("br label %{}", _func.blocks[*target].name));
+                if *target < func.blocks.len() {
+                    self.emit_line(&format!("br label %{}", func.blocks[*target].name));
                 }
             }
-            MIRInstruction::Branch { condition, true_target, false_target } => {
-                let current_bb_idx = self.find_block_idx(_func, inst);
+            MIRInstruction::Branch { condition, true_target, false_target, .. } => {
+                let current_bb_idx = self.find_block_idx(func, inst);
                 if let Some(idx) = current_bb_idx {
-                    if _func.blocks[idx].exception_handler.is_some() {
+                    if func.blocks[idx].exception_handler.is_some() {
                         self.emit_line("call void @tejx_pop_handler()");
                     }
                 }
@@ -809,25 +875,31 @@ impl CodeGen {
                 let cmp = format!("%cmp{}", self.temp_counter);
                 self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, cond));
 
-                let true_name = if *true_target < _func.blocks.len() {
-                    _func.blocks[*true_target].name.clone()
+                let true_name = if *true_target < func.blocks.len() {
+                    func.blocks[*true_target].name.clone()
                 } else {
                     "unknown".to_string()
                 };
-                let false_name = if *false_target < _func.blocks.len() {
-                    _func.blocks[*false_target].name.clone()
+                let false_name = if *false_target < func.blocks.len() {
+                    func.blocks[*false_target].name.clone()
                 } else {
                     "unknown".to_string()
                 };
                 self.emit_line(&format!("br i1 {}, label %{}, label %{}", cmp, true_name, false_name));
             }
-            MIRInstruction::Return { value } => {
-                let current_bb_idx = self.find_block_idx(_func, inst);
+            MIRInstruction::Return { value, .. } => {
+                let current_bb_idx = self.find_block_idx(func, inst);
                 if let Some(idx) = current_bb_idx {
-                    if _func.blocks[idx].exception_handler.is_some() {
+                    if func.blocks[idx].exception_handler.is_some() {
                         self.emit_line("call void @tejx_pop_handler()");
                     }
                 }
+
+                let ret_var_name = if let Some(MIRValue::Variable { name, .. }) = value {
+                    Some(name.clone())
+                } else {
+                    None
+                };
 
                 if let Some(val) = value {
                     let v = self.resolve_value(val);
@@ -836,7 +908,7 @@ impl CodeGen {
                     self.emit_line("ret i64 0");
                 }
             }
-            MIRInstruction::Call { dst, callee, args } => {
+            MIRInstruction::Call { dst, callee, args, .. } => {
                 if callee == "rt_box_number" {
                     let mut arg_val = self.resolve_value(&args[0]);
                     let arg_ty = args[0].get_type();
@@ -935,7 +1007,7 @@ impl CodeGen {
                         let mut arg_val = self.resolve_value(arg);
                         let arg_ty = arg.get_type();
                         
-                        let box_func = match arg_ty {
+                        let boxfunc = match arg_ty {
                             t if t.is_float() => Some("rt_box_number"),
                             t if t.is_numeric() => Some("rt_box_int"),
                             TejxType::Bool => Some("rt_box_boolean"),
@@ -943,7 +1015,7 @@ impl CodeGen {
                             _ => None
                         };
 
-                        if let Some(f) = box_func {
+                        if let Some(f) = boxfunc {
                             if !self.declared_functions.contains(f) {
                                 if f == "rt_box_number" {
                                     self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
@@ -1110,13 +1182,76 @@ impl CodeGen {
                         self.declared_functions.insert(final_callee.clone());
                     }
                     self.emit_line(&format!("{} = call i64 @{}({})", result_tmp, final_callee, args_str));
+                    
+                    // --- Ownership Transfer: Mark consumed arguments as Moved ---
+                    let is_stdlib = final_callee.starts_with("Array_") || 
+                                    final_callee.starts_with("Map_") || 
+                                    final_callee.starts_with("String_") || 
+                                    final_callee.starts_with("Math_") ||
+                                    final_callee.starts_with("Collection_") ||
+                                    final_callee.starts_with("Promise_") ||
+                                    final_callee.starts_with("Thread_") ||
+                                    final_callee.starts_with("tejx_") ||
+                                    final_callee.starts_with("http_") ||
+                                    final_callee.starts_with("d_") ||
+                                    final_callee.starts_with("e_") ||
+                                    final_callee.starts_with("n_") ||
+                                    final_callee.starts_with("s_") ||
+                                    final_callee == "__await" ||
+                                    final_callee == "__resolve_promise" ||
+                                    final_callee == "__reject_promise" ||
+                                    final_callee == "print" || 
+                                    final_callee == "len" || 
+                                    final_callee == "assert" ||
+                                    final_callee == "__join" ||
+                                    final_callee.starts_with("rt_");
+
+                    let is_method = final_callee.starts_with("m_");
+                    let is_constructor = final_callee.ends_with("_constructor");
+                    let is_container_mutator = ["rt_Map_set", "rt_Map_put", "rt_Set_add"].contains(&final_callee.as_str());
+
+                    for (i, arg) in args.iter().enumerate() {
+                        let mut should_consume = !is_stdlib;
+                        
+                        if (is_constructor || is_method) && i == 0 {
+                            should_consume = false; // 'this' is borrowed
+                        }
+                        
+                        if is_container_mutator && i > 0 {
+                            should_consume = true;
+                        }
+
+                        // Fix: The worker task must NOT free the promise ID (Arg 0) after resolving.
+                        // Consider it consumed by the resolve call (ownership transfer to runtime/void).
+                        if (final_callee == "__resolve_promise" || final_callee == "__reject_promise") && (i == 0 || i == 1) {
+                            should_consume = true;
+                        }
+                        
+                        // Fix: The arguments bundle passed to a task MUST be consumed (moved to the task queue).
+                        if final_callee == "tejx_enqueue_task" && i == 1 {
+                            should_consume = true;
+                        }
+
+                        // Fix: Array_push must consume the value to take ownership (it's storing it).
+                        if final_callee == "Array_push" && i == 1 {
+                            should_consume = true;
+                        }
+
+                        if should_consume {
+                            if let MIRValue::Variable { name, .. } = arg {
+                                if let Some(flag_ptr) = self.local_moved_flags.get(name).cloned() {
+                                    self.emit_line(&format!("store i1 1, i1* {}", flag_ptr));
+                                }
+                            }
+                        }
+                    }
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
                         self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
                     }
                 }
             }
-            MIRInstruction::IndirectCall { dst, callee, args } => {
+            MIRInstruction::IndirectCall { dst, callee, args, .. } => {
                 let callee_val = self.resolve_value(callee);
                 
                 // Add null check for indirect call
@@ -1161,24 +1296,34 @@ impl CodeGen {
             MIRInstruction::ObjectLiteral { dst, entries, .. } => {
                 self.temp_counter += 1;
                 let obj_tmp = format!("%obj{}", self.temp_counter);
+                
                 if !self.declared_functions.contains("m_new") {
                     self.global_buffer.push_str("declare i64 @m_new()\n");
                     self.declared_functions.insert("m_new".to_string());
                 }
                 self.emit_line(&format!("{} = call i64 @m_new()", obj_tmp));
+
                 for (k, v) in entries {
                     let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", k), ty: TejxType::String });
                     let v_val = self.resolve_value(v);
+                    
                     if !self.declared_functions.contains("m_set") {
                         self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
                         self.declared_functions.insert("m_set".to_string());
                     }
                     self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_tmp, k_val, v_val));
+
+                    // Mark v as moved if it is a variable
+                    if let MIRValue::Variable { name, .. } = v {
+                        if let Some(flag_ptr) = self.local_moved_flags.get(name).cloned() {
+                             self.emit_line(&format!("store i1 1, i1* {}", flag_ptr));
+                        }
+                    }
                 }
                 let ptr = self.resolve_ptr(dst);
                 self.emit_line(&format!("store i64 {}, i64* {}", obj_tmp, ptr));
             }
-            MIRInstruction::ArrayLiteral { dst, elements, ty } => {
+            MIRInstruction::ArrayLiteral { dst, elements, ty, .. } => {
                 self.temp_counter += 1;
                 let arr_tmp = format!("%arr{}", self.temp_counter);
                 
@@ -1230,12 +1375,20 @@ impl CodeGen {
                         }
                         self.emit_line(&format!("call i64 @Array_push(i64 {}, i64 {})", arr_tmp, v_val));
                     }
+
+                    // Mark v as moved if it is a variable
+                    if let MIRValue::Variable { name, .. } = v {
+                        if let Some(flag_ptr) = self.local_moved_flags.get(name).cloned() {
+                             self.emit_line(&format!("store i1 1, i1* {}", flag_ptr));
+                        }
+                    }
+
                     idx += 1;
                 }
                 let ptr = self.resolve_ptr(dst);
                 self.emit_line(&format!("store i64 {}, i64* {}", arr_tmp, ptr));
             }
-            MIRInstruction::LoadMember { dst, obj, member } => {
+            MIRInstruction::LoadMember { dst, obj, member, .. } => {
                 let obj_val = self.resolve_value(obj);
                 let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::String });
                 self.temp_counter += 1;
@@ -1246,7 +1399,7 @@ impl CodeGen {
                 }
                 self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, k_val));
                 
-                let dst_ty = _func.variables.get(dst).unwrap_or(&TejxType::Any);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
                 let final_res = if dst_ty.is_numeric() && !dst_ty.is_float() {
                     // Expecting Int32/Int64: Unbox Any -> Double -> Int
                     if !self.declared_functions.contains("rt_to_number") {
@@ -1282,7 +1435,7 @@ impl CodeGen {
                 let ptr = self.resolve_ptr(dst);
                 self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
             }
-            MIRInstruction::StoreMember { obj, member, src } => {
+            MIRInstruction::StoreMember { obj, member, src, .. } => {
                 let obj_val = self.resolve_value(obj);
                 let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::String });
                 let v_val = self.resolve_value(src);
@@ -1292,7 +1445,7 @@ impl CodeGen {
                 }
                 self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, k_val, v_val));
             }
-            MIRInstruction::LoadIndex { dst, obj, index } => {
+            MIRInstruction::LoadIndex { dst, obj, index, .. } => {
                 let obj_val = self.resolve_value(obj);
                 let idx_val = self.resolve_value(index);
                 self.temp_counter += 1;
@@ -1363,7 +1516,7 @@ impl CodeGen {
 
                     // --- Store based on destination type ---
                     let ptr = self.resolve_ptr(dst);
-                    let dst_ty = _func.variables.get(dst).unwrap_or(&TejxType::Any);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
 
                     if matches!(dst_ty, TejxType::Any) {
                         if !self.declared_functions.contains("rt_box_boolean") {
@@ -1534,7 +1687,7 @@ impl CodeGen {
  
                     self.emit_line(&format!("{}:", done_path));
                     
-                    let dst_ty = _func.variables.get(dst).unwrap_or(&TejxType::Any);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
                     
                     // Raw integer or Boolean destination
                     if (dst_ty.is_numeric() && !dst_ty.is_float()) || matches!(dst_ty, TejxType::Bool) {
@@ -1630,7 +1783,7 @@ impl CodeGen {
                 self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
                 }
             }
-            MIRInstruction::StoreIndex { obj, index, src } => {
+            MIRInstruction::StoreIndex { obj, index, src, .. } => {
                 let obj_val = self.resolve_value(obj);
                 let idx_val = self.resolve_value(index);
                 let v_val = self.resolve_value(src);
@@ -1827,12 +1980,12 @@ impl CodeGen {
                     self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, idx_val, v_val));
                 }
             }
-            MIRInstruction::Throw { value } => {
+            MIRInstruction::Throw { value, .. } => {
                 let val = self.resolve_value(value);
                 self.emit_line(&format!("call void @tejx_throw(i64 {})", val));
                 self.emit_line("unreachable");
             }
-            MIRInstruction::Cast { dst, src, ty } => {
+            MIRInstruction::Cast { dst, src, ty, .. } => {
                  let s = self.resolve_value(src);
                  let src_ty = src.get_type();
                  
@@ -1860,11 +2013,19 @@ impl CodeGen {
                       // Generic bitcast for other types
                       self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
                  }
-                 let ptr = self.resolve_ptr(dst);
-                 self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
-            }
-        }
-    }
+                  let ptr = self.resolve_ptr(dst);
+                  self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+             }
+             MIRInstruction::Free { value, .. } => {
+                 let v = self.resolve_value(value);
+                 if !self.declared_functions.contains("rt_free") {
+                     self.global_buffer.push_str("declare void @rt_free(i64)\n");
+                     self.declared_functions.insert("rt_free".to_string());
+                 }
+                 self.emit_line(&format!("call void @rt_free(i64 {})", v));
+             }
+         }
+     }
 
 
     fn find_block_idx(&self, func: &MIRFunction, inst: &MIRInstruction) -> Option<usize> {

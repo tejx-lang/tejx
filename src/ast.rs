@@ -410,6 +410,39 @@ impl Expression {
             _ => "".to_string(),
         }
     }
+
+    pub fn get_line(&self) -> usize {
+        match self {
+             Expression::NumberLiteral { _line, .. } => *_line,
+             Expression::StringLiteral { _line, .. } => *_line,
+             Expression::BooleanLiteral { _line, .. } => *_line,
+             Expression::Identifier { _line, .. } => *_line,
+             Expression::BinaryExpr { _line, .. } => *_line,
+             Expression::UnaryExpr { _line, .. } => *_line,
+             Expression::AssignmentExpr { _line, .. } => *_line,
+             Expression::CallExpr { _line, .. } => *_line,
+             Expression::MemberAccessExpr { _line, .. } => *_line,
+             Expression::ArrayAccessExpr { _line, .. } => *_line,
+             Expression::ObjectLiteralExpr { _line, .. } => *_line,
+             Expression::ArrayLiteral { _line, .. } => *_line,
+             Expression::NewExpr { _line, .. } => *_line,
+             Expression::ThisExpr { _line, .. } => *_line,
+             Expression::SuperExpr { _line, .. } => *_line,
+             Expression::LambdaExpr { _line, .. } => *_line,
+             Expression::AwaitExpr { _line, .. } => *_line,
+             Expression::MatchExpr { _line, .. } => *_line,
+             Expression::TernaryExpr { _line, .. } => *_line,
+             Expression::UndefinedExpr { _line, .. } => *_line,
+             Expression::NoneExpr { _line, .. } => *_line,
+             Expression::SomeExpr { _line, .. } => *_line,
+             Expression::OptionalMemberAccessExpr { _line, .. } => *_line,
+             Expression::OptionalCallExpr { _line, .. } => *_line,
+             Expression::OptionalArrayAccessExpr { _line, .. } => *_line,
+             Expression::NullishCoalescingExpr { _line, .. } => *_line,
+             Expression::SpreadExpr { _line, .. } => *_line,
+             Expression::BlockExpr { _line, .. } => *_line,
+        }
+    }
 }
 
 impl Statement {

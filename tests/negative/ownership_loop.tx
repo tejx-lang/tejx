@@ -1,0 +1,10 @@
+class Box {
+    value: int;
+}
+
+function main() {
+    let a = new Box();
+    while (true) {
+        let b = a; // Error: Use of moved variable 'a' (in second iteration)
+    }
+}
