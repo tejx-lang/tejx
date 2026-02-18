@@ -29,6 +29,7 @@ pub struct Symbol {
     pub members: HashMap<String, MemberInfo>, // Name -> Info
     pub is_variadic: bool,
     pub aliased_type: Option<String>,
+    pub is_moved: bool,
 }
 
 pub struct TypeChecker {
@@ -57,6 +58,7 @@ impl TypeChecker {
                 members: HashMap::new(),
                 is_variadic: variadic,
                 aliased_type: None,
+                is_moved: false,
             }
         };
         globals.insert("assert".to_string(), builtin_func(1, true));
@@ -141,7 +143,7 @@ impl TypeChecker {
         object_members.insert("values".to_string(), MemberInfo { type_name: "function:any[]:object".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         object_members.insert("entries".to_string(), MemberInfo { type_name: "function:any[][]:object".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         class_members.insert("Object".to_string(), object_members);
-        globals.insert("Object".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
+        globals.insert("Object".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None, is_moved: false });
 
         // Map members 
         let mut map_members = HashMap::new();
@@ -168,14 +170,16 @@ impl TypeChecker {
         let mut math_members = HashMap::new();
         math_members.insert("abs".to_string(), MemberInfo { type_name: "function:float64:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         math_members.insert("random".to_string(), MemberInfo { type_name: "function:float64:".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
-        math_members.insert("floor".to_string(), MemberInfo { type_name: "function:int32:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
-        math_members.insert("ceil".to_string(), MemberInfo { type_name: "function:int32:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
-        math_members.insert("round".to_string(), MemberInfo { type_name: "function:int32:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
+        math_members.insert("floor".to_string(), MemberInfo { type_name: "function:float64:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
+        math_members.insert("ceil".to_string(), MemberInfo { type_name: "function:float64:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
+        math_members.insert("round".to_string(), MemberInfo { type_name: "function:float64:float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
+        math_members.insert("pow".to_string(), MemberInfo { type_name: "function:float64:float64,float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         math_members.insert("min".to_string(), MemberInfo { type_name: "function:float64:float64,float64...".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         math_members.insert("max".to_string(), MemberInfo { type_name: "function:float64:float64,float64...".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         math_members.insert("PI".to_string(), MemberInfo { type_name: "float64".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         class_members.insert("Math".to_string(), math_members);
-        globals.insert("Math".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
+
+        globals.insert("Math".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None, is_moved: false });
 
         // Console members
         let mut console_members = HashMap::new();
@@ -184,19 +188,19 @@ impl TypeChecker {
         console_members.insert("warn".to_string(), MemberInfo { type_name: "function:void:any...".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         class_members.insert("Console".to_string(), console_members.clone());
         class_members.insert("console".to_string(), console_members);
-        globals.insert("console".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
+        globals.insert("console".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None, is_moved: false });
 
         // JSON members
         let mut json_members = HashMap::new();
         json_members.insert("stringify".to_string(), MemberInfo { type_name: "function:string:any".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         json_members.insert("parse".to_string(), MemberInfo { type_name: "function:any:string".to_string(), is_static: true, access: AccessLevel::Public, is_readonly: true });
         class_members.insert("JSON".to_string(), json_members);
-        globals.insert("JSON".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
-        globals.insert("json".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None });
+        globals.insert("JSON".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None, is_moved: false });
+        globals.insert("json".to_string(), Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None, is_moved: false });
         class_members.insert("json".to_string(), class_members.get("JSON").unwrap().clone());
 
         // Define them as classes in globals so is_valid_type finds them
-        let class_sym = |_name: &str| Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None };
+        let class_sym = |_name: &str| Symbol { type_name: "class".to_string(), is_const: true, params: vec![], members: HashMap::new(), is_variadic: false, aliased_type: None, is_moved: false };
         globals.insert("Error".to_string(), class_sym("Error"));
         globals.insert("Date".to_string(), class_sym("Date"));
         globals.insert("Array".to_string(), class_sym("Array"));
@@ -403,6 +407,7 @@ impl TypeChecker {
                         members: HashMap::new(),
                         is_variadic: false,
                         aliased_type: Some(_type_def.clone()),
+                        is_moved: false,
                     });
                 }
             }
@@ -537,6 +542,7 @@ impl TypeChecker {
                 members: HashMap::new(),
                 is_variadic,
                 aliased_type: None,
+                is_moved: false,
             });
         }
     }
@@ -554,6 +560,7 @@ impl TypeChecker {
                 members: HashMap::new(),
                 is_variadic,
                 aliased_type: None,
+                is_moved: false,
             });
         }
     }
@@ -575,6 +582,7 @@ impl TypeChecker {
                 members: HashMap::new(),
                 is_variadic,
                 aliased_type: None,
+                is_moved: false,
             });
         }
     }
@@ -696,6 +704,13 @@ impl TypeChecker {
 
     fn is_numeric(&self, t: &str) -> bool {
         matches!(t, "int" | "int16" | "int32" | "int64" | "int128" | "float" | "float16" | "float32" | "float64")
+    }
+
+    fn is_copy_type(&self, t: &str) -> bool {
+        if t.ends_with("[]") || t.starts_with("function:") || t == "function" || t == "any" || t == "object" || t == "string" {
+            return true;
+        }
+        matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float32" | "float64" | "bool" | "boolean" | "char")
     }
 
     fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
@@ -895,6 +910,16 @@ impl TypeChecker {
                          self.report_error(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col);
                     }
 
+                    // Handle Move Semantics: If initializer is an Identifier
+                    if let Expression::Identifier { name: src_name, .. } = &**expr {
+                        let is_copy_type = |t: &str| -> bool {
+                            matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float64" | "bool" | "char")
+                        };
+                        if !is_copy_type(&init_type) && init_type != "any" {
+                             self.mark_moved(src_name, *line, *_col);
+                        }
+                    }
+
                     if type_annotation == "any" || type_annotation == "" {
                         if type_annotation == "" && init_type != "any" {
                              let _ = self.define_pattern(pattern, init_type.clone(), *is_const, *line, *_col);
@@ -936,9 +961,38 @@ impl TypeChecker {
             Statement::WhileStmt { condition, body, .. } => {
                  self.check_expression(condition)?;
                  self.loop_depth += 1;
+                 
+                 // Two-pass check for move semantics in loops
+                 let _ = self.check_statement(body);
                  let res = self.check_statement(body);
+                 
                  self.loop_depth -= 1;
                  res
+            },
+            Statement::ForStmt { init, condition, increment, body, .. } => {
+                self.enter_scope();
+                if let Some(init_stmt) = init {
+                    self.check_statement(init_stmt)?;
+                }
+                if let Some(cond_expr) = condition {
+                    self.check_expression(cond_expr)?;
+                }
+                
+                self.loop_depth += 1;
+                // Two-pass check for move semantics in loops
+                let _ = self.check_statement(body);
+                if let Some(inc_expr) = increment {
+                    let _ = self.check_expression(inc_expr);
+                }
+                
+                let res = self.check_statement(body);
+                if let Some(inc_expr) = increment {
+                    self.check_expression(inc_expr)?;
+                }
+                self.loop_depth -= 1;
+                
+                self.exit_scope();
+                res
             },
             Statement::BreakStmt { _line, _col } => {
                 if self.loop_depth == 0 {
@@ -1235,6 +1289,28 @@ impl TypeChecker {
          None
     }
 
+    fn mark_moved(&mut self, name: &str, _line: usize, _col: usize) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(s) = scope.get_mut(name) {
+                if s.is_moved {
+                    // Already moved
+                } else {
+                    s.is_moved = true;
+                }
+                return;
+            }
+        }
+    }
+
+    fn unmark_moved(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(s) = scope.get_mut(name) {
+                s.is_moved = false;
+                return;
+            }
+        }
+    }
+
     fn check_expression(&mut self, expr: &Expression) -> Result<String, ()> {
         // println!("DEBUG: Check Expr: {:?}", expr);
         match expr {
@@ -1295,7 +1371,9 @@ impl TypeChecker {
             },
             Expression::Identifier { name, _line, _col } => {
                 if let Some(s) = self.lookup(name) {
-                     // println!("DEBUG: Lookup '{}' -> '{}'", name, s.type_name);
+                     if s.is_moved {
+                         self.report_error(format!("Use of moved variable '{}'", name), *_line, *_col);
+                     }
                     Ok(s.type_name)
                 } else {
                     if name == "console" { return Ok("Console".to_string()); }
@@ -1419,7 +1497,17 @@ impl TypeChecker {
                 Ok("any".to_string())
             },
             Expression::AssignmentExpr { target, value, _line, _col, .. } => {
-                let target_type = self.check_expression(target)?;
+                let target_type = match target.as_ref() {
+                    Expression::Identifier { name, .. } => {
+                        if let Some(s) = self.lookup(name) {
+                            Ok(s.type_name.clone())
+                        } else {
+                            self.report_error(format!("Undefined variable '{}'", name), *_line, *_col);
+                            Ok("any".to_string())
+                        }
+                    }
+                    _ => self.check_expression(target)
+                }?;
                 
                 // Check for const reassignment
                 if let Expression::Identifier { name, .. } = &**target {
@@ -1468,6 +1556,19 @@ impl TypeChecker {
                         self.report_error(format!("Type mismatch in assignment: expected '{}', got '{}'", target_type, value_type), *_line, *_col);
                     }
                 }
+
+                // Handle Move Semantics: If value is an Identifier and it's not Copy type, mark as moved
+                if let Expression::Identifier { name: src_name, .. } = &**value {
+                    if !self.is_copy_type(&value_type) && value_type != "any" {
+                         self.mark_moved(src_name, *_line, *_col);
+                    }
+                }
+
+                // Unmark target as moved if it was an identifier
+                if let Expression::Identifier { name: target_name, .. } = &**target {
+                    self.unmark_moved(target_name);
+                }
+
                 Ok(value_type)
             },
             Expression::CallExpr { callee, args, _line, _col } => {
@@ -1507,41 +1608,64 @@ impl TypeChecker {
                                  self.report_error(format!("Function '{}' expected {} arguments, got {}", callee_str, s.params.len(), args.len()), *_line, *_col);
                              }
                          }
-                         
-                         // Check argument types
-                         for (i, arg) in args.iter().enumerate() {
-                             let arg_type = self.check_expression(arg)?;
-                             let target_type = if s.is_variadic {
-                                 if s.params.is_empty() {
-                                     "any".to_string()
-                                 } else if i >= s.params.len() - 1 {
-                                     let last_param = &s.params[s.params.len() - 1];
-                                     if last_param.ends_with("[]") {
-                                         last_param[..last_param.len()-2].to_string()
-                                     } else {
-                                         "any".to_string()
-                                     }
-                                 } else {
-                                     s.params[i].clone()
-                                 }
-                             } else if i < s.params.len() {
-                                 s.params[i].clone()
-                             } else {
-                                 "any".to_string()
-                             };
+                                                  // Check argument types
+                          for (i, arg) in args.iter().enumerate() {
+                              let arg_type = self.check_expression(arg)?;
+                              let target_type = if s.is_variadic {
+                                  if s.params.is_empty() {
+                                      "any".to_string()
+                                  } else if i >= s.params.len() - 1 {
+                                      let last_param = &s.params[s.params.len() - 1];
+                                      if last_param.ends_with("[]") {
+                                          last_param[..last_param.len()-2].to_string()
+                                      } else {
+                                          "any".to_string()
+                                      }
+                                  } else {
+                                      s.params[i].clone()
+                                  }
+                              } else if i < s.params.len() {
+                                  s.params[i].clone()
+                              } else {
+                                  "any".to_string()
+                              };
 
-                             if target_type != "any" && !self.are_types_compatible(&target_type, &arg_type) {
-                                 self.report_error(format!("Argument type mismatch for '{}': expected '{}', got '{}'", callee_str, target_type, arg_type), *_line, *_col);
-                             }
-                         }
+                              if target_type != "any" && !self.are_types_compatible(&target_type, &arg_type) {
+                                  self.report_error(format!("Argument type mismatch for '{}': expected '{}', got '{}'", callee_str, target_type, arg_type), *_line, *_col);
+                              }
+
+                              // Handle Move Semantics in Call
+                              if let Expression::Identifier { name: src_name, .. } = arg {
+                                  let is_borrowing = matches!(callee_str.as_str(), "print" | "delay") || callee_str.starts_with("console.");
+                                  if !is_borrowing && !self.is_copy_type(&arg_type) && arg_type != "any" {
+                                       self.mark_moved(src_name, *_line, *_col);
+                                  }
+                              }
+                          }
                     }
                 } else if callee_str != "print" && callee_str != "delay" {
                     if !callee_str.contains('.') {
                         self.report_error(format!("Undefined function '{}'", callee_str), *_line, *_col);
                     }
-                    for arg in args { self.check_expression(arg)?; }
+                    for arg in args { 
+                        let arg_type = self.check_expression(arg)?; 
+                        if let Expression::Identifier { name: src_name, .. } = arg {
+                             let is_borrowing = matches!(callee_str.as_str(), "print" | "delay") || callee_str.starts_with("console.");
+                             if !is_borrowing && !self.is_copy_type(&arg_type) && arg_type != "any" {
+                                  self.mark_moved(src_name, *_line, *_col);
+                             }
+                        }
+                    }
                 } else {
-                    for arg in args { self.check_expression(arg)?; }
+                    for arg in args { 
+                        let arg_type = self.check_expression(arg)?; 
+                        if let Expression::Identifier { name: src_name, .. } = arg {
+                             let is_borrowing = matches!(callee_str.as_str(), "print" | "delay") || callee_str.starts_with("console.");
+                             if !is_borrowing && !self.is_copy_type(&arg_type) && arg_type != "any" {
+                                  self.mark_moved(src_name, *_line, *_col);
+                             }
+                        }
+                    }
                 }
                 Ok("any".to_string())
             },
@@ -1574,9 +1698,19 @@ impl TypeChecker {
                 self.check_expression(object)?;
                 Ok("any".to_string())
             },
-            Expression::OptionalCallExpr { callee, args, .. } => {
+            Expression::OptionalCallExpr { callee, args, _line, _col } => {
                 self.check_expression(callee)?;
-                for arg in args { self.check_expression(arg)?; }
+                for arg in args { 
+                    let arg_type = self.check_expression(arg)?; 
+                    if let Expression::Identifier { name: src_name, .. } = arg {
+                         let is_copy_type = |t: &str| -> bool {
+                             matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float64" | "bool" | "char")
+                         };
+                         if !is_copy_type(&arg_type) && arg_type != "any" {
+                              self.mark_moved(src_name, *_line, *_col);
+                         }
+                    }
+                }
                 Ok("any".to_string())
             },
             Expression::NewExpr { class_name, args, _line, _col } => {
@@ -1586,7 +1720,14 @@ impl TypeChecker {
                 if self.abstract_classes.contains(class_name) {
                     self.report_error(format!("Cannot instantiate abstract class '{}'", class_name), *_line, *_col);
                 }
-                for arg in args { self.check_expression(arg)?; }
+                for arg in args { 
+                    let arg_type = self.check_expression(arg)?; 
+                    if let Expression::Identifier { name: src_name, .. } = arg {
+                         if !self.is_copy_type(&arg_type) && arg_type != "any" {
+                              self.mark_moved(src_name, *_line, *_col);
+                         }
+                    }
+                }
                 Ok(class_name.clone())
             },
             _ => Ok("any".to_string()), // TODO

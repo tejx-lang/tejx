@@ -1,0 +1,28 @@
+function main() {
+    print("--- Memory Scoping Test ---");
+    
+    let x = 10;
+    print("Initial x: Expected: 10, Actual: ", x);
+
+    if (true) {
+        let x = 20; // Shadowing
+        print("Inner Shadowed x: Expected: 20, Actual: ", x);
+        
+        let y = 30;
+        print("Inner y: Expected: 30, Actual: ", y);
+    }
+    
+    print("Outer x after block: Expected: 10, Actual: ", x);
+    
+    // y should not be accessible here. Uncommenting should cause compile error.
+    // print(y); 
+
+    print("--- Ownership/Move Simulation ---");
+    let s1 = "Shared String";
+    {
+        print("Accessing s1 in block: ", s1);
+    }
+    print("Accessing s1 after block: ", s1);
+    
+    print("Memory Scoping Tests Complete!");
+}

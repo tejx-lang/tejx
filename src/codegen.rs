@@ -139,13 +139,13 @@ impl CodeGen {
                 
                 if let Some(reg_ref) = self.value_map.get(name) {
                     let reg = reg_ref.clone();
-                    // It's a local variable (alloca) -> Load it
+                    // Intercept and load from alloca
                     self.temp_counter += 1;
                     let val_reg = format!("%val_{}", self.temp_counter);
                     self.emit_line(&format!("{} = load i64, i64* {}", val_reg, reg));
-                    // println!("ResolveVar: {} -> {} (from {})", name, val_reg, reg);
                     return val_reg;
                 }
+                // println!("DEBUG: Variable {} not found in value_map", name);
 
                 // Check for function parameter (if not mapped to alloca yet? - should be in value_map)
                 // Fallback for globals
@@ -160,8 +160,12 @@ impl CodeGen {
                 if name.starts_with("g_") || self.declared_globals.contains(name) {
                      self.temp_counter += 1;
                      let val_reg = format!("%gval_{}", self.temp_counter);
-                     let g_name = if name.starts_with("g_") { format!("@{}", name) } else { format!("@g_{}", name) };
-                     self.emit_line(&format!("{} = load i64, i64* {}", val_reg, g_name));
+                     let g_name = if name.starts_with("g_") { name.to_string() } else { format!("g_{}", name) };
+                     if !self.declared_globals.contains(&g_name) {
+                          self.global_buffer.push_str(&format!("@{} = global i64 0\n", g_name));
+                          self.declared_globals.insert(g_name.clone());
+                     }
+                     self.emit_line(&format!("{} = load i64, i64* @{}", val_reg, g_name));
                      return val_reg;
                 }
 
@@ -194,23 +198,25 @@ impl CodeGen {
             return name.to_string();
         }
         
-        // If it's a global variable (unmangled and not in this function's locals or params)
-        // This handles top-level variables that are not explicitly `g_` prefixed in MIR,
-        // but are treated as globals because they are not local to the current function.
-        if !name.contains("$") && !self.local_vars.contains(name) && !self.current_function_params.contains(name) {
+        if name.starts_with("g_") {
             if !self.declared_globals.contains(name) {
-                self.global_buffer.push_str(&format!("@g_{} = global i64 0\n", name));
+                self.global_buffer.push_str(&format!("@{} = global i64 0\n", name));
                 self.declared_globals.insert(name.to_string());
             }
-            return format!("@g_{}", name);
+            return format!("@{}", name);
         }
 
-        // Fallback to existing logic for MIR-prefixed globals (g_...) or local variables
-        if name.starts_with("g_") {
-            format!("@{}", name)
-        } else {
-            self.value_map.get(name).cloned().unwrap_or_else(|| format!("%{}_ptr", name))
+        // If it's a global variable (unmangled and not in this function's locals or params)
+        if !name.contains("$") && !self.local_vars.contains(name) && !self.current_function_params.contains(name) {
+            let g_name = format!("g_{}", name);
+            if !self.declared_globals.contains(&g_name) {
+                self.global_buffer.push_str(&format!("@{} = global i64 0\n", g_name));
+                self.declared_globals.insert(g_name.clone());
+            }
+            return format!("@{}", g_name);
         }
+
+        self.value_map.get(name).cloned().unwrap_or_else(|| format!("%{}_ptr", name))
     }
 }
 
@@ -220,6 +226,7 @@ impl CodeGen {
         self.buffer.clear();
         self.global_buffer.clear();
         self.declared_functions.clear();
+        self.declared_globals.clear();
         
         // Register defined functions and their param counts
         let mut has_tejx_main = false;
@@ -254,7 +261,10 @@ impl CodeGen {
             }
         }
         for g in globals {
-            self.global_buffer.push_str(&format!("@{} = global i64 0\n", g));
+            if !self.declared_globals.contains(&g) {
+                self.global_buffer.push_str(&format!("@{} = global i64 0\n", g));
+                self.declared_globals.insert(g);
+            }
         }
 
         self.global_buffer.push_str("@.fmt_d = private unnamed_addr constant [5 x i8] c\"%lld\\00\"\n");
@@ -310,8 +320,7 @@ impl CodeGen {
             String::new()
         } else {
             func.params.iter()
-                .enumerate()
-                .map(|(i, _)| format!("i64 %__arg{}", i))
+                .map(|p| format!("i64 %{}", p))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -324,19 +333,20 @@ impl CodeGen {
         for bb in &func.blocks {
             for inst in &bb.instructions {
                 let dest_var = match inst {
-                    MIRInstruction::Move { dst, .. } => Some(dst.clone()),
-                    MIRInstruction::BinaryOp { dst, .. } => Some(dst.clone()),
-                    MIRInstruction::Call { dst, .. } => Some(dst.clone()),
+                    MIRInstruction::Move { dst, .. } |
+                    MIRInstruction::BinaryOp { dst, .. } |
+                    MIRInstruction::Call { dst, .. } |
+                    MIRInstruction::IndirectCall { dst, .. } |
+                    MIRInstruction::LoadMember { dst, .. } |
+                    MIRInstruction::LoadIndex { dst, .. } |
                     MIRInstruction::ObjectLiteral { dst, .. } |
-                    MIRInstruction::ArrayLiteral { dst, .. } => Some(dst.clone()),
-                    MIRInstruction::LoadMember { dst, .. } => Some(dst.clone()),
-                    MIRInstruction::LoadIndex { dst, .. } => Some(dst.clone()),
-                    MIRInstruction::IndirectCall { dst, .. } => Some(dst.clone()),
+                    MIRInstruction::ArrayLiteral { dst, .. } |
                     MIRInstruction::Cast { dst, .. } => Some(dst.clone()),
                     _ => None,
                 };
                 if let Some(name) = dest_var {
                     if !name.starts_with("g_") && !self.current_function_params.contains(&name) {
+                        // println!("DEBUG: Found local variable: {} in {}", name, func.name);
                         self.local_vars.insert(name);
                     }
                 }
@@ -344,14 +354,14 @@ impl CodeGen {
         }
 
         // Allocas for parameters first
-        for (i, p) in func.params.iter().enumerate() {
+        for p in &func.params {
             if !self.value_map.contains_key(p) {
                 let reg_name = format!("%{}_ptr", p);
                 self.emit_line(&format!("{} = alloca i64", reg_name));
                 self.value_map.insert(p.clone(), reg_name.clone());
                 
                 // CRITICAL: Store the incoming argument into the alloca
-                self.emit_line(&format!("store i64 %__arg{}, i64* {}", i, reg_name));
+                self.emit_line(&format!("store i64 %{}, i64* {}", p, reg_name));
             }
         }
         
@@ -895,7 +905,7 @@ impl CodeGen {
                     }
                 }
 
-                let ret_var_name = if let Some(MIRValue::Variable { name, .. }) = value {
+                let _ret_var_name = if let Some(MIRValue::Variable { name, .. }) = value {
                     Some(name.clone())
                 } else {
                     None
@@ -1305,8 +1315,40 @@ impl CodeGen {
 
                 for (k, v) in entries {
                     let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", k), ty: TejxType::String });
-                    let v_val = self.resolve_value(v);
+                    let mut v_val = self.resolve_value(v);
                     
+                    // Box primitives for object properties (everything in a map is 'Any')
+                    let v_ty = v.get_type();
+                    if v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char) {
+                         self.temp_counter += 1;
+                         let boxed_reg = format!("%boxed_obj_{}", self.temp_counter);
+                         
+                         if v_ty.is_float() {
+                              self.temp_counter += 1;
+                              let d_val = format!("%d_val_obj_{}", self.temp_counter);
+                              self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, v_val));
+                              
+                              if !self.declared_functions.contains("rt_box_number") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
+                                   self.declared_functions.insert("rt_box_number".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_number(double {})", boxed_reg, d_val));
+                         } else if matches!(v_ty, TejxType::Bool) {
+                              if !self.declared_functions.contains("rt_box_boolean") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_boolean(i64)\n");
+                                   self.declared_functions.insert("rt_box_boolean".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed_reg, v_val));
+                         } else {
+                              if !self.declared_functions.contains("rt_box_int") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_int(i64)\n");
+                                   self.declared_functions.insert("rt_box_int".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed_reg, v_val));
+                         }
+                         v_val = boxed_reg;
+                    }
+
                     if !self.declared_functions.contains("m_set") {
                         self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
                         self.declared_functions.insert("m_set".to_string());
@@ -1351,14 +1393,46 @@ impl CodeGen {
                     self.emit_line(&format!("{} = call i64 @a_new()", arr_tmp));
                 }
 
+                // Determine if we need to box elements (for generic/Any arrays)
+                let arr_elem_ty = if let Some(t) = &ty { t.get_array_element_type() } else { TejxType::Any };
+                let needs_boxing = !use_fixed && matches!(arr_elem_ty, TejxType::Any | TejxType::Class(_));
+
                 let mut idx = 0;
                 for v in elements {
                     let mut v_val = self.resolve_value(v);
-                    if v.get_type().is_float() {
+                    
+                    // Box primitives if storing into generic array
+                    let v_ty = v.get_type();
+                    if needs_boxing && (v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char)) {
                          self.temp_counter += 1;
-                         let bc = format!("%bc_flt_{}", self.temp_counter);
-                         self.emit_line(&format!("{} = bitcast double {} to i64", bc, v_val));
-                         v_val = bc;
+                         let boxed_reg = format!("%boxed_{}", self.temp_counter);
+                         
+                         if v_ty.is_float() {
+                              // v_val is i64 (bitcasted float). rt_box_number expects double.
+                              self.temp_counter += 1;
+                              let d_val = format!("%d_val_{}", self.temp_counter);
+                              self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, v_val));
+                              
+                              if !self.declared_functions.contains("rt_box_number") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
+                                   self.declared_functions.insert("rt_box_number".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_number(double {})", boxed_reg, d_val));
+                         } else if matches!(v.get_type(), TejxType::Bool) {
+                              if !self.declared_functions.contains("rt_box_boolean") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_boolean(i64)\n");
+                                   self.declared_functions.insert("rt_box_boolean".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed_reg, v_val));
+                         } else {
+                              // Int / Char (Int32, Int16 etc)
+                              if !self.declared_functions.contains("rt_box_int") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_int(i64)\n");
+                                   self.declared_functions.insert("rt_box_int".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed_reg, v_val));
+                         }
+                         v_val = boxed_reg;
                     }
 
                     if use_fixed {
@@ -1428,6 +1502,15 @@ impl CodeGen {
                     let bc_val = format!("%bc_val_{}", self.temp_counter);
                     self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
                     bc_val
+                } else if matches!(dst_ty, TejxType::Bool) {
+                    if !self.declared_functions.contains("rt_to_boolean") {
+                        self.global_buffer.push_str("declare i64 @rt_to_boolean(i64)\n");
+                        self.declared_functions.insert("rt_to_boolean".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let b_val = format!("%b_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = call i64 @rt_to_boolean(i64 {})", b_val, res_tmp));
+                    b_val
                 } else {
                     res_tmp
                 };
@@ -1438,7 +1521,40 @@ impl CodeGen {
             MIRInstruction::StoreMember { obj, member, src, .. } => {
                 let obj_val = self.resolve_value(obj);
                 let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::String });
-                let v_val = self.resolve_value(src);
+                let mut v_val = self.resolve_value(src);
+                
+                // Box primitives if stored in object property (always 'Any' slot)
+                let v_ty = src.get_type();
+                if v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char) {
+                     self.temp_counter += 1;
+                     let boxed_reg = format!("%boxed_set_{}", self.temp_counter);
+                     
+                     if v_ty.is_float() {
+                          self.temp_counter += 1;
+                          let d_val = format!("%d_val_set_{}", self.temp_counter);
+                          self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, v_val));
+                          
+                          if !self.declared_functions.contains("rt_box_number") {
+                               self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
+                               self.declared_functions.insert("rt_box_number".to_string());
+                          }
+                          self.emit_line(&format!("{} = call i64 @rt_box_number(double {})", boxed_reg, d_val));
+                     } else if matches!(v_ty, TejxType::Bool) {
+                          if !self.declared_functions.contains("rt_box_boolean") {
+                               self.global_buffer.push_str("declare i64 @rt_box_boolean(i64)\n");
+                               self.declared_functions.insert("rt_box_boolean".to_string());
+                          }
+                          self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed_reg, v_val));
+                     } else {
+                          if !self.declared_functions.contains("rt_box_int") {
+                               self.global_buffer.push_str("declare i64 @rt_box_int(i64)\n");
+                               self.declared_functions.insert("rt_box_int".to_string());
+                          }
+                          self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed_reg, v_val));
+                     }
+                     v_val = boxed_reg;
+                }
+
                 if !self.declared_functions.contains("m_set") {
                     self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
                     self.declared_functions.insert("m_set".to_string());
@@ -1977,7 +2093,44 @@ impl CodeGen {
                         self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
                         self.declared_functions.insert("m_set".to_string());
                     }
-                    self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, idx_val, v_val));
+                    // Box primitives for index access fallback (always 'Any' slot)
+                    let v_ty = src.get_type();
+                    let mut final_v_val = v_val;
+                    if v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char) {
+                         self.temp_counter += 1;
+                         let boxed_reg = format!("%boxed_idx_set_{}", self.temp_counter);
+                         
+                         if v_ty.is_float() {
+                              self.temp_counter += 1;
+                              let d_val = format!("%d_val_idx_set_{}", self.temp_counter);
+                              self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, final_v_val));
+                              
+                              if !self.declared_functions.contains("rt_box_number") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
+                                   self.declared_functions.insert("rt_box_number".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_number(double {})", boxed_reg, d_val));
+                         } else if matches!(v_ty, TejxType::Bool) {
+                              if !self.declared_functions.contains("rt_box_boolean") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_boolean(i64)\n");
+                                   self.declared_functions.insert("rt_box_boolean".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed_reg, final_v_val));
+                         } else {
+                              if !self.declared_functions.contains("rt_box_int") {
+                                   self.global_buffer.push_str("declare i64 @rt_box_int(i64)\n");
+                                   self.declared_functions.insert("rt_box_int".to_string());
+                              }
+                              self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed_reg, final_v_val));
+                         }
+                         final_v_val = boxed_reg;
+                    }
+
+                    if !self.declared_functions.contains("m_set") {
+                        self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
+                        self.declared_functions.insert("m_set".to_string());
+                    }
+                    self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, idx_val, final_v_val));
                 }
             }
             MIRInstruction::Throw { value, .. } => {
@@ -2017,7 +2170,43 @@ impl CodeGen {
                   self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
              }
              MIRInstruction::Free { value, .. } => {
+                 // 1. Resolve variable name and value
+                 // We need the name to look up the flag.
+                 let var_name = if let MIRValue::Variable { name, .. } = value { Some(name) } else { None };
                  let v = self.resolve_value(value);
+                 
+                 // 2. Check if we have a moved flag for this variable
+                 if let Some(name) = var_name {
+                     if let Some(flag_ptr) = self.local_moved_flags.get(name).cloned() {
+                         self.temp_counter += 1;
+                         let is_dead = format!("%is_dead_free_{}", self.temp_counter);
+                         self.emit_line(&format!("{} = load i1, i1* {}", is_dead, flag_ptr));
+                         
+                         let do_free = format!("do_free_{}", self.temp_counter);
+                         let skip_free = format!("skip_free_{}", self.temp_counter);
+                         
+                         // If is_dead (1) -> skip. If Live (0) -> free.
+                         self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_dead, skip_free, do_free));
+                         
+                         self.emit_line(&format!("{}:", do_free));
+                         
+                         if !self.declared_functions.contains("rt_free") {
+                             self.global_buffer.push_str("declare void @rt_free(i64)\n");
+                             self.declared_functions.insert("rt_free".to_string());
+                         }
+                         self.emit_line(&format!("call void @rt_free(i64 {})", v));
+                         
+                         // Mark as Moved (Dead) after freeing
+                         self.emit_line(&format!("store i1 1, i1* {}", flag_ptr));
+                         
+                         self.emit_line(&format!("br label %{}", skip_free));
+                         self.emit_line(&format!("{}:", skip_free));
+                         return;
+                     }
+                 }
+                 
+                 // Fallback: If no flag (e.g. purely temporary or not tracked?), just free.
+                 // Ideally all droppable vars have flags.
                  if !self.declared_functions.contains("rt_free") {
                      self.global_buffer.push_str("declare void @rt_free(i64)\n");
                      self.declared_functions.insert("rt_free".to_string());

@@ -372,7 +372,9 @@ unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
-    // println!("m_set id: {}, key_ptr: {}, val: {}", id, key_ptr, val);
+    if key_ptr < 2000000000 && key_ptr > 1000000 {
+         let k = unsafe { get_string_key(&HEAP.lock().unwrap(), key_ptr) };
+    }
     let mut heap = HEAP.lock().unwrap();
     
     // Pre-calculate boxed index to avoid borrow checker conflict
@@ -403,7 +405,6 @@ pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
                         }
                     }
                     if idx < arr.len() {
-                        // println!("m_set Array: arr[{}] = {}", idx, val);
                         arr[idx] = val;
                     }
                 }
@@ -441,7 +442,6 @@ pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
-    // println!("m_get id: {}, key_ptr: {}", id, key_ptr);
     let heap = HEAP.lock().unwrap();
     if let Some(obj) = heap.get(id) {
         match obj {
@@ -459,7 +459,6 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                 if let Some(i) = idx {
                     if i < arr.len() {
                         let res = arr[i];
-                        // println!("m_get Array index: {}, res: {}", i, res);
                         return res;
                     } else {
                         eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
@@ -510,7 +509,6 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
             }
             TaggedValue::String(s) => {
                 let key = if key_ptr > 1000 && key_ptr < 0xFFFFFFFFFFFF { get_string_key(&heap, key_ptr) } else { "".to_string() };
-                // println!("m_get String key: {}, length: {}", key, s.len());
                 if key == "length" {
                     return (s.len() as f64).to_bits() as i64;
                 }
@@ -668,24 +666,27 @@ pub fn stringify_value(id: i64) -> String {
         }
     } else {
         drop(heap);
-        // Fallbacks for non-heap IDs (unboxed values)
+        // Optimization: Values between -1 billion and 1 billion (including 0) are treated as direct integers.
+        // Wait, if id is 0, we want "null" for JS compatibility usually, but user says "0 should be 0".
+        // Actually, in NovaJs, we want to distinguish null (0) from integer 0.
+        // We ensure integer 0 is boxed.
         if id == 0 { return "null".to_string(); }
         
-        // Optimization: Values between -1 billion and 1 billion are treated as direct integers.
         if id > -1_000_000_000 && id < 1_000_000_000 {
             return id.to_string();
         }
 
         // Try treating it as a bitcasted double
         let d = f64::from_bits(id as u64);
-        if d.is_finite() && (d.abs() > 1e-300 || d.abs() == 0.0) {
+        // Only treat as double if it's a "reasonable" value and NOT a small ID or common bit pattern
+        if d.is_finite() && d.abs() > 1e-300 && d.abs() < 1e300 {
              let res = if d.fract() == 0.0 { format!("{:.0}", d) }
              else { format!("{}", d) };
              return res;
         }
 
         // Pointers are risky. On macOS, string literals from segments are typically in this range.
-        if id > 0x100000000 && id < 0x200000000000 {
+        if id > 0x100000000 && id < 0x200000000000 { // let _k = unsafe { *(id as *const i64) }; // k is the boxed object ID if it was boxed_null() {
              let p = id as *const c_char;
              if !p.is_null() {
                  let c_str = unsafe { CStr::from_ptr(p) };
@@ -1179,8 +1180,8 @@ pub extern "C" fn rt_div(a: i64, b: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_box_number(n: f64) -> i64 {
-    // Optimization: If n is a small integer, return it as literal ID
-    if n.fract() == 0.0 && n >= 0.0 && n < 1000000.0 {
+    // Optimization: If n is a small integer (BUT NOT 0, as 0 is null), return it as literal ID
+    if n.fract() == 0.0 && n > 0.0 && n < 1000000.0 {
         return n as i64;
     }
 
@@ -1191,7 +1192,20 @@ pub extern "C" fn rt_box_number(n: f64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_box_int(n: i64) -> i64 {
-    rt_box_number(n as f64)
+    // Optimization: If n is a small integer (BUT NOT 0), return it as literal ID
+    if n > 0 && n < 1000000 {
+        return n;
+    }
+    // Also handle negative small integers if needed, but for now just 0 check is critical
+    // Actually safe to return negatives? Heap Offset is positive.
+    // If IDs are negative?
+    // Let's just optimization > 0 to be safe
+    
+    let mut heap = HEAP.lock().unwrap();
+    let id = heap.alloc(TaggedValue::Number(n as f64)); // Use Number for compatibility or Int?
+    // Existing code used rt_box_number which uses TaggedValue::Number.
+    // Let's stick to Number for consistency with existing runtime unless we want to introduce Int type
+    id
 }
 
 #[unsafe(no_mangle)]
@@ -1633,7 +1647,7 @@ pub unsafe extern "C" fn rt_free(id: i64) {
         let idx = (id - HEAP_OFFSET) as usize;
         if id >= HEAP_OFFSET && idx < heap.objects.len() {
             if let Some(obj) = &heap.objects[idx] {
-                let type_str = match obj {
+                let _type_str = match obj {
                     TaggedValue::Array(_) => "Array",
                     TaggedValue::ByteArray(_) => "ByteArray",
                     TaggedValue::Map(_) => "Map",
@@ -1886,17 +1900,24 @@ pub unsafe extern "C" fn __optional_chain(obj: i64, op: i64) -> i64 {
 }
 
 // Array extra Stubs
-#[unsafe(no_mangle)] 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_concat(id_a: i64, id_b: i64) -> i64 {
     let mut new_arr = Vec::new();
     let mut heap = HEAP.lock().unwrap();
-    let extract = |id| {
-        if let Some(TaggedValue::Array(arr)) = heap.get(id) { arr.clone() } else { vec![id] }
+
+    let mut extract = |id| {
+        if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+            new_arr.extend(arr.clone());
+        } else {
+            // If not an array, just push the ID as a single element
+            new_arr.push(id);
+        }
     };
-    new_arr.extend(extract(id_a));
-    new_arr.extend(extract(id_b));
-    let id = heap.alloc(TaggedValue::Array(new_arr));
-    id
+
+    extract(id_a);
+    extract(id_b);
+    
+    heap.alloc(TaggedValue::Array(new_arr))
 }
 
 #[unsafe(no_mangle)]
@@ -2168,7 +2189,9 @@ pub extern "C" fn Array_sliceRest(id: i64, start: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn parseInt(s: i64) -> i64 {
     let s_str = stringify_value(s);
-    s_str.parse::<i64>().unwrap_or(0)
+    // Parse as f64 first to handle "55.5" correctly, then truncate to i64
+    let n = s_str.trim().parse::<f64>().unwrap_or(0.0);
+    rt_box_int(n as i64)
 }
 
 #[unsafe(no_mangle)]
@@ -3335,27 +3358,30 @@ pub unsafe extern "C" fn Array_sort(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_flat(id: i64, depth: i64) -> i64 {
-    // Recursive flatten
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Array(arr)) = heap.get(id) {
-        let elements = arr.clone();
-        drop(heap); // Release to recurse
-        
-        let mut flattened = Vec::new();
-        let d = if depth < 0 { 1 } else { depth }; // default 1 if not passed (0 passed as arg?)
-        // Wait, checking arg count? 
-        // Assuming depth passed.
-        
-        for &el in &elements {
-            let mut is_arr = false;
-            {
-                let heap = HEAP.lock().unwrap();
-                if let Some(TaggedValue::Array(_)) = heap.get(el) { is_arr = true; }
+    let elements = {
+        let heap = HEAP.lock().unwrap();
+        if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+            arr.clone()
+        } else {
+            return id;
+        }
+    };
+
+    let mut flattened = Vec::new();
+    let d = depth;
+
+    for &el in &elements {
+        let mut sub_arr_opt = None;
+        {
+            let heap = HEAP.lock().unwrap();
+            if let Some(TaggedValue::Array(arr)) = heap.get(el) {
+                sub_arr_opt = Some(arr.clone());
             }
-            
-            if is_arr && d > 0 {
+        }
+        
+        if let Some(_) = sub_arr_opt {
+            if d > 0 {
                  let sub_flat_id = Array_flat(el, d - 1);
-                 // flatten returns a NEW array ID.
                  let heap = HEAP.lock().unwrap();
                  if let Some(TaggedValue::Array(sub)) = heap.get(sub_flat_id) {
                      flattened.extend(sub.clone());
@@ -3363,21 +3389,13 @@ pub unsafe extern "C" fn Array_flat(id: i64, depth: i64) -> i64 {
             } else {
                  flattened.push(el);
             }
+        } else {
+             flattened.push(el);
         }
-        
-        let mut heap = HEAP.lock().unwrap();
-        let new_id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(new_id, TaggedValue::Array(flattened));
-        return new_id;
     }
-    drop(heap);
-    // Return empty array if failed
+
     let mut heap = HEAP.lock().unwrap();
-    let new_id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(new_id, TaggedValue::Array(Vec::new()));
-    new_id
+    heap.alloc(TaggedValue::Array(flattened))
 }
 
 
@@ -3472,7 +3490,7 @@ pub extern "C" fn tejx_dec_async_ops() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tejx_run_event_loop() {
-    let mut idle_count = 0;
+    let mut _idle_count = 0;
     loop {
         let task = {
             let mut queue = EVENT_QUEUE.lock().unwrap();
@@ -3480,7 +3498,7 @@ pub unsafe extern "C" fn tejx_run_event_loop() {
         };
 
         if let Some(t) = task {
-            idle_count = 0;
+            _idle_count = 0;
             let f: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute(t.func);
             f(t.arg);
         } else {
@@ -3490,7 +3508,7 @@ pub unsafe extern "C" fn tejx_run_event_loop() {
                 break;
             }
             
-            idle_count += 1;
+            _idle_count += 1;
             if ops == 0 {
                 break;
             }

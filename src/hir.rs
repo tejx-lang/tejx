@@ -216,6 +216,10 @@ pub enum HIRStatement {
         value: HIRExpression,
         line: usize,
     },
+    Sequence {
+        statements: Vec<HIRStatement>,
+        line: usize,
+    },
 }
 
 impl HIRStatement {
@@ -233,6 +237,7 @@ impl HIRStatement {
             HIRStatement::Try { line, .. } => *line,
             HIRStatement::Throw { line, .. } => *line,
             HIRStatement::Function { line, .. } => *line,
+            HIRStatement::Sequence { line, .. } => *line,
         }
     }
 }

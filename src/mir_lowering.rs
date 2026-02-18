@@ -25,6 +25,8 @@ pub struct MIRLowering {
     signatures: HashMap<String, Vec<TejxType>>,
     current_return_type: TejxType,
     current_line: usize,
+    scopes: Vec<HashMap<String, String>>, // Stack of scopes: original_name -> unique_mir_name
+    var_counter: usize,
 }
 
 impl MIRLowering {
@@ -40,7 +42,55 @@ impl MIRLowering {
             signatures,
             current_return_type: TejxType::Void,
             current_line: 0,
+            scopes: vec![HashMap::new()], // Global/Function scope
+            var_counter: 0,
         }
+    }
+
+    fn new_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) -> Vec<String> {
+        let scope = self.scopes.pop().expect("Scope stack underflow");
+        // Return variables declared in this scope safely (values of the map)
+        scope.values().cloned().collect()
+    }
+
+    fn declare_variable(&mut self, name: &str) -> String {
+        if name.starts_with("g_") {
+             if let Some(scope) = self.scopes.last_mut() {
+                 scope.insert(name.to_string(), name.to_string());
+             }
+             return name.to_string();
+        }
+        let unique_name = if self.scopes.len() == 1 {
+            // Global/Top-level: preserve name (or prefix if needed, but globals usually static)
+            // Actually, for shadowing test, even top-level vars inside 'main' are local.
+            // Only truly global if outside function?
+            // checking 'lower' method: it creates a new MIRFunction.
+            // So these are all local to function.
+            format!("{}_{}", name, self.var_counter)
+        } else {
+            format!("{}_{}", name, self.var_counter)
+        };
+        self.var_counter += 1;
+        
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), unique_name.clone());
+        }
+        unique_name
+    }
+
+    fn resolve_variable(&self, name: &str) -> String {
+        // Search from inner to outer
+        for scope in self.scopes.iter().rev() {
+            if let Some(unique) = scope.get(name) {
+                return unique.clone();
+            }
+        }
+        // If not found, assume global or parameter (if parameters aren't in scope yet)
+        name.to_string()
     }
 
     pub fn lower(&mut self, hir_func: &HIRStatement) -> MIRFunction {
@@ -56,6 +106,20 @@ impl MIRLowering {
         self.current_function.params = params.iter().map(|(n, _)| n.clone()).collect();
         self.temp_counter = 0;
         self.block_counter = 0;
+        self.scopes.clear();
+        self.scopes.push(HashMap::new()); // Reset to function scope
+        
+        // Register parameters in the top-level scope
+        for (pname, pty) in params.iter() {
+            // Parameters are available throughout the function
+            // We use the original name for parameters as they are part of the signature/ABI
+            // But if we want to support shadowing logic, we should probably map them too?
+            // For now, let's map param name -> param name to be consistent with resolve_variable
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.insert(pname.clone(), pname.clone());
+            }
+            self.current_function.variables.insert(pname.clone(), pty.clone());
+        }
 
         let entry = self.new_block("entry");
         self.current_function.entry_block = entry;
@@ -63,15 +127,15 @@ impl MIRLowering {
 
         // Initialize parameters as moves from argument registers - REMOVED
         // CodeGen handles this automatically by storing %__argN into the parameter alloca.
-        for (_i, (pname, pty)) in params.iter().enumerate() {
+        // for (_i, (pname, pty)) in params.iter().enumerate() {
             // let arg_name = format!("__arg{}", i);
-            self.current_function.variables.insert(pname.clone(), pty.clone());
+             // self.current_function.variables.insert(pname.clone(), pty.clone());
             /*
             self.emit(MIRInstruction::Move { line: 0,  dst: pname.clone(),
                 src: MIRValue::Variable { name: arg_name, ty: pty.clone()  },
             });
             */
-        }
+        // }
 
         self.lower_statement(body);
 
@@ -113,7 +177,8 @@ impl MIRLowering {
 
         if target_is_any || target_is_string {
             let box_func = match src_ty {
-                t if t.is_numeric() && target_is_any => Some("rt_box_number"),
+                t if t.is_float() && target_is_any => Some("rt_box_number"),
+                t if t.is_numeric() && target_is_any => Some("rt_box_int"),
                 TejxType::Bool if target_is_any => Some("rt_box_boolean"),
                 TejxType::String if (target_is_any || target_is_string) && matches!(val, MIRValue::Constant { .. }) => Some("rt_box_string"),
                 _ => None
@@ -140,25 +205,23 @@ impl MIRLowering {
              };
              
              if let Some(func) = unbox_func {
-                 let temp = self.new_temp(TejxType::Float64);
+                 let res_ty = if func == "rt_is_truthy" { TejxType::Bool } else { TejxType::Float64 };
+                 let temp = self.new_temp(res_ty.clone());
                  self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                      callee: func.to_string(),
                      args: vec![val],
                   });
-                 let mut final_val = MIRValue::Variable { name: temp, ty: TejxType::Float64 };
+                 let mut final_val = MIRValue::Variable { name: temp, ty: res_ty.clone() };
                  
-                 // If target is not Float64, we need a cast
-                 if target_ty.is_numeric() && *target_ty != TejxType::Float64 {
+                 // If target is not the function's return type, we might need a cast
+                 if target_ty.is_numeric() && *target_ty != res_ty {
                       let cast_temp = self.new_temp(target_ty.clone());
                       self.emit(MIRInstruction::Cast { line: 0,  dst: cast_temp.clone(),
                           src: final_val,
                           ty: target_ty.clone(),
                        });
                       final_val = MIRValue::Variable { name: cast_temp, ty: target_ty.clone() };
-                 } else if *target_ty == TejxType::Bool {
-                      // Bool case: already handled by rt_is_truthy which returns bool?
-                      // Wait, rt_is_truthy in runtime.rs returns bool (1 byte).
-                 }
+                 } 
                  return final_val;
              }
         }
@@ -181,12 +244,33 @@ impl MIRLowering {
         self.current_line = stmt.get_line();
         match stmt {
             HIRStatement::Block { statements, .. } => {
+                self.new_scope();
+                for s in statements {
+                    self.lower_statement(s);
+                }
+                // End of block: Drop all variables declared in this scope!
+                let vars_to_drop = self.pop_scope();
+                for var_unique_name in vars_to_drop {
+                    if let Some(ty) = self.current_function.variables.get(&var_unique_name).cloned() {
+                        if ty.needs_drop() {
+                            self.emit(MIRInstruction::Free {
+                                value: MIRValue::Variable { name: var_unique_name, ty },
+                                line: self.current_line,
+                            });
+                        }
+                    }
+                }
+            }
+            HIRStatement::Sequence { statements, .. } => {
+                // Sequence is a block without a scope.
                 for s in statements {
                     self.lower_statement(s);
                 }
             }
             HIRStatement::VarDecl { name, initializer, ty, .. } => {
-                self.current_function.variables.insert(name.clone(), ty.clone());
+                let unique_name = self.declare_variable(name);
+                self.current_function.variables.insert(unique_name.clone(), ty.clone());
+                
                 if let Some(init) = initializer {
                     self.expected_ty = Some(ty.clone());
                     let mut src = self.lower_expression(init);
@@ -194,7 +278,7 @@ impl MIRLowering {
                     
                     src = self.auto_box(src, ty);
 
-                    self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
+                    self.emit(MIRInstruction::Move { line: 0,  dst: unique_name,
                         src,
                         
                      });
@@ -469,8 +553,9 @@ impl MIRLowering {
                 }
             }
             HIRExpression::Variable { name, ty, .. } => {
+                let unique_name = self.resolve_variable(name);
                 MIRValue::Variable {
-                    name: name.clone(),
+                    name: unique_name,
                     ty: ty.clone(),
                 }
             }
@@ -674,8 +759,9 @@ impl MIRLowering {
                 
                 match target.as_ref() {
                     HIRExpression::Variable { name, ty, .. } => {
+                        let unique_name = self.resolve_variable(name);
                         val = self.auto_box(val, ty);
-                        self.emit(MIRInstruction::Move { line: 0,  dst: name.clone(),
+                        self.emit(MIRInstruction::Move { line: 0,  dst: unique_name,
                             src: val.clone(),
                             
                          });
@@ -705,7 +791,7 @@ impl MIRLowering {
             }
             HIRExpression::Call { callee, args, ty, .. } => {
                 let maybe_sig = self.signatures.get(callee).cloned();
-                let mir_args: Vec<MIRValue> = args.iter().enumerate()
+                let mut mir_args: Vec<MIRValue> = args.iter().enumerate()
                     .map(|(i, a)| {
                         let val = self.lower_expression(a);
                         let target_ty = maybe_sig.as_ref().and_then(|sig| sig.get(i)).unwrap_or(&TejxType::Any);
@@ -714,6 +800,7 @@ impl MIRLowering {
                     .collect();
                 let temp = self.new_temp(ty.clone());
                 let mut final_callee = callee.clone();
+                // println!("DEBUG: Lowering Call: {}, args: {}", callee, args.len());
                 // Map specialized method calls to runtime functions
                 if callee == "f_Atomic_add" { final_callee = "rt_atomic_add".to_string(); }
                 else if callee == "f_Atomic_sub" { final_callee = "rt_atomic_sub".to_string(); }
@@ -727,6 +814,18 @@ impl MIRLowering {
                 else if callee == "f_Thread_join" { final_callee = "Thread_join".to_string(); }
                 else if callee == "f_Mutex_lock" { final_callee = "m_lock".to_string(); }
                 else if callee == "f_Mutex_unlock" { final_callee = "m_unlock".to_string(); }
+                else if callee == "f_Array_flat" || callee == "f_any___flat" { 
+                    final_callee = "Array_flat".to_string();
+                    if mir_args.len() == 1 {
+                        mir_args.push(MIRValue::Constant { value: "1".to_string(), ty: TejxType::Int64 });
+                    }
+                }
+                else if callee == "f_Array_concat" || callee == "f_any___concat" { 
+                    final_callee = "Array_concat".to_string(); 
+                }
+                else if callee == "f_any___unshift" { final_callee = "Array_unshift".to_string(); }
+                else if callee == "f_any___shift" { final_callee = "Array_shift".to_string(); }
+                else if callee == "f_any___join" { final_callee = "Array_join".to_string(); }
 
                 self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                     callee: final_callee,

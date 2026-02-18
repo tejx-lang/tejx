@@ -205,8 +205,7 @@ fn main() {
             eprintln!("Error: {}", e);
             let _ = fs::remove_file(&runtime_lib_path);
             // Keep .ll file for debugging
-            // Keep .ll file for debugging
-            // process::exit(1);
+            process::exit(1);
         }
     }
 }
