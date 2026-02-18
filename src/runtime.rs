@@ -2150,30 +2150,15 @@ pub extern "C" fn Array_sliceRest(id: i64, start: i64) -> i64 {
 
 #[unsafe(no_mangle)] pub extern "C" fn calc_getValue(a: i64) -> i64 { a }
 
-// OOP Stubs
-#[unsafe(no_mangle)] pub extern "C" fn BankAccount_getBankName() -> i64 {
-    CString::new("TejX Bank").unwrap().into_raw() as i64
-}
-#[unsafe(no_mangle)] pub extern "C" fn acc_deposit(_this: i64, _amt: i64) -> i64 { 0 }
-#[unsafe(no_mangle)] pub extern "C" fn acc_getBalance(_this: i64) -> i64 { 100 }
-#[unsafe(no_mangle)] pub extern "C" fn c_printDetails(_this: i64) -> i64 { 0 }
-#[unsafe(no_mangle)] pub extern "C" fn dDog_bark(_this: i64) -> i64 { 0 }
+// OOP Stubs Removed
+
 #[unsafe(no_mangle)] pub extern "C" fn dDog_speak(_this: i64) -> i64 { 0 }
 #[unsafe(no_mangle)] pub extern "C" fn p_get_age(_this: i64) -> i64 { 30 }
 #[unsafe(no_mangle)] pub unsafe extern "C" fn p_get_name(_this: i64) -> i64 {
     CString::new("StubName").unwrap().into_raw() as i64
 }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn p_get_info(_this: i64) -> i64 {
-    CString::new("StubInfo").unwrap().into_raw() as i64
-}
-#[unsafe(no_mangle)] pub unsafe extern "C" fn p_print(_this: i64, prefix: i64) -> i64 {
-    if prefix != 0 {
-        let _p = CStr::from_ptr(prefix as *const c_char).to_string_lossy();
-    } else {
-    }
-    0
-}
-#[unsafe(no_mangle)] pub extern "C" fn p_set_age(_this: i64, _val: i64) -> i64 { 0 }
+// More stubs removed
+
 #[unsafe(no_mangle)] pub extern "C" fn p_set_name(_this: i64, _val: i64) -> i64 { 0 }
 #[unsafe(no_mangle)] pub extern "C" fn r_greet(_this: i64, _name: i64) -> i64 { 0 }
 #[unsafe(no_mangle)] pub extern "C" fn r_identify(_this: i64) -> i64 { 0 }

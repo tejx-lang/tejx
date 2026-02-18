@@ -48,7 +48,7 @@ class Point {
 class BankAccount {
     private balance: int32 = 0;
     public owner: string;
-    static bankName: string = "TejXBank";
+    static bankName: string = "MyBank";
 
     constructor(owner: string, initialBalance: int32) {
         this.owner = owner;
@@ -136,7 +136,8 @@ function test_oop() {
     }
 
     // Static & Encapsulation
-    assert_eq_string("TejXBank", BankAccount.getBankName(), "Static method");
+
+    assert_eq_string("MyBank", BankAccount.getBankName(), "Static method");
     let acc = new BankAccount("Alice", 100);
     acc.deposit(50);
     assert_eq_int(150, acc.getBalance(), "Encapsulation deposit");

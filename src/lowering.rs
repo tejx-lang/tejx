@@ -285,6 +285,7 @@ impl Lowering {
                          } else {
                              format!("f_{}_{}", class_decl.name, method.func.name)
                          };
+
                          self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
                          if !method.is_static {
                              methods.push(method.func.name.clone());
@@ -336,12 +337,16 @@ impl Lowering {
                     } else if let Statement::ClassDeclaration(class_decl) = &**declaration {
                         let mut methods = Vec::new();
                         for method in &class_decl.methods {
-                             let mangled = if method.func.name.starts_with("f_") {
-                                 method.func.name.clone()
-                             } else {
-                                 format!("f_{}_{}", class_decl.name, method.func.name)
-                             };
-                             self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
+                              let mangled = if method.func.name.starts_with("f_") {
+                                  method.func.name.clone()
+                              } else {
+                                  format!("f_{}_{}", class_decl.name, method.func.name)
+                              };
+                              // DEBUG
+                              if method.func.name == "getBankName" || method.func.name == "greet" {
+                                  println!("DEBUG PASS 0: Inserting {} -> {}", class_decl.name, mangled);
+                              }
+                              self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.func.return_type));
                              if !method.is_static {
                                  methods.push(method.func.name.clone());
                              }
@@ -369,6 +374,7 @@ impl Lowering {
                         } else {
                             format!("f_{}_{}", ext_decl._target_type, method.name)
                         };
+
                         self.user_functions.borrow_mut().insert(mangled, TejxType::from_name(&method.return_type));
                         methods.push(method.name.clone());
                     }
@@ -1111,9 +1117,9 @@ impl Lowering {
             let return_type = TejxType::from_name(&func_decl.return_type);
             
             self.enter_scope();
-            for (pname, pty) in &params {
-                self.define(pname.clone(), pty.clone());
-            }
+            let mangled_params: Vec<(String, TejxType)> = params.iter()
+                .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
+                .collect();
             
             let hir_body = self.lower_statement(&func_decl.body)
                 .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
@@ -1121,7 +1127,7 @@ impl Lowering {
             self._exit_scope();
 
             functions.push(HIRStatement::Function { line: line, 
-                name, params, _return_type: return_type, body: Box::new(hir_body),
+                name, params: mangled_params, _return_type: return_type, body: Box::new(hir_body),
             });
         }
     }
@@ -1465,8 +1471,9 @@ impl Lowering {
             }
             Expression::Identifier { name, .. } => {
                 let (resolved_name, ty) = self.lookup(name).unwrap_or_else(|| (name.clone(), TejxType::Any));
-                let final_name = if self.user_functions.borrow().contains_key(name) && name != "main" && !resolved_name.starts_with("g_") && !resolved_name.contains("$") {
-                    format!("f_{}", name)
+                let f_name = format!("f_{}", name);
+                let final_name = if (self.user_functions.borrow().contains_key(name) || self.user_functions.borrow().contains_key(&f_name)) && name != "main" && !resolved_name.starts_with("g_") && !resolved_name.contains("$") {
+                    f_name
                 } else {
                     resolved_name
                 };
@@ -1712,7 +1719,8 @@ impl Lowering {
                              } else {
                                  TejxType::Any
                              };
-                             hir_args.insert(0, HIRExpression::Variable { line: line,  name: "this".to_string(), ty: this_ty });
+                             let (mangled_this, _) = self.lookup("this").unwrap_or_else(|| ("this".to_string(), TejxType::Any));
+                             hir_args.insert(0, HIRExpression::Variable { line: line,  name: mangled_this, ty: this_ty });
 
                              return HIRExpression::Call { line: line, 
                                  callee: method_name,
@@ -1790,8 +1798,12 @@ impl Lowering {
                         };
                     } else {
                         let type_name = match &r_ty {
-                            TejxType::Int32 | TejxType::Int16 | TejxType::Int64 | TejxType::Int128 => "number",
-                            TejxType::Float32 | TejxType::Float16 | TejxType::Float64 => "number",
+                            TejxType::Int32 => "int32",
+                            TejxType::Int16 => "int16",
+                            TejxType::Int64 => "int64",
+                            TejxType::Int128 => "int128",
+                            TejxType::Float32 => "float32",
+                            TejxType::Float64 => "float64",
                             TejxType::Bool => "boolean",
                             TejxType::String => "string",
                             TejxType::Char => "char",
@@ -1827,10 +1839,36 @@ impl Lowering {
                              final_args = vec![HIRExpression::Variable { line: line,  name: mangled_this, ty: TejxType::Any }];
                              final_args.extend(hir_args.clone());
                          }
-                     } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
-                         final_callee = if callee_str == "main" { "f_main".to_string() } else { format!("f_{}", callee_str) };
-                         ty = ret_ty.clone();
                      } else {
+                         // Check if this is a static method call: ClassName.method()
+                         let obj_name = match object.as_ref() {
+                             Expression::Identifier { name, .. } => Some(name.clone()),
+                             _ => None,
+                         };
+                         let is_known_class = if let Some(ref n) = obj_name {
+                             self.class_methods.borrow().contains_key(n) ||
+                             self.class_static_fields.borrow().contains_key(n) ||
+                             self.class_instance_fields.borrow().contains_key(n)
+                         } else { false };
+                         
+                         if is_known_class {
+                             let cn = obj_name.unwrap();
+                             let static_callee = format!("f_{}_{}", cn, member);
+                             let ret = self.user_functions.borrow().get(&static_callee).cloned().unwrap_or(TejxType::Any);
+                             final_callee = static_callee;
+                             ty = ret;
+                             // Static method calls don't pass 'this'
+                             final_args = hir_args.clone();
+                         } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
+                             final_callee = if callee_str == "main" { "f_main".to_string() } else { format!("f_{}", callee_str) };
+                             ty = ret_ty.clone();
+                         } else {
+                             // Also check normalized version (dots to underscores, with f_ prefix)
+                             let f_normalized = format!("f_{}", normalized);
+                             if let Some(ret_ty) = self.user_functions.borrow().get(&f_normalized) {
+                                 final_callee = f_normalized;
+                                 ty = ret_ty.clone();
+                             } else {
                          // Check stdlib imports for MemberAccess (e.g. fs.readFile)
                          let imports = self.std_imports.borrow();
                          let mut found_import = false;
@@ -1873,8 +1911,9 @@ impl Lowering {
                                  if let Some(cn) = class_opt {
                                      let stripped = if let Some(pos) = cn.find('<') { cn[..pos].to_string() } else { cn.clone() };
                                      let method_key = format!("{}_{}", stripped, member);
-                                     if self.user_functions.borrow().contains_key(&method_key) {
-                                         final_callee = format!("f_{}", method_key);
+                                     let f_method_key = format!("f_{}", method_key);
+                                     if self.user_functions.borrow().contains_key(&method_key) || self.user_functions.borrow().contains_key(&f_method_key) {
+                                         final_callee = f_method_key;
                                          let obj_hir = self.lower_expression(object);
                                          let mut n_args = vec![obj_hir];
                                          n_args.extend(hir_args.clone());
@@ -1983,6 +2022,8 @@ impl Lowering {
                                  }
                              }
                          }
+                         }
+                          }
                      }
                 } else if let Some(ret_ty) = self.user_functions.borrow().get(&callee_str) {
                     final_callee = if callee_str == "main" { "tejx_main".to_string() } else { format!("f_{}", callee_str) };
@@ -2125,13 +2166,18 @@ impl Lowering {
                                         *class_name = class_name[..pos].to_string();
                                     }
                                     let mangled_key = format!("{}_{}", class_name, method_name);
-                                    if self.user_functions.borrow().contains_key(&mangled_key) {
+                                    let f_mangled_key = format!("f_{}", mangled_key);
+                                    
+                                    // Debug lookup unconditional
+                                    println!("DEBUG LOOKUP UNCOND: class={} method={} key={} f_key={}", class_name, method_name, mangled_key, f_mangled_key);
+                                    
+                                    if self.user_functions.borrow().contains_key(&mangled_key) || self.user_functions.borrow().contains_key(&f_mangled_key) {
                                         let is_std_collection = ["Stack", "Queue", "PriorityQueue", "MinHeap", "MaxHeap", "Map", "Set", "OrderedMap", "OrderedSet", "BloomFilter", "Trie"]
                                             .contains(&class_name.as_str());
                                         if is_std_collection {
-                                            final_callee = format!("f_{}", mangled_key);
+                                            final_callee = f_mangled_key;
                                         } else {
-                                            final_callee = format!("f_{}", mangled_key);
+                                            final_callee = f_mangled_key;
                                         }
                                         let mut m_args = Vec::new();
                                         if is_instance {
@@ -2396,9 +2442,10 @@ impl Lowering {
                 }
 
                 let combined = format!("{}_{}", obj_name, member);
-                if self.user_functions.borrow().contains_key(&combined) {
+                let f_combined = format!("f_{}", combined);
+                if self.user_functions.borrow().contains_key(&combined) || self.user_functions.borrow().contains_key(&f_combined) {
                     HIRExpression::Variable { line: line, 
-                        name: format!("f_{}", combined),
+                        name: f_combined,
                         ty: TejxType::Any,
                     }
                 } else {

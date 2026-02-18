@@ -355,6 +355,7 @@ impl TypeChecker {
                 Statement::InterfaceDeclaration { .. } |
                 Statement::TypeAliasDeclaration { .. } |
                 Statement::ExtensionDeclaration(_) |
+                Statement::ExportDecl { .. } |
                 Statement::VarDeclaration { .. } => {
                     // Allowed
                 },
@@ -393,7 +394,7 @@ impl TypeChecker {
                 let mut members = HashMap::new();
                 for m in &class_decl._members {
                     members.insert(m._name.clone(), MemberInfo {
-                        type_name: m._type_name.clone(),
+                        type_name: self.parameterize_generics(&m._type_name, &class_decl.generic_params),
                         is_static: m._is_static,
                         access: if m._access == crate::ast::AccessModifier::Private { AccessLevel::Private } else { AccessLevel::Public },
                         is_readonly: false,
@@ -402,8 +403,9 @@ impl TypeChecker {
                 for method in &class_decl.methods {
                     let ret_ty = if method.func.return_type.is_empty() { "any".to_string() } else { method.func.return_type.clone() };
                     let (final_type, _, _) = self.parse_signature(format!("function:{}", ret_ty));
+                    let parameterized_type = self.parameterize_generics(&final_type, &class_decl.generic_params);
                     members.insert(method.func.name.clone(), MemberInfo {
-                        type_name: final_type,
+                        type_name: parameterized_type,
                         is_static: method.is_static,
                         access: if method._access == crate::ast::AccessModifier::Private { AccessLevel::Private } else { AccessLevel::Public },
                         is_readonly: true, // Methods are readonly
@@ -411,7 +413,7 @@ impl TypeChecker {
                 }
                 for getter in &class_decl._getters {
                     members.insert(getter._name.clone(), MemberInfo {
-                        type_name: getter._return_type.clone(),
+                        type_name: self.parameterize_generics(&getter._return_type, &class_decl.generic_params),
                         is_static: false, 
                         access: AccessLevel::Public,
                         is_readonly: true, // Default to readonly, setter can clear it
@@ -422,7 +424,7 @@ impl TypeChecker {
                         existing.is_readonly = false;
                     } else {
                         members.insert(setter._name.clone(), MemberInfo {
-                            type_name: setter._param_type.clone(), // or void?
+                            type_name: self.parameterize_generics(&setter._param_type, &class_decl.generic_params), // or void?
                             is_static: false,
                             access: AccessLevel::Public,
                             is_readonly: false,
@@ -1476,6 +1478,7 @@ impl TypeChecker {
     }
 
     fn substitute_generics(&self, member_type: &str, obj_type: &str) -> String {
+        // println!("DEBUG: substituting '{}' in '{}'", member_type, obj_type);
         let mut parts = Vec::new();
         if obj_type.ends_with("[]") {
             parts.push(&obj_type[..obj_type.len() - 2]);
@@ -1514,6 +1517,45 @@ impl TypeChecker {
             }
         }
         
+        result
+    }
+
+    fn parameterize_generics(&self, type_name: &str, params: &Vec<String>) -> String {
+        let mut result = type_name.to_string();
+        for (i, param) in params.iter().enumerate() {
+            let placeholder = format!("${}", i);
+            let mut new_res = String::new();
+            let mut last_pos = 0;
+            let p_len = param.len();
+            
+            while let Some(idx) = result[last_pos..].find(param) {
+                let abs_idx = last_pos + idx;
+                // Fix indexing: operate on byte slices
+                let before_char = if abs_idx > 0 { result[..abs_idx].chars().last() } else { None };
+                let after_char = result[abs_idx + p_len..].chars().next();
+                
+                let is_word_start = match before_char {
+                    Some(c) => !c.is_alphanumeric() && c != '_',
+                    None => true,
+                };
+                let is_word_end = match after_char {
+                    Some(c) => !c.is_alphanumeric() && c != '_',
+                    None => true,
+                };
+                
+                new_res.push_str(&result[last_pos..abs_idx]);
+                
+                if is_word_start && is_word_end {
+                    new_res.push_str(&placeholder);
+                } else {
+                    new_res.push_str(param);
+                }
+                last_pos = abs_idx + p_len;
+            }
+            new_res.push_str(&result[last_pos..]);
+            result = new_res;
+        }
+        // println!("DEBUG: parameterized '{}' with {:?} -> '{}'", type_name, params, result);
         result
     }
 
@@ -1705,7 +1747,14 @@ impl TypeChecker {
                 Ok("int32".to_string())
             },
             Expression::MemberAccessExpr { object, member, _line, _col, .. } => {
-                let obj_type = self.check_expression(object)?;
+                let mut obj_type = self.check_expression(object)?;
+                
+                // Resolve alias if needed
+                if let Some(sym) = self.lookup(&obj_type) {
+                     if let Some(aliased) = &sym.aliased_type {
+                         obj_type = aliased.clone();
+                     }
+                }
                 
                 // Special case for class names (static access)
                 if let Expression::Identifier { name, .. } = &**object {

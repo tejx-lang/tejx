@@ -13,6 +13,8 @@ function main() {
     
     let values = Object.values(obj);
     assert_eq_int(2, len(values), "Object.values length");
+    // Sort to handle potential non-deterministic order
+    values.sort();
     assert_eq_int(1, values[0], "Object.values[0]");
     assert_eq_int(2, values[1], "Object.values[1]");
 

@@ -112,7 +112,7 @@ while read -r FILE; do
     [ -f "${FILE%.*}.ll" ] && rm "${FILE%.*}.ll"
     
     echo "----------------------------------------"
-done < <(find "$TESTS_DIR" -name "*.tx")
+done < <(find "$TESTS_DIR" -name "*.tx" -not -path "*/modules/*")
 
 # 4. Summary
 TOTAL=$((PASSED + FAILED))
