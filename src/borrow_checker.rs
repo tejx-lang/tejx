@@ -392,7 +392,7 @@ impl BorrowChecker {
 
     fn mark_moved(&mut self, val: &MIRValue, state: &mut HashMap<String, VarState>) {
         if let MIRValue::Variable { name, ty } = val {
-            if ty.needs_drop() {
+            if ty.needs_drop() && !ty.is_copyable() {
                 state.insert(name.clone(), VarState::Moved);
             }
         }

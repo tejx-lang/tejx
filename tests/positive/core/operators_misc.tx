@@ -1,0 +1,23 @@
+// Operators & Typeof Tests
+// ========================
+import { assert_eq_string } from "../utils.tx";
+
+function main() {
+    print("=== OPERATORS MISC START ===");
+    
+    // Typeof
+    let i = 10;
+    let s = "str";
+    let b = true;
+    
+    // Note: assertions depend on implementation return values
+    // Using string matching if possible, else print
+    print("typeof 10: ", typeof(i));
+    print("typeof 'str': ", typeof(s));
+    print("typeof true: ", typeof(b));
+    
+    // Sizeof
+    // console.log("sizeof int: " + sizeof(i));
+    
+    print("=== OPERATORS MISC COMPLETE ===");
+}

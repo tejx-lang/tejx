@@ -5,7 +5,7 @@
 # ============================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TESTS_DIR="$SCRIPT_DIR/tests"
+TESTS_DIR="$SCRIPT_DIR/tests/positive"
 BUILD_DIR="$SCRIPT_DIR/build"
 TEJXR_BIN="$SCRIPT_DIR/target/release/tejxr"
 
@@ -42,11 +42,15 @@ mkdir -p "$BUILD_DIR/tests"
 echo -e "${YELLOW}>>> Running All Tests...${NC}"
 echo "----------------------------------------"
 
-for FILE in "$TESTS_DIR"/*.tx; do
+# Find all .tx files recursively and read into loop using process substitution
+while read -r FILE; do
     [ -f "$FILE" ] || continue
     
+    # Get relative path for nicer display
+    REL_PATH="${FILE#$TESTS_DIR/}"
     FILENAME=$(basename "${FILE%.*}")
-    echo -e "${CYAN}Processing: $FILENAME${NC}"
+    
+    echo -e "${CYAN}Processing: $REL_PATH${NC}"
     
     # Run the Rust TejX compiler
     "$TEJXR_BIN" "$FILE" 2>&1
@@ -57,7 +61,8 @@ for FILE in "$TESTS_DIR"/*.tx; do
         BINARY="${FILE%.*}"
         
         if [ -f "$BINARY" ]; then
-            # Move binary to build folder
+            # Move binary to build folder (preserving name to avoid collisions if needed, but flat for now)
+            # Check if we should preserve structure in build dir? For simplicity, keeping flat, assuming unique filenames or OK to overwrite.
             mv "$BINARY" "$BUILD_DIR/tests/$FILENAME"
             
             # Run the binary
@@ -75,7 +80,7 @@ for FILE in "$TESTS_DIR"/*.tx; do
             else
                 echo -e "  ${RED}❌ RUNTIME ERROR${NC} (exit: $RUN_EXIT)"
                 FAILED=$((FAILED + 1))
-                ERRORS+=("$FILENAME (runtime error, exit: $RUN_EXIT)")
+                ERRORS+=("$REL_PATH (runtime error, exit: $RUN_EXIT)")
             fi
         else
             # Check if .ll file exists (compilation succeeded but linking failed)
@@ -84,7 +89,7 @@ for FILE in "$TESTS_DIR"/*.tx; do
                 echo -e "  ${YELLOW}⚠️  LINK ERROR${NC} (LLVM IR generated, clang linking failed)"
                 mv "$LL_FILE" "$BUILD_DIR/tests/${FILENAME}.ll"
                 FAILED=$((FAILED + 1))
-                ERRORS+=("$FILENAME (linking failed)")
+                ERRORS+=("$REL_PATH (linking failed)")
             else
                 echo -e "  ${GREEN}✅ PASS${NC} (compiled + linked)"
                 PASSED=$((PASSED + 1))
@@ -100,14 +105,14 @@ for FILE in "$TESTS_DIR"/*.tx; do
             echo -e "  ${RED}❌ COMPILE ERROR${NC}"
         fi
         FAILED=$((FAILED + 1))
-        ERRORS+=("$FILENAME (compilation failed)")
+        ERRORS+=("$REL_PATH (compilation failed)")
     fi
     
     # Clean up any leftover .ll files
     [ -f "${FILE%.*}.ll" ] && rm "${FILE%.*}.ll"
     
     echo "----------------------------------------"
-done
+done < <(find "$TESTS_DIR" -name "*.tx")
 
 # 4. Summary
 TOTAL=$((PASSED + FAILED))

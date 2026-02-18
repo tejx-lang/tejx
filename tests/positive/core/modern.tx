@@ -1,0 +1,43 @@
+// Modern Syntax Tests
+// ===================
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+function main() {
+    print("=== MODERN SYNTAX START ===");
+    
+    // Template Literals
+    let user = "Alice";
+    let score = 100;
+    let message = `User ${user} Score ${score}`;
+    assert_eq_string("User Alice Score 100", message, "Template literal");
+    
+    let calc = `Sum: ${10 + 20}`;
+    assert_eq_string("Sum: 30", calc, "Template expression");
+    
+    // Optional Chaining
+    let obj = { a: 42, b: { c: "Nested" } };
+    assert_eq_int(42, obj?.a, "Optional Access a");
+    assert_eq_string("Nested", obj?.b?.c, "Optional Access nested");
+    // assert_eq(undefined/0, obj?.missing); // Value check harder without undefined constant
+
+    // Nullish Coalescing
+    let nothing = None;
+    let val = nothing ?? "Default";
+    assert_eq_string("Default", val, "Nullish default");
+    
+    let val2 = obj?.a ?? 100;
+    assert_eq_int(42, val2, "Nullish existing");
+    
+    // Ternary
+    let status = (score > 50) ? "Pass" : "Fail";
+    assert_eq_string("Pass", status, "Ternary");
+    
+    // Spread Object
+    let p = { name: "Alice", age: 30 };
+    let j = { title: "Dev" };
+    let merged = { ...p, ...j };
+    assert_eq_string("Alice", merged.name, "Spread merge name");
+    assert_eq_string("Dev", merged.title, "Spread merge title");
+    
+    print("=== MODERN SYNTAX COMPLETE ===");
+}

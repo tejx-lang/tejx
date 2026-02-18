@@ -146,6 +146,11 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    SequenceExpr {
+        expressions: Vec<Expression>,
+        _line: usize,
+        _col: usize,
+    },
     MemberAccessExpr {
         object: Box<Expression>,
         member: String,
@@ -275,6 +280,7 @@ pub struct Parameter {
 pub struct ClassDeclaration {
     pub name: String,
     pub _parent_name: String,
+    pub generic_params: Vec<String>,
     pub _is_abstract: bool,
     pub _implemented_protocols: Vec<String>,
     pub _members: Vec<ClassMember>,
@@ -441,6 +447,7 @@ impl Expression {
              Expression::NullishCoalescingExpr { _line, .. } => *_line,
              Expression::SpreadExpr { _line, .. } => *_line,
              Expression::BlockExpr { _line, .. } => *_line,
+             Expression::SequenceExpr { _line, .. } => *_line,
         }
     }
 }

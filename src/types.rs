@@ -82,6 +82,25 @@ impl TejxType {
         }
     }
 
+    pub fn is_copyable(&self) -> bool {
+        match self {
+            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |
+            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 |
+            TejxType::Bool | TejxType::Char | TejxType::Void => true,
+            TejxType::String => true, // Strings are shared/immutable pointers
+            TejxType::Class(name) => {
+                // Special move-only types
+                // We only move Thread to preserve strict single-owner thread lifecycle.
+                if name == "Thread" {
+                    return false;
+                }
+                true // All other classes (including Mutex, SharedQueue) are reference-shared pointers
+            },
+            TejxType::Any => true, // Boxed values are shared
+            TejxType::FixedArray(_, _) => false, // Fixed arrays are moved/stored by value
+        }
+    }
+
     pub fn from_name(name: &str) -> TejxType {
         let name = name.trim();
         if name.contains('|') {

@@ -2464,13 +2464,21 @@ impl Lowering {
                     let mut expr = chunks[0].clone();
                     for next_chunk in chunks.into_iter().skip(1) {
                          expr = HIRExpression::Call { line: line, 
-                             callee: "Array_concat".to_string(), // Ensure this maps to Array_concat in runtime
+                             callee: "Array_concat".to_string(),
                              args: vec![expr, next_chunk],
                              ty: TejxType::Class("any[]".to_string()),
                          };
                     }
                     expr
                 }
+            }
+            Expression::SequenceExpr { expressions, .. } => {
+                let mut lower_exprs = Vec::new();
+                for e in expressions {
+                    lower_exprs.push(self.lower_expression(e));
+                }
+                let ty = lower_exprs.last().map(|e| e.get_type()).unwrap_or(TejxType::Void);
+                HIRExpression::Sequence { expressions: lower_exprs, ty, line }
             }
             Expression::LambdaExpr { params, body, .. } => {
                 let id = {

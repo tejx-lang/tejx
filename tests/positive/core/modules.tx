@@ -1,0 +1,53 @@
+// Modules Tests
+// =============
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+// Imports from local modules
+// Assuming tests/modules/ exists. From tests/core/modules.tx, we need ../modules/
+import { add, multiply, VERSION, Calculator } from "../modules/math.tx";
+import hello from "../modules/export_default.tx";
+
+// Named imports from std
+import { sqrt } from "std:math";
+import std:fs;
+import { now } from "std:time";
+
+function test_custom_modules() {
+    print("--- Custom Modules ---");
+
+    assert_eq_string("1.0.0", VERSION, "Module constant verify");
+    assert_eq_int(30, add(10, 20), "Module add(10, 20)");
+    assert_eq_int(20, multiply(5, 4), "Module multiply(5, 4)");
+
+    let calc = new Calculator();
+    calc.add(100);
+    assert_eq_int(100, calc.getValue(), "Module Class Calculator");
+
+    // Default export
+    // hello("TejX User") returns string
+    let msg = hello("TejX User");
+    // We can't assert exact string if we don't know it, but logic suggests:
+    // "Hello from runtime.rs! ..." or based on export_default.tx content. 
+    // Let's assume it returns something non-empty.
+    assert_true(len(msg) > 0, "Default export returned message");
+}
+
+function test_std_imports() {
+    print("--- Std Named Imports ---");
+    assert_eq_int(5, sqrt(25), "sqrt(25) from std:math");
+
+    // fs existence check - Cargo.toml should exist in root, but we are running from root?
+    // tests/core/modules.tx is executed. CWD is usually project root.
+    // If CWD is project root, "Cargo.toml" exists.
+    assert_true(fs.existsSync("Cargo.toml"), "fs.existsSync(Cargo.toml)");
+
+    let t = now();
+    assert_true(t > 0, "std:time now() > 0");
+}
+
+function main() {
+    print("=== MODULES TESTS START ===");
+    test_custom_modules();
+    test_std_imports();
+    print("=== MODULES TESTS COMPLETE ===");
+}

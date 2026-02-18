@@ -52,12 +52,14 @@ run_with_timeout() {
     return "$exit_code"
 }
 
-for FILE in "$TESTS_DIR"/*.tx; do
+# Find all .tx files recursively and read into loop using process substitution
+while read -r FILE; do
     [ -f "$FILE" ] || continue
     
+    REL_PATH="${FILE#$TESTS_DIR/}"
     FILENAME=$(basename "${FILE%.*}")
     echo -e "${CYAN}----------------------------------------${NC}"
-    echo -e "${YELLOW}Testing: $FILENAME${NC}"
+    echo -e "${YELLOW}Testing: $REL_PATH${NC}"
     
     # Capture output
     OUT_FILE=$(mktemp)
@@ -152,7 +154,7 @@ for FILE in "$TESTS_DIR"/*.tx; do
     rm -f "$BINARY"
     rm -f "$LL_FILE"
     rm -f "$BUILD_DIR/$FILENAME"
-done
+done < <(find "$TESTS_DIR" -name "*.tx")
 
 echo -e "${CYAN}----------------------------------------${NC}"
 echo -e "${CYAN}Final Results Summary:${NC}"

@@ -1,0 +1,56 @@
+// Test Utilities for NovaJs
+// =========================
+
+function assert_eq_int(expected: int, actual: int, msg: string) {
+    if (expected == actual) {
+        print("✅ PASS: " + msg + " - Expected: " + expected + ", Actual: " + actual);
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: " + expected);
+        print("   Actual:   " + actual);
+    }
+}
+
+function assert_eq_float(expected: float, actual: float, msg: string) {
+    if (expected == actual) {
+        print("✅ PASS: " + msg + " - Expected: " + expected + ", Actual: " + actual);
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: " + expected);
+        print("   Actual:   " + actual);
+    }
+}
+
+function assert_eq_string(expected: string, actual: string, msg: string) {
+    if (expected == actual) {
+        print("✅ PASS: " + msg + " - Expected: '" + expected + "', Actual: '" + actual + "'");
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: '" + expected + "'");
+        print("   Actual:   '" + actual + "'");
+    }
+}
+
+function assert_true(cond: bool, msg: string) {
+    if (cond) {
+        print("✅ PASS: " + msg + " - Expected: true, Actual: true");
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: true");
+        print("   Actual:   false");
+    }
+}
+
+function assert_false(cond: bool, msg: string) {
+    if (!cond) {
+        print("✅ PASS: " + msg + " - Expected: false, Actual: false");
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: false");
+        print("   Actual:   true");
+    }
+}
+
+function assert_fail(msg: string) {
+    print("❌ FAIL: " + msg);
+}

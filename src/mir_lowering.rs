@@ -561,21 +561,25 @@ impl MIRLowering {
             }
             HIRExpression::NewExpr { class_name, _args, .. } => {
                 if class_name == "Thread" {
-                     let callback = self.lower_expression(&_args[0]);
-                     let arg = if _args.len() > 1 {
-                         self.lower_expression(&_args[1])
-                     } else {
-                         MIRValue::Constant { value: "0".to_string(), ty: TejxType::Any }
-                     };
-                     
-                     let temp = self.new_temp(TejxType::Int32);
-                     self.emit(MIRInstruction::Call { line: 0,  callee: "Thread_new".to_string(),
-                         args: vec![callback, arg],
-                         dst: temp.clone(),
-                         
-                      });
-                     
-                     MIRValue::Variable { name: temp, ty: TejxType::Class("Thread".to_string()) }
+                      let callback = self.lower_expression(&_args[0]);
+                      let arg = if _args.len() > 1 {
+                          self.lower_expression(&_args[1])
+                      } else {
+                          MIRValue::Constant { value: "0".to_string(), ty: TejxType::Any }
+                      };
+                      let arg2 = if _args.len() > 2 {
+                          self.lower_expression(&_args[2])
+                      } else {
+                          MIRValue::Constant { value: "0".to_string(), ty: TejxType::Any }
+                      };
+                      
+                      let temp = self.new_temp(TejxType::Int32);
+                      self.emit(MIRInstruction::Call { line: 0,  callee: "Thread_new".to_string(),
+                          args: vec![callback, arg, arg2],
+                          dst: temp.clone(),
+                       });
+                      
+                      MIRValue::Variable { name: temp, ty: TejxType::Class("Thread".to_string()) }
                 } else if class_name == "Mutex" {
                      let temp = self.new_temp(TejxType::Class("Mutex".to_string()));
                      self.emit(MIRInstruction::Call { line: 0,  callee: "Mutex_new".to_string(),
@@ -622,7 +626,6 @@ impl MIRLowering {
                        self.emit(MIRInstruction::Call { line: 0,  callee: "m_new".to_string(),
                            args: vec![],
                            dst: temp.clone(),
-                           
                         });
                        
                        let constructor_name = "f_Array_constructor".to_string();
@@ -1192,6 +1195,13 @@ impl MIRLowering {
                 
                 self.current_block = exit_block;
                 MIRValue::Variable { name: result_temp, ty: ty.clone() }
+            }
+            HIRExpression::Sequence { expressions, .. } => {
+                let mut last_val = MIRValue::Constant { value: "0".to_string(), ty: TejxType::Int32 };
+                for e in expressions {
+                    last_val = self.lower_expression(e);
+                }
+                last_val
             }
         }
     }

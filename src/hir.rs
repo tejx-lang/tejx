@@ -52,6 +52,11 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
+    Sequence {
+        expressions: Vec<HIRExpression>,
+        ty: TejxType,
+        line: usize,
+    },
     OptionalChain { // Unified optional access
         target: Box<HIRExpression>, // Object or array
         operation: String, // ".prop" or "[index]" or "()"
@@ -126,6 +131,7 @@ impl HIRExpression {
             HIRExpression::Match { ty, .. } => ty.clone(),
             HIRExpression::BlockExpr { ty, .. } => ty.clone(),
             HIRExpression::If { ty, .. } => ty.clone(),
+            HIRExpression::Sequence { ty, .. } => ty.clone(),
         }
     }
 
@@ -147,6 +153,7 @@ impl HIRExpression {
             HIRExpression::Match { line, .. } => *line,
             HIRExpression::BlockExpr { line, .. } => *line,
             HIRExpression::If { line, .. } => *line,
+            HIRExpression::Sequence { line, .. } => *line,
         }
     }
 }
