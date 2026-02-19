@@ -8,7 +8,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests/negative"
 BUILD_DIR="$SCRIPT_DIR/build/tests/negative"
-TEJXR_BIN="$SCRIPT_DIR/target/release/tejxr"
+TEJXC_BIN="$SCRIPT_DIR/target/release/tejxc"
 
 # Track results
 PASSED=0
@@ -28,7 +28,7 @@ echo -e "${CYAN}============================================${NC}"
 echo ""
 
 # Ensure compiler is built (fast check)
-if [ ! -f "$TEJXR_BIN" ]; then
+if [ ! -f "$TEJXC_BIN" ]; then
     echo "Compiler binary not found. Building..."
     ./build.sh
 fi
@@ -80,7 +80,7 @@ while read -r FILE; do
     rm -f "$BINARY" "$LL_FILE"
     
     # Attempt compilation with a timeout
-    run_with_timeout 5 "$TEJXR_BIN" "$FILE" > "$OUT_FILE" 2>&1
+    run_with_timeout 5 "$TEJXC_BIN" "$FILE" > "$OUT_FILE" 2>&1
     COMPILE_EXIT=$?
     
     if [ $COMPILE_EXIT -eq 129 ] || [ $COMPILE_EXIT -eq 143 ]; then

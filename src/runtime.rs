@@ -149,7 +149,13 @@ pub static HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
  #[unsafe(no_mangle)]
  static mut LAST_LEN: usize = 0;
  #[unsafe(no_mangle)]
+ #[unsafe(no_mangle)]
  static mut LAST_ELEM_SIZE: usize = 0;
+ 
+ #[unsafe(no_mangle)]
+ static mut LAST_MAP_ID: i64 = -1;
+ #[unsafe(no_mangle)]
+ static mut LAST_MAP_PTR: *mut HashMap<String, i64> = std::ptr::null_mut();
  
   unsafe extern "C" {
       fn longjmp(env: *mut u64, val: i32);
@@ -2957,28 +2963,64 @@ pub unsafe extern "C" fn Array_includes(id: i64, item: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_sort(id: i64) -> i64 {
-     // Default string sort
      let mut heap = HEAP.lock().unwrap();
-     if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
-         // We can't easily user comparator callback here without releasing lock 
-         // and calling back into VM. 
-         // For now, implement default lexicographical sort.
-         // We need to resolve values to strings while holding lock.
-         // But `stringify_value` calls `HEAP.lock()`. Deadlock!
-         // We must verify `stringify_value` implementation.
-         // It likely locks. 
-         // So we gather values, drop lock, sort, re-acquire, update.
-         let elements = arr.clone();
-         drop(heap); // Release
+
+     // 1. Snapshot the array (read-only access)
+     let indices = if let Some(TaggedValue::Array(arr)) = heap.get(id) {
+         if arr.is_empty() { return id; }
+         arr.clone()
+     } else {
+         return 0;
+     };
+
+     // 2. Perform sorting (read-only access to heap for value resolution)
+     // Heuristic: Check first element
+     let first = indices[0];
+     let is_maybe_numeric = if let Some(TaggedValue::Number(_)) = heap.get(first) {
+         true
+     } else if first >= HEAP_OFFSET {
+         false 
+     } else {
+         true
+     };
+
+     if is_maybe_numeric {
+         let mut numbers = Vec::with_capacity(indices.len());
+         let mut all_numbers = true;
          
-         let mut str_vals: Vec<(String, i64)> = elements.iter().map(|&e| (stringify_value(e), e)).collect();
-         str_vals.sort_by(|a, b| a.0.cmp(&b.0));
-         
-         let mut heap = HEAP.lock().unwrap();
-         if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
-             *arr = str_vals.into_iter().map(|(_, e)| e).collect();
+         for &elem in indices.iter() {
+             let val = if let Some(TaggedValue::Number(n)) = heap.get(elem) {
+                 *n
+             } else if elem >= HEAP_OFFSET {
+                 all_numbers = false;
+                 break;
+             } else {
+                 rt_to_number_internal(&heap, elem)
+             };
+             numbers.push((val, elem));
+         }
+
+         if all_numbers {
+             numbers.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+             
+             // 3. Write back (mutable access)
+             if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
+                 *arr = numbers.into_iter().map(|(_, e)| e).collect();
+             }
              return id;
          }
+     }
+
+     // Fallback to String sort
+     drop(heap); // Release lock for stringify (which locks)
+     
+     let mut str_vals: Vec<(String, i64)> = indices.iter().map(|&e| (stringify_value(e), e)).collect();
+     str_vals.sort_by(|a, b| a.0.cmp(&b.0));
+     
+     let mut heap = HEAP.lock().unwrap();
+     if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
+         *arr = str_vals.into_iter().map(|(_, e)| e).collect();
+         return id;
      }
      0
 }
@@ -3553,4 +3595,105 @@ pub unsafe extern "C" fn rt_len(id: i64) -> i64 {
         }
     }
     rt_box_int(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
+    // 1. Fast Path
+    unsafe {
+        if LAST_MAP_ID == id && !LAST_MAP_PTR.is_null() {
+            let map = &*LAST_MAP_PTR;
+            
+            // Try to avoid allocation for string keys
+            if key_ptr > 0x100000000 && key_ptr < 0xFFFFFFFFFFFF {
+                let p = key_ptr as *const c_char;
+                if !p.is_null() {
+                    let c_str = CStr::from_ptr(p);
+                    if let Ok(s) = c_str.to_str() {
+                         return map.get(s).cloned().unwrap_or(0);
+                    }
+                }
+            }
+            // Fallback: If we can't use CStr (e.g. heap object logic), just fall through to slow resolution
+        }
+    }
+
+    // 2. Slow Path (Update Cache)
+    let heap = HEAP.lock().unwrap();
+    if let Some(obj) = heap.get(id) {
+        if let TaggedValue::Map(map) = obj {
+             unsafe {
+                 LAST_MAP_ID = id;
+                 LAST_MAP_PTR = map as *const HashMap<String, i64> as *mut HashMap<String, i64>;
+             }
+             // Key lookup (same logic as m_get but inside the lock)
+             let key = if key_ptr > 0x100000000 && key_ptr < 0xFFFFFFFFFFFF {
+                 let p = key_ptr as *const c_char;
+                 let c_str = CStr::from_ptr(p);
+                 c_str.to_string_lossy().into_owned()
+             } else {
+                 get_string_key(&heap, key_ptr)
+             };
+             
+             let res = map.get(&key).cloned().unwrap_or(0);
+             return res;
+        }
+    }
+    
+    // 3. Fallback to standard m_get for Arrays/Strings/etc
+    drop(heap);
+    m_get(id, key_ptr)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_map_set_fast(id: i64, key_ptr: i64, val: i64) -> i64 {
+    // 1. Fast Path
+    unsafe {
+        if LAST_MAP_ID == id && !LAST_MAP_PTR.is_null() {
+            let map = &mut *LAST_MAP_PTR;
+            
+             if key_ptr > 0x100000000 && key_ptr < 0xFFFFFFFFFFFF {
+                let p = key_ptr as *const c_char;
+                if !p.is_null() {
+                    let c_str = CStr::from_ptr(p);
+                    if let Ok(s) = c_str.to_str() {
+                         // Optimize: Only insert if we have ownership or cloning needed? 
+                         // String key must be owned by map. .to_string() allocates. 
+                         // But we avoid the HEAP lock!
+                         map.insert(s.to_string(), val); 
+                         return val;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Slow Path
+    let mut heap = HEAP.lock().unwrap();
+    
+    // Resolve key first to avoid borrowing conflict
+    let key = if key_ptr > 0x100000000 && key_ptr < 0xFFFFFFFFFFFF {
+         let p = key_ptr as *const c_char;
+         unsafe {
+             let c_str = CStr::from_ptr(p);
+             c_str.to_string_lossy().into_owned()
+         }
+    } else {
+         get_string_key(&heap, key_ptr)
+    };
+
+    if let Some(obj) = heap.get_mut(id) {
+        if let TaggedValue::Map(map) = obj {
+             unsafe {
+                 LAST_MAP_ID = id;
+                 LAST_MAP_PTR = map as *mut HashMap<String, i64>;
+             }
+             map.insert(key, val);
+             return val;
+        }
+    }
+    
+    // 3. Fallback
+    drop(heap);
+    m_set(id, key_ptr, val)
 }

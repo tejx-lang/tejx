@@ -1356,11 +1356,11 @@ impl CodeGen {
                          v_val = boxed_reg;
                     }
 
-                    if !self.declared_functions.contains("m_set") {
-                        self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
-                        self.declared_functions.insert("m_set".to_string());
+                    if !self.declared_functions.contains("rt_map_set_fast") {
+                        self.global_buffer.push_str("declare i64 @rt_map_set_fast(i64, i64, i64)\n");
+                        self.declared_functions.insert("rt_map_set_fast".to_string());
                     }
-                    self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_tmp, k_val, v_val));
+                    self.emit_line(&format!("call i64 @rt_map_set_fast(i64 {}, i64 {}, i64 {})", obj_tmp, k_val, v_val));
 
                     // Mark v as moved if it is a variable
                     if let MIRValue::Variable { name, .. } = v {
@@ -1485,11 +1485,11 @@ impl CodeGen {
                 let k_val = self.resolve_value(&MIRValue::Constant { value: format!("\"{}\"", member), ty: TejxType::String });
                 self.temp_counter += 1;
                 let res_tmp = format!("%val{}", self.temp_counter);
-                if !self.declared_functions.contains("m_get") {
-                    self.global_buffer.push_str("declare i64 @m_get(i64, i64)\n");
-                    self.declared_functions.insert("m_get".to_string());
+                if !self.declared_functions.contains("rt_map_get_fast") {
+                    self.global_buffer.push_str("declare i64 @rt_map_get_fast(i64, i64)\n");
+                    self.declared_functions.insert("rt_map_get_fast".to_string());
                 }
-                self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, k_val));
+                self.emit_line(&format!("{} = call i64 @rt_map_get_fast(i64 {}, i64 {})", res_tmp, obj_val, k_val));
                 
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
                 let final_res = if dst_ty.is_numeric() && !dst_ty.is_float() {
@@ -1573,11 +1573,11 @@ impl CodeGen {
                      v_val = boxed_reg;
                 }
 
-                if !self.declared_functions.contains("m_set") {
-                    self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
-                    self.declared_functions.insert("m_set".to_string());
+                if !self.declared_functions.contains("rt_map_set_fast") {
+                    self.global_buffer.push_str("declare i64 @rt_map_set_fast(i64, i64, i64)\n");
+                    self.declared_functions.insert("rt_map_set_fast".to_string());
                 }
-                self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, k_val, v_val));
+                self.emit_line(&format!("call i64 @rt_map_set_fast(i64 {}, i64 {}, i64 {})", obj_val, k_val, v_val));
             }
             MIRInstruction::LoadIndex { dst, obj, index, .. } => {
                 let obj_val = self.resolve_value(obj);
@@ -1674,7 +1674,7 @@ impl CodeGen {
                         self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
                     }
 
-                } else if false { // obj.get_type().is_array() {
+                } else if obj.get_type().is_array() {
                     // --- GENERIC ARRAY OPTIMIZATION: INLINED CACHE CHECK ---
                     if !self.declared_functions.contains("LAST_ID") {
                         self.global_buffer.push_str("@LAST_ID = external global i64\n");
@@ -1908,11 +1908,11 @@ impl CodeGen {
                          self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
                     }
                 } else {
-                    if !self.declared_functions.contains("m_get") {
-                        self.global_buffer.push_str("declare i64 @m_get(i64, i64)\n");
-                        self.declared_functions.insert("m_get".to_string());
+                    if !self.declared_functions.contains("rt_map_get_fast") {
+                        self.global_buffer.push_str("declare i64 @rt_map_get_fast(i64, i64)\n");
+                        self.declared_functions.insert("rt_map_get_fast".to_string());
                     }
-                    self.emit_line(&format!("{} = call i64 @m_get(i64 {}, i64 {})", res_tmp, obj_val, idx_val));
+                    self.emit_line(&format!("{} = call i64 @rt_map_get_fast(i64 {}, i64 {})", res_tmp, obj_val, idx_val));
                     let ptr = self.resolve_ptr(dst);
                 self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
                 }
@@ -1996,7 +1996,7 @@ impl CodeGen {
 
                     self.emit_line(&format!("{}:", done_path));
 
-                } else if false { // obj.get_type().is_array() {
+                } else if obj.get_type().is_array() {
                     // --- GENERIC ARRAY OPTIMIZATION: INLINED CACHE CHECK ---
                     if !self.declared_functions.contains("LAST_ID") {
                         self.global_buffer.push_str("@LAST_ID = external global i64\n");
@@ -2064,7 +2064,6 @@ impl CodeGen {
                     let gep8 = format!("%gep8_{}", self.temp_counter);
                     self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 {}", gep8, ptr, idx_norm));
                     
-                    // Value conversion for byte array
                     // Value conversion for byte array
                     let src_ty = src.get_type();
                     let v_to_store = if matches!(src_ty, TejxType::Bool) || (src_ty.is_numeric() && !src_ty.is_float()) {
@@ -2144,11 +2143,11 @@ impl CodeGen {
                          final_v_val = boxed_reg;
                     }
 
-                    if !self.declared_functions.contains("m_set") {
-                        self.global_buffer.push_str("declare i64 @m_set(i64, i64, i64)\n");
-                        self.declared_functions.insert("m_set".to_string());
+                    if !self.declared_functions.contains("rt_map_set_fast") {
+                        self.global_buffer.push_str("declare i64 @rt_map_set_fast(i64, i64, i64)\n");
+                        self.declared_functions.insert("rt_map_set_fast".to_string());
                     }
-                    self.emit_line(&format!("call i64 @m_set(i64 {}, i64 {}, i64 {})", obj_val, idx_val, final_v_val));
+                    self.emit_line(&format!("call i64 @rt_map_set_fast(i64 {}, i64 {}, i64 {})", obj_val, idx_val, final_v_val));
                 }
             }
             MIRInstruction::Throw { value, .. } => {

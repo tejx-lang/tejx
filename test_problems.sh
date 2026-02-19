@@ -7,7 +7,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests/problems"
 BUILD_DIR="$SCRIPT_DIR/build/problems"
-TEJXR_BIN="$SCRIPT_DIR/target/release/tejxr"
+TEJXC_BIN="$SCRIPT_DIR/target/release/tejxc"
 
 # Track results
 PASSED=0
@@ -29,8 +29,8 @@ echo ""
 # 1. Build the compiler (ensure it is up to date)
 # ./build.sh # Skip full build, assume it's built or use existing
 
-if [ ! -f "$TEJXR_BIN" ]; then
-    echo -e "${RED}❌ Compiler binary not found at $TEJXR_BIN${NC}"
+if [ ! -f "$TEJXC_BIN" ]; then
+    echo -e "${RED}❌ Compiler binary not found at $TEJXC_BIN${NC}"
     echo "Please run ./build.sh first."
     exit 1
 fi
@@ -78,7 +78,7 @@ for FILE in "${PROBLEMS_TO_RUN[@]}"; do
     echo -e "${CYAN}Processing: $REL_PATH${NC}"
     
     # Run the Rust TejX compiler
-    "$TEJXR_BIN" "$FILE" 2>&1
+    "$TEJXC_BIN" "$FILE" 2>&1
     COMPILE_EXIT=$?
     
     if [ $COMPILE_EXIT -eq 0 ]; then

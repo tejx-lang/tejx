@@ -7,7 +7,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests/positive"
 BUILD_DIR="$SCRIPT_DIR/build"
-TEJXR_BIN="$SCRIPT_DIR/target/release/tejxr"
+TEJXC_BIN="$SCRIPT_DIR/target/release/tejxc"
 
 # Track results
 PASSED=0
@@ -53,7 +53,7 @@ while read -r FILE; do
     echo -e "${CYAN}Processing: $REL_PATH${NC}"
     
     # Run the Rust TejX compiler
-    "$TEJXR_BIN" "$FILE" 2>&1
+    "$TEJXC_BIN" "$FILE" 2>&1
     COMPILE_EXIT=$?
     
     if [ $COMPILE_EXIT -eq 0 ]; then

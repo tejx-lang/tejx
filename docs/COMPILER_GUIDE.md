@@ -205,6 +205,6 @@ Async programming in NovaJs is handled through a combination of compiler lowerin
 ### Compiling a File
 
 ```bash
-./target/release/tejxr input.tx
+./target/release/tejxc input.tx
 ./input # Run the generated binary
 ```

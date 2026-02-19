@@ -13,7 +13,7 @@ cargo build --release 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Compiler Build successful!"
-    echo "   Binary: $SCRIPT_DIR/target/release/tejxr"
+    echo "   Binary: $SCRIPT_DIR/target/release/tejxc"
 else
     echo "❌ Compiler Build failed."
     exit 1
