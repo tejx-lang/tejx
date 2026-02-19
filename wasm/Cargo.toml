@@ -1,8 +1,12 @@
 [package]
-name = "tejxr"
+name = "tejxr-wasm"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 colored = "3.1.1"

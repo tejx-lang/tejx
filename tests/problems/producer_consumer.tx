@@ -1,4 +1,4 @@
-import { SharedQueue, Mutex } from "std:sync";
+import { SharedQueue, Mutex } from "std:thread";
 
 function producer(q: SharedQueue<int>, lock: Mutex): void {
   for (let i = 0; i < 100; i++) {

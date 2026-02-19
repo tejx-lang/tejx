@@ -125,6 +125,14 @@ pub enum MIRInstruction {
         value: MIRValue,
         line: usize,
     },
+    TrySetup {
+        try_target: usize,
+        catch_target: usize,
+        line: usize,
+    },
+    PopHandler {
+        line: usize,
+    },
 }
 
 impl MIRInstruction {
@@ -146,6 +154,8 @@ impl MIRInstruction {
             MIRInstruction::Throw { line, .. } => *line,
             MIRInstruction::Cast { line, .. } => *line,
             MIRInstruction::Free { line, .. } => *line,
+            MIRInstruction::TrySetup { line, .. } => *line,
+            MIRInstruction::PopHandler { line, .. } => *line,
         }
     }
 
@@ -167,6 +177,8 @@ impl MIRInstruction {
             MIRInstruction::Throw { line, .. } => *line = new_line,
             MIRInstruction::Cast { line, .. } => *line = new_line,
             MIRInstruction::Free { line, .. } => *line = new_line,
+            MIRInstruction::TrySetup { line, .. } => *line = new_line,
+            MIRInstruction::PopHandler { line, .. } => *line = new_line,
         }
     }
 }

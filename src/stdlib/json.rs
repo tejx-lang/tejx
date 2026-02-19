@@ -7,7 +7,10 @@ fn stringify_json_recursive(id: i64) -> String {
     if let Some(obj) = heap.get(id) {
         match obj {
             TaggedValue::Map(map) => {
-                let entries: Vec<(String, i64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                let entries: Vec<(String, i64)> = map.iter()
+                    .filter(|(k, _v)| *k != "toString" && *k != "__proto__" && *k != "constructor")
+                    .map(|(k, v)| (k.clone(), *v))
+                    .collect();
                 drop(heap);
                 let parts: Vec<String> = entries.iter().map(|(k, v)| {
                     format!("\"{}\":{}", k, stringify_json_recursive(*v))

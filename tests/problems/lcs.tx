@@ -2,7 +2,7 @@ function lcs(text1: string, text2: string): int {
   let m = text1.length;
   let n = text2.length;
   // Create a 2D Array: dp[m+1][n+1]
-  let dp: int[][] = new Array(m + 1);
+  let dp = new Array(m + 1);
   for (let i = 0; i <= m; i++) dp[i] = new Array(n + 1).fill(0);
 
   for (let i = 1; i <= m; i++) {
@@ -21,7 +21,18 @@ function lcs(text1: string, text2: string): int {
   return dp[m][n];
 }
 
+function assert(condition: bool, message: string) {
+  if (!condition) {
+    print("❌ ASSERT FAILED: " + message);
+    let x: int = 0;
+    x = 1 / 0; // Force crash
+  } else {
+    print("✅ PASS: " + message);
+  }
+}
 
 function main() {
-  print("LCS('abcde', 'ace'): Expected: 3, Actual: ", lcs("abcde", "ace"));
+  let res = lcs("abcde", "ace");
+  print("LCS('abcde', 'ace'): Expected: 3, Actual: ", res);
+  assert(res == 3, "LCS should be 3");
 }

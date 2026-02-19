@@ -4,6 +4,7 @@ use crate::ast::*;
 use crate::hir::*;
 use crate::types::TejxType;
 use crate::token::TokenType;
+use crate::diagnostics::Diagnostic;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -33,6 +34,8 @@ pub struct Lowering {
     class_parents: RefCell<HashMap<String, String>>,
     pub async_enabled: bool,
     current_async_promise_id: RefCell<Option<String>>,
+    pub diagnostics: RefCell<Vec<Diagnostic>>,
+    pub filename: RefCell<String>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -61,8 +64,10 @@ impl Lowering {
             class_getters: RefCell::new(HashMap::new()),
             class_setters: RefCell::new(HashMap::new()),
             class_parents: RefCell::new(HashMap::new()),
-            async_enabled: true,
+            async_enabled: false,
             current_async_promise_id: RefCell::new(None),
+            diagnostics: RefCell::new(Vec::new()),
+            filename: RefCell::new(String::new()),
         }
     }
 
@@ -113,7 +118,7 @@ impl Lowering {
             "Math_pow", "fs_exists", "Array_push", "Array_pop", "Array_concat",
             "Thread_join", "__await", "__optional_chain", 
             "Calculator_add", "Calculator_getValue",
-            "calc_add", "calc_getValue", "hello", "__callee___area",
+            "calc_add", "calc_getValue", "__callee___area",
             "arrUtil_indexOf", "arrUtil_shift", "arrUtil_unshift",
             "Array_forEach", "Array_map", "Array_filter",
             "Date_now", "fs_mkdir", "fs_readFile", "fs_writeFile",
@@ -135,7 +140,7 @@ impl Lowering {
              "printf"
         ];
         
-        runtime_funcs.contains(&name) || name.starts_with("tejx_")
+        runtime_funcs.contains(&name) || name.starts_with("tejx_") || name == "rt_len"
     }
 
     pub fn lower(&self, program: &Program, base_path: &std::path::Path) -> LoweringResult {
@@ -145,23 +150,44 @@ impl Lowering {
         let mut merged_statements = program.statements.clone();
 
         // Pass 0: Handle imports (simplistic recursive merge for tests)
+        let valid_std_modules = ["math", "fs", "collections", "time", "net", "json", "http", "https", "thread", "system"];
+        let filename = self.filename.borrow().clone();
+        
+        let mut processed_files = HashSet::new();
+        if let Ok(p) = std::fs::canonicalize(base_path.join(&filename)) {
+            processed_files.insert(p);
+        }
+
         let mut i = 0;
         while i < merged_statements.len() {
-            if let Statement::ImportDecl { source, .. } = &merged_statements[i] {
+            if let Statement::ImportDecl { source, _names, _is_default, _line, _col } = &merged_statements[i] {
                 if source.starts_with("std:") {
                     let mod_name = &source[4..];
+
+                    // Validate std module name
+                    if !valid_std_modules.contains(&mod_name) {
+                        let avail = valid_std_modules.join(", ");
+                        self.diagnostics.borrow_mut().push(
+                            Diagnostic::new(
+                                format!("Unknown standard module 'std:{}'", mod_name),
+                                *_line, *_col, filename.clone(),
+                            )
+                            .with_code("E0201")
+                            .with_hint(&format!("Available standard modules: {}", avail))
+                            .with_label(&format!("'std:{}' is not a valid module", mod_name))
+                        );
+                        i += 1;
+                        continue;
+                    }
+
                     let mut imports = self.std_imports.borrow_mut();
                     
-                    let new_mode = if let Statement::ImportDecl { _names, .. } = &merged_statements[i] {
-                         if _names.is_empty() {
-                             ImportMode::All
-                         } else {
-                             let mut set = HashSet::new();
-                             for n in _names { set.insert(n.clone()); }
-                             ImportMode::Named(set)
-                         }
-                    } else {
+                    let new_mode = if _names.is_empty() {
                         ImportMode::All
+                    } else {
+                        let mut set = HashSet::new();
+                        for n in _names { set.insert(n.clone()); }
+                        ImportMode::Named(set)
                     };
 
                     // Merge strategy: All > Named
@@ -212,27 +238,139 @@ impl Lowering {
                     i += 1;
                     continue;
                 }
-                // Resolve path
+
+                // File-based import: resolve path
+                let import_names = _names.clone();
+                let import_line = *_line;
+                let import_col = *_col;
+                let is_default = *_is_default;
+                let source_str = source.clone();
+                
                 let mut path = base_path.to_path_buf();
-                // source is usually like "./modules/math.tx"
-                let clean_source = source.trim_matches('"');
+                let clean_source = source_str.trim_matches('"');
                 if clean_source.starts_with("./") {
                     path.push(&clean_source[2..]);
                 } else {
                     path.push(clean_source);
                 }
 
-                if path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let mut lexer = crate::lexer::Lexer::new(&content, &path.to_string_lossy());
-                        let tokens = lexer.tokenize();
-                        let mut parser = crate::parser::Parser::new(tokens, &path.to_string_lossy());
-                        let imported_program = parser.parse_program();
+                if !path.exists() {
+                    // File not found error
+                    self.diagnostics.borrow_mut().push(
+                        Diagnostic::new(
+                            format!("Module file not found: '{}'", clean_source),
+                            import_line, import_col, filename.clone(),
+                        )
+                        .with_code("E0200")
+                        .with_hint("Check the file path or create the module file")
+                        .with_label(&format!("no file at '{}'", path.display()))
+                    );
+                    i += 1;
+                    continue;
+                }
+
+                // Canonicalize to detect duplicates/cycles
+                let canon_path = match std::fs::canonicalize(&path) {
+                    Ok(p) => p,
+                    Err(_) => path.clone(), // Fallback
+                };
+
+                if processed_files.contains(&canon_path) {
+                    // Already included (circular or diamond dependency)
+                    // Skip to avoid infinite recursion
+                    // We remove the Import statement to avoid infinite loop in this Pass 0
+                    merged_statements.remove(i);
+                    // Do NOT increment i, as next statement shifts down
+                    continue;
+                }
+                processed_files.insert(canon_path.clone());
+
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let mut lexer = crate::lexer::Lexer::new(&content, &path.to_string_lossy());
+                    let tokens = lexer.tokenize();
+                    let mut parser = crate::parser::Parser::new(tokens, &path.to_string_lossy());
+                    let imported_program = parser.parse_program();
+                    
+                    let new_stmts = imported_program.statements;
+
+                    // Validate exported symbols
+                    if !import_names.is_empty() {
+                        let mut exported_names: Vec<String> = Vec::new();
+                        let mut has_default_export = false;
                         
-                        let new_stmts = imported_program.statements;
-                        merged_statements.splice(i..i+1, new_stmts);
-                        continue;
+                        for stmt in &new_stmts {
+                            if let Statement::ExportDecl { declaration, _is_default: is_def, .. } = stmt {
+                                if *is_def {
+                                    has_default_export = true;
+                                }
+                                // Extract name from the declaration
+                                match declaration.as_ref() {
+                                    Statement::FunctionDeclaration(func) => {
+                                        exported_names.push(func.name.clone());
+                                    }
+                                    Statement::ClassDeclaration(class) => {
+                                        exported_names.push(class.name.clone());
+                                    }
+                                    Statement::VarDeclaration { pattern: crate::ast::BindingNode::Identifier(name), .. } => {
+                                        exported_names.push(name.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        if is_default && !has_default_export {
+                            self.diagnostics.borrow_mut().push(
+                                Diagnostic::new(
+                                    format!("Module '{}' has no default export", clean_source),
+                                    import_line, import_col, filename.clone(),
+                                )
+                                .with_code("E0203")
+                                .with_hint(&if exported_names.is_empty() {
+                                    "Add 'export default' to a function or class in the module".to_string()
+                                } else {
+                                    format!("Use named imports: import {{ {} }} from \"{}\"", exported_names.join(", "), clean_source)
+                                })
+                            );
+                        } else if !is_default && !exported_names.is_empty() {
+                            // Check each named import exists in exports
+                            for name in &import_names {
+                                if !exported_names.contains(name) {
+                                    self.diagnostics.borrow_mut().push(
+                                        Diagnostic::new(
+                                            format!("'{}' is not exported from '{}'", name, clean_source),
+                                            import_line, import_col, filename.clone(),
+                                        )
+                                        .with_code("E0202")
+                                        .with_hint(&format!("Available exports: {}", exported_names.join(", ")))
+                                        .with_label(&format!("'{}' not found in module", name))
+                                    );
+                                }
+                            }
+                        }
                     }
+
+                    // If this is a default import, rename the default-exported function to match the import alias
+                    let mut final_stmts = new_stmts;
+                    if is_default && !import_names.is_empty() {
+                        let alias = import_names[0].clone();
+                        for stmt in final_stmts.iter_mut() {
+                            if let Statement::ExportDecl { declaration, _is_default: true, .. } = stmt {
+                                match declaration.as_mut() {
+                                    Statement::FunctionDeclaration(func) => {
+                                        func.name = alias.clone();
+                                    }
+                                    Statement::ClassDeclaration(class) => {
+                                        class.name = alias.clone();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+
+                    merged_statements.splice(i..i+1, final_stmts);
+                    continue;
                 }
             }
             i += 1;
@@ -507,7 +645,12 @@ impl Lowering {
         signatures.insert("tejx_run_event_loop".to_string(), vec![]);
         signatures.insert("tejx_Promise_clone".to_string(), vec![TejxType::Any]);
         signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
+        signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
         signatures.insert("rt_sleep".to_string(), vec![TejxType::Any]);
+        signatures.insert("Array_reduce".to_string(), vec![TejxType::Any, TejxType::Any, TejxType::Any]);
+        signatures.insert("__optional_chain".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("rt_object_merge".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert("rt_len".to_string(), vec![TejxType::Any]);
 
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
@@ -1415,7 +1558,10 @@ impl Lowering {
                     body: Box::new(body),
                 })
             }
-            Statement::ExportDecl { declaration, .. } => self.lower_statement(declaration),
+            Statement::ExportDecl { declaration, _is_default, .. } => {
+                // Just lower the declaration - default export aliasing is handled during import splicing
+                self.lower_statement(declaration)
+            }
             _ => None,
         }
     }
@@ -1432,6 +1578,190 @@ impl Lowering {
     fn lower_expression(&self, expr: &Expression) -> HIRExpression {
         let line = expr.get_line();
         match expr {
+            Expression::ObjectLiteralExpr { entries, _spreads, .. } => {
+                let mut hir_entries = Vec::new();
+                for (key, val) in entries {
+                    hir_entries.push((key.clone(), self.lower_expression(val)));
+                }
+                
+                let base_obj = HIRExpression::ObjectLiteral {
+                    entries: hir_entries,
+                    ty: TejxType::Any, // Map
+                    line,
+                };
+
+                if _spreads.is_empty() {
+                    base_obj
+                } else {
+                    // Handle spreads: merge spreads into base_obj
+                    // Sequence:
+                    // let obj = base_obj;
+                    // rt_object_merge(obj, spread1);
+                    // rt_object_merge(obj, spread2);
+                    // obj
+                    
+                    self.enter_scope();
+                    let obj_var = self.define("obj_spread_target".to_string(), TejxType::Any);
+                    
+                    let mut seq_exprs = Vec::new();
+                    
+                    // 1. Declare and init obj
+                     seq_exprs.push(HIRExpression::Assignment {
+                        target: Box::new(HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line }),
+                        value: Box::new(base_obj),
+                        ty: TejxType::Any,
+                        line,
+                    });
+
+                    // 2. Merge spreads
+                    for spread in _spreads {
+                        let spread_val = self.lower_expression(spread);
+                        seq_exprs.push(HIRExpression::Call {
+                            callee: "rt_object_merge".to_string(),
+                            args: vec![
+                                HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line },
+                                spread_val
+                            ],
+                            ty: TejxType::Any,
+                            line,
+                        });
+                    }
+                    
+                    // 3. Return obj
+                    seq_exprs.push(HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line });
+
+                    self._exit_scope(); // Variables defined will be handled by HIR lowering logic assuming unique names?
+                    // wait, HIR Sequence is list of *Expressions*. 
+                    // `Declaration` is a Statement. 
+                    // Lowering `Variable` logic in `mir_lowering` expects variable to be declared in `Function`.
+                    // But `lowering.rs` defines scopes.
+                    // If we use `HIRExpression::Sequence`, we can't easily declare a variable?
+                    // HIR Sequence returns result of last expression.
+                    // We can use a BlockExpr?
+                    // `HIRBlockExpr` is an Expression that contains Statements!
+                    // So we can use Statements inside.
+                    
+                    let mut block_stmts = Vec::new();
+                    
+                    // Var Decl
+                    block_stmts.push(HIRStatement::VarDecl {
+                        name: obj_var.clone(),
+                        initializer: None, // We will assign next
+                        ty: TejxType::Any,
+                        _is_const: false,
+                        line,
+                    });
+                     block_stmts.push(HIRStatement::ExpressionStmt {
+                        expr: HIRExpression::Assignment {
+                            target: Box::new(HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line }),
+                            value: Box::new(HIRExpression::ObjectLiteral { entries: entries.iter().map(|(k,v)| (k.clone(), self.lower_expression(v))).collect(), ty: TejxType::Any, line }), // Re-construct base obj here?
+                            // Issue: I reconstructed base_obj above but consumed entries.
+                            // Let's refactor.
+                            ty: TejxType::Any,
+                            line,
+                        },
+                        line,
+                    });
+                    
+                    // Spreads
+                     for spread in _spreads {
+                        let spread_val = self.lower_expression(spread);
+                         block_stmts.push(HIRStatement::ExpressionStmt {
+                            expr: HIRExpression::Call {
+                                callee: "rt_object_merge".to_string(),
+                                args: vec![
+                                    HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line },
+                                    spread_val
+                                ],
+                                ty: TejxType::Any,
+                                line,
+                            },
+                            line,
+                        });
+                    }
+
+                    // Return
+                    block_stmts.push(HIRStatement::ExpressionStmt {
+                         expr: HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line },
+                         line
+                    });
+                    
+                    // Creating BlockExpr
+                    // HIRExpression::BlockExpr { statements: block_stmts ... }
+                    // Does BlockExpr return the last statement's value?
+                    // MIR Lowering for BlockExpr:
+                    // It lowers statements. 
+                    // It does NOT implicitly return the last value unless it's an expression block logic?
+                    // `mir_lowering.rs`: `HIDExpression::BlockExpr` -> `lower_statement` for all stmts.
+                    // It returns `MIRValue`?
+                    // Checked `mir_lowering.rs`: `BlockExpr` case in `lower_expression`?
+                    // I verified `mir_lowering` earlier.
+                    // `HIRExpression::BlockExpr` WAS in `mir_lowering.rs` struct definition (Line 94).
+                    // BUT `lower_expression` implementation (Line 556+) did NOT have `BlockExpr` case!
+                    // Check logic again.
+                    // `mir_lowering.rs` Lines 556+.
+                    // I scrolled down. `BlockExpr` was NOT visible in snippet.
+                    // It was likely missing or I missed it.
+                    // If missing, `BlockExpr` won't work.
+                    // Use `Sequence` instead.
+                    // `Sequence` takes `Vec<HIRExpression>`.
+                    // We need a variable.
+                    // Can we abuse `Call`? 
+                    // `(lambda(obj) { merge...; return obj; })(base_obj)`
+                    // This is cleaner.
+                    
+                    let mut lambda_body_stmts = Vec::new();
+                    let param_name = "base_obj_param".to_string();
+                    let param_mangled = self.define(param_name.clone(), TejxType::Any);
+                    
+                    for spread in _spreads {
+                         let spread_val = self.lower_expression(spread);
+                         lambda_body_stmts.push(HIRStatement::ExpressionStmt {
+                            expr: HIRExpression::Call {
+                                callee: "rt_object_merge".to_string(),
+                                args: vec![
+                                    HIRExpression::Variable { name: param_mangled.clone(), ty: TejxType::Any, line },
+                                    spread_val
+                                ],
+                                ty: TejxType::Any,
+                                line,
+                            },
+                            line,
+                        });
+                    }
+                    
+                    lambda_body_stmts.push(HIRStatement::Return {
+                         value: Some(HIRExpression::Variable { name: param_mangled.clone(), ty: TejxType::Any, line }),
+                         line
+                    });
+                    
+                    // Create lambda
+                    let lambda_name = format!("lambda_spread_{}", self.lambda_counter.replace_with(|&mut c| c + 1));
+                    let lambda = HIRStatement::Function {
+                        line,
+                        name: lambda_name.clone(),
+                        params: vec![(param_mangled.clone(), TejxType::Any)],
+                        _return_type: TejxType::Any,
+                        body: Box::new(HIRStatement::Block { line, statements: lambda_body_stmts }),
+                    };
+                    self.lambda_functions.borrow_mut().push(lambda);
+                    
+                    // Call lambda
+                    let base_obj_expr = HIRExpression::ObjectLiteral {
+                        entries: entries.iter().map(|(k,v)| (k.clone(), self.lower_expression(v))).collect(),
+                        ty: TejxType::Any,
+                        line,
+                    };
+                    
+                    HIRExpression::Call {
+                         callee: lambda_name,
+                         args: vec![base_obj_expr], // Pass base object
+                         ty: TejxType::Any,
+                         line 
+                    }
+                }
+            }
+
             Expression::NumberLiteral { value, .. } => {
                 let (val_str, ty) = if value.fract() == 0.0 {
                     (format!("{:.0}", value), TejxType::Int32)
@@ -1470,6 +1800,13 @@ impl Lowering {
                 }
             }
             Expression::Identifier { name, .. } => {
+                    if name == "None" {
+                        return HIRExpression::Literal { 
+                            line: line,
+                            value: "0".to_string(), 
+                            ty: TejxType::Any 
+                        };
+                    }
                 let (resolved_name, ty) = self.lookup(name).unwrap_or_else(|| (name.clone(), TejxType::Any));
                 let f_name = format!("f_{}", name);
                 let final_name = if (self.user_functions.borrow().contains_key(name) || self.user_functions.borrow().contains_key(&f_name)) && name != "main" && !resolved_name.starts_with("g_") && !resolved_name.contains("$") {
@@ -1815,6 +2152,13 @@ impl Lowering {
                             ty: TejxType::String,
                         };
                     }
+                } else if callee_str == "len" {
+                    let r_expr = hir_args[0].clone();
+                    return HIRExpression::Call { line: line, 
+                        callee: "rt_len".to_string(),
+                        args: vec![r_expr],
+                        ty: TejxType::Int32,
+                    };
                 } else if callee_str == "sizeof" {
                     let r_expr = hir_args[0].clone();
                     let r_ty = r_expr.get_type();
@@ -2465,13 +2809,30 @@ impl Lowering {
                     ty,
                 }
             }
-            Expression::ObjectLiteralExpr { entries, .. } => {
-                let hir_entries = entries.iter()
+            Expression::ObjectLiteralExpr { entries, _spreads, .. } => {
+                let lower_entries: Vec<(String, HIRExpression)> = entries.iter()
                     .map(|(k, v)| (k.clone(), self.lower_expression(v)))
                     .collect();
-                HIRExpression::ObjectLiteral { line: line, 
-                    entries: hir_entries,
+                
+                let base_obj = HIRExpression::ObjectLiteral { line: line, 
+                    entries: lower_entries,
                     ty: TejxType::Any,
+                };
+
+                if _spreads.is_empty() {
+                    base_obj
+                } else {
+                    // Reduce spreads: rt_object_merge(base, spread)
+                    let mut current = base_obj;
+                    for spread_expr in _spreads {
+                        let spread_hir = self.lower_expression(spread_expr);
+                        current = HIRExpression::Call { line: line, 
+                            callee: "rt_object_merge".to_string(),
+                            args: vec![current, spread_hir],
+                            ty: TejxType::Any,
+                        };
+                    }
+                    current
                 }
             }
             Expression::ArrayLiteral { elements, .. } => {

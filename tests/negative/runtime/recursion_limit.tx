@@ -4,6 +4,7 @@
 function infinite(n: int) {
     // No base case
     infinite(n + 1);
+    print(n); // Defeat TCO
 }
 
 function main() {

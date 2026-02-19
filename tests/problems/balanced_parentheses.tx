@@ -1,14 +1,23 @@
 import { Stack } from "std:collections";
 
+function assert(condition: bool, message: string): void {
+  if (!condition) {
+    print("❌ ASSERT FAILED: ", message);
+  } else {
+    print("✅ PASS: ", message);
+  }
+}
+
 function isBalanced(expr: string): bool {
   let s: Stack<char> = new Stack();
+  print("Checking expr:", expr);
   
   for (let i = 0; i < expr.length; i++) {
     let c = expr[i];
     if (c == "(" || c == "[" || c == "{") {
       s.push(c);
     } else {
-      if (s.isEmpty()) return false;
+      if (s.isEmpty()) { return false; }
       let top = s.pop();
       if ((c == ")" && top != "(") || 
           (c == "]" && top != "[") || 
@@ -21,11 +30,7 @@ function isBalanced(expr: string): bool {
 }
 
 function main(): void {
-  let res1 = isBalanced("{[()]}");
-  print("isBalancedValid: Expected: true, Actual: ", res1);
-
-  let res2 = isBalanced("{[(])}");
-  print("isBalancedInvalid: Expected: false, Actual: ", res2);
+  assert(isBalanced("{[()]}") == true, "Balanced string should return true");
+  assert(isBalanced("{[(])}") == false, "Unbalanced string should return false");
+  print("Finished balanced_parentheses.");
 }
-
-

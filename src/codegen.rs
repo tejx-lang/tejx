@@ -145,7 +145,6 @@ impl CodeGen {
                     self.emit_line(&format!("{} = load i64, i64* {}", val_reg, reg));
                     return val_reg;
                 }
-                // println!("DEBUG: Variable {} not found in value_map", name);
 
                 // Check for function parameter (if not mapped to alloca yet? - should be in value_map)
                 // Fallback for globals
@@ -346,7 +345,6 @@ impl CodeGen {
                 };
                 if let Some(name) = dest_var {
                     if !name.starts_with("g_") && !self.current_function_params.contains(&name) {
-                        // println!("DEBUG: Found local variable: {} in {}", name, func.name);
                         self.local_vars.insert(name);
                     }
                 }
@@ -854,6 +852,14 @@ impl CodeGen {
                     self.emit_line(&format!("br label %{}", func.blocks[*target].name));
                 }
             }
+            MIRInstruction::TrySetup { try_target, .. } => {
+                 if *try_target < func.blocks.len() {
+                    self.emit_line(&format!("br label %{}", func.blocks[*try_target].name));
+                }
+            }
+            MIRInstruction::PopHandler { .. } => {
+                 self.emit_line("call void @tejx_pop_handler()");
+            }
             MIRInstruction::Branch { condition, true_target, false_target, .. } => {
                 let current_bb_idx = self.find_block_idx(func, inst);
                 if let Some(idx) = current_bb_idx {
@@ -1130,6 +1136,7 @@ impl CodeGen {
                                 else if method == "findIndex" { final_callee = "Array_findIndex".to_string(); }
                                 else if method == "reverse" { final_callee = "Array_reverse".to_string(); }
                                 else if method == "splice" { final_callee = "Array_splice".to_string(); }
+                                else if method == "clone" { final_callee = "Array_clone".to_string(); }
                                 else if method == "lock" { final_callee = "m_lock".to_string(); }
                                 else if method == "unlock" { final_callee = "m_unlock".to_string(); }
                                 else if method == "padStart" { final_callee = "trimmed_padStart".to_string(); }
@@ -1403,7 +1410,7 @@ impl CodeGen {
                     
                     // Box primitives if storing into generic array
                     let v_ty = v.get_type();
-                    if needs_boxing && (v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char)) {
+                    if needs_boxing && (v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char | TejxType::String)) {
                          self.temp_counter += 1;
                          let boxed_reg = format!("%boxed_{}", self.temp_counter);
                          
@@ -1424,6 +1431,17 @@ impl CodeGen {
                                    self.declared_functions.insert("rt_box_boolean".to_string());
                               }
                               self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed_reg, v_val));
+                         } else if matches!(v.get_type(), TejxType::String) {
+                              if v_val.starts_with("ptrtoint") {
+                                   if !self.declared_functions.contains("rt_box_string") {
+                                       self.global_buffer.push_str("declare i64 @rt_box_string(i64)\n");
+                                       self.declared_functions.insert("rt_box_string".to_string());
+                                   }
+                                   self.emit_line(&format!("{} = call i64 @rt_box_string(i64 {})", boxed_reg, v_val));
+                              } else {
+                                   // Already an ID (variable), just move
+                                   self.emit_line(&format!("{} = add i64 {}, 0", boxed_reg, v_val));
+                              }
                          } else {
                               // Int / Char (Int32, Int16 etc)
                               if !self.declared_functions.contains("rt_box_int") {

@@ -83,12 +83,14 @@ Low-level filesystem operations:
 - `readFile(path)`, `writeFile(path, content)`.
 - `exists(path)`, `remove(path)`, `mkdir(path)`.
 
-### `std:os`
+### `std:system`
 
-Operating system integration:
+Operating system and process integration:
 
-- `args()`: Returns command-line arguments.
-- `env()`: Access environment variables.
+- `system.argv`: Command-line arguments.
+- `system.env`: Access environment variables.
+- `system.os`: Current operating system name.
+- `system.exit(code)`: Exit the process with a status code.
 
 ### `std:time`
 

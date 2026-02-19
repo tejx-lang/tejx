@@ -35,13 +35,23 @@ class LRUCache {
   }
 }
 
-
+function assert(condition: bool, message: string): void {
+  if (!condition) {
+    print("❌ ASSERT FAILED: ", message);
+  } else {
+    print("✅ PASS: ", message);
+  }
+}
 
 function main() {
   let cache = new LRUCache(2);
   cache.put("A", 1);
   cache.put("B", 2);
-  print("Get A: Expected: 1, Actual: ", cache.get("A"));
+  
+  let valA = cache.get("A");
+  assert(valA == 1, "Get A: Expected 1, Actual " + valA); 
+  
   cache.put("A", 10);
-  print("Get A Updated: Expected: 10, Actual: ", cache.get("A"));
+  let valA2 = cache.get("A");
+  assert(valA2 == 10, "Get A Updated: Expected 10, Actual " + valA2);
 }

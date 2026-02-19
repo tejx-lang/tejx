@@ -476,29 +476,54 @@ impl MIRLowering {
             }
             HIRStatement::Try { try_block, catch_var, catch_block, finally_block, .. } => {
                 let catch_block_idx = self.new_block("catch");
-                let finally_block_idx = finally_block.as_ref().map(|_| self.new_block("finally"));
                 let exit_block_idx = self.new_block("try_exit");
 
-                // Lower try block with catch handler
+                // Variables to track unwinding state across finally block
+                // We reuse temps. We need to declare them early so they are available in all blocks.
+                let is_unwinding_var = self.new_temp(TejxType::Bool);
+                let saved_ex_var = self.new_temp(TejxType::Any);
+
+                let finally_handler_idx = if finally_block.is_some() { Some(self.new_block("finally_unwind")) } else { None };
+                let finally_body_idx = if finally_block.is_some() { Some(self.new_block("finally_body")) } else { None };
+
+                // 1. Lower Try Block
+                // Handler: Catch
                 self.exception_handler_stack.push(catch_block_idx);
-                // We need to start a new block for the try body to ensure it has the exception handler
+                
                 let try_start_idx = self.new_block("try_start");
-                self.emit(MIRInstruction::Jump { line: 0,  target: try_start_idx  });
+                // self.emit(MIRInstruction::Jump { line: 0,  target: try_start_idx  }); 
+                // Replaced by TrySetup which branches to try or catch
+                self.emit(MIRInstruction::TrySetup { line: 0, 
+                     try_target: try_start_idx,
+                     catch_target: catch_block_idx 
+                });
+
                 self.current_block = try_start_idx;
                 
                 self.lower_statement(try_block);
                 
+                // Try success path
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
-                    if let Some(f) = finally_block_idx {
-                        self.emit(MIRInstruction::Jump { line: 0,  target: f  });
+                    // Successful execution of try block: Pop the handler
+                    self.emit(MIRInstruction::PopHandler { line: 0 });
+
+                    if let Some(fb_idx) = finally_body_idx {
+                        // Normal execution: flow to finally
+                        self.emit(MIRInstruction::Move { line: 0,  dst: is_unwinding_var.clone(), src: MIRValue::Constant { value: "false".to_string(), ty: TejxType::Bool } });
+                        self.emit(MIRInstruction::Jump { line: 0,  target: fb_idx  });
                     } else {
                         self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
                     }
                 }
                 self.exception_handler_stack.pop();
 
-                // Lower catch block
+                // 2. Lower Catch Block
+                // Handler: Finally Unwind (if exists)
+                if let Some(fh_idx) = finally_handler_idx {
+                    self.exception_handler_stack.push(fh_idx);
+                }
+
                 self.current_block = catch_block_idx;
                 if let Some(var) = catch_var {
                     // Extract exception into variable
@@ -506,31 +531,62 @@ impl MIRLowering {
                     self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(),
                         callee: "tejx_get_exception".to_string(),
                         args: vec![],
-                        
                      });
                     self.emit(MIRInstruction::Move { line: 0,  dst: var.clone(),
                         src: MIRValue::Variable { name: temp, ty: TejxType::Any  },
                         });
                 }
                 self.lower_statement(catch_block);
+                
+                // Catch success path
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
-                    if let Some(f) = finally_block_idx {
-                        self.emit(MIRInstruction::Jump { line: 0,  target: f  });
+                     if let Some(fb_idx) = finally_body_idx {
+                         self.emit(MIRInstruction::Move { line: 0,  dst: is_unwinding_var.clone(), src: MIRValue::Constant { value: "false".to_string(), ty: TejxType::Bool } });
+                         self.emit(MIRInstruction::Jump { line: 0,  target: fb_idx  });
                     } else {
-                        self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
+                         self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
                     }
                 }
 
-                // Lower finally block
-                if let Some(f_idx) = finally_block_idx {
-                    self.current_block = f_idx;
+                if finally_handler_idx.is_some() {
+                    self.exception_handler_stack.pop();
+                }
+
+                // 3. Lower Finally Unwind Handler
+                if let Some(fh_idx) = finally_handler_idx {
+                    self.current_block = fh_idx;
+                    self.emit(MIRInstruction::Move { line: 0,  dst: is_unwinding_var.clone(), src: MIRValue::Constant { value: "true".to_string(), ty: TejxType::Bool } });
+                    
+                    // Save exception
+                    let temp = self.new_temp(TejxType::Any);
+                    self.emit(MIRInstruction::Call { line: 0,  dst: temp.clone(), callee: "tejx_get_exception".to_string(), args: vec![] });
+                    self.emit(MIRInstruction::Move { line: 0,  dst: saved_ex_var.clone(), src: MIRValue::Variable { name: temp, ty: TejxType::Any } });
+                    
+                    if let Some(fb_idx) = finally_body_idx {
+                        self.emit(MIRInstruction::Jump { line: 0,  target: fb_idx  });
+                    }
+                }
+
+                // 4. Lower Finally Body
+                if let Some(fb_idx) = finally_body_idx {
+                    self.current_block = fb_idx;
                     if let Some(f_stmt) = finally_block {
                         self.lower_statement(f_stmt);
                     }
+                    
                     let cb = self.current_block;
                     if !self.current_function.blocks[cb].is_terminated() {
-                        self.emit(MIRInstruction::Jump { line: 0,  target: exit_block_idx  });
+                        let rethrow_idx = self.new_block("finally_rethrow");
+                        
+                        self.emit(MIRInstruction::Branch { line: 0, 
+                             condition: MIRValue::Variable { name: is_unwinding_var.clone(), ty: TejxType::Bool },
+                             true_target: rethrow_idx,
+                             false_target: exit_block_idx
+                        });
+                        
+                        self.current_block = rethrow_idx;
+                        self.emit(MIRInstruction::Throw { line: 0,  value: MIRValue::Variable { name: saved_ex_var, ty: TejxType::Any } });
                     }
                 }
 
@@ -677,6 +733,84 @@ impl MIRLowering {
             }
             HIRExpression::BinaryExpr { left, op, right, ty, .. } => {
                 match op {
+                    TokenType::QuestionQuestion => {
+                        // Nullish Coalescing: left ?? right
+                        // if !rt_is_nullish(left) then left else right
+                        let l_val = self.lower_expression(left);
+                        let result_temp = self.new_temp(ty.clone());
+                        
+                        let nullish_check_block = self.new_block("nullish_check");
+                        let not_null_block = self.new_block("not_null");
+                        let null_block = self.new_block("is_null");
+                        let merge_block = self.new_block("nullish_merge");
+                        
+                        // Emit check: rt_is_nullish(l_val)
+                        // Note: l_val might be Any or specific type. rt_is_nullish takes i64 (Any).
+                        let is_null = self.new_temp(TejxType::Int64); 
+                        self.emit(MIRInstruction::Call { line: 0, dst: is_null.clone(),
+                             callee: "rt_is_nullish".to_string(),
+                             args: vec![l_val.clone()],
+                             });
+                        
+                        // Convert i64/bool to i1 for Branch? CodeGen expects i64 for condition?
+                        // Branch instruction expects MIRValue::Variable (which is i64 usually).
+                        // wait, Branch implementation in CodeGen:
+                        // "stmt: Branch { condition, ... }"
+                        // "val = resolve_value(condition)" -> returns string (register name)
+                        // "emit: br i1 val..."
+                        // BUT `resolve_value` returns i64 string?
+                        // `resolve_value` returns register/const string.
+                        // `codegen.rs`: "if is_bool_type { ... return "1" }"
+                        // It seems CodeGen expects the condition value to be boolean-ish i1?
+                        // Wait, `rt_is_nullish` returns i64 (1 or 0).
+                        // If we pass this i64 to Branch, LLVM verify might fail if it expects i1.
+                        // CodeGen: "br i1 {}, ..."
+                        // We need to Compare with 0?
+                        // `MIRInstruction::Branch` takes a `condition` MIRValue.
+                        // In `If` lowering: `cond_val = lower_expr(condition)`.
+                        // If `condition` expr was `BinaryExpr` (e.g. `==`), it returns `Bool`.
+                        // In CodeGen `BinaryOp` for comparators: `zext i1 %cmp to i64`. It returns i64!
+                        // In CodeGen `Branch`:
+                        // `let cond_str = resolve_value(condition);`
+                        // `emit("trunc i64 {} to i1", cond_str)` ??
+                        // I need to check CodeGen `Branch` implementation.
+                        // I don't have CodeGen file open right now.
+                        // But looking at `Loop` lowering `Branch`:
+                        // `cond_val = self.lower_expression(condition);`
+                        // If checking CodeGen from memory/previous reads:
+                        // Usually `Branch` instruction handling in CodeGen takes `i64` and truncates or compares ne 0.
+                        // Let's assume `rt_is_nullish` returns 1/0 (i64).
+                        // We can use it directly? or compare `ne 0`?
+                        // Let's create a comparison instr to be safe and cleaner.
+                        let is_null_bool = self.new_temp(TejxType::Bool);
+                        self.emit(MIRInstruction::BinaryOp { line: 0, dst: is_null_bool.clone(),
+                             left: MIRValue::Variable { name: is_null, ty: TejxType::Int64 },
+                             op: TokenType::BangEqual, // != 0?
+                             // wait, rt_is_nullish returns 1 if NULL.
+                             // So if (is_null == 1) -> Go to null_block (evaluate right).
+                             // if (is_null == 0) -> Go to not_null_block (return left).
+                             // Let's check: is_null != 0
+                             right: MIRValue::Constant { value: "0".to_string(), ty: TejxType::Int64 },
+                        });
+                        // is_null_bool is True if is_null != 0 (i.e. is null).
+                        
+                        self.emit(MIRInstruction::Branch { line: 0, condition: MIRValue::Variable { name: is_null_bool, ty: TejxType::Bool },
+                             true_target: null_block, 
+                             false_target: not_null_block, 
+                             });
+                             
+                        self.current_block = not_null_block;
+                        self.emit(MIRInstruction::Move { line: 0, dst: result_temp.clone(), src: l_val });
+                        self.emit(MIRInstruction::Jump { line: 0, target: merge_block });
+                        
+                        self.current_block = null_block;
+                        let r_val = self.lower_expression(right);
+                        self.emit(MIRInstruction::Move { line: 0, dst: result_temp.clone(), src: r_val });
+                        self.emit(MIRInstruction::Jump { line: 0, target: merge_block });
+                        
+                        self.current_block = merge_block;
+                        MIRValue::Variable { name: result_temp, ty: ty.clone() }
+                    }
                     TokenType::AmpersandAmpersand => {
                         // Short-circuit AND: left && right
                         // if left then evaluate right else left
@@ -803,7 +937,6 @@ impl MIRLowering {
                     .collect();
                 let temp = self.new_temp(ty.clone());
                 let mut final_callee = callee.clone();
-                // println!("DEBUG: Lowering Call: {}, args: {}", callee, args.len());
                 // Map specialized method calls to runtime functions
                 if callee == "f_Atomic_add" { final_callee = "rt_atomic_add".to_string(); }
                 else if callee == "f_Atomic_sub" { final_callee = "rt_atomic_sub".to_string(); }

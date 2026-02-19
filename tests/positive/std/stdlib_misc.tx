@@ -2,7 +2,7 @@
 // =================
 import std:math;
 import std:fs;
-import std:os; // args()
+import std:system; 
 import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
 function test_extra_arrays() {

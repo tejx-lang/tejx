@@ -1,0 +1,7 @@
+// EXPECT: COMPILE_ERROR
+// Test: importing a symbol that doesn't exist in the module
+import { nonExistentFunction } from "../../positive/modules/math.tx";
+
+function main(): void {
+    print("should not reach here");
+}

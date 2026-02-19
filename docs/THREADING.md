@@ -39,7 +39,7 @@ function main() {
 - `thread.join()`: Blocks until the thread finishes and returns its result.
 - `Thread.sleep(ms)`: Puts the _current_ thread to sleep (blocking).
 
-## 2. Synchronization (`std:sync`)
+## 2. Synchronization (`std:thread`)
 
 When threads need to share data or coordinate, you **must** use synchronization primitives to avoid race conditions.
 
@@ -48,7 +48,7 @@ When threads need to share data or coordinate, you **must** use synchronization 
 Protects shared data by ensuring only one thread can access it at a time.
 
 ```typescript
-import { Mutex } from "std:sync";
+import { Mutex } from "std:thread";
 
 let lock = new Mutex();
 // ... inside a thread ...
@@ -62,7 +62,7 @@ lock.release();
 A thread-safe queue implementation, useful for Producer-Consumer patterns.
 
 ```typescript
-import { SharedQueue, Mutex } from "std:sync";
+import { SharedQueue, Mutex } from "std:thread";
 
 let q = new SharedQueue<int>();
 let lock = new Mutex();

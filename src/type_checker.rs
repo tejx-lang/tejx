@@ -116,6 +116,7 @@ impl TypeChecker {
         array_members.insert("flat".to_string(), MemberInfo { type_name: "function:$0[]:int32".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         array_members.insert("fill".to_string(), MemberInfo { type_name: "function:$0[]:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         array_members.insert("concat".to_string(), MemberInfo { type_name: "function:$0[]:any...".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+        array_members.insert("clone".to_string(), MemberInfo { type_name: "function:$0[]:".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         class_members.insert("Array".to_string(), array_members);
 
         // String members
@@ -360,7 +361,7 @@ impl TypeChecker {
                     // Allowed
                 },
                 _ => {
-                    self.diagnostics.push(Diagnostic::new("Executable statements are not allowed at the top level. Wrap them in a 'main' function.".to_string(), stmt.get_line(), stmt.get_col(), self.current_file.clone()));
+                    self.diagnostics.push(Diagnostic::new("Executable statements are not allowed at the top level".to_string(), stmt.get_line(), stmt.get_col(), self.current_file.clone()).with_code("E0114").with_hint("Wrap executable code inside a 'function main() { ... }' block"));
                 }
             }
             let _ = self.check_statement(stmt);
@@ -525,8 +526,15 @@ impl TypeChecker {
                           self.define_with_params("setInterval".to_string(), "any".to_string(), vec!["any".to_string(), "any".to_string()]);
                           self.define_with_params("clearTimeout".to_string(), "void".to_string(), vec!["any".to_string()]);
                           self.define_with_params("clearInterval".to_string(), "void".to_string(), vec!["any".to_string()]);
-                      } else if source == "std:os" {
+                      } else if source == "std:system" {
                           self.define_with_params("args".to_string(), "function".to_string(), Vec::new());
+                          let mut system_members = HashMap::new();
+                          system_members.insert("argv".to_string(), MemberInfo { type_name: "string[]".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          system_members.insert("env".to_string(), MemberInfo { type_name: "Map<string,string>".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          system_members.insert("os".to_string(), MemberInfo { type_name: "string".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          system_members.insert("exit".to_string(), MemberInfo { type_name: "function:void:int32".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          self.class_members.insert("System".to_string(), system_members);
+                          self.define("system".to_string(), "System".to_string());
                       } else if source == "std:collections" {
                           self.define("Stack".to_string(), "class".to_string());
                           self.define("Queue".to_string(), "class".to_string());
@@ -539,15 +547,6 @@ impl TypeChecker {
                           self.define_with_params("close".to_string(), "function".to_string(), vec!["any".to_string()]);
                           self.define("http".to_string(), "Http".to_string());
                           self.define("https".to_string(), "Https".to_string());
-                      } else if source == "std:system" {
-                           let mut system_members = HashMap::new();
-                           system_members.insert("argv".to_string(), MemberInfo { type_name: "string[]".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
-                           system_members.insert("env".to_string(), MemberInfo { type_name: "Map<string,string>".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
-                           system_members.insert("os".to_string(), MemberInfo { type_name: "string".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
-                           system_members.insert("exit".to_string(), MemberInfo { type_name: "function:void:int32".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
-                           
-                           self.class_members.insert("System".to_string(), system_members);
-                           self.define("system".to_string(), "System".to_string());
                       }
                  } else if !_names.is_empty() {
                      for name in _names {
@@ -644,7 +643,7 @@ impl TypeChecker {
 
         if let Some(scope) = self.scopes.last_mut() {
             if scope.contains_key(&name) {
-                self.report_error(format!("Variable '{}' is already defined in this scope", name), line, col);
+                self.report_error_detailed(format!("Variable '{}' is already defined in this scope", name), line, col, "E0109", Some("Choose a different name or remove the duplicate declaration"));
                 return;
             }
             
@@ -672,6 +671,15 @@ impl TypeChecker {
 
     fn report_error(&mut self, msg: String, line: usize, col: usize) {
         self.diagnostics.push(Diagnostic::new(msg, line, col, self.current_file.clone()));
+    }
+
+    fn report_error_detailed(&mut self, msg: String, line: usize, col: usize, code: &str, hint: Option<&str>) {
+        let mut diag = Diagnostic::new(msg, line, col, self.current_file.clone())
+            .with_code(code);
+        if let Some(h) = hint {
+            diag = diag.with_hint(h);
+        }
+        self.diagnostics.push(diag);
     }
 
     fn is_assignable(&self, target: &str, value: &str) -> bool {
@@ -766,29 +774,30 @@ impl TypeChecker {
     }
 
     fn is_copy_type(&self, t: &str) -> bool {
-        if t.ends_with("[]") || t.starts_with("function:") || t == "function" || t == "any" || t == "object" || t == "string" {
+        if t.starts_with("function:") || t == "function" || t == "any" || t == "object" || t == "string" {
             return true;
+        }
+        // Arrays are NOT copy — they are heap-allocated containers
+        if t.ends_with("[]") {
+            return false;
         }
         if matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float32" | "float64" | "bool" | "boolean" | "char") {
             return true;
         }
-        // Union types: if it's a union of pointers/primitives, it's copyable
+        // Union types: if it's a union of copy types, it's copyable
         if t.contains('|') {
             return t.split('|').all(|s| self.is_copy_type(s.trim()));
         }
-        // Generics: Node<int> should be treated like Node (pointer)
+        // Generics: Node<int> should NOT be copy (it's a class)
         if let Some(angle) = t.find('<') {
             return self.is_copy_type(&t[..angle]);
         }
-        // Classes are reference-like pointers to the heap.
-        // Mutex, SharedQueue, etc. use Arc in the runtime, making them safe to share.
-        // We only move Thread to preserve strict single-owner thread lifecycle.
-        if !t.is_empty() && !t.starts_with("{") {
-             if t == "Thread" {
-                 return false;
-             }
-             return true;
+        // Standard library shared types that are internally reference-counted/shared
+        let shared_types = ["Mutex", "SharedQueue", "Atomic", "Condition", "Promise"];
+        if shared_types.contains(&t) {
+            return true;
         }
+        // User-defined classes use MOVE semantics — they are NOT copy
         false
     }
 
@@ -1011,12 +1020,12 @@ impl TypeChecker {
         match stmt {
             Statement::VarDeclaration { pattern, type_annotation, initializer, is_const, line, _col } => {
                 if !self.is_valid_type(type_annotation) {
-                    self.report_error(format!("Unknown data type: '{}'", type_annotation), *line, *_col);
+                    self.report_error_detailed(format!("Unknown data type: '{}'", type_annotation), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                 }
                 if let Some(expr) = initializer {
                     let init_type = self.check_expression(expr)?;
                     if !self.are_types_compatible(type_annotation, &init_type) {
-                         self.report_error(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col);
+                         self.report_error_detailed(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col, "E0100", Some(&format!("Consider converting with 'as {}' or change the variable type", type_annotation)));
                     }
 
                     // Handle Move Semantics: If initializer is an Identifier
@@ -1113,13 +1122,13 @@ impl TypeChecker {
             },
             Statement::BreakStmt { _line, _col } => {
                 if self.loop_depth == 0 {
-                    self.report_error("'break' can only be used inside a loop".to_string(), *_line, *_col);
+                    self.report_error_detailed("'break' can only be used inside a loop".to_string(), *_line, *_col, "E0112", Some("'break' can only be used inside 'for' or 'while' loops"));
                 }
                 Ok(())
             },
             Statement::ContinueStmt { _line, _col } => {
                 if self.loop_depth == 0 {
-                    self.report_error("'continue' can only be used inside a loop".to_string(), *_line, *_col);
+                    self.report_error_detailed("'continue' can only be used inside a loop".to_string(), *_line, *_col, "E0112", Some("'continue' can only be used inside 'for' or 'while' loops"));
                 }
                 Ok(())
             },
@@ -1154,7 +1163,7 @@ impl TypeChecker {
                  // Verify parent exists
                  if !class_decl._parent_name.is_empty() {
                      if self.lookup(&class_decl._parent_name).is_none() {
-                         self.report_error(format!("Parent class '{}' not found", class_decl._parent_name), class_decl._line, class_decl._col);
+                         self.report_error_detailed(format!("Parent class '{}' not found", class_decl._parent_name), class_decl._line, class_decl._col, "E0101", Some("Ensure the parent class is defined before the child class"));
                      }
                  }
 
@@ -1169,12 +1178,12 @@ impl TypeChecker {
                              }
                              for (req_name, _) in req_methods {
                                  if !class_method_names.contains(&req_name) {
-                                     self.report_error(format!("Class '{}' missing method '{}' required by interface '{}'", class_decl.name, req_name, interface_name), class_decl._line, class_decl._col);
+                                     self.report_error_detailed(format!("Class '{}' missing method '{}' required by interface '{}'", class_decl.name, req_name, interface_name), class_decl._line, class_decl._col, "E0111", Some(&format!("Add method '{}' to class '{}' to satisfy the interface contract", req_name, class_decl.name)));
                                  }
                              }
                          }
                      } else {
-                         self.report_error(format!("Interface '{}' not found", interface_name), class_decl._line, class_decl._col);
+                         self.report_error_detailed(format!("Interface '{}' not found", interface_name), class_decl._line, class_decl._col, "E0101", Some("Define the interface before implementing it, or check the spelling"));
                      }
                  }
 
@@ -1188,14 +1197,14 @@ impl TypeChecker {
                      self.enter_scope();
                      for param in &method.func.params {
                          if !self.is_valid_type(&param.type_name) {
-                             self.report_error(format!("Unknown data type: '{}'", param.type_name), class_decl._line, class_decl._col);
+                             self.report_error_detailed(format!("Unknown data type: '{}'", param.type_name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                          }
                          self.define(param.name.clone(), param.type_name.clone());
                      }
                      let prev_return = self.current_function_return.take();
                      let prev_async = self.current_function_is_async;
                      if !self.is_valid_type(&method.func.return_type) {
-                         self.report_error(format!("Unknown data type: '{}'", method.func.return_type), class_decl._line, class_decl._col);
+                         self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", method.func.return_type, method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
                      }
                       let ret_ty = if method.func.return_type.is_empty() { "any".to_string() } else { method.func.return_type.clone() };
                       self.current_function_return = Some(ret_ty);
@@ -1277,7 +1286,7 @@ impl TypeChecker {
                             if (is_numeric(&expected_type) && is_numeric(&got)) || (is_bool(&expected_type) && is_bool(&got)) {
                                 // Ok
                             } else {
-                                self.report_error(format!("Return type mismatch: expected '{}', got '{}'", expected_original, got), *line, *col);
+                                self.report_error_detailed(format!("Return type mismatch: expected '{}', got '{}'", expected_original, got), *line, *col, "E0107", Some(&format!("The function signature declares return type '{}'; ensure the returned value matches", expected_original)));
                             }
                        }
                  }
@@ -1330,8 +1339,15 @@ impl TypeChecker {
                           self.define_with_params("setInterval".to_string(), "any".to_string(), vec!["any".to_string(), "any".to_string()]);
                           self.define_with_params("clearTimeout".to_string(), "void".to_string(), vec!["any".to_string()]);
                           self.define_with_params("clearInterval".to_string(), "void".to_string(), vec!["any".to_string()]);
-                      } else if source == "std:os" {
+                      } else if source == "std:system" {
                           self.define_with_params("args".to_string(), "function".to_string(), Vec::new());
+                          let mut system_members = HashMap::new();
+                          system_members.insert("argv".to_string(), MemberInfo { type_name: "string[]".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          system_members.insert("env".to_string(), MemberInfo { type_name: "Map<string,string>".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          system_members.insert("os".to_string(), MemberInfo { type_name: "string".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          system_members.insert("exit".to_string(), MemberInfo { type_name: "function:void:int32".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                          self.class_members.insert("System".to_string(), system_members);
+                          self.define("system".to_string(), "System".to_string());
                       } else if source == "std:collections" {
                           // Stack
                           self.define("Stack".to_string(), "class".to_string());
@@ -1478,7 +1494,6 @@ impl TypeChecker {
     }
 
     fn substitute_generics(&self, member_type: &str, obj_type: &str) -> String {
-        // println!("DEBUG: substituting '{}' in '{}'", member_type, obj_type);
         let mut parts = Vec::new();
         if obj_type.ends_with("[]") {
             parts.push(&obj_type[..obj_type.len() - 2]);
@@ -1555,7 +1570,6 @@ impl TypeChecker {
             new_res.push_str(&result[last_pos..]);
             result = new_res;
         }
-        // println!("DEBUG: parameterized '{}' with {:?} -> '{}'", type_name, params, result);
         result
     }
 
@@ -1630,7 +1644,6 @@ impl TypeChecker {
     }
 
     fn check_expression(&mut self, expr: &Expression) -> Result<String, ()> {
-        // println!("DEBUG: Check Expr: {:?}", expr);
         match expr {
             Expression::NumberLiteral { value, .. } => {
                 if value.fract() == 0.0 {
@@ -1654,7 +1667,7 @@ impl TypeChecker {
                         if is_numeric(&right_type) || right_type == "any" {
                             Ok(right_type)
                         } else {
-                            self.report_error(format!("Unary '-' cannot be applied to type '{}'", right_type), *_line, *_col);
+                            self.report_error_detailed(format!("Unary '-' cannot be applied to type '{}'", right_type), *_line, *_col, "E0100", Some("Unary negation only works on numeric types (int, float)"));
                             Ok("any".to_string())
                         }
                     },
@@ -1666,7 +1679,7 @@ impl TypeChecker {
                 if let Some(c) = &self.current_class {
                     Ok(c.clone())
                 } else {
-                    self.report_error("Using 'this' outside of a class".to_string(), *_line, *_col);
+                    self.report_error_detailed("Using 'this' outside of a class".to_string(), *_line, *_col, "E0115", Some("'this' can only be used inside class methods or constructors"));
                     Ok("any".to_string())
                 }
             },
@@ -1690,12 +1703,12 @@ impl TypeChecker {
             Expression::Identifier { name, _line, _col } => {
                 if let Some(s) = self.lookup(name) {
                      if s.is_moved {
-                         self.report_error(format!("Use of moved variable '{}'", name), *_line, *_col);
+                         self.report_error_detailed(format!("Use of moved variable '{}'", name), *_line, *_col, "E0103", Some("Value was moved to another variable; consider cloning before the move"));
                      }
                     Ok(s.type_name)
                 } else {
                     if name == "console" { return Ok("Console".to_string()); }
-                    self.report_error(format!("Undefined variable '{}'", name), *_line, *_col);
+                    self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some("Check the spelling or ensure the variable is declared before use"));
                     Ok("any".to_string())
                 }
             },
@@ -1717,7 +1730,7 @@ impl TypeChecker {
                     if matches!(op, TokenType::Less | TokenType::Greater | TokenType::LessEqual | TokenType::GreaterEqual) {
                         return Ok("bool".to_string());
                     }
-                    self.report_error(format!("Binary operator '{:?}' cannot be applied to type 'string'", op), *_line, *_col);
+                    self.report_error_detailed(format!("Binary operator '{:?}' cannot be applied to type 'string'", op), *_line, *_col, "E0100", Some("Use string methods for comparison, or convert to a numeric type first"));
                     return Ok("any".to_string());
                 }
     
@@ -1763,7 +1776,7 @@ impl TypeChecker {
                              if let Some(members) = self.class_members.get(name) {
                                  if let Some(info) = members.get(member).cloned() {
                                      if !info.is_static {
-                                         self.report_error(format!("Member '{}' is not static", member), *_line, *_col);
+                                         self.report_error_detailed(format!("Member '{}' is not static", member), *_line, *_col, "E0116", Some("Access this member on an instance, not the class itself"));
                                      }
                                      return Ok(self.substitute_generics(&info.type_name, name));
                                  }
@@ -1775,18 +1788,18 @@ impl TypeChecker {
                 // Instance access
                 if let Some(info) = self.resolve_instance_member(&obj_type, member) {
                      if info.is_static {
-                         self.report_error(format!("Static member '{}' accessed on instance", member), *_line, *_col);
+                         self.report_error_detailed(format!("Static member '{}' accessed on instance", member), *_line, *_col, "E0116", Some("Access static members using the class name, e.g., ClassName.member"));
                      }
                      if info.access == AccessLevel::Private {
                          if let Some(current) = &self.current_class {
                              if current != &obj_type && !obj_type.starts_with("function") { 
                                  if current != &obj_type {
                                      // Check hierarchy if needed, but for now simple check
-                                     self.report_error(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_type), *_line, *_col);
+                                     self.report_error_detailed(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_type), *_line, *_col, "E0106", Some("Mark the member as 'public' in the class definition, or access it from within the class"));
                                  }
                              }
                          } else {
-                             self.report_error(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_type), *_line, *_col);
+                             self.report_error_detailed(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_type), *_line, *_col, "E0106", Some("Mark the member as 'public' in the class definition, or access it from within the class"));
                          }
                      }
                      return Ok(self.substitute_generics(&info.type_name, &obj_type));
@@ -1797,7 +1810,7 @@ impl TypeChecker {
                     if obj_type == "enum" || self.lookup(&obj_type).map(|s| s.type_name == "enum").unwrap_or(false) {
                         return Ok("int32".to_string());
                     }
-                    self.report_error(format!("Property '{}' does not exist on type '{}'", member, obj_type), *_line, *_col);
+                    self.report_error_detailed(format!("Property '{}' does not exist on type '{}'", member, obj_type), *_line, *_col, "E0105", Some(&format!("Check the spelling or add '{}' as a member of class '{}'", member, obj_type)));
                 }
                 Ok("any".to_string())
             },
@@ -1834,7 +1847,7 @@ impl TypeChecker {
                         if let Some(s) = self.lookup(name) {
                             Ok(s.type_name.clone())
                         } else {
-                            self.report_error(format!("Undefined variable '{}'", name), *_line, *_col);
+                            self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some("Check the spelling or ensure the variable is declared before use"));
                             Ok("any".to_string())
                         }
                     }
@@ -1845,7 +1858,7 @@ impl TypeChecker {
                 if let Expression::Identifier { name, .. } = &**target {
                     if let Some(symbol) = self.lookup(name) {
                         if symbol.is_const {
-                            self.report_error(format!("Cannot reassign to constant variable '{}'", name), *_line, *_col);
+                            self.report_error_detailed(format!("Cannot reassign to constant variable '{}'", name), *_line, *_col, "E0104", Some("Variable was declared with 'const'; use 'let' instead if you need to reassign"));
                         }
                     }
                 }
@@ -1861,7 +1874,7 @@ impl TypeChecker {
                          // Check instance members
                          if let Some(info) = self.resolve_instance_member(&obj_type, member) {
                              if info.is_readonly {
-                                 self.report_error(format!("Cannot assign to read-only property '{}'", member), *_line, *_col);
+                                 self.report_error_detailed(format!("Cannot assign to read-only property '{}'", member), *_line, *_col, "E0104", Some("This property is read-only; add a setter to modify it"));
                              }
                          } else {
                              // Static access??
@@ -1871,7 +1884,7 @@ impl TypeChecker {
                                          if let Some(members) = self.class_members.get(name) {
                                              if let Some(info) = members.get(member) {
                                                  if info.is_readonly {
-                                                      self.report_error(format!("Cannot assign to read-only static property '{}'", member), *_line, *_col);
+                                                      self.report_error_detailed(format!("Cannot assign to read-only static property '{}'", member), *_line, *_col, "E0104", Some("Static properties declared as read-only cannot be modified"));
                                                  }
                                              }
                                          }
@@ -1885,7 +1898,7 @@ impl TypeChecker {
                 let value_type = self.check_expression(value)?;
                 if target_type != "any" && value_type != "any" {
                     if !self.is_assignable(&target_type, &value_type) {
-                        self.report_error(format!("Type mismatch in assignment: expected '{}', got '{}'", target_type, value_type), *_line, *_col);
+                        self.report_error_detailed(format!("Type mismatch in assignment: expected '{}', got '{}'", target_type, value_type), *_line, *_col, "E0100", Some(&format!("Consider converting with 'as {}' or change the variable type", target_type)));
                     }
                 }
 
@@ -1919,7 +1932,7 @@ impl TypeChecker {
                          for arg in args { self.check_expression(arg)?; }
                          return Ok("void".to_string());
                     } else {
-                        self.report_error("Cannot use 'super' here".to_string(), *_line, *_col);
+                        self.report_error_detailed("Cannot use 'super' here".to_string(), *_line, *_col, "E0115", Some("'super' can only be used inside a class that extends another class"));
                         return Ok("any".to_string());
                     }
                 }
@@ -1934,18 +1947,32 @@ impl TypeChecker {
                     if parts.len() >= 2 {
                         return_type = parts[1].to_string();
                         if parts.len() >= 3 {
-                            s_params = parts[2].split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+                             let p_str = parts[2];
+                             if p_str.ends_with("...") {
+                                 is_variadic = true;
+                             }
+                            s_params = p_str.split(',').filter(|s| !s.is_empty()).map(|s| {
+                                if s.ends_with("...") {
+                                    s[..s.len()-3].to_string()
+                                } else {
+                                    s.to_string()
+                                }
+                            }).collect();
                         }
                     }
-                } else if let Some(s) = self.lookup(&callee_str) {
-                    if s.type_name.starts_with("function:") {
-                        let parts: Vec<&str> = s.type_name.split(':').collect();
-                        if parts.len() >= 2 {
-                            return_type = parts[1].to_string();
+                }
+                // Always try lookup to fill s_params if not yet populated from type string
+                if s_params.is_empty() {
+                    if let Some(s) = self.lookup(&callee_str) {
+                        if return_type == "any" && s.type_name.starts_with("function:") {
+                            let parts: Vec<&str> = s.type_name.split(':').collect();
+                            if parts.len() >= 2 {
+                                return_type = parts[1].to_string();
+                            }
                         }
+                        s_params = s.params.clone();
+                        is_variadic = s.is_variadic;
                     }
-                    s_params = s.params.clone();
-                    is_variadic = s.is_variadic;
                 }
 
                 // Check arguments
@@ -1973,16 +2000,25 @@ impl TypeChecker {
                     };
 
                     if target_type != "any" && !self.are_types_compatible(&target_type, &arg_type) {
-                        self.report_error(format!("Argument type mismatch for '{}': expected '{}', got '{}'", callee_str, target_type, arg_type), *_line, *_col);
+                        self.report_error_detailed(format!("Argument type mismatch for '{}': expected '{}', got '{}'", callee_str, target_type, arg_type), *_line, *_col, "E0108", Some(&format!("Pass a value of type '{}' or convert using 'as {}'", target_type, target_type)));
                     }
 
                     // Handle Move Semantics in Call
                     if let Expression::Identifier { name: src_name, .. } = arg {
-                        let is_borrowing = matches!(callee_str.as_str(), "print" | "delay") || callee_str.starts_with("console.");
+                        let is_borrowing = matches!(callee_str.as_str(), "print" | "delay" | "eprint") || callee_str.starts_with("console.");
                         if !is_borrowing && !self.is_copy_type(&arg_type) && arg_type != "any" {
                              self.mark_moved(src_name, *_line, *_col);
                         }
                     }
+                }
+
+                // Check argument count
+                if !is_variadic && !s_params.is_empty() && args.len() != s_params.len() {
+                    self.report_error_detailed(
+                        format!("Function '{}' expects {} argument(s), but {} were provided", callee_str, s_params.len(), args.len()),
+                        *_line, *_col, "E0109",
+                        Some(&format!("Provide exactly {} argument(s)", s_params.len()))
+                    );
                 }
                 
                 if callee_type == "any" && return_type == "any" {
@@ -2008,7 +2044,7 @@ impl TypeChecker {
 
             Expression::AwaitExpr { expr, _line, _col } => {
                 if !self.current_function_is_async && self.current_function_return.is_some() {
-                    self.report_error("'await' can only be used inside an 'async' function".to_string(), *_line, *_col);
+                    self.report_error_detailed("'await' can only be used inside an 'async' function".to_string(), *_line, *_col, "E0113", Some("Mark the enclosing function with 'async' keyword"));
                 }
                 let t = self.check_expression(expr)?;
                 if t.starts_with("Promise<") {
@@ -2043,10 +2079,10 @@ impl TypeChecker {
             },
             Expression::NewExpr { class_name, args, _line, _col } => {
                 if !self.is_valid_type(class_name) {
-                     self.report_error(format!("Unknown class '{}'", class_name), *_line, *_col);
+                     self.report_error_detailed(format!("Unknown class '{}'", class_name), *_line, *_col, "E0101", Some("Ensure the class is defined or imported before use"));
                 }
                 if self.abstract_classes.contains(class_name) {
-                    self.report_error(format!("Cannot instantiate abstract class '{}'", class_name), *_line, *_col);
+                    self.report_error_detailed(format!("Cannot instantiate abstract class '{}'", class_name), *_line, *_col, "E0110", Some("Create a concrete subclass that implements all abstract methods, then instantiate that instead"));
                 }
                 for arg in args { 
                     let arg_type = self.check_expression(arg)?; 
@@ -2065,7 +2101,6 @@ impl TypeChecker {
     fn define_pattern(&mut self, pattern: &BindingNode, type_name: String, is_const: bool, line: usize, col: usize) -> Result<(), ()> {
         match pattern {
             BindingNode::Identifier(name) => {
-                // println!("DEBUG: Defining variable '{}' as type '{}'", name, type_name);
                 self.define_variable(name.clone(), type_name, is_const, line, col);
             }
             BindingNode::ArrayBinding { elements, rest } => {

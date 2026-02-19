@@ -23,17 +23,24 @@ function solveNQueens(n: int): void {
   }
 
   let found = backtrack(0);
-  print("N-Queens Solution (n=4): Expected: true, Actual: ", found);
+  assert(found == true, "N-Queens Solution should be found for n=4");
   
   if (found) {
-      // Validating first row for 4-queens (usually . Q . . or . . Q .)
-      // One solution is . Q . . / ...
-      print("Board generated."); 
+       // Check first solution for 4 queens: . Q . . / . . . Q / Q . . . / . . Q . (Indices: 1, 3, 0, 2)
+       // OR 0, 1, 0, 2 ?? No standard is 1 3 0 2
+       // Verify strict solution
+       print("Board generated."); 
+  }
 }
 
+function assert(condition: bool, message: string): void {
+  if (!condition) {
+    print("❌ ASSERT FAILED: ", message);
+  } else {
+    print("✅ PASS: ", message);
+  }
 }
 
 function main() {
   solveNQueens(4);
 }
-

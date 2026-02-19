@@ -38,12 +38,38 @@ fi
 # 2. Create build directory
 mkdir -p "$BUILD_DIR"
 
-# 3. Run all problem files
+# 3. Run problem files
 echo -e "${YELLOW}>>> Running Problem Tests...${NC}"
 echo "----------------------------------------"
 
-# Find all .tx files recursively and read into loop using process substitution
-while read -r FILE; do
+PROBLEMS_TO_RUN=()
+if [ "$#" -gt 0 ]; then
+    # Use provided arguments
+    for arg in "$@"; do
+        # Handle simple filenames vs paths
+        if [[ "$arg" == *.tx ]]; then
+            if [ -f "$TESTS_DIR/$arg" ]; then
+                PROBLEMS_TO_RUN+=("$TESTS_DIR/$arg")
+            elif [ -f "$arg" ]; then
+                PROBLEMS_TO_RUN+=("$arg")
+            else
+                echo -e "${RED}File not found: $arg${NC}"
+            fi
+        else
+            # Try appending extension
+             if [ -f "$TESTS_DIR/$arg.tx" ]; then
+                PROBLEMS_TO_RUN+=("$TESTS_DIR/$arg.tx")
+            fi
+        fi
+    done
+else
+    # Default: Find all .tx files
+    while read -r FILE; do
+        PROBLEMS_TO_RUN+=("$FILE")
+    done < <(find "$TESTS_DIR" -name "*.tx" | sort)
+fi
+
+for FILE in "${PROBLEMS_TO_RUN[@]}"; do
     [ -f "$FILE" ] || continue
     
     REL_PATH="${FILE#$TESTS_DIR/}"
@@ -69,7 +95,7 @@ while read -r FILE; do
             OUT_FILE=$(mktemp)
             "$BUILD_DIR/$FILENAME" 2>&1 | tee "$OUT_FILE"
             RUN_EXIT=${PIPESTATUS[0]}
-            OUTPUT=$(cat "$OUT_FILE")
+            # OUTPUT=$(cat "$OUT_FILE") # Unused
             rm "$OUT_FILE"
             
             if [ $RUN_EXIT -eq 0 ]; then
@@ -110,7 +136,7 @@ while read -r FILE; do
     [ -f "${FILE%.*}.ll" ] && rm "${FILE%.*}.ll"
     
     echo "----------------------------------------"
-done < <(find "$TESTS_DIR" -name "*.tx")
+done
 
 # 4. Summary
 TOTAL=$((PASSED + FAILED))

@@ -12,6 +12,8 @@ mod mir;
 mod mir_lowering;
 mod borrow_checker;
 mod codegen;
+#[path = "../wasm/src/wasm_codegen.rs"]
+mod wasm_codegen;
 mod linker;
 mod diagnostics;
 
@@ -28,6 +30,7 @@ use mir::{MIRInstruction, MIRValue};
 use mir_lowering::MIRLowering;
 use borrow_checker::BorrowChecker;
 use codegen::CodeGen;
+use wasm_codegen::WasmCodeGen;
 use linker::Linker;
 
 const RUNTIME_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libruntime.a"));
@@ -46,6 +49,7 @@ fn main() {
 
     let mut emit_mir = false;
     let mut emit_llvm = false;
+    let mut target_wasm = false;
     for arg in args.iter().skip(1) {
         if arg == "--disable-async" {
             async_enabled = false;
@@ -53,6 +57,12 @@ fn main() {
              emit_mir = true;
         } else if arg == "--emit-llvm" {
              emit_llvm = true;
+        } else if arg == "--target" {
+             // We need to peek next arg
+        } else if arg == "wasm" && args.iter().any(|a| a == "--target") {
+             target_wasm = true;
+        } else if arg.starts_with("--target=") {
+             if arg.ends_with("wasm") { target_wasm = true; }
         } else if arg.starts_with("--") {
             eprintln!("Unknown option: {}", arg);
             process::exit(1);
@@ -112,8 +122,20 @@ fn main() {
 
     let mut lowering = Lowering::new();
     lowering.async_enabled = async_enabled;
+    *lowering.filename.borrow_mut() = filename.clone();
     let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
     let lowering_result = lowering.lower(&program, base_path);
+
+    // Check for lowering errors (import validation, etc.)
+    {
+        let diagnostics = lowering.diagnostics.borrow();
+        if !diagnostics.is_empty() {
+            for diag in diagnostics.iter() {
+                diag.report(&contents);
+            }
+            process::exit(1);
+        }
+    }
 
     let mut mir_functions = Vec::new();
     for hir_func in &lowering_result.functions {
@@ -124,7 +146,35 @@ fn main() {
 
     let mut borrow_checker = BorrowChecker::new();
     for mir_func in &mut mir_functions {
-        let drops = borrow_checker.check(mir_func, &filename);
+        let (drops, reassignment_drops) = borrow_checker.check(mir_func, &filename);
+
+        // Inject reassignment drops: Free the old value before it's overwritten.
+        // Process in reverse order within each block to maintain correct instruction indices.
+        // Group by block_idx first, then sort by inst_idx descending within each block.
+        {
+            let mut by_block: std::collections::HashMap<usize, Vec<(usize, String)>> = std::collections::HashMap::new();
+            for (block_idx, inst_idx, var_name) in reassignment_drops {
+                by_block.entry(block_idx).or_default().push((inst_idx, var_name));
+            }
+            for (block_idx, mut items) in by_block {
+                // Sort descending by inst_idx so insertions don't shift later indices
+                items.sort_by(|a, b| b.0.cmp(&a.0));
+                let bb = &mut mir_func.blocks[block_idx];
+                for (inst_idx, var_name) in items {
+                    if let Some(ty) = mir_func.variables.get(&var_name) {
+                        let line = if inst_idx < bb.instructions.len() {
+                            bb.instructions[inst_idx].get_line()
+                        } else { 0 };
+                        bb.instructions.insert(inst_idx, MIRInstruction::Free {
+                            value: MIRValue::Variable { name: var_name, ty: ty.clone() },
+                            line,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Inject leaf-block drops (existing logic): Free live variables before Return/Throw
         for (block_idx, var_names) in drops {
             let bb = &mut mir_func.blocks[block_idx];
             let mut insert_idx = bb.instructions.len();
@@ -160,6 +210,30 @@ fn main() {
             diag.report(&contents);
         }
         process::exit(1);
+    }
+
+    if target_wasm {
+        let mut wasm_codegen = WasmCodeGen::new();
+        let wat = wasm_codegen.generate_wat(&mir_functions);
+        
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|err| {
+            eprintln!("WAT to WASM conversion failed: {}", err);
+            process::exit(1);
+        });
+
+        let output_wasm = if let Some(pos) = filename.rfind('.') {
+            format!("{}.wasm", &filename[..pos])
+        } else {
+            "a.wasm".to_string()
+        };
+
+        fs::write(&output_wasm, wasm_bytes).unwrap_or_else(|err| {
+            eprintln!("Error writing WASM file: {}", err);
+            process::exit(1);
+        });
+
+        println!("Successfully compiled to {}", output_wasm);
+        return;
     }
 
     let mut codegen = CodeGen::new();
@@ -198,7 +272,7 @@ fn main() {
     match linker.link() {
         Ok(_) => {
             // Success - cleanup temp files
-            // let _ = fs::remove_file(&temp_ll_file);
+            let _ = fs::remove_file(&temp_ll_file);
             let _ = fs::remove_file(&runtime_lib_path);
         },
         Err(e) => {

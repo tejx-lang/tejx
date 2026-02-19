@@ -3,6 +3,13 @@ class TreeNode {
   left: TreeNode | None = None;
   right: TreeNode | None = None;
   constructor(v: int) { this.val = v; }
+  
+  clone(): TreeNode {
+    let n = new TreeNode(this.val);
+    if (this.left != None) n.left = this.left.clone();
+    if (this.right != None) n.right = this.right.clone();
+    return n;
+  }
 }
 
 function hasPathSum(root: TreeNode | None, sum: int): bool {
@@ -20,7 +27,13 @@ function hasPathSum(root: TreeNode | None, sum: int): bool {
   return hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
 }
 
-// Test case
+function assert(condition: bool, message: string): void {
+  if (!condition) {
+    print("❌ ASSERT FAILED: ", message);
+  } else {
+    print("✅ PASS: ", message);
+  }
+}
 
 function main() {
   // Test case
@@ -31,7 +44,7 @@ function main() {
   root.left.left.left = new TreeNode(7);
   root.left.left.right = new TreeNode(2);
 
-  print("PathSum(22): Expected: true, Actual: ", hasPathSum(root, 22));
-  print("PathSum(26): Expected: false, Actual: ", hasPathSum(root, 26)); 
-  print("PathSum(18): Expected: false, Actual: ", hasPathSum(root, 18));
+  assert(hasPathSum(root.clone(), 22) == true, "PathSum(22) is true");
+  assert(hasPathSum(root.clone(), 26) == false, "PathSum(26) is false");
+  assert(hasPathSum(root, 18) == false, "PathSum(18) is false");
 }

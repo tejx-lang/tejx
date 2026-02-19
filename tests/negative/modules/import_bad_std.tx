@@ -1,0 +1,7 @@
+// EXPECT: COMPILE_ERROR
+// Test: importing from an unknown standard module
+import { fake } from "std:nonexistent";
+
+function main(): void {
+    print("should not reach here");
+}

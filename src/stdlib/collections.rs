@@ -36,12 +36,16 @@ pub fn exports() -> HashSet<String> {
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Stack_push(this: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) { arr.push(val); }
+    if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) { 
+        arr.push(val); 
+    }
     this
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Stack_pop(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) { return arr.pop().unwrap_or(0); }
+    if let Some(TaggedValue::Array(arr)) = heap.get_mut(this) { 
+        return arr.pop().unwrap_or(0); 
+    }
     0
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Stack_peek(this: i64) -> i64 {

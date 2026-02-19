@@ -2,14 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 pub mod math;
 pub mod fs;
-pub mod os;
+pub mod system;
 pub mod time;
 pub mod json;
 pub mod prelude;
 pub mod collections;
 pub mod thread;
 pub mod net;
-pub mod sync;
 
 pub struct StdLib {
     modules: HashMap<String, HashSet<String>>,
@@ -22,7 +21,7 @@ impl StdLib {
         
         modules.insert("math".to_string(), math::exports());
         modules.insert("fs".to_string(), fs::exports());
-        modules.insert("os".to_string(), os::exports());
+        modules.insert("system".to_string(), system::exports());
         modules.insert("time".to_string(), time::exports());
         modules.insert("json".to_string(), HashSet::from(["stringify".to_string(), "parse".to_string()]));
         modules.insert("collections".to_string(), collections::exports());
@@ -30,7 +29,7 @@ impl StdLib {
         modules.insert("net".to_string(), net::exports());
         modules.insert("http".to_string(), net::http_exports());
         modules.insert("https".to_string(), net::https_exports());
-        modules.insert("sync".to_string(), sync::exports());
+
         
         // Add all methods to collections
         if let Some(funcs) = modules.get_mut("collections") {

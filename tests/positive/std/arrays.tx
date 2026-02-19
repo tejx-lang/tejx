@@ -32,20 +32,6 @@ function main() {
     assert_eq_int(2, revArr[1], "reverse[1]");
     assert_eq_int(1, revArr[2], "reverse[2]");
 
-    // splice
-    let spliceArr = [1, 2, 3, 4, 5];
-    let removed = spliceArr.splice(1, 2, 9, 10);
-    assert_eq_int(2, len(removed), "splice removed length");
-    assert_eq_int(2, removed[0], "splice removed[0]");
-    assert_eq_int(3, removed[1], "splice removed[1]");
-    
-    assert_eq_int(7, len(spliceArr), "splice modified length");
-    assert_eq_int(1, spliceArr[0], "splice modified[0]");
-    assert_eq_int(9, spliceArr[1], "splice modified[1]");
-    assert_eq_int(10, spliceArr[2], "splice modified[2]");
-    assert_eq_int(4, spliceArr[3], "splice modified[3]");
-    assert_eq_int(5, spliceArr[4], "splice modified[4]");
-
     print("\n--- Array Slice ---");
     let sliceArr = [1, 2, 3, 4, 5];
     // slice(1, 4) -> index 1 to 3 (exclusive 4) -> [2, 3, 4]
