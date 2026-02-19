@@ -231,7 +231,10 @@ pub fn exports() -> HashSet<String> {
             unsafe { boxed_keys.push(rt_box_string(c_str.as_ptr() as i64)); }
         }
         let mut heap = HEAP.lock().unwrap();
-        return heap.alloc(TaggedValue::Array(boxed_keys));
+        // Use alloc loop or insert
+        let new_id = heap.next_id; heap.next_id += 1;
+        heap.insert(new_id, TaggedValue::Array(boxed_keys));
+        return new_id;
     }
     0
 }
@@ -239,12 +242,20 @@ pub fn exports() -> HashSet<String> {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) {
         let vals: Vec<i64> = map.values().cloned().collect();
-        return heap.alloc(TaggedValue::Array(vals));
+        // Use alloc loop or insert
+        let new_id = heap.next_id; heap.next_id += 1;
+        heap.insert(new_id, TaggedValue::Array(vals));
+        return new_id;
     }
     0
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Map_size(this: i64) -> i64 { rt_collections_size(this) }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Map_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
+#[unsafe(no_mangle)] pub extern "C" fn rt_Map_clear(this: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(map)) = heap.get_mut(this) { map.clear(); }
+    this
+}
 
 // --- Set ---
 #[unsafe(no_mangle)] pub extern "C" fn rt_Set_constructor(this: i64) -> i64 {
@@ -253,31 +264,43 @@ pub fn exports() -> HashSet<String> {
     this
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Set_add(this: i64, val: i64) -> i64 {
+    let key = stringify_value(val);
     let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.insert(val); }
+    if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.insert(key); }
     this
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Set_has(this: i64, val: i64) -> i64 {
+    let key = stringify_value(val);
     let result = {
         let heap = HEAP.lock().unwrap();
-        if let Some(TaggedValue::Set(set)) = heap.get(this) { set.contains(&val) }
+        if let Some(TaggedValue::Set(set)) = heap.get(this) { set.contains(&key) }
         else { false }
     };
     rt_box_boolean(if result { 1 } else { 0 })
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Set_delete(this: i64, val: i64) -> i64 {
+    let key = stringify_value(val);
     let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.remove(&val); }
+    if let Some(TaggedValue::Set(set)) = heap.get_mut(this) { set.remove(&key); }
     this
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Set_remove(this: i64, val: i64) -> i64 {
     rt_Set_delete(this, val)
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Set_values(this: i64) -> i64 {
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Set(set)) = heap.get(this) {
-        let vals: Vec<i64> = set.iter().cloned().collect();
-        return heap.alloc(TaggedValue::Array(vals));
+        let vals: Vec<String> = set.iter().cloned().collect();
+        drop(heap);
+        let mut boxed_vals = Vec::new();
+        for v in vals {
+            let c_str = CString::new(v).unwrap();
+            unsafe { boxed_vals.push(rt_box_string(c_str.as_ptr() as i64)); }
+        }
+        let mut heap = HEAP.lock().unwrap();
+        let new_id = heap.next_id; heap.next_id += 1;
+        heap.insert(new_id, TaggedValue::Array(boxed_vals));
+        return new_id;
     }
     0
 }
@@ -341,7 +364,159 @@ pub fn exports() -> HashSet<String> {
 #[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_size(this: i64) -> i64 { rt_collections_size(this) }
 #[unsafe(no_mangle)] pub extern "C" fn rt_OrderedSet_isEmpty(this: i64) -> i64 { rt_collections_isEmpty(this) }
 
-// --- BloomFilter ---
+// --- Generic Collection Methods ---
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_keys(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    let keys = if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        m.keys().filter(|k| *k != "toString" && *k != "constructor").cloned().collect::<Vec<String>>()
+    } else if let Some(TaggedValue::OrderedMap(order, _)) = heap.get(id) {
+        order.iter().filter(|k| *k != "toString" && *k != "constructor").cloned().collect::<Vec<String>>()
+    } else {
+        Vec::new()
+    };
+    drop(heap);
+    
+    let mut boxed_keys = Vec::new();
+    for k in keys {
+        let c_str = CString::new(k).unwrap();
+        unsafe { boxed_keys.push(rt_box_string(c_str.as_ptr() as i64)); }
+    }
+    
+    let mut heap = HEAP.lock().unwrap();
+    let arr_id = heap.next_id; heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(boxed_keys));
+    arr_id
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_values(id: i64) -> i64 {
+    // Handle Set separately since it stores strings now
+    {
+        let heap = HEAP.lock().unwrap();
+        if let Some(TaggedValue::Set(s)) = heap.get(id) {
+            let str_vals: Vec<String> = s.iter().cloned().collect();
+            drop(heap);
+            let mut boxed_vals = Vec::new();
+            for v in str_vals {
+                let c_str = CString::new(v).unwrap();
+                unsafe { boxed_vals.push(rt_box_string(c_str.as_ptr() as i64)); }
+            }
+            let mut heap = HEAP.lock().unwrap();
+            let arr_id = heap.next_id; heap.next_id += 1;
+            heap.insert(arr_id, TaggedValue::Array(boxed_vals));
+            return arr_id;
+        }
+    }
+
+    let heap = HEAP.lock().unwrap();
+    let values = if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        m.values().cloned().collect::<Vec<i64>>()
+    } else if let Some(TaggedValue::OrderedMap(_, m)) = heap.get(id) {
+        m.values().cloned().collect::<Vec<i64>>()
+    } else {
+        Vec::new()
+    };
+    drop(heap);
+    
+    let mut heap = HEAP.lock().unwrap();
+    let arr_id = heap.next_id; heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(values));
+    arr_id
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_entries(id: i64) -> i64 {
+    let heap = HEAP.lock().unwrap();
+    let entries = if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        m.iter().filter(|(k, _)| *k != "toString" && *k != "constructor")
+            .map(|(k, v)| (k.clone(), *v)).collect::<Vec<(String, i64)>>()
+    } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
+        order.iter().filter(|k| *k != "toString" && *k != "constructor")
+            .map(|k| (k.clone(), m.get(k).cloned().unwrap_or(0))).collect::<Vec<(String, i64)>>()
+    } else {
+        Vec::new()
+    };
+    drop(heap);
+    
+    // Entries returns Array of [key, value] arrays? Or Array of objects?
+    // Usually Array of [key, value].
+    // Original runtime creates Array of 2-element Arrays?
+    // Let's create proper structure.
+    // .. original runtime used loop to create inner arrays.
+    
+    let mut heap = HEAP.lock().unwrap();
+    // Logic:
+    // Need to alloc string key and array, so we must drop lock before boxing.
+
+    // Re-implementation simplified:
+    drop(heap); // Release lock
+    
+    let mut final_entries = Vec::new();
+    for (k, v) in entries {
+        let c_str = CString::new(k).unwrap();
+        let k_id = unsafe { rt_box_string(c_str.as_ptr() as i64) };
+        
+        let mut heap = HEAP.lock().unwrap();
+        let inner_arr_id = heap.next_id; heap.next_id += 1;
+        heap.insert(inner_arr_id, TaggedValue::Array(vec![k_id, v]));
+        drop(heap);
+        final_entries.push(inner_arr_id);
+    }
+    
+    let mut heap = HEAP.lock().unwrap();
+    let arr_id = heap.next_id; heap.next_id += 1;
+    heap.insert(arr_id, TaggedValue::Array(final_entries));
+    arr_id
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_has(id: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get(id) {
+        return if m.contains_key(&k_str) { 1 } else { 0 };
+    }
+    if let Some(TaggedValue::Set(s)) = heap.get(id) {
+        return if s.contains(&k_str) { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_delete(id: i64, key: i64) -> i64 {
+    let k_str = stringify_value(key);
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
+        return if m.remove(&k_str).is_some() { 1 } else { 0 };
+    }
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
+        return if s.remove(&k_str) { 1 } else { 0 };
+    }
+    0
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_clear(id: i64) {
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) { m.clear(); }
+    else if let Some(TaggedValue::Set(s)) = heap.get_mut(id) { s.clear(); }
+    else if let Some(TaggedValue::Array(a)) = heap.get_mut(id) { a.clear(); }
+    else if let Some(TaggedValue::OrderedMap(_, m)) = heap.get_mut(id) { m.clear(); }
+    else if let Some(TaggedValue::OrderedSet(_, s)) = heap.get_mut(id) { s.clear(); }
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn rt_Collection_add(id: i64, val: i64) {
+    let key = stringify_value(val);
+    let mut heap = HEAP.lock().unwrap();
+    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) { s.insert(key); }
+}
+
+// --- Prefix-less aliases for runtime method dispatch ---
+// The lowering can emit callee names without the `rt_` prefix (e.g. `Collection_keys`),
+// but the runtime functions are prefixed with `rt_`. These wrappers bridge the gap.
+#[unsafe(no_mangle)] pub extern "C" fn Collection_keys(id: i64) -> i64 { rt_Collection_keys(id) }
+#[unsafe(no_mangle)] pub extern "C" fn Collection_values(id: i64) -> i64 { rt_Collection_values(id) }
+#[unsafe(no_mangle)] pub extern "C" fn Collection_entries(id: i64) -> i64 { rt_Collection_entries(id) }
+#[unsafe(no_mangle)] pub extern "C" fn Collection_has(id: i64, key: i64) -> i64 { rt_Collection_has(id, key) }
+#[unsafe(no_mangle)] pub extern "C" fn Collection_delete(id: i64, key: i64) -> i64 { rt_Collection_delete(id, key) }
+#[unsafe(no_mangle)] pub extern "C" fn Collection_clear(id: i64) { rt_Collection_clear(id) }
+#[unsafe(no_mangle)] pub extern "C" fn Collection_add(id: i64, val: i64) { rt_Collection_add(id, val) }
+
 #[unsafe(no_mangle)] pub extern "C" fn rt_BloomFilter_constructor(this: i64, size_bits: i64, k_hashes: i64) -> i64 {
     let bits = to_f64(size_bits) as usize;
     let k = to_f64(k_hashes) as usize;

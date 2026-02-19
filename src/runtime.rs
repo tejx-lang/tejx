@@ -54,7 +54,7 @@ pub enum TaggedValue {
     Number(f64),
     Boolean(bool),
     String(String),
-    Set(std::collections::HashSet<i64>),
+    Set(std::collections::HashSet<String>),
     Date(f64),
     OrderedMap(Vec<String>, HashMap<String, i64>),
     OrderedSet(Vec<i64>, HashSet<i64>),
@@ -659,13 +659,9 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::Boolean(b) => if *b { "true".to_string() } else { "false".to_string() },
             TaggedValue::String(s) => s.clone(),
             TaggedValue::Set(set) => {
-                let vals: Vec<i64> = set.iter().cloned().collect();
+                let vals: Vec<String> = set.iter().cloned().collect();
                 drop(heap);
-                let mut parts = Vec::new();
-                for v_id in vals {
-                    parts.push(stringify_value(v_id));
-                }
-                format!("Set {{ {} }}", parts.join(", "))
+                format!("Set {{ {} }}", vals.join(", "))
             }
             TaggedValue::Date(t) => format!("[Date: {}]", t),
             TaggedValue::OrderedMap(_, _) => "[OrderedMap]".to_string(),
@@ -1248,19 +1244,21 @@ pub extern "C" fn rt_box_number(n: f64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_box_int(n: i64) -> i64 {
-    // Optimization: If n is a small integer (BUT NOT 0), return it as literal ID
-    if n > 0 && n < 1000000 {
+    // Small positive integers (1..HEAP_OFFSET-1) are self-representing
+    if n > 0 && n < HEAP_OFFSET {
         return n;
     }
-    // Also handle negative small integers if needed, but for now just 0 check is critical
-    // Actually safe to return negatives? Heap Offset is positive.
-    // If IDs are negative?
-    // Let's just optimization > 0 to be safe
     
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.alloc(TaggedValue::Number(n as f64)); // Use Number for compatibility or Int?
-    // Existing code used rt_box_number which uses TaggedValue::Number.
-    // Let's stick to Number for consistency with existing runtime unless we want to introduce Int type
+    
+    // If the value is already a valid heap ID (i.e. already boxed), return as-is
+    // This prevents double-boxing when print codegen boxes a value that's
+    // already a heap reference (e.g. array elements from int[] containers)
+    if n >= HEAP_OFFSET && heap.contains_key(n) {
+        return n;
+    }
+    
+    let id = heap.alloc(TaggedValue::Number(n as f64));
     id
 }
 
@@ -2160,6 +2158,7 @@ pub unsafe extern "C" fn parseFloat(s: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_del(id: i64, key_or_val: i64) -> i64 {
     if id == 0 { return 0; }
+    let str_key = stringify_value(key_or_val);
     let mut heap = HEAP.lock().unwrap();
     let key = get_string_key(&heap, key_or_val);
     match heap.get_mut(id) {
@@ -2168,7 +2167,7 @@ pub unsafe extern "C" fn rt_del(id: i64, key_or_val: i64) -> i64 {
             return if removed { 1 } else { 0 };
         }
         Some(TaggedValue::Set(set)) => {
-            let removed = set.remove(&key_or_val);
+            let removed = set.remove(&str_key);
             return if removed { 1 } else { 0 };
         }
         _ => 0
@@ -2205,6 +2204,7 @@ pub unsafe extern "C" fn m_size(id: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_has(id: i64, key_or_val: i64) -> i64 {
     if id == 0 { return 0; }
+    let str_key = stringify_value(key_or_val);
     let heap = HEAP.lock().unwrap();
     match heap.get(id) {
         Some(TaggedValue::Map(map)) => {
@@ -2212,7 +2212,7 @@ pub unsafe extern "C" fn rt_has(id: i64, key_or_val: i64) -> i64 {
             if map.contains_key(&key) { 1 } else { 0 }
         }
         Some(TaggedValue::Set(set)) => {
-            if set.contains(&key_or_val) { 1 } else { 0 }
+            if set.contains(&str_key) { 1 } else { 0 }
         }
         _ => 0
     }
@@ -2343,9 +2343,10 @@ pub unsafe extern "C" fn rt_string_slice(id: i64, start: i64, end: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn s_del(id: i64, val: i64) -> i64 {
     if id == 0 { return 0; }
+    let key = stringify_value(val);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Set(set)) = heap.get_mut(id) {
-        let removed = set.remove(&val);
+        let removed = set.remove(&key);
         return if removed { 1 } else { 0 };
     }
     0
@@ -2462,175 +2463,12 @@ pub unsafe extern "C" fn trimmed_repeat(s_id: i64, count: i64) -> i64 {
 
 // Object Static Methods
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_keys(id: i64) -> i64 {
-    eprintln!("Collection_keys for id: {}", id);
-    let heap = HEAP.lock().unwrap();
-    let keys = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        eprintln!("  Found Map with {} keys", m.len());
-        m.keys()
-            .filter(|k| *k != "toString" && *k != "constructor")
-            .cloned()
-            .collect::<Vec<String>>()
-    } else if let Some(TaggedValue::OrderedMap(order, _)) = heap.get(id) {
-        eprintln!("  Found OrderedMap with {} keys", order.len());
-        order.iter()
-            .filter(|k| *k != "toString" && *k != "constructor")
-            .cloned()
-            .collect::<Vec<String>>()
-    } else {
-        eprintln!("  NOT A MAP (type: {:?})", heap.get(id).map(|v| format!("{:?}", v)));
-        drop(heap);
-        let mut heap = HEAP.lock().unwrap();
-        let arr_id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(arr_id, TaggedValue::Array(Vec::new()));
-        return arr_id;
-    };
-    drop(heap);
-    
-    let mut boxed_keys = Vec::new();
-    for k in keys {
-        boxed_keys.push(rt_box_string_raw(k));
-    }
-    
-    let mut heap = HEAP.lock().unwrap();
-    let arr_id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(arr_id, TaggedValue::Array(boxed_keys));
-    arr_id
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Object_keys(id: i64) -> i64 {
-    Collection_keys(id)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Object_values(id: i64) -> i64 {
-    Collection_values(id)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Object_entries(id: i64) -> i64 {
-    Collection_entries(id)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_values(id: i64) -> i64 {
-    let heap = HEAP.lock().unwrap();
-    let values = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        m.iter()
-            .filter(|(k, _)| *k != "toString" && *k != "constructor")
-            .map(|(_, v)| *v)
-            .collect::<Vec<i64>>()
-    } else if let Some(TaggedValue::OrderedMap(_, m)) = heap.get(id) {
-        m.iter()
-            .filter(|(k, _)| *k != "toString" && *k != "constructor")
-            .map(|(_, v)| *v)
-            .collect::<Vec<i64>>()
-    } else {
-        drop(heap);
-        let mut heap = HEAP.lock().unwrap();
-        let arr_id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(arr_id, TaggedValue::Array(Vec::new()));
-        return arr_id;
-    };
-    drop(heap);
-    
-    let mut heap = HEAP.lock().unwrap();
-    let arr_id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(arr_id, TaggedValue::Array(values));
-    arr_id
-}
 
 // Object_values moved
 
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_entries(id: i64) -> i64 {
-    let heap = HEAP.lock().unwrap();
-    let entries = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        m.iter()
-            .filter(|(k, _)| *k != "toString" && *k != "constructor")
-            .map(|(k, v)| (k.clone(), *v))
-            .collect::<Vec<(String, i64)>>()
-    } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
-        order.iter()
-            .filter(|k| *k != "toString" && *k != "constructor")
-            .map(|k| (k.clone(), m.get(k).cloned().unwrap_or(0)))
-            .collect::<Vec<(String, i64)>>()
-    } else {
-        drop(heap);
-        let mut heap = HEAP.lock().unwrap();
-        let arr_id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(arr_id, TaggedValue::Array(Vec::new()));
-         return arr_id;
-    };
-    drop(heap);
-    
-    let mut entry_ids = Vec::new();
-    for (k, v) in entries {
-        let mut heap = HEAP.lock().unwrap();
-        let pair_id = heap.next_id;
-        heap.next_id += 1;
-        
-        let k_id = heap.alloc(TaggedValue::String(k));
-        heap.insert(pair_id, TaggedValue::Array(vec![k_id, v]));
-        entry_ids.push(pair_id);
-    }
-    
-    let mut heap = HEAP.lock().unwrap();
-    let arr_id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(arr_id, TaggedValue::Array(entry_ids));
-    arr_id
-}
 
-// Object_entries moved
-
-
-// --- Map Methods ---
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_size(id: i64) -> i64 {
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        return m.len() as i64;
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_delete(id: i64, key: i64) -> i64 {
-    let k_str = stringify_value(key);
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
-        let existed = m.remove(&k_str).is_some();
-        return if existed { 1 } else { 0 };
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_clear(id: i64) {
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
-        m.clear();
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_keys(id: i64) -> i64 {
-    Collection_keys(id)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_values(id: i64) -> i64 {
-    Collection_values(id)
-}
 // --- Array Methods (Any/Dynamic) ---
 // These are required by the linker for method calls on 'any' typed arrays or dynamic dispatch.
 // They roughly map to Array_* functions but with specific mangled names.
@@ -2819,120 +2657,6 @@ pub unsafe extern "C" fn f_SharedQueue_isEmpty(q_id: i64) -> i64 {
         return if arr.is_empty() { 1 } else { 0 };
     }
     1
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_has(id: i64, key: i64) -> i64 {
-    let k_str = stringify_value(key);
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        return if m.contains_key(&k_str) { 1 } else { 0 };
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_put(id: i64, key: i64, val: i64) {
-    let k_str = stringify_value(key);
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
-        m.insert(k_str, val);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Map_get(id: i64, key: i64) -> i64 {
-    let k_str = stringify_value(key);
-    let heap = HEAP.lock().unwrap();
-    if let Some(obj) = heap.get(id) {
-        match obj {
-            TaggedValue::Map(m) => {
-                return *m.get(&k_str).unwrap_or(&0);
-            }
-            TaggedValue::Array(a) => {
-                if k_str == "length" {
-                    let len = a.len() as f64;
-                    drop(heap);
-                    return rt_box_number(len);
-                }
-            }
-            TaggedValue::String(s) => {
-                if k_str == "length" {
-                    let len = s.len() as f64;
-                    drop(heap);
-                    return rt_box_number(len);
-                }
-            }
-            _ => {}
-        }
-    }
-    0
-}
-
-// --- Set Methods ---
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Set_size(id: i64) -> i64 {
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get(id) {
-        return s.len() as i64;
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Set_delete(id: i64, val: i64) -> i64 {
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
-        let existed = s.remove(&val);
-        return if existed { 1 } else { 0 };
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Set_clear(id: i64) {
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
-        s.clear();
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Set_add(id: i64, val: i64) {
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
-        s.insert(val);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Set_has(id: i64, val: i64) -> i64 {
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get(id) {
-        return if s.contains(&val) { 1 } else { 0 };
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Set_values(id: i64) -> i64 {
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get(id) {
-        let values: Vec<i64> = s.iter().cloned().collect();
-        drop(heap);
-        let mut heap = HEAP.lock().unwrap();
-        let arr_id = heap.next_id;
-        heap.next_id += 1;
-        heap.insert(arr_id, TaggedValue::Array(values));
-        return arr_id;
-    }
-    drop(heap);
-    let mut heap = HEAP.lock().unwrap();
-    let arr_id = heap.next_id;
-    heap.next_id += 1;
-    heap.insert(arr_id, TaggedValue::Array(Vec::new()));
-    arr_id
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn print(id: i64) {
@@ -3164,59 +2888,7 @@ pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *const *const c_ch
     0
 }
 
-// --- Collection Generic Methods ---
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_size(id: i64) -> i64 {
-    stdlib::collections::rt_collections_size(id)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_clear(id: i64) {
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) { m.clear(); }
-    else if let Some(TaggedValue::Set(s)) = heap.get_mut(id) { s.clear(); }
-    else if let Some(TaggedValue::Array(a)) = heap.get_mut(id) { a.clear(); }
-    else if let Some(TaggedValue::OrderedMap(_, m)) = heap.get_mut(id) { m.clear(); } // TODO: clear vec too
-    else if let Some(TaggedValue::OrderedSet(_, s)) = heap.get_mut(id) { s.clear(); } // TODO: clear vec
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_delete(id: i64, key: i64) -> i64 {
-    // stdlib::collections::std_collections_Map_delete(id, key); 
-    // Manual dispatch since logic is simple and stdlib might be duplicated if not careful
-    let k_str = stringify_value(key);
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get_mut(id) {
-        return if m.remove(&k_str).is_some() { 1 } else { 0 };
-    }
-    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
-        return if s.remove(&key) { 1 } else { 0 };
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_has(id: i64, key: i64) -> i64 {
-    let k_str = stringify_value(key);
-    let heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        return if m.contains_key(&k_str) { 1 } else { 0 };
-    }
-    if let Some(TaggedValue::Set(s)) = heap.get(id) {
-        return if s.contains(&key) { 1 } else { 0 };
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Collection_add(id: i64, val: i64) {
-    // Forward to Set_add logic locally
-    let mut heap = HEAP.lock().unwrap();
-    if let Some(TaggedValue::Set(s)) = heap.get_mut(id) {
-        s.insert(val);
-    }
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_slice(id: i64, start: i64, end: i64) -> i64 {
@@ -3591,12 +3263,7 @@ pub unsafe extern "C" fn https_getSync(url_id: i64) -> i64 {
     rt_box_string_raw("{}".to_string())
 }
 
-// rt_Map_clear
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rt_Map_clear(id: i64) -> i64 {
-    Map_clear(id);
-    0
-}
+
 
 // f_any___ array method stubs
 #[unsafe(no_mangle)]
@@ -3829,7 +3496,7 @@ pub unsafe extern "C" fn __optional_chain(target: i64, op_str: i64) -> i64 {
         let prop = &op[1..];
         // box prop string
         let prop_id = rt_box_string_raw(prop.to_string());
-        return Map_get(target, prop_id);
+        return stdlib::collections::rt_Map_get(target, prop_id);
     } else if op.starts_with("[") {
         // format "[index]" -- wait, lowering handles dynamic index?
         // HIR logic: `operation` field is String.

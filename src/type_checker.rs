@@ -777,9 +777,10 @@ impl TypeChecker {
         if t.starts_with("function:") || t == "function" || t == "any" || t == "object" || t == "string" {
             return true;
         }
-        // Arrays are NOT copy — they are heap-allocated containers
+        // Arrays ARE copy — they are heap-allocated but passed as reference pointers (i64 handles)
+        // at runtime, so passing to functions borrows rather than moves ownership.
         if t.ends_with("[]") {
-            return false;
+            return true;
         }
         if matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float32" | "float64" | "bool" | "boolean" | "char") {
             return true;

@@ -2606,23 +2606,23 @@ impl Lowering {
                                              }
                                          },
                                          "forEach" => (format!("Array_{}", method_name), TejxType::Void),
-                                         "set" | "put" => ("Map_put".to_string(), TejxType::Any), // Map.put
-                                         "get" => ("Map_get".to_string(), TejxType::Any),
-                                         "has" => ("Collection_has".to_string(), TejxType::Any),
-                                         "delete" | "del" => ("Collection_delete".to_string(), TejxType::Any),
+                                         "set" | "put" => ("rt_Map_put".to_string(), TejxType::Any), // Map.put
+                                         "get" => ("rt_Map_get".to_string(), TejxType::Any),
+                                         "has" => ("rt_Collection_has".to_string(), TejxType::Any),
+                                         "delete" | "del" => ("rt_Collection_delete".to_string(), TejxType::Any),
                                          "size" => ("rt_collections_size".to_string(), TejxType::Any),
-                                         "clear" => ("Collection_clear".to_string(), TejxType::Any),
+                                         "clear" => ("rt_Collection_clear".to_string(), TejxType::Any),
                                          "add" => {
                                              if class_name_opt.as_deref() == Some("Atomic") {
                                                   ("rt_atomic_add".to_string(), TejxType::Int32)
                                              } else if let Some(cn) = class_name_opt.as_deref() {
                                                   if cn == "Set" {
-                                                      ("Collection_add".to_string(), TejxType::Any)
+                                                      ("rt_Collection_add".to_string(), TejxType::Any)
                                                   } else {
                                                       (format!("f_{}_add", cn), TejxType::Any)
                                                   }
                                              } else {
-                                                  ("Collection_add".to_string(), TejxType::Any)
+                                                  ("rt_Collection_add".to_string(), TejxType::Any)
                                              }
                                          },
                                          "sub" if class_name_opt.as_deref() == Some("Atomic") => ("rt_atomic_sub".to_string(), TejxType::Int32),
@@ -2644,9 +2644,9 @@ impl Lowering {
                                                  name == "Object"
                                              } else { false };
                                              if is_static_obj {
-                                                 ("Object_keys".to_string(), TejxType::Any)
+                                                 ("rt_Collection_keys".to_string(), TejxType::Any)
                                              } else {
-                                                 ("Collection_keys".to_string(), TejxType::Any)
+                                                 ("rt_Collection_keys".to_string(), TejxType::Any)
                                              }
                                          },
                                          "values" => {
@@ -2654,9 +2654,9 @@ impl Lowering {
                                                  name == "Object"
                                              } else { false };
                                              if is_static_obj {
-                                                 ("Object_values".to_string(), TejxType::Any)
+                                                 ("rt_Collection_values".to_string(), TejxType::Any)
                                              } else {
-                                                 ("Collection_values".to_string(), TejxType::Any)
+                                                 ("rt_Collection_values".to_string(), TejxType::Any)
                                              }
                                          },
                                          "entries" => {
@@ -2664,9 +2664,9 @@ impl Lowering {
                                                  name == "Object"
                                              } else { false };
                                              if is_static_obj {
-                                                 ("Object_entries".to_string(), TejxType::Any)
+                                                 ("rt_Collection_entries".to_string(), TejxType::Any)
                                              } else {
-                                                 ("Collection_entries".to_string(), TejxType::Any)
+                                                 ("rt_Collection_entries".to_string(), TejxType::Any)
                                              }
                                          },
                                          "toLowerCase" => ("rt_string_to_lower".to_string(), TejxType::Any),

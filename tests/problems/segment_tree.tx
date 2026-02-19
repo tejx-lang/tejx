@@ -35,6 +35,6 @@ function main() {
   let root = new SegNode(0, None, None);
   // Note: Partial test as full ST build is missing in file
   let updated = update(root, 0, 10, 5, 10);
-  print("Update returned node: Expected: valid, Actual: ", updated != None);
+  print("Update returned node: Expected: true, Actual: ", updated != None);
   print("Updated value: Expected: 10, Actual: ", updated.val);
 }
