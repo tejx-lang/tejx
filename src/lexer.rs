@@ -148,7 +148,14 @@ impl Lexer {
                             TokenType::Slash
                         }
                     }
-                    '%' => TokenType::Modulo,
+                    '%' => {
+                        if self.peek(1) == '=' {
+                            self.advance();
+                            TokenType::ModuloEquals
+                        } else {
+                            TokenType::Modulo
+                        }
+                    }
                     '=' => {
                         if self.peek(1) == '=' {
                             self.advance();
@@ -184,7 +191,12 @@ impl Lexer {
                              TokenType::LessEqual
                          } else if self.peek(1) == '<' {
                              self.advance();
-                             TokenType::LessLess
+                             if self.peek(1) == '=' {
+                                 self.advance();
+                                 TokenType::LessLessEquals
+                             } else {
+                                 TokenType::LessLess
+                             }
                          } else {
                              TokenType::Less
                          }
@@ -195,7 +207,12 @@ impl Lexer {
                             TokenType::GreaterEqual
                         } else if self.peek(1) == '>' {
                              self.advance();
-                             TokenType::GreaterGreater
+                             if self.peek(1) == '=' {
+                                 self.advance();
+                                 TokenType::GreaterGreaterEquals
+                             } else {
+                                 TokenType::GreaterGreater
+                             }
                         } else {
                             TokenType::Greater
                         }
@@ -240,6 +257,9 @@ impl Lexer {
                         if self.peek(1) == '&' {
                             self.advance();
                             TokenType::AmpersandAmpersand
+                        } else if self.peek(1) == '=' {
+                            self.advance();
+                            TokenType::AmpersandEquals
                         } else {
                             TokenType::Ampersand
                         }
@@ -248,11 +268,21 @@ impl Lexer {
                         if self.peek(1) == '|' {
                             self.advance();
                             TokenType::PipePipe
+                        } else if self.peek(1) == '=' {
+                            self.advance();
+                            TokenType::PipeEquals
                         } else {
                             TokenType::Pipe
                         }
                     }
-                    '^' => TokenType::Caret,
+                    '^' => {
+                        if self.peek(1) == '=' {
+                            self.advance();
+                            TokenType::CaretEquals
+                        } else {
+                            TokenType::Caret
+                        }
+                    },
                     '~' => TokenType::Tilde,
                     _ => TokenType::Unknown,
                 };
@@ -264,6 +294,12 @@ impl Lexer {
                     TokenType::MinusMinus => "--".to_string(),
                     TokenType::StarEquals => "*=".to_string(),
                     TokenType::SlashEquals => "/=".to_string(),
+                    TokenType::ModuloEquals => "%=".to_string(),
+                    TokenType::AmpersandEquals => "&=".to_string(),
+                    TokenType::PipeEquals => "|=".to_string(),
+                    TokenType::CaretEquals => "^=".to_string(),
+                    TokenType::LessLessEquals => "<<=".to_string(),
+                    TokenType::GreaterGreaterEquals => ">>=".to_string(),
                     TokenType::Arrow => "=>".to_string(),
                     TokenType::EqualEqual => "==".to_string(),
                     TokenType::EqualEqualEqual => "===".to_string(),

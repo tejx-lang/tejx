@@ -781,7 +781,11 @@ impl CodeGen {
                             // Does the destination expect a raw integer or a bitcasted double?
                             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
                             if dst_ty.is_numeric() && !dst_ty.is_float() {
-                                self.emit_line(&format!("{} = fptosi double {} to i64", tmp, res_f));
+                                if !self.declared_functions.contains("rt_f64_to_i64") {
+                                    self.global_buffer.push_str("declare i64 @rt_f64_to_i64(double)\n");
+                                    self.declared_functions.insert("rt_f64_to_i64".to_string());
+                                }
+                                self.emit_line(&format!("{} = call i64 @rt_f64_to_i64(double {})", tmp, res_f));
                             } else if matches!(dst_ty, TejxType::Any) {
                                 if !self.declared_functions.contains("rt_box_number") {
                                     self.global_buffer.push_str("declare i64 @rt_box_number(double)\n");
@@ -1504,7 +1508,11 @@ impl CodeGen {
                     
                     self.temp_counter += 1;
                     let i_val = format!("%i_val_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
+                    if !self.declared_functions.contains("rt_f64_to_i64") {
+                        self.global_buffer.push_str("declare i64 @rt_f64_to_i64(double)\n");
+                        self.declared_functions.insert("rt_f64_to_i64".to_string());
+                    }
+                    self.emit_line(&format!("{} = call i64 @rt_f64_to_i64(double {})", i_val, f_val));
                     i_val
                 } else if dst_ty.is_float() {
                      // Expecting Float: Unbox Any -> Double -> Bitcast to i64 (storage)
@@ -1782,7 +1790,11 @@ impl CodeGen {
                     
                     self.temp_counter += 1;
                     let res64_raw = format!("%res64_raw{}", self.temp_counter);
-                    self.emit_line(&format!("{} = fptosi double {} to i64", res64_raw, res64_f));
+                    if !self.declared_functions.contains("rt_f64_to_i64") {
+                        self.global_buffer.push_str("declare i64 @rt_f64_to_i64(double)\n");
+                        self.declared_functions.insert("rt_f64_to_i64".to_string());
+                    }
+                    self.emit_line(&format!("{} = call i64 @rt_f64_to_i64(double {})", res64_raw, res64_f));
                     
                     self.temp_counter += 1;
                     let res64_f_bc = format!("%res64_f_bc{}", self.temp_counter);
@@ -1811,7 +1823,11 @@ impl CodeGen {
                     
                     self.temp_counter += 1;
                     let slow_raw = format!("%slow_raw{}", self.temp_counter);
-                    self.emit_line(&format!("{} = fptosi double {} to i64", slow_raw, slow_f));
+                    if !self.declared_functions.contains("rt_f64_to_i64") {
+                        self.global_buffer.push_str("declare i64 @rt_f64_to_i64(double)\n");
+                        self.declared_functions.insert("rt_f64_to_i64".to_string());
+                    }
+                    self.emit_line(&format!("{} = call i64 @rt_f64_to_i64(double {})", slow_raw, slow_f));
                     
                     self.temp_counter += 1;
                     let slow_f_bc = format!("%slow_f_bc{}", self.temp_counter);
@@ -1975,7 +1991,11 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let v_f = format!("%ba_s_vf{}", self.temp_counter);
                         self.emit_line(&format!("{} = bitcast i64 {} to double", v_f, v_val));
-                        self.emit_line(&format!("{} = fptosi double {} to i8", v_byte, v_f));
+                        if !self.declared_functions.contains("rt_f64_to_i8") {
+                            self.global_buffer.push_str("declare i8 @rt_f64_to_i8(double)\n");
+                            self.declared_functions.insert("rt_f64_to_i8".to_string());
+                        }
+                        self.emit_line(&format!("{} = call i8 @rt_f64_to_i8(double {})", v_byte, v_f));
                     } else {
                         self.emit_line(&format!("{} = trunc i64 {} to i8", v_byte, v_val));
                     }
@@ -2078,7 +2098,11 @@ impl CodeGen {
                          self.emit_line(&format!("{} = bitcast i64 {} to double", v_f, v_val));
                          self.temp_counter += 1;
                          let v_i = format!("%v_i{}", self.temp_counter);
-                         self.emit_line(&format!("{} = fptosi double {} to i8", v_i, v_f));
+                         if !self.declared_functions.contains("rt_f64_to_i8") {
+                             self.global_buffer.push_str("declare i8 @rt_f64_to_i8(double)\n");
+                             self.declared_functions.insert("rt_f64_to_i8".to_string());
+                         }
+                         self.emit_line(&format!("{} = call i8 @rt_f64_to_i8(double {})", v_i, v_f));
                          v_i
                     } else {
                          // Default fallback (pointers/strings/etc -> 0?)
@@ -2168,7 +2192,11 @@ impl CodeGen {
                            self.temp_counter += 1;
                            let f_val = format!("%f_val{}", self.temp_counter);
                            self.emit_line(&format!("{} = bitcast i64 {} to double", f_val, s));
-                           self.emit_line(&format!("{} = fptosi double {} to i64", tmp, f_val));
+                           if !self.declared_functions.contains("rt_f64_to_i64") {
+                               self.global_buffer.push_str("declare i64 @rt_f64_to_i64(double)\n");
+                               self.declared_functions.insert("rt_f64_to_i64".to_string());
+                           }
+                           self.emit_line(&format!("{} = call i64 @rt_f64_to_i64(double {})", tmp, f_val));
                       } else if !src_ty.is_float() && ty.is_float() {
                            // int -> bits(double)
                            self.temp_counter += 1;

@@ -24,7 +24,8 @@ pub enum TokenType {
     AmpersandAmpersand, PipePipe,
     Ampersand, Pipe, Caret, Tilde, LessLess, GreaterGreater,
     // Assignment & Unary Sugar
-    PlusEquals, MinusEquals, StarEquals, SlashEquals,
+    PlusEquals, MinusEquals, StarEquals, SlashEquals, ModuloEquals,
+    AmpersandEquals, PipeEquals, CaretEquals, LessLessEquals, GreaterGreaterEquals,
     PlusPlus, MinusMinus,
     // Control
     Question, QuestionDot, QuestionQuestion, Arrow, Enum,

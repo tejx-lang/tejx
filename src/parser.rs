@@ -1001,6 +1001,7 @@ impl Parser {
         let mut statements = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
              if let Some(stmt) = self.parse_declaration() {
+
                 statements.push(stmt);
             }
         }
@@ -1275,7 +1276,10 @@ impl Parser {
         
         if self.match_token(TokenType::Equals) || self.match_token(TokenType::PlusEquals) || 
            self.match_token(TokenType::MinusEquals) || self.match_token(TokenType::StarEquals) || 
-           self.match_token(TokenType::SlashEquals) {
+           self.match_token(TokenType::SlashEquals) || self.match_token(TokenType::ModuloEquals) ||
+           self.match_token(TokenType::AmpersandEquals) || self.match_token(TokenType::PipeEquals) ||
+           self.match_token(TokenType::CaretEquals) || self.match_token(TokenType::LessLessEquals) ||
+           self.match_token(TokenType::GreaterGreaterEquals) {
             let op_token = self.tokens[self.current - 1].clone();
             let op = op_token.token_type;
             let value = self.parse_assignment();

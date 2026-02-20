@@ -3697,3 +3697,13 @@ pub unsafe extern "C" fn rt_map_set_fast(id: i64, key_ptr: i64, val: i64) -> i64
     drop(heap);
     m_set(id, key_ptr, val)
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rt_f64_to_i8(f: f64) -> i8 {
+    f as i8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rt_f64_to_i64(f: f64) -> i64 {
+    f as i64
+}
