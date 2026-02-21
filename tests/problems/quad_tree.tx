@@ -1,0 +1,28 @@
+class Rectangle {
+  x: float; y: float; w: float; h: float;
+  constructor(x: float, y: float, w: float, h: float) { /* ... */ }
+}
+
+class Quadtree {
+  boundary: Rectangle;
+  capacity: int;
+  points: Point[] = [];
+  divided: bool = false;
+  
+  // Children
+  northWest: Quadtree | None = None;
+  northEast: Quadtree | None = None;
+  southWest: Quadtree | None = None;
+  southEast: Quadtree | None = None;
+
+  subdivide(): void {
+    // Logic to create 4 new Quadtrees for the quadrants
+    this.divided = true;
+  }
+}
+
+
+function main() {
+  let qt = new Quadtree();
+  print("Quadtree instantiated: Expected: true, Actual: ", qt != None);
+}

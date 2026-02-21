@@ -1,0 +1,179 @@
+// Modern Capabilities Test Suite
+// Covers: Advanced OOP, Functional Patterns, Error Handling, Algorithms
+// ====================================================================
+
+// 1. Advanced OOP: Deep Inheritance & Polymorphism
+// ------------------------------------------------
+
+class Node {
+    id: int32;
+    constructor(id: int32) { this.id = id; }
+    describe(): string { return "Node(" + this.id + ")"; }
+}
+
+class Element extends Node {
+    tagName: string;
+    constructor(id: int32, tagName: string) {
+        super(id);
+        this.tagName = tagName;
+    }
+    describe(): string { return "Element(" + this.tagName + ") -> " + super.describe(); }
+}
+
+class Button extends Element {
+    label: string;
+    constructor(id: int32, label: string) {
+        super(id, "button");
+        this.label = label;
+    }
+    describe(): string { return "Button['" + this.label + "'] -> " + super.describe(); }
+}
+
+// 3. Data Structures: Stack Implementation
+// ----------------------------------------
+
+class Stack {
+    items: object[] = [];
+    
+    push(item: object): void {
+        let list = this.items;
+        list.push(item);
+    }
+    
+    pop(): object {
+        let list = this.items;
+        return list.pop();
+    }
+    
+    peek(): object {
+        if (this.items.length == 0) return None;
+        return this.items[this.items.length - 1];
+    }
+    
+    isEmpty(): bool {
+        if (this.items.length == 0) {
+            return true;
+        }
+        return false;
+    }
+}
+
+// 4. Algorithms: Binary Search
+// ----------------------------
+
+function binarySearch(arr: int32[], target: int32): int32 {
+    let left = 0;
+    let right = arr.length - 1;
+    
+    while (left <= right) {
+        let mid = Math.floor((left + right) / 2);
+        if (arr[mid] == target) {
+            return mid;
+        }
+        if (arr[mid] < target) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    return -1;
+}
+
+// 5. Error Handling: Custom Logic
+// -------------------------------
+
+class ValidationResult {
+    isValid: boolean;
+    error: string;
+    constructor(valid: boolean, err: string) {
+        this.isValid = valid;
+        this.error = err;
+    }
+}
+
+function validate(input: string): ValidationResult {
+    if (input.length == 0) {
+        return new ValidationResult(false, "Empty string");
+    }
+    if (input == "error") {
+        return new ValidationResult(false, "Invalid keyword");
+    }
+    return new ValidationResult(true, "");
+}
+
+function main() {
+    print("=== Modern Capabilities Test Suite ===");
+
+    print("\n--- Advanced OOP: Deep Inheritance ---");
+
+    let btn = new Button(1, "Submit");
+    print("Deep Inheritance: Expected: Button['Submit'] -> Element(button) -> Node(1)");
+    print("Actual: ", btn.describe());
+
+    // Polymorphism
+    print("\n--- Polymorphism: Mixed Collection ---");
+    let nodes: Node[] = [
+        new Node(1),
+        new Element(2, "div"),
+        new Button(3, "OK")
+    ];
+
+    nodes.forEach((n) => {
+        print("Item: ", n.describe());
+    });
+
+
+    // 2. Functional Patterns: Map/Filter Chain
+    // ----------------------------------------
+    print("\n--- Functional Patterns ---");
+
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    // Chain: Filter even -> Map square -> Sum
+    // Note: Chaining requires creating intermediate variables if fluent syntax isn't fully supported on Array prototype
+    let evens = numbers.filter(n => n % 2 == 0);
+    let squares = evens.map(n => n * n);
+
+    let sumSquares = 0;
+    for (let i = 0; i < squares.length; i = i + 1) {
+        sumSquares = sumSquares + squares[i];
+    }
+
+    print("Even Squares Sum: Expected: 220, Actual: ", sumSquares);
+    // (2^2 + 4^2 + 6^2 + 8^2 + 10^2) = 4 + 16 + 36 + 64 + 100 = 220
+
+
+    print("\n--- Data Structures: Generic-like Stack ---");
+
+    let stack = new Stack();
+    stack.push(10);
+    stack.push(20);
+    stack.push(30);
+
+    print("Peek: Expected: 30, Actual: ", stack.peek());
+    print("Pop: Expected: 30, Actual: ", stack.pop());
+    print("Pop: Expected: 20, Actual: ", stack.pop());
+    print("IsEmpty: Expected: false, Actual: ", stack.isEmpty());
+    stack.pop(); // 10
+    print("IsEmpty after clearing: Expected: true, Actual: ", stack.isEmpty());
+
+
+    print("\n--- Algorithms: Binary Search ---");
+
+    let sorted = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    print("Search 40: Expected: 3, Actual: ", binarySearch(sorted, 40));
+    print("Search 90: Expected: 8, Actual: ", binarySearch(sorted, 90));
+    print("Search 25 (Missing): Expected: -1, Actual: ", binarySearch(sorted, 25));
+
+
+    print("\n--- Error Handling Logic ---");
+
+    let r1 = validate("hello");
+    print("Valid input: Expected: true, Actual: ", r1.isValid);
+
+    let r2 = validate("");
+    print("Empty input: Expected: false, Error: Empty string. Actual: ", r2.isValid, ", ", r2.error);
+
+
+    print("\n=== Modern Capabilities Test Complete ===");
+}

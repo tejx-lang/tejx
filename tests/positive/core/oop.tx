@@ -1,0 +1,230 @@
+// OOP Tests (Consolidated)
+// ========================
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+// --- Interfaces & Classes ---
+
+interface Greeter {
+    greet(name: string): void;
+}
+
+class Entity {
+    id: int32;
+    constructor(id: int32) {
+        this.id = id;
+    }
+}
+
+class Robot extends Entity {
+    model: string;
+    constructor(id: int32, model: string) {
+        super(id); 
+        this.id = id;
+        this.model = model;
+    }
+    identify(): string {
+        return this.model;
+    }
+}
+
+extension Robot {
+    greet(name: string): string {
+        return "Hello " + name;
+    }
+    status(): string {
+        return "Operational";
+    }
+}
+
+class Point {
+    x: int32;
+    y: int32;
+    constructor(x: int32, y: int32) {
+        this.x = x;
+        this.y = y;
+    }
+}
+
+class BankAccount {
+    private balance: int32 = 0;
+    public owner: string;
+    static bankName: string = "MyBank";
+
+    constructor(owner: string, initialBalance: int32) {
+        this.owner = owner;
+        this.balance = initialBalance;
+    }
+
+    public deposit(amount: int32): void {
+        this.balance += amount;
+    }
+
+    public getBalance(): int32 {
+        return this.balance;
+    }
+    
+    static getBankName(): string {
+        return BankAccount.bankName;
+    }
+}
+
+class Person {
+    _name: string = "";
+    _age: int32 = 0;
+    
+    constructor(name: string, age: int32) {
+        this._name = name;
+        this._age = age;
+    }
+    
+    get name(): string { return this._name; }
+    set name(value: string) { this._name = value; }
+    
+    get age(): int32 { return this._age; }
+    set age(value: int32) { if (value >= 0) this._age = value; }
+    
+    get info(): string { return this._name + " is " + this._age + " years old"; }
+}
+
+class Animal {
+    name: string;
+    constructor(n: string) { this.name = n; }
+    speak(): string { return "noise"; }
+}
+
+class Dog extends Animal {
+    breed: string;
+    constructor(n: string) {
+        super(n);
+        this.name = n;
+        this.breed = "Unknown";
+    }
+    speak(): string { return "bark"; }
+}
+
+abstract class Shape {
+    protected name: string;
+    constructor() { this.name = "Unknown Shape"; }
+    abstract area(): int32;
+    // describe(): string { return this.name; }
+}
+
+class Circle extends Shape {
+    private radius: int32;
+    constructor(r: int32) {
+        super();
+        this.name = "Circle"; 
+        this.radius = r;
+    }
+    area(): int32 {
+        // approx
+        return 3 * this.radius * this.radius; 
+    }
+}
+
+function test_oop() {
+    print("--- OOP Features ---");
+    let r = new Robot(101, "T-800");
+    assert_eq_string("T-800", r.identify(), "Robot identify");
+    assert_eq_string("Hello Human", r.greet("Human"), "Robot extension greet");
+    assert_eq_string("Operational", r.status(), "Robot extension status");
+
+    // Memory block
+    {
+        let p = new Point(10, 20);
+        assert_eq_int(10, p.x, "Point x");
+    }
+
+    // Static & Encapsulation
+
+    assert_eq_string("MyBank", BankAccount.getBankName(), "Static method");
+    let acc = new BankAccount("Alice", 100);
+    acc.deposit(50);
+    assert_eq_int(150, acc.getBalance(), "Encapsulation deposit");
+
+    // Getter/Setter
+    let p2 = new Person("Alice", 30);
+    assert_eq_string("Alice", p2.name, "Getter name");
+    p2.name = "Bob";
+    assert_eq_string("Bob", p2.name, "Setter name");
+    assert_eq_string("Bob is 30 years old", p2.info, "Computed getter");
+
+    // Inheritance & Abstract
+    let d = new Dog("Buddy");
+    assert_eq_string("bark", d.speak(), "Override method");
+    assert_true(d instanceof Dog, "instanceof Dog");
+    assert_true(d instanceof Animal, "instanceof Animal");
+
+    let c = new Circle(2);
+    assert_eq_int(12, c.area(), "Abstract impl area"); // 3 * 2 * 2
+}
+
+// --- Features Objects ---
+
+function test_objects() {
+    print("--- Objects (Structural) ---");
+    let user = {
+        name: "TejX",
+        age: 1,
+        active: true,
+        address: { city: "Metropolis", zip: 12345 }
+    };
+    assert_eq_string("TejX", user.name, "Object property");
+    assert_eq_string("Metropolis", user.address.city, "Nested object property");
+
+    // Bracket notation
+    assert_eq_string("TejX", "" + user["name"], "Bracket notation");
+
+    // Array inside object
+    let o = { list: [1, 2, 3] };
+    assert_eq_int(2, o.list[1], "Array inside object");
+
+    // Mixed complex
+    let config = {
+        servers: [ { port: 80 }, { port: 8080 } ]
+    };
+    assert_eq_int(8080, config.servers[1].port, "Complex object mixing");
+}
+
+// --- Features Structs ---
+
+function test_structs() {
+    print("--- Structs ---");
+    let point: { x: int32, y: int32 } = { x: 10, y: 20 };
+    assert_eq_int(10, point.x, "Struct x");
+    assert_eq_int(20, point.y, "Struct y");
+}
+
+// --- Features OOP Super ---
+
+class BaseSC {
+    greet(name: string): string { return "Hello " + name + " from Base"; }
+    calc(x: int): int { return x * 2; }
+}
+
+class DerivedSC extends BaseSC {
+    greet(name: string): string {
+        let base_msg = super.greet(name);
+        return base_msg + " (and Derived)";
+    }
+    calc(x: int): int {
+        let base_val = super.calc(x);
+        return base_val + 1;
+    }
+}
+
+function test_super() {
+    print("--- Super Calls ---");
+    let d = new DerivedSC();
+    assert_eq_string("Hello Alice from Base (and Derived)", d.greet("Alice"), "Super greet");
+    assert_eq_int(21, d.calc(10), "Super calc"); // 10*2 + 1
+}
+
+function main() {
+    print("=== OOP TESTS START ===");
+    test_oop();
+    test_objects();
+    test_structs();
+    test_super();
+    print("=== OOP TESTS COMPLETE ===");
+}

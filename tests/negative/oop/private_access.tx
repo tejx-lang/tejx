@@ -1,0 +1,11 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that private members cannot be accessed from outside the class.
+
+class Secret {
+    private code: int = 1234;
+}
+
+function main() {
+    let s = new Secret();
+    print(s.code); // Error: code is private
+}

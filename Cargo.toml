@@ -1,6 +1,12 @@
 [package]
-name = "tejxr"
+name = "tejxc"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
+colored = "3.1.1"
+wat = "1.222.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(runtime_build)'] }

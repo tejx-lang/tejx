@@ -1,0 +1,11 @@
+// Negative Test: Function Argument Mismatch
+// EXPECTED: COMPILE_ERROR
+
+function add(a: int32, b: int32): int32 {
+    return a + b;
+}
+
+function main() {
+    add(10); // Error: Too few arguments
+    add(10, "20"); // Error: Type mismatch for argument 2
+}

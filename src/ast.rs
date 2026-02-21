@@ -18,7 +18,8 @@ pub enum Statement {
     FunctionDeclaration(FunctionDeclaration),
     ClassDeclaration(ClassDeclaration),
     #[allow(dead_code)]
-    ProtocolDeclaration(ProtocolDeclaration), // If needed
+    // ProtocolDeclaration(ProtocolDeclaration), // Removed
+ 
     #[allow(dead_code)]
     ExtensionDeclaration(ExtensionDeclaration), // If needed
     EnumDeclaration(EnumDeclaration),
@@ -30,7 +31,7 @@ pub enum Statement {
     },
     InterfaceDeclaration {
         name: String,
-        _methods: Vec<ProtocolMethod>,
+        _methods: Vec<InterfaceMethod>,
         _line: usize, 
         _col: usize
     },
@@ -67,7 +68,13 @@ pub enum Statement {
         _line: usize,
         _col: usize,
     },
-    // ForOfStmt removed (unused)
+    ForOfStmt {
+        variable: BindingNode,
+        iterable: Box<Expression>,
+        body: Box<Statement>,
+        _line: usize,
+        _col: usize,
+    },
     SwitchStmt {
         condition: Box<Expression>,
         cases: Vec<Case>,
@@ -93,7 +100,7 @@ pub enum Statement {
         _col: usize,
     },
     ImportDecl {
-        _names: Vec<String>,
+        _names: Vec<ImportItem>,
         source: String,
         _is_default: bool,
         _line: usize,
@@ -108,8 +115,14 @@ pub enum Statement {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImportItem {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expression {
-    NumberLiteral { value: f64, _line: usize, _col: usize },
+    NumberLiteral { value: f64, _is_float: bool, _line: usize, _col: usize },
     StringLiteral { value: String, _line: usize, _col: usize },
     BooleanLiteral { value: bool, _line: usize, _col: usize },
     Identifier { name: String, _line: usize, _col: usize },
@@ -134,8 +147,13 @@ pub enum Expression {
         _col: usize,
     },
     CallExpr {
-        callee: String, // TODO: This should probably be an Expression in a real compiler, but C++ used string
+        callee: Box<Expression>, 
         args: Vec<Expression>,
+        _line: usize,
+        _col: usize,
+    },
+    SequenceExpr {
+        expressions: Vec<Expression>,
         _line: usize,
         _col: usize,
     },
@@ -144,6 +162,7 @@ pub enum Expression {
         member: String,
         _line: usize,
         _col: usize,
+        _is_namespace: bool,
     },
     ArrayAccessExpr {
         target: Box<Expression>,
@@ -184,6 +203,7 @@ pub enum Expression {
     },
     // TypeofExpr removed
 
+    #[allow(dead_code)]
     MatchExpr {
         target: Box<Expression>,
         arms: Vec<MatchArm>,
@@ -197,6 +217,7 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    #[allow(dead_code)]
     UndefinedExpr { _line: usize, _col: usize },
     NoneExpr { _line: usize, _col: usize },
     SomeExpr {
@@ -234,6 +255,7 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    #[allow(dead_code)]
     BlockExpr {
         statements: Vec<Statement>, // For match arms with blocks
         _line: usize,
@@ -264,6 +286,7 @@ pub struct Parameter {
 pub struct ClassDeclaration {
     pub name: String,
     pub _parent_name: String,
+    pub generic_params: Vec<String>,
     pub _is_abstract: bool,
     pub _implemented_protocols: Vec<String>,
     pub _members: Vec<ClassMember>,
@@ -338,19 +361,13 @@ pub struct Case {
 
 
 #[derive(Debug, Clone)]
-pub struct ProtocolMethod {
+pub struct InterfaceMethod {
     pub _name: String,
     pub _params: Vec<Parameter>,
     pub _return_type: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProtocolDeclaration {
-    pub _name: String,
-    pub _methods: Vec<ProtocolMethod>,
-    pub _line: usize,
-    pub _col: usize,
-}
+// Removed ProtocolDeclaration
 
 #[derive(Debug, Clone)]
 pub struct ExtensionDeclaration {
@@ -380,4 +397,117 @@ pub struct MatchArm {
     pub pattern: BindingNode,
     pub guard: Option<Box<Expression>>,
     pub body: Box<Expression>,
+}
+
+impl Expression {
+    pub fn to_callee_name(&self) -> String {
+        match self {
+            Expression::Identifier { name, .. } => name.clone(),
+            Expression::ThisExpr { .. } => "this".to_string(),
+            Expression::SuperExpr { .. } => "super".to_string(),
+            Expression::NewExpr { class_name, .. } => format!("$new_{}", class_name),
+            Expression::MemberAccessExpr { object, member, .. } => {
+                let base = object.to_callee_name();
+                if base.is_empty() {
+                    "".to_string() // Return empty if base is not a simple name
+                } else {
+                    format!("{}.{}", base, member)
+                }
+            }
+            Expression::StringLiteral { .. } => "(string)".to_string(),
+            Expression::NumberLiteral { .. } => "(number)".to_string(),
+            Expression::BooleanLiteral { .. } => "(bool)".to_string(),
+            Expression::ArrayLiteral { .. } => "(array)".to_string(),
+            Expression::ObjectLiteralExpr { .. } => "(object)".to_string(),
+            _ => "".to_string(),
+        }
+    }
+
+    pub fn get_line(&self) -> usize {
+        match self {
+             Expression::NumberLiteral { _line, .. } => *_line,
+             Expression::StringLiteral { _line, .. } => *_line,
+             Expression::BooleanLiteral { _line, .. } => *_line,
+             Expression::Identifier { _line, .. } => *_line,
+             Expression::BinaryExpr { _line, .. } => *_line,
+             Expression::UnaryExpr { _line, .. } => *_line,
+             Expression::AssignmentExpr { _line, .. } => *_line,
+             Expression::CallExpr { _line, .. } => *_line,
+             Expression::MemberAccessExpr { _line, .. } => *_line,
+             Expression::ArrayAccessExpr { _line, .. } => *_line,
+             Expression::ObjectLiteralExpr { _line, .. } => *_line,
+             Expression::ArrayLiteral { _line, .. } => *_line,
+             Expression::NewExpr { _line, .. } => *_line,
+             Expression::ThisExpr { _line, .. } => *_line,
+             Expression::SuperExpr { _line, .. } => *_line,
+             Expression::LambdaExpr { _line, .. } => *_line,
+             Expression::AwaitExpr { _line, .. } => *_line,
+             Expression::MatchExpr { _line, .. } => *_line,
+             Expression::TernaryExpr { _line, .. } => *_line,
+             Expression::UndefinedExpr { _line, .. } => *_line,
+             Expression::NoneExpr { _line, .. } => *_line,
+             Expression::SomeExpr { _line, .. } => *_line,
+             Expression::OptionalMemberAccessExpr { _line, .. } => *_line,
+             Expression::OptionalCallExpr { _line, .. } => *_line,
+             Expression::OptionalArrayAccessExpr { _line, .. } => *_line,
+             Expression::NullishCoalescingExpr { _line, .. } => *_line,
+             Expression::SpreadExpr { _line, .. } => *_line,
+             Expression::BlockExpr { _line, .. } => *_line,
+             Expression::SequenceExpr { _line, .. } => *_line,
+        }
+    }
+}
+
+impl Statement {
+    pub fn get_line(&self) -> usize {
+        match self {
+            Statement::VarDeclaration { line, .. } => *line,
+            Statement::FunctionDeclaration(f) => f._line,
+            Statement::ClassDeclaration(c) => c._line,
+            Statement::EnumDeclaration(e) => e._line,
+            Statement::TypeAliasDeclaration { _line, .. } => *_line,
+            Statement::InterfaceDeclaration { _line, .. } => *_line,
+            Statement::ReturnStmt { _line, .. } => *_line,
+            Statement::BreakStmt { _line, .. } => *_line,
+            Statement::ContinueStmt { _line, .. } => *_line,
+            Statement::BlockStmt { _line, .. } => *_line,
+            Statement::IfStmt { _line, .. } => *_line,
+            Statement::WhileStmt { _line, .. } => *_line,
+            Statement::ForStmt { _line, .. } => *_line,
+            Statement::ForOfStmt { _line, .. } => *_line,
+            Statement::SwitchStmt { _line, .. } => *_line,
+            Statement::ExpressionStmt { _line, .. } => *_line,
+            Statement::TryStmt { _line, .. } => *_line,
+            Statement::ThrowStmt { _line, .. } => *_line,
+            Statement::ImportDecl { _line, .. } => *_line,
+            Statement::ExportDecl { _line, .. } => *_line,
+            Statement::ExtensionDeclaration(_) => 0, // Todo
+        }
+    }
+
+    pub fn get_col(&self) -> usize {
+        match self {
+            Statement::VarDeclaration { _col, .. } => *_col,
+            Statement::FunctionDeclaration(f) => f._col,
+            Statement::ClassDeclaration(c) => c._col,
+            Statement::EnumDeclaration(e) => e._col,
+            Statement::TypeAliasDeclaration { _col, .. } => *_col,
+            Statement::InterfaceDeclaration { _col, .. } => *_col,
+            Statement::ReturnStmt { _col, .. } => *_col,
+            Statement::BreakStmt { _col, .. } => *_col,
+            Statement::ContinueStmt { _col, .. } => *_col,
+            Statement::BlockStmt { _col, .. } => *_col,
+            Statement::IfStmt { _col, .. } => *_col,
+            Statement::WhileStmt { _col, .. } => *_col,
+            Statement::ForStmt { _col, .. } => *_col,
+            Statement::ForOfStmt { _col, .. } => *_col,
+            Statement::SwitchStmt { _col, .. } => *_col,
+            Statement::ExpressionStmt { _col, .. } => *_col,
+            Statement::TryStmt { _col, .. } => *_col,
+            Statement::ThrowStmt { _col, .. } => *_col,
+            Statement::ImportDecl { _col, .. } => *_col,
+            Statement::ExportDecl { _col, .. } => *_col,
+            Statement::ExtensionDeclaration(_) => 0, // Todo
+        }
+    }
 }

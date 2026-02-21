@@ -1,0 +1,57 @@
+
+// Linked List Traversal (Destructive)
+// ===================================
+
+class Node {
+    value: int32;
+    next: Node;
+
+    constructor(val: int32) {
+        this.value = val;
+        this.next = None;
+    }
+}
+
+function main() {
+    print("--- Linked List Test ---");
+
+    // Build List: 1 -> 2 -> 3
+    let head = new Node(1);
+    let n2 = new Node(2);
+    let n3 = new Node(3);
+
+    // Wiring up moves ownership
+    n2.next = n3; 
+    // n3 is moved into n2.next
+    
+    head.next = n2;
+    // n2 is moved into head.next
+
+    // Traversal
+    print("Traversing (Destructive):");
+    
+    let current = head;
+    // head is moved to current. head is now Moved.
+
+    while (current != None) {
+        print("Node:", current.value);
+        
+        let nextNode = current.next;
+        // current.next is moved to nextNode.
+        // current.next is now None (conceptually primitive 0)
+        // But since we destructively read, 'current' object loses 'next'.
+        
+        // Check if we can still access value (primitive copy)
+        // print("Still have value:", current.value);
+
+        // Move current to next
+        current = nextNode;
+    }
+
+    print("Traversal Complete.");
+    
+    // Attempting to access head would be compile error (Moved)
+    // Attempting to access n2 would be compile error (Moved)
+    
+    print("--- End Test ---");
+}

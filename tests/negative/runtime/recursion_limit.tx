@@ -1,0 +1,12 @@
+// EXPECTED: RUNTIME_ERROR
+// Description: Verify that infinite recursion eventually crashes the program (Stack Overflow).
+
+function infinite(n: int) {
+    // No base case
+    infinite(n + 1);
+    print(n); // Defeat TCO
+}
+
+function main() {
+    infinite(1);
+}

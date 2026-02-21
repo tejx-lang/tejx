@@ -1,0 +1,36 @@
+// Operator Tests
+// ==============
+
+import { assert_eq_int } from "../utils.tx";
+
+function main() {
+    print("--- Operator Tests ---");
+
+    // Compound Assignment
+    let val = 10;
+    val += 5; 
+    assert_eq_int(15, val, "+=");
+    
+    val -= 5;
+    assert_eq_int(10, val, "-=");
+    
+    val *= 2; 
+    assert_eq_int(20, val, "*=");
+    
+    val /= 2;
+    assert_eq_int(10, val, "/=");
+
+    // Increment/Decrement
+    let x = 0;
+    x++;
+    assert_eq_int(1, x, "post-inc");
+    ++x;
+    assert_eq_int(2, x, "pre-inc");
+    
+    x--;
+    assert_eq_int(1, x, "post-dec");
+    --x;
+    assert_eq_int(0, x, "pre-dec");
+
+    print("Operator tests complete!");
+}

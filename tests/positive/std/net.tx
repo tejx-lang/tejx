@@ -1,0 +1,93 @@
+// Network Tests
+// =============
+import std:net;
+import std:http;
+import { assert_eq_int, assert_true } from "../utils.tx";
+
+async function test_http_sync() {
+    print("--- HTTP Sync ---");
+    // External call, might fail if offline. We can't strictly assert success content, 
+    // but we can assert call mechanics.
+    // Use widely available endpoint.
+    let url = "http://example.com";
+    print("GET Sync: ", url);
+    let res = http.getSync(url);
+    if (res != "") {
+        print("Success Sync. Length: ", res.length);
+        assert_true(res.length > 0, "Response received");
+    } else {
+        print("WARN: HTTP Sync request failed or empty (network issue?)");
+    }
+}
+
+async function test_http_async() {
+    print("--- HTTP Async ---");
+    let url = "http://example.com";
+    print("GET Async: ", url);
+    let res = await http.get(url);
+    if (res != "") {
+        print("Success Async. Length: ", res.length);
+        assert_true(res.length > 0, "Async Response received");
+    } else {
+        print("WARN: HTTP Async request failed or empty");
+    }
+}
+
+function test_tcp_connect() {
+    print("--- TCP Connect ---");
+    let stream = net.connect("google.com:80");
+    print("Connect result: ", stream);
+    
+    if (stream != -1) {
+        print("Connected to google.com:80");
+        net.close(stream);
+        assert_true(true, "TCP Connect success");
+    } else {
+        print("WARN: TCP Connect failed (network issue?)");
+    }
+}
+
+async function test_parallel_requests() {
+    print("--- Parallel Requests ---");
+    let url = "http://example.com";
+    let p1 = http.get(url);
+    let p2 = http.get(url);
+    
+    let results = await Promise.all([p1, p2]);
+    if (results.length == 2) {
+         print("Parallel fetch done.");
+         // if one failed, length might be 0 string.
+         // assert mechanics mainly.
+    }
+}
+
+async function test_404() {
+    print("--- HTTP 404 ---");
+    let url = "http://google.com/this-page-definitely-does-not-exist-123";
+    let res = await http.get(url);
+    // 404 usually returns a body (error page).
+    print("404 Response Length: ", res.length);
+}
+
+async function test_dns_fail() {
+    print("--- DNS Failure ---");
+    let url = "http://this-domain-is-fake-and-should-fail-12345.com";
+    try {
+        await http.get(url);
+        print("Unexpected success for bad DNS");
+    } catch (e) {
+        print("Caught expected error for bad DNS: ", e);
+        // assert_true(true, "Caught DNS error");
+    }
+}
+
+async function main() {
+    print("=== NET TESTS START ===");
+    test_tcp_connect();
+    test_http_sync();
+    await test_http_async();
+    await test_parallel_requests();
+    await test_404();
+    await test_dns_fail();
+    print("=== NET TESTS COMPLETE ===");
+}

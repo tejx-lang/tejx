@@ -1,0 +1,53 @@
+import { Map } from "std:collections";
+
+function getFrequencyKey(word: string): string {
+  let chars = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"];
+  let counts = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+  
+  for (let i = 0; i < word.length; i++) {
+    let c = word[i];
+    for (let j = 0; j < 26; j++) {
+      if (c == chars[j]) {
+        counts[j] = counts[j] + 1;
+        break;
+      }
+    }
+  }
+  
+  let key = "";
+  for (let i = 0; i < 26; i++) {
+    key = key + counts[i] + "#";
+  }
+  return key;
+}
+
+function groupAnagrams(words: string[]): void {
+  let groups: Map<string, string[]> = new Map();
+
+  for (let i = 0; i < words.length; i++) {
+    let word = words[i];
+    let key = getFrequencyKey(word);
+    
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    let list = groups.get(key);
+    list.push(word);
+  }
+
+  // Print grouped anagrams using keys()
+  let keys = groups.keys();
+  print("Number of groups: Expected: 3, Actual: ", keys.length);
+  
+  for (let i = 0; i < keys.length; i++) {
+    let key = keys[i];
+    let list = groups.get(key);
+    print("Group: ", list);
+  }
+}
+
+
+function main(): void {
+  groupAnagrams(["eat", "tea", "tan", "ate", "nat", "bat"]);
+}
+

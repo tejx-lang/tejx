@@ -1,0 +1,19 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that getter-only properties cannot be assigned to.
+
+class Box {
+    _val: int;
+    constructor(v: int) {
+        this._val = v;
+    }
+
+    get value(): int {
+        return this._val;
+    }
+}
+
+function main() {
+    let b = new Box(100);
+    print(b.value);
+    b.value = 200; // Error: Cannot assign to read-only property 'value'
+}

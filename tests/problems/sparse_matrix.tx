@@ -1,0 +1,20 @@
+class SparseMatrix {
+  values: float[];
+  col_indices: int[];
+  row_ptr: int[];
+
+  // This structure allows O(1) row access even in massive datasets
+  getRow(row_idx: int): void {
+    let start = this.row_ptr[row_idx];
+    let end = this.row_ptr[row_idx + 1];
+    for (let i = start; i < end; i++) {
+        print("Val:", this.values[i], "at Col:", this.col_indices[i]);
+    }
+  }
+}
+
+
+function main() {
+  let sm = new SparseMatrix();
+  print("SparseMatrix instantiated. Expected: true, Actual: ", sm != None);
+}

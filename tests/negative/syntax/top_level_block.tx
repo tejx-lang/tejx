@@ -1,0 +1,6 @@
+// Description: Verify that top-level blocks are disallowed.
+// Expected: COMPILE_ERROR
+
+{
+    print("Block");
+}

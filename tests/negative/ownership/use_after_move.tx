@@ -1,0 +1,14 @@
+// Description: Value is used after being moved to another variable
+// EXPECTED: COMPILE_ERROR
+
+class Data {
+    value = 0;
+}
+
+function main() {
+    let a = new Data();
+    let b = a; // moved
+    
+    // ERROR: use after move
+    print(a.value);
+}

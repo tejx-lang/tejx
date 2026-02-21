@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that a void function cannot return a value.
+
+function doNothing(): void {
+    return 10; // Error: returning int from void function
+}
+
+function main() {
+    doNothing();
+}

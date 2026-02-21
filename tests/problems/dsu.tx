@@ -1,0 +1,29 @@
+class DSU {
+  parent: int[];
+  constructor(n: int) {
+    this.parent = new Array<int>(n);
+    for (let i = 0; i < n; i++) this.parent[i] = i;
+  }
+
+  find(i: int): int {
+    if (this.parent[i] == i) return i;
+    // Path Compression: recursively update parent
+    this.parent[i] = this.find(this.parent[i]);
+    return this.parent[i];
+  }
+
+  union(i: int, j: int): void {
+    let rootI = this.find(i);
+    let rootJ = this.find(j);
+    if (rootI != rootJ) this.parent[rootI] = rootJ;
+  }
+}
+
+
+function main() {
+  let dsu = new DSU(5);
+  dsu.union(0, 1);
+  dsu.union(1, 2);
+  print("Find(0) == Find(2): Expected: true, Actual: ", dsu.find(0) == dsu.find(2));
+  print("Find(0) == Find(3): Expected: false, Actual: ", dsu.find(0) == dsu.find(3));
+}

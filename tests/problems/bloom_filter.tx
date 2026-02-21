@@ -1,0 +1,16 @@
+import { BloomFilter } from "std:collections";
+
+function testBloomFilter(): void {
+    // BloomFilter(size_bits, k_hashes)
+    let bf = new BloomFilter(1000, 3);
+    bf.add("apple");
+    bf.add("banana");
+    
+    print("Contains 'apple': Expected: true, Actual: ", bf.contains("apple"));
+    print("Contains 'orange': Expected: false, Actual: ", bf.contains("orange"));
+}
+
+
+function main(): void {
+  testBloomFilter();
+}

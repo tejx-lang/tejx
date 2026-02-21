@@ -1,0 +1,8 @@
+
+async function fail(): void {
+    print("Should not compile");
+}
+
+function main() {
+    fail();
+}

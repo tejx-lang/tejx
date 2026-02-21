@@ -1,0 +1,7 @@
+// EXPECT: COMPILE_ERROR
+// Test: importing from a file that doesn't exist
+import { foo } from "./nonexistent.tx";
+
+function main(): void {
+    print("should not reach here");
+}

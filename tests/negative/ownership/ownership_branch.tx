@@ -1,0 +1,13 @@
+class Box {
+    value: int;
+}
+
+function main() {
+    let a = new Box();
+    if (true) {
+        let b = a; // 'a' moved
+    } else {
+        // 'a' not moved
+    }
+    print(a.value); // Error: Variable 'a' maybe moved
+}

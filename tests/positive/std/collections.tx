@@ -1,0 +1,40 @@
+// Collection Tests
+// ================
+
+import { Map, Set } from "std:collections";
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function main() {
+    print("--- Map Tests ---");
+    let m = new Map();
+    m.put("name", "TejX");
+    m.put("version", 1);
+
+    assert_true(m.has("name"), "Map.has('name')");
+    assert_eq_string("TejX", m.at("name"), "Map.get('name')");
+    assert_eq_int(2, m.size(), "Map.size()");
+
+    // Verify instance keys()
+    // Note: keys() format check might need adjustment depending on toString implementation
+    // For now just checking it doesn't crash and returns something
+    let k = m.keys();
+    // print("Map keys: ", k); 
+
+    m.clear();
+    assert_eq_int(0, m.size(), "Map size after clear");
+
+    print("--- Set Tests ---");
+    let setObj = new Set();
+    setObj.add(1);
+    setObj.add(2);
+    setObj.add(2);  // Duplicate
+    setObj.add(3);
+
+    assert_true(setObj.has(1), "Set.has(1)");
+    assert_false(setObj.has(99), "Set.has(99)");
+    assert_eq_int(3, setObj.size(), "Set.size()");
+
+    setObj.delete(1);
+    assert_eq_int(2, setObj.size(), "Set size after delete");
+    assert_false(setObj.has(1), "Set.has(1) after delete");
+}

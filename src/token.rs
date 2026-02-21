@@ -3,29 +3,32 @@
 pub enum TokenType {
     // Keywords
     Function, Return, Let, Const, If, Else, While, For, Break, Continue,
-    Class, New, This, Super, Constructor, Extends, Abstract, Switch, Case, Default, Import, Export, From, Instanceof,
+    Class, New, This, Super, Constructor, Extends, Implements, Extension, Abstract, Switch, Case, Default, Import, Export, From, Instanceof,
     Public, Private, Protected, Static, Async, Await, // OOP Modifiers
-    Protocol, Implements, Extension, // Interfaces
-    Try, Catch, Finally, Throw, Match, Undefined, // Error handling & Types
+    Try, Catch, Finally, Throw, // Error handling
     Some, None, Option, // Option types
-    Get, Set, TypeAlias, Interface, // Property accessors & Type defs
+    Get, Set, Interface, TypeAlias, // Property accessors
     // Primitives
-    TypeNumber, TypeString, TypeBoolean, TypeVoid, TypeAny,
-    TypeInt, TypeFloat, TypeBigInt, TypeBigFloat,
+    TypeString, TypeBoolean, TypeVoid, TypeAny,
+    TypeInt, TypeInt16, TypeInt64, TypeInt128,
+    TypeFloat, TypeFloat16, TypeFloat64,
+    TypeChar,
     // Literals
     Identifier, Number, String, TemplateString, True, False,
     // Symbols
     Plus, Minus, Star, Slash, Modulo, Equals,
-    Dot, Comma, Colon, Semicolon, Ellipsis,
+    Dot, Comma, Colon, DoubleColon, Semicolon, Ellipsis,
     OpenParen, CloseParen, OpenBrace, CloseBrace, OpenBracket, CloseBracket,
     // Logic & Comparison
-    EqualEqual, Bang, BangEqual, Less, LessEqual, Greater, GreaterEqual,
+    EqualEqual, EqualEqualEqual, Bang, BangEqual, BangEqualEqual, Less, LessEqual, Greater, GreaterEqual,
     AmpersandAmpersand, PipePipe,
+    Ampersand, Pipe, Caret, Tilde, LessLess, GreaterGreater,
     // Assignment & Unary Sugar
-    PlusEquals, MinusEquals, StarEquals, SlashEquals,
+    PlusEquals, MinusEquals, StarEquals, SlashEquals, ModuloEquals,
+    AmpersandEquals, PipeEquals, CaretEquals, LessLessEquals, GreaterGreaterEquals,
     PlusPlus, MinusMinus,
     // Control
-    Question, QuestionDot, QuestionQuestion, Arrow, Typeof, Enum,
+    Question, QuestionDot, QuestionQuestion, Arrow, Enum,
     // Contextual keywords
     To, Of,
     // OOP

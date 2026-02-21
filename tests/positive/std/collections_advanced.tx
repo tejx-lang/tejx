@@ -1,0 +1,47 @@
+// Advanced Collections Tests
+// ==========================
+import { 
+    Stack, Queue, MinHeap, MaxHeap, Map, Set, OrderedMap, OrderedSet, BloomFilter, Trie
+} from "std:collections";
+import { assert_eq_int, assert_true, assert_false } from "../utils.tx";
+
+function main() {
+    print("=== ADVANCED COLLECTIONS START ===");
+
+    // MinHeap
+    let minH = new MinHeap();
+    minH.insert(50); minH.insert(10); minH.insert(30);
+    assert_eq_int(10, minH.extractMin(), "MinHeap extract 10");
+    assert_eq_int(30, minH.extractMin(), "MinHeap extract 30");
+
+    // MaxHeap
+    let maxH = new MaxHeap();
+    maxH.insertMax(10); maxH.insertMax(50); maxH.insertMax(30);
+    assert_eq_int(50, maxH.extractMax(), "MaxHeap extract 50");
+    
+    // OrderedMap
+    let om = new OrderedMap();
+    om.put("b", 2); om.put("a", 1);
+    assert_eq_int(1, om.at("a"), "OrderedMap get a");
+    assert_eq_int(2, om.size(), "OrderedMap size");
+    
+    // OrderedSet
+    let os = new OrderedSet();
+    os.add(100); os.add(50);
+    assert_true(os.has(50), "OrderedSet has 50");
+    assert_false(os.has(99), "OrderedSet !has 99");
+    
+    // BloomFilter
+    let bf = new BloomFilter(100, 3);
+    bf.add("apple");
+    assert_true(bf.contains("apple"), "BloomFilter contains apple");
+    assert_false(bf.contains("orange"), "BloomFilter !contains orange");
+    
+    // Trie
+    let t = new Trie();
+    t.addPath("hello", 1);
+    assert_eq_int(1, t.find("hello"), "Trie find hello");
+    assert_eq_int(0, t.find("hell"), "Trie !find hell");
+
+    print("=== ADVANCED COLLECTIONS COMPLETE ===");
+}

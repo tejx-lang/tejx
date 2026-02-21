@@ -1,0 +1,82 @@
+// IO & FileSystem Tests
+// =====================
+import std:fs;
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function test_output() {
+    print("--- Output Test ---");
+    print("Sending to stdout...");
+    eprint("Sending to stderr...");
+    // Hard to assert output without capturing it, but ensuring it runs is good.
+}
+
+function test_fs_sync() {
+    print("--- FS Sync Test ---");
+    let path = "test_io_sync.txt";
+    if (fs.existsSync(path)) fs.unlinkSync(path);
+
+    // Write/Read
+    fs.writeFileSync(path, "Hello IO");
+    assert_true(fs.existsSync(path), "File created");
+    
+    let content = fs.readFileSync(path);
+    assert_eq_string("Hello IO", content, "Read content");
+
+    // Append
+    fs.appendFileSync(path, " World");
+    let appended = fs.readFileSync(path);
+    assert_eq_string("Hello IO World", appended, "Appended content");
+
+    // Unlink
+    fs.unlinkSync(path);
+    assert_false(fs.existsSync(path), "File deleted");
+}
+
+async function test_fs_async() {
+    print("--- FS Async Test ---");
+    let path = "test_io_async.txt";
+    if (fs.existsSync(path)) fs.unlinkSync(path);
+
+    await fs.writeFile(path, "Hello Async IO");
+    assert_true(fs.existsSync(path), "Async File created");
+
+    let content = await fs.readFile(path);
+    assert_eq_string("Hello Async IO", content, "Async Read content");
+
+    fs.unlinkSync(path);
+    assert_false(fs.existsSync(path), "Async File deleted");
+}
+
+function test_directories() {
+    print("--- Directory Test ---");
+    let dir = "test_io_dir";
+    if (fs.existsSync(dir)) {
+        // fs.rmdirSync(dir); // assuming unlink handles dirs or rmdir exists? 
+        // features_fs.tx used unlinkSync for dirs (likely recursive or system call wrapper)
+        fs.unlinkSync(dir);
+    }
+    
+    fs.mkdirSync(dir);
+    assert_true(fs.existsSync(dir), "Dir created");
+
+    let filePath = dir + "/file1.txt";
+    fs.writeFileSync(filePath, "1");
+    assert_true(fs.existsSync(filePath), "File in dir created");
+
+    let files = fs.readdirSync(dir);
+    // Depending on impl, might include . or ..? Usually just entries.
+    // If we just created 1 file, length should be 1.
+    assert_eq_int(1, files.length, "Dir files count");
+
+    fs.unlinkSync(dir);
+    assert_false(fs.existsSync(dir), "Dir deleted");
+}
+
+async function main() {
+    print("=== IO TESTS START ===");
+    test_output();
+    test_fs_sync();
+    await test_fs_async();
+    test_directories();
+    print("=== IO TESTS COMPLETE ===");
+}

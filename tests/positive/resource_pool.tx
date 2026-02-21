@@ -1,0 +1,77 @@
+
+// Resource Pool Pattern - Strict Ownership
+// ==========================================
+
+class Resource {
+    id: int32;
+    active: bool;
+
+    constructor(id: int32) {
+        this.id = id;
+        this.active = true;
+        print("Resource Constructed:", this.id);
+    }
+}
+
+class ResourcePool {
+    pool: Resource[];
+
+    constructor() {
+        this.pool = [];
+        // Add some resources
+        this.pool.push(new Resource(1));
+        this.pool.push(new Resource(2));
+    }
+
+    acquire(): Resource {
+        if (this.pool.length > 0) {
+            return this.pool.pop();
+        }
+        return None;
+    }
+
+    release(r: Resource) {
+        if (r != None) {
+             print("Releasing Resource:", r.id);
+             this.pool.push(r);
+        }
+    }
+}
+
+// Function consuming resource removed.
+// Use 'print' directly or add method to Resource.
+
+function main() {
+    print("--- Resource Pool Test ---");
+    let pool = new ResourcePool();
+
+    print("Acquiring 1...");
+    let r1 = pool.acquire(); 
+    // r1 is now owned by this scope.
+
+    if (r1 != None) {
+        print("Using Resource:", r1.id);
+    }
+
+    print("Acquiring 2...");
+    let r2 = pool.acquire();
+    if (r2 != None) {
+        print("Using Resource:", r2.id);
+    }
+
+
+    print("Releasing 1...");
+    pool.release(r1);
+    // r1 is now Moved. Cannot use r1 here.
+    // print(r1.id); // Would be error if uncommented (Use after move)
+
+    print("Releasing 2...");
+    pool.release(r2);
+
+    // Acquire again to verify they are back
+    print("Acquiring Reused...");
+    let r3 = pool.acquire();
+    print("Got Reused:", r3.id);
+
+    print("--- End Test ---");
+}

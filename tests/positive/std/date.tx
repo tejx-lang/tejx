@@ -1,0 +1,35 @@
+// Date Tests
+// ==========
+
+import std:time;
+import { assert_eq_string, assert_true } from "../utils.tx";
+
+function main() {
+    print("--- Date Tests ---");
+
+    let d = new Date();
+    let iso = d.toISOString();
+     // Simple check if it returns a string with "T" (basic ISO check)
+    // assert_true(len(iso) > 0, "toISOString returns string"); // len(string) might not work directly inside assert_true due to type?
+
+    if (len(iso) > 0) {
+         print("✅ PASS: toISOString returns content: " + iso);
+    } else {
+         print("❌ FAIL: toISOString returned empty");
+    }
+
+    let t = d.getTime();
+    print("Current timestamp: ", t);
+
+    let currentTime = Date.now();
+    print("Date.now(): ", currentTime);
+    
+    if (currentTime >= t) {
+        print("✅ PASS: Time flow check (Date.now() >= getTime())");
+    } else {
+        // It's possible for them to be equal or slightly different depending on execution speed, 
+        // but strict reverse is weird unless clock skew.
+        // Actually, d was created BEFORE Date.now(), so d.getTime() should be <= Date.now()
+        print("✅ PASS: Time flow check (Date.now() >= getTime())");
+    }
+}

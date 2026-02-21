@@ -1,0 +1,5 @@
+import { foo } from "./circular_b.tx";
+
+export function bar() {
+    return foo();
+}

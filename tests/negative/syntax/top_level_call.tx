@@ -1,0 +1,8 @@
+// Description: Verify that top-level function calls are disallowed.
+// Expected: COMPILE_ERROR
+
+function foo() {
+    print("Hello");
+}
+
+foo(); // Error: Top-level function calls are not allowed. Use main().

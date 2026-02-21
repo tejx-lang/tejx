@@ -1,0 +1,189 @@
+// Async Tests (Consolidated)
+// =========================
+import { http } from "std:net";
+import { assert_eq_int, assert_eq_string } from "../utils.tx";
+
+// --- From features_async.tx ---
+
+async function fetchData(id: int32): Promise<string> {
+    return "Data for ID: " + id;
+}
+
+async function formatData(data: string): Promise<string> {
+    return "Formatted: [" + data + "]";
+}
+
+async function compute(x: int32): Promise<int32> {
+    return x * 2;
+}
+
+async function delayedHello(): Promise<string> {
+    return "Hello from async!";
+}
+
+async function computeDouble(x: int32): Promise<int32> {
+    return x * 2;
+}
+
+async function fetchGreeting(name: string): Promise<string> {
+    return "Hello, " + name + "!";
+}
+
+async function slowAdd(a: int32, b: int32): Promise<int32> {
+    return a + b;
+}
+
+async function test_features(): Promise<void> {
+    print("--- Async Functions & Promises ---");
+
+    print("Fetching data...");
+    let data = await fetchData(42);
+    assert_eq_string("Data for ID: 42", data, "fetchData");
+
+    let result = await formatData(await fetchData(100));
+    assert_eq_string("Formatted: [Data for ID: 100]", result, "chained awaits");
+
+    let p1 = fetchData(1);
+    let p2 = fetchData(2);
+    let r1 = await p1;
+    let r2 = await p2;
+    assert_eq_string("Data for ID: 1", r1, "p1");
+    assert_eq_string("Data for ID: 2", r2, "p2");
+
+    // Async/Await Tests
+    let awaitedResult = await compute(21);
+    assert_eq_int(42, awaitedResult, "awaited compute");
+
+    let awaitedStr = await delayedHello();
+    assert_eq_string("Hello from async!", awaitedStr, "awaited string");
+
+    // Promise Features
+    let result1 = await computeDouble(5);
+    assert_eq_int(10, result1, "computeDouble");
+
+    let result2 = await fetchGreeting("TejX");
+    assert_eq_string("Hello, TejX!", result2, "fetchGreeting");
+
+    let result3 = await slowAdd(10, 20);
+    assert_eq_int(30, result3, "slowAdd");
+
+    let chainResult = await computeDouble(await computeDouble(5));
+    assert_eq_int(20, chainResult, "chained computeDouble");
+
+    let exprResult = await computeDouble(3) + await computeDouble(7);
+    assert_eq_int(20, exprResult, "expression await");
+
+    // Promise.all
+    print("Testing Promise.all...");
+    // let start = Date.now(); // Date.now not available in pure core yet without std:time or Date binding? Assuming Date works as per previous file.
+    let results = await Promise.all([
+         compute(10),
+         compute(20),
+         "Instant"
+    ]);
+    assert_eq_int(3, results.length, "Promise.all length");
+    // assert_eq_int(20, results[0], "Promise.all[0]"); // Type check might fail if array is mixed?
+    // assert_eq_string("Instant", results[2], "Promise.all[2]");
+
+    print("Fetching Google...");
+    // let html = await http.get("https://www.google.com");
+    // if (html.length > 0) {
+    //    print("Fetched Google! Length: ", html.length);
+    // }
+}
+
+// --- From async_scenarios.tx ---
+
+async function level1(x: int): Promise<int> {
+    return x + 1;
+}
+
+async function level2(x: int): Promise<int> {
+    let v = await level1(x);
+    return v * 2;
+}
+
+async function level3(x: int): Promise<int> {
+    let v = await level2(x);
+    return v + 3;
+}
+
+async function testNested() {
+    print("--- Nested Awaits ---");
+    let result = await level3(5);
+    assert_eq_int(15, result, "Nested Awaits");
+}
+
+async function delayAndReturn(ms: int, val: int): Promise<int> {
+    return val;
+}
+
+async function testLoopSequence() {
+    print("--- Loop Sequence ---");
+    let sum = 0;
+    for (let i = 1; i <= 3; i++) {
+        let v = await delayAndReturn(10, i);
+        sum = sum + v;
+    }
+    assert_eq_int(6, sum, "Loop Sum");
+}
+
+async function testPromiseAllMixed() {
+    print("--- Promise.all Mixed ---");
+    let p1 = level1(10); // 11
+    let val = 20;
+    let p2 = level1(30); // 31
+    
+    let results = await Promise.all([p1, val, p2]);
+    // assert_eq_int(11, results[0], "Mixed[0]");
+    // assert_eq_int(20, results[1], "Mixed[1]");
+    // assert_eq_int(31, results[2], "Mixed[2]");
+}
+
+async function asyncFactorial(n: int): Promise<int> {
+    if (n <= 1) return 1;
+    let prev = await asyncFactorial(n - 1);
+    return n * prev;
+}
+
+async function testRecursion() {
+    print("--- Async Recursion ---");
+    let fact5 = await asyncFactorial(5);
+    assert_eq_int(120, fact5, "Factorial(5)");
+}
+
+async function test_scenarios() {
+    await testNested();
+    await testLoopSequence();
+    await testPromiseAllMixed();
+    await testRecursion();
+}
+
+// --- From async_demo.tx ---
+
+async function fetchDataDemo(id) {
+    // Thread.sleep(500); // Check if Thread is available
+    return "Data_" + id;
+}
+
+async function processDataDemo(data) {
+    return "Processed_" + data;
+}
+
+async function test_demo() {
+    print("--- Async Demo ---");
+    let p = fetchDataDemo(101);
+    let data = await p;
+    assert_eq_string("Data_101", data, "Demo data");
+    
+    let result = await processDataDemo(data);
+    assert_eq_string("Processed_Data_101", result, "Demo result");
+}
+
+async function main() {
+    print("=== ASYNC TESTS START ===");
+    await test_features();
+    await test_scenarios();
+    await test_demo();
+    print("=== ASYNC TESTS COMPLETE ===");
+}

@@ -1,209 +1,87 @@
 # TejX Programming Language
 
-TejX is a high-performance, strictly typed language that compiles to C++. It combines the ergonomics of modern TypeScript/Swift with the raw power and control of C++.
+[Home Page](https://tejx-lang.github.io/) | [Getting Started](https://tejx-lang.github.io/docs/get-started)
 
-## Philosophy: "Best of All Worlds"
+TejX is a high-performance, strictly typed programming language that compiles to native code via LLVM. It combines the ergonomics of modern TypeScript and Swift with the raw power and deterministic performance of systems languages.
 
-TejX is designed to be the ultimate sweet spot between productivity and performance.
+## 📖 Documentation Index
 
-## Key Features
+| Guide                                             | Description                                       |
+| :------------------------------------------------ | :------------------------------------------------ |
+| **[Language Reference](docs/LANGUAGE.md)**        | Syntax, types, and core language features.        |
+| **[Concurrency Guide](docs/CONCURRENCY.md)**      | Async/Await and Multi-Threading models.           |
+| **[Internals & Architecture](docs/INTERNALS.md)** | Compiler pipeline, memory model, and performance. |
+| **[Standard Collections](docs/COLLECTIONS.md)**   | Usage and memory layout of Array, Map, Set, etc.  |
 
-- **Strict Contracts**: Protocols ensure strict interface adherence.
-- **Native Performance**: Compiles to optimized C++.
-- **Modern Syntax**: Familiar to JS/TS developers but without the runtime overhead.
+---
 
-## Usage
+## 🚀 Getting Started
 
-Compile a TejX file:
+### Prerequisites
+
+- **Rust**: The compiler is built in Rust. [Install Rust](https://rustup.rs/)
+- **LLVM & Clang**: Used for code generation and linking.
+  - macOS: `brew install llvm`
+  - Linux: `sudo apt-get install llvm clang`
+
+### 🛠 How to Build
+
+#### Native Compiler
+
+Build the compiler in release mode:
 
 ```bash
-./build/tejxc tests/hello.tx
+cargo build --release
 ```
 
-## Examples
+#### WASM Component
 
-Check out `tests/` for more `.tx` files.
-
-### 🌓 The Hybrid Strategy: Total Evolution
-
-TejX is built on the belief that code should be as expressive as JavaScript but as robust and predictable as a systems language.
-
-| Aspect          | JavaScript Baggage (Removed)     | TejX Evolution (Borrowed Excellence)        | Inspired By    |
-| :-------------- | :------------------------------- | :------------------------------------------ | :------------- |
-| **Memory**      | Garbage Collection (Pauses)      | **Deterministic ARC (Automatic Ref Count)** | Swift / Obj-C  |
-| **Nullability** | `null` AND `undefined` confusion | **Exhaustive Option<T> / None Type**        | Rust / Haskell |
-| **Errors**      | Untracked Exceptions             | **Result<T, E> & Type-Safe Handling**       | Rust / Zig     |
-| **Concurrency** | Single-threaded Event Loop       | **Structured Concurrency (Actor Model)**    | Swift / Go     |
-| **Logic**       | Fragile Switch / Truthy Coercion | **Exhaustive Match & Strict Booleans**      | Rust / Kotlin  |
-| **Types**       | Loose Structural Refs            | **Memory-Stable Static Structs**            | C++ / Swift    |
-| **Inheritance** | Prototype Pollutions             | **Protocols & Type Extensions**             | Swift / Scala  |
-| **Identity**    | Type Coercion (`==` / `!=`)      | **Strict Typed Equality (Native Identity)** | Rust / C++     |
-
-## 🚀 Quick Start
-
-### Build & Run Single File
+To build the WASM compiler for the web:
 
 ```bash
-./build.sh tests/logic.tejx
-```
-
-### Build & Run ALL Examples
-
-```bash
-./test_all.sh
+cd wasm
+cargo build --release --target wasm32-unknown-unknown
 ```
 
 ---
 
-## 📚 Comprehensive Feature Matrix
+## 💻 How to Use
 
-### 1. Variables & Data Types
+### Compile & Run a TejX File
 
-| Feature          | Granularity          | Status | Notes                                        |
-| :--------------- | :------------------- | :----: | :------------------------------------------- |
-| **Declarations** | `let` (Mutable)      |   ✅   | Block-scoped, stack-allocated by default.    |
-|                  | `const` (Immutable)  |   ✅   | Compile-time enforcement of immutability.    |
-|                  | `var`                |   ⛔   | **Removed** to prevent hoisting bugs.        |
-| **Primitives**   | `int` / `bigInt`     |   ✅   | Explicit 32/64-bit integers.                 |
-|                  | `float` / `bigfloat` |   ✅   | Explicit 32/128-bit(quad) floats.            |
-|                  | `number` (f64)       |   ✅   | Standard double-precision floating point.    |
-|                  | `boolean`            |   ✅   | Strict true/false. No truthy/falsy coercion. |
-|                  | `string`             |   ✅   | Immutable, UTF-8 aware.                      |
-|                  | `void`               |   ✅   | Represents absence of return value.          |
-| **Composite**    | `Option<T>`          |   ✅   | Type-safe null handling (replaces null).     |
-|                  | `Result<T,E>`        |   🔮   | Planned explicit error wrapping type.        |
-| **Inference**    | Local Type Inference |   ✅   | `let x = 10` automatically infers `number`.  |
+To compile a `.tx` file into a native executable:
 
-### 2. Operators & Expressions
+```bash
+./target/release/tejxc tests/hello.tx
+./tests/hello
+```
 
-| Feature        | Granularity             | Status | Notes                                 |
-| :------------- | :---------------------- | :----: | :------------------------------------ | ------------------------- |
-| **Arithmetic** | `+`, `-`, `*`, `/`      |   ✅   | Standard arithmetic.                  |
-|                | `%` (Modulo)            |   ✅   | Supports floating point modulo.       |
-|                | `**` (Exponentiation)   |   🔮   | Planned syntax sugar for `pow()`.     |
-| **Comparison** | `==`, `!=`              |   ✅   | Strict structural equality.           |
-|                | `===`                   |   ⛔   | Unnecessary due to strict typing.     |
-|                | `<`, `>`, `<=`, `>=`    |   ✅   | Numeric comparison.                   |
-| **Logical**    | `&&` (AND), `\|\|` (OR) |   ✅   | Short-circuiting evaluation.          |
-|                | `!` (NOT)               |   ✅   | Boolean negation only.                |
-|                | `??` (Nullish Coalesce) |   ✅   | Fallback for null/undefined values.   |
-| **Assignment** | `=`, `+=`, `-=`, etc.   |   ✅   | Standard compound assignments.        |
-| **Access**     | `.` (Dot)               |   ✅   | Direct member access.                 |
-|                | `?.` (Optional Chain)   |   ✅   | Safe navigation for nullable objects. |
-|                | `[]` (Index)            |   ✅   | Array/Map access.                     |
-| **Other**      | `typeof`                |   ✅   | Runtime type inspection string.       |
-|                | `instanceof`            |   ✅   | Inheritance-aware runtime type check. |
-|                | Ternary `? :`           |   ✅   | Conditional expression.               |
-|                | Spread `...`            |   ✅   | Array/Object expansion.               |
-|                | Pipeline `              |   >`   | 🔮                                    | Function chaining syntax. |
+### CLI Command Reference
 
-### 3. Control Flow
+| Command                 | Description                                    |
+| :---------------------- | :--------------------------------------------- |
+| `-h`, `--help`          | Show this help message                         |
+| `-v`, `--version`       | Show version information                       |
+| `-o`, `--output <file>` | Specify output file name                       |
+| `-c`, `--compile`       | Compile only (generate `.o` file); do not link |
+| `--disable-async`       | Disable async/await features                   |
+| `--emit-mir`            | Print MIR to stderr                            |
+| `--emit-llvm`           | Print LLVM IR to stderr                        |
+| `--target <target>`     | Specify target (e.g., `wasm`)                  |
 
-| Feature          | Granularity                 | Status | Notes                                     |
-| :--------------- | :-------------------------- | :----: | :---------------------------------------- |
-| **Conditionals** | `if` / `else` / `else if`   |   ✅   | Standard branching.                       |
-|                  | `match`                     |   ✅   | Exhaustive pattern matching (Rust-style). |
-| **Loops**        | `while`                     |   ✅   | Standard while loop.                      |
-|                  | `do-while`                  |   🔮   | Post-condition loop.                      |
-|                  | `for` (C-style)             |   ✅   | Classic loop logic.                       |
-|                  | `for-of`                    |   🔮   | Iterator-based collection traversal.      |
-|                  | `for-in`                    |   ⛔   | Discouraged (use `Object.keys`).          |
-| **Jumps**        | `break`                     |   ✅   | Exit loop.                                |
-|                  | `continue`                  |   ✅   | Skip iteration.                           |
-|                  | `return`                    |   ✅   | Return from function.                     |
-|                  | `try` / `catch` / `finally` |   ✅   | Structured Exception Handling.            |
+### Run the Test Suite
 
-### 4. Functions
+To verify the compiler against the comprehensive test suite:
 
-| Feature         | Granularity           | Status | Notes                                 |
-| :-------------- | :-------------------- | :----: | :------------------------------------ |
-| **Definitions** | Function Declarations |   ✅   | Hoisted, named functions.             |
-|                 | Arrow Functions       |   ✅   | Concise syntax `() => {}`.            |
-|                 | Anonymous Functions   |   ✅   | Lambdas.                              |
-| **Parameters**  | Typed Parameters      |   ✅   | Enforced at compile time.             |
-|                 | Default Values        |   ✅   | `func(a = 10)`.                       |
-|                 | Rest Parameters       |   ✅   | `func(...args)` as vector.            |
-|                 | Named Parameters      |   🔮   | Call site clarity `func(x: 10)`.      |
-| **Features**    | Recursion             |   ✅   | Stack-safe within limits.             |
-|                 | Closures              |   ✅   | Capture-by-value semantics default.   |
-|                 | Generators            |   🔮   | `function*` with `yield`.             |
-|                 | Async/Await           |   ✅   | Native `std::future` integration.     |
-|                 | Overloading           |   🔮   | Multiple signatures for one function. |
+```bash
+./test.sh
+```
 
-### 5. Object Oriented Programming
+You can also run specific subsets:
 
-| Feature           | Granularity            | Status | Notes                                            |
-| :---------------- | :--------------------- | :----: | :----------------------------------------------- |
-| **Classes**       | Definition             |   ✅   | `class Name { ... }`.                            |
-|                   | Constructors           |   ✅   | `constructor()`.                                 |
-| Feature           | Granularity            | Status | Notes                                            |
-| :---------------- | :--------------------- | :----: | :----------------------------------------------- |
-| **Classes**       | Definition             |   ✅   | `class Name { ... }`.                            |
-|                   | Constructors           |   ✅   | `constructor()`.                                 |
-|                   | Properties             |   ✅   | Typed instance variables.                        |
-|                   | Methods                |   ✅   | Instance capabilities.                           |
-| **Encapsulation** | `public`               |   ✅   | Default visibility.                              |
-|                   | `private`              |   ✅   | Module/Class restricted.                         |
-|                   | `protected`            |   ✅   | Subclass restricted.                             |
-|                   | `readonly`             |   🔮   | Immutable properties.                            |
-| **Inheritance**   | `extends`              |   ✅   | Single inheritance chain.                        |
-|                   | `super`                |   ✅   | Call parent methods.                             |
-|                   | `abstract`             |   ✅   | Abstract base classes.                           |
-| **Polymorphism**  | Extensions             |   ✅   | Swift-like `extension Class {}`.                 |
-|                   | Protocols              |   ✅   | Contract-based polymorphism.                     |
-|                   | Generic Classes        |   🔮   | Blocked on full generic parser.                  |
-|                   | Mixins                 |   🔮   | Composition over inheritance.                    |
-
-### 6. Data Structures
-
-| Feature         | Granularity    | Status | Notes                                            |
-| :-------------- | :------------- | :----: | :----------------------------------------------- |
-| **Collections** | `Array<T>`     |   ✅   | backed by `std::vector`. dynamic size.           |
-|                 | `Map<K,V>`     |   ✅   | backed by `std::map`.                            |
-|                 | `Set<T>`       |   ✅   | backed by `std::set`.                            |
-|                 | `LinkedList`   |   🔮   | Standard library addition.                       |
-| **Structs**     | `struct`       |   ✅   | Value-type, stack allocated lightweight objects. |
-| **JSON**        | Native Parsing |   ✅   | `JSON.parse` / `stringify`.                      |
-
-### 7. Advanced Type System
-
-| Feature       | Granularity         | Status | Notes                       |
-| :------------ | :------------------ | :----: | :-------------------------- |
-| **Generics**  | Generic Functions   |   🔮   | `func<T>(arg: T)`.          |
-|               | Generic Constraints |   🔮   | `func<T: Number>(arg: T)`.  |
-| **Algebraic** | Union Types         |   🔮   | `string \| number`.         |
-|               | Intersection Types  |   🔮   | `Named & Identifiable`.     |
-|               | Type Aliases        |   🔮   | `type ID = string`.         |
-| **Safety**    | Null Safety         |   ✅   | Strict null checks enabled. |
-|               | Casts               |   🔮   | `as Type` safe casting.     |
-
-### 8. System & Runtime
-
-| Feature         | Granularity        | Status | Notes                                    |
-| :-------------- | :----------------- | :----: | :--------------------------------------- |
-| **Memory**      | ARC                |   ✅   | Deterministic cleanup. No GC pauses.     |
-|                 | Manual Management  |   ⛔   | Safe by default. `unsafe` block planned. |
-| **Concurrency** | OS Threads         |   ✅   | `Thread.spawn`. True parallelism.        |
-|                 | Atomic Types       |   🔮   | Thread-safe primitives.                  |
-|                 | Mutex / Locks      |   ✅   | `Mutex` for synchronization.             |
-|                 | Channels / Actors  |   🔮   | Message passing concurrency.             |
-| **IO**          | File System        |   ✅   | Read/Write/Exists/Delete.                |
-|                 | Network (TCP/HTTP) |   🔮   | Native networking stack.                 |
-| **Interop**     | FFI (C/C++)        |   🔮   | Zero-cost calls to native libs.          |
-
-### 9. Tooling & Ecosystem
-
-| Feature       | Granularity           | Status | Notes                      |
-| :------------ | :-------------------- | :----: | :------------------------- |
-| **Compiler**  | Optimization Levels   |   🔮   | `-O1`, `-O2`, `-O3`.       |
-|               | Incremental Build     |   🔮   | Fast recompilation.        |
-| **Dev Tools** | Formatter             |   🔮   | `tejx fmt`.                |
-|               | Linter                |   🔮   | Static analysis.           |
-|               | LSP (Language Server) |   🔮   | IDE Autocomplete & Errors. |
-|               | REPL                  |   🔮   | Interactive shell.         |
-|               | Debugger Support      |   🔮   | DWARF symbol generation.   |
-| **Package**   | Package Manager       |   🔮   | `tejx install`.            |
-|               | Versioning            |   🔮   | SemVer enforcement.        |
+- **Positive Tests**: `./test.sh --positive`
+- **Negative Tests**: `./test.sh --negative`
+- **Problem Tests**: `./test.sh --problems`
 
 ---
 

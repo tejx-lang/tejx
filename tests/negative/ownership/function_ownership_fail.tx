@@ -1,0 +1,22 @@
+
+// Function Ownership - Negative Test
+// ==================================
+
+class Item {
+    name: string;
+    constructor(n: string) { this.name = n; }
+}
+
+function consume(item: Item) {
+    print("Consumed", item.name);
+}
+
+function main() {
+    let item = new Item("Apple");
+    
+    // Move 'item' into 'consume'
+    consume(item);
+    
+    // ERROR: Use of moved variable 'item'
+    print(item.name);
+}

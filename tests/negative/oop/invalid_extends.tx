@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that extending a non-existent class causes a compile error.
+
+class Child extends NonExistentParent {
+    x: int;
+}
+
+function main() {
+    let c = new Child();
+}

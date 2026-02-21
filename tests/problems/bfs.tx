@@ -1,0 +1,56 @@
+import { Map, Set, Queue } from "std:collections";
+
+function bfs(graph: Map<string, string[]>, start: string): void {
+  let visited: Set<string> = new Set();
+  let q: Queue<string> = new Queue();
+
+  q.enqueue(start);
+  visited.add(start);
+
+  let result: string[] = [];
+  while (!q.isEmpty()) {
+    let current = q.dequeue();
+    result.push(current);
+
+    let neighbors = graph.get(current);
+    if (neighbors != None) {
+      for (let i = 0; i < neighbors.length; i++) {
+        let next = neighbors[i];
+        if (!visited.has(next)) {
+          visited.add(next);
+          q.enqueue(next);
+        }
+      }
+    }
+  }
+  
+  print("BFS Traversal: Actual: ", result);
+  
+  let expected = ["A", "B", "C", "D", "E", "F"];
+  print("Expected:", expected);
+  if (result.length != expected.length) {
+      print("❌ ASSERT FAILED: Length mismatch");
+      let crash = 1 / 0;
+  }
+  for (let i = 0; i < result.length; i++) {
+      if (result[i] != expected[i]) {
+          print("❌ ASSERT FAILED: Mismatch at index " + i + ": " + result[i] + " vs " + expected[i]);
+          let crash = 1 / 0;
+      }
+  }
+  print("✅ PASS: BFS Traversal correct");
+}
+
+
+function main() {
+  let graph = new Map();
+
+  graph.set("A", ["B", "C"]);
+  graph.set("B", ["D", "E"]);
+  graph.set("C", ["F"]);
+  graph.set("D", []);
+  graph.set("E", ["F"]);
+  graph.set("F", []);
+
+  bfs(graph, "A");
+}

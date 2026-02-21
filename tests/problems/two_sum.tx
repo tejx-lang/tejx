@@ -1,0 +1,37 @@
+import { Map } from "std:collections";
+
+function findTwoSum(nums: int[], target: int): int[] | None {
+  // Map stores: Value -> Index
+  let prevMap: Map<int, int> = new Map();
+  print("Type of prevMap");
+  
+  for (let i = 0; i < nums.length; i++) {
+    let diff = target - nums[i];
+    
+    if (prevMap.has(diff)) {
+       let idx = prevMap.get(diff);
+       print("Found diff: ", diff, " accessing index: ", idx);
+       return [idx, i];
+    }
+    print("Setting index for ", nums[i], " as ", i);
+    prevMap.set(nums[i], i);
+  }
+
+  return None;
+}
+
+function main(): void {
+  print("Explicit set check:");
+  let m2 = new Map<int, int>();
+  m2.set(100, 0);
+  let v = m2.get(100);
+  print("Get 100 (expect 0): ", v);
+
+  print("Running findTwoSum...");
+  let result = findTwoSum([2, 7, 11, 15], 17);
+  if (result != None) {
+    print("Indices found: Expected: 0 and 3 (values 2+15=17), Actual: ", result[0], "and", result[1]);
+  } else {
+    print("Indices: Expected: Found, Actual: None");
+  }
+}

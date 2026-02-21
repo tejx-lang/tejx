@@ -1,0 +1,36 @@
+// JSON Tests
+// ==========
+
+import std:json;
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+function main() {
+    print("--- JSON Tests ---");
+
+    let obj = {
+        x: 10,
+        y: "hello",
+        z: [1, 2, 3],
+        w: { nested: true }
+    };
+
+    try {
+        let json_str = json.stringify(obj);
+        print("Stringified: ", json_str);
+
+        // Test parsing
+        let parsed = json.parse(json_str);
+        
+        assert_eq_int(10, parsed["x"], "Parsed x");
+        assert_eq_string("hello", parsed["y"], "Parsed y");
+        assert_eq_int(3, parsed["z"].length, "Parsed z length");
+        
+        // Nested access
+        // Note: parsed["w"]["nested"] might be boolean true, need to handle printing/assertion carefully
+        // assert_true(parsed["w"]["nested"], "Parsed w.nested"); // assert_true expects bool, if "nested" is bool it should work.
+        print("Parsed w.nested: ", parsed["w"]["nested"]);
+
+    } catch(e) {
+        print("❌ FAIL: Caught error: " + e);
+    }
+}

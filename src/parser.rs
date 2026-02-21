@@ -4,15 +4,19 @@ use crate::token::{Token, TokenType};
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
-    errors: Vec<String>,
+    errors: Vec<crate::diagnostics::Diagnostic>,
+    filename: String,
+    pub async_enabled: bool,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<Token>, filename: &str) -> Self {
         Self {
             tokens,
             current: 0,
             errors: Vec::new(),
+            filename: filename.to_string(),
+            async_enabled: true,
         }
     }
 
@@ -20,7 +24,7 @@ impl Parser {
         !self.errors.is_empty()
     }
 
-    pub fn get_errors(&self) -> &Vec<String> {
+    pub fn get_errors(&self) -> &Vec<crate::diagnostics::Diagnostic> {
         &self.errors
     }
 
@@ -36,6 +40,8 @@ impl Parser {
         while !self.is_at_end() {
              if let Some(stmt) = self.parse_declaration() {
                 statements.push(stmt);
+            } else {
+                self.synchronize();
             }
         }
         Program { statements }
@@ -49,6 +55,10 @@ impl Parser {
             TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
             TokenType::Function => Some(self.parse_function_declaration(false)),
             TokenType::Async => {
+                if !self.async_enabled {
+                    let t = self.peek();
+                    self.errors.push(crate::diagnostics::Diagnostic::new("async/await is disabled".to_string(), t.line, t.column, self.filename.clone()));
+                }
                 if self.check_next(TokenType::Function) {
                     self.advance(); // consume async
                     Some(self.parse_function_declaration(true))
@@ -57,32 +67,49 @@ impl Parser {
                     Some(self.parse_statement()) 
                 }
             }
-            TokenType::Class => Some(self.parse_class_declaration()),
+            TokenType::Class => Some(self.parse_class_declaration(false)),
             TokenType::Abstract => {
                 if self.check_next(TokenType::Class) {
                      self.advance(); // consume abstract
-                     let mut decl = self.parse_class_declaration();
-                     if let Statement::ClassDeclaration(ref mut c) = decl {
-                         c._is_abstract = true;
-                     }
-                     Some(decl)
+                     Some(self.parse_class_declaration(true))
                 } else {
                      Some(self.parse_statement())
                 }
             }
-            TokenType::Protocol => Some(self.parse_protocol_declaration()),
             TokenType::Interface => Some(self.parse_interface_declaration()),
             TokenType::Extension => Some(self.parse_extension_declaration()),
             TokenType::Enum => Some(self.parse_enum_declaration()),
-            TokenType::TypeAlias => Some(self.parse_type_alias_declaration()),
+            // TokenType::Protocol => Some(self.parse_protocol_declaration()), // Removed
+            TokenType::TypeAlias => Some(self.parse_type_alias_declaration()), // Added
             TokenType::Export => {
-                self.advance(); // consume export
+                let export_token = self.advance().clone(); // consume export
                 let is_default = self.match_token(TokenType::Default);
-                if let Some(decl) = self.parse_declaration() {
+                
+                let decl = match self.peek().token_type {
+                    TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
+                    TokenType::Function => Some(self.parse_function_declaration(false)),
+                    TokenType::Async => {
+                        self.advance(); // consume async
+                        Some(self.parse_function_declaration(true))
+                    }
+                    TokenType::Class => Some(self.parse_class_declaration(false)),
+                    TokenType::Abstract => {
+                        self.advance(); // consume abstract
+                        Some(self.parse_class_declaration(true))
+                    }
+                    TokenType::Interface => Some(self.parse_interface_declaration()),
+                    TokenType::Extension => Some(self.parse_extension_declaration()),
+                    TokenType::Enum => Some(self.parse_enum_declaration()),
+                    TokenType::TypeAlias => Some(self.parse_type_alias_declaration()),
+                    _ => None,
+                };
+
+                if let Some(d) = decl {
                      Some(Statement::ExportDecl {
-                         declaration: Box::new(decl),
+                         declaration: Box::new(d),
                          _is_default: is_default,
-                         _line: 0, _col: 0
+                         _line: export_token.line,
+                         _col: export_token.column
                      })
                 } else {
                     None
@@ -94,30 +121,63 @@ impl Parser {
     }
     
     fn parse_var_declaration(&mut self) -> Statement {
+        self.parse_var_declaration_internal(true)
+    }
+
+    fn parse_var_declaration_internal(&mut self, consume_semicolon: bool) -> Statement {
          let start_token = self.advance().clone(); // let/const
          let is_const = start_token.token_type == TokenType::Const;
          
          let pattern = self.parse_binding_pattern();
          
-         let mut type_annotation = "any".to_string();
+         let mut type_annotation = "".to_string();
          if self.match_token(TokenType::Colon) {
              type_annotation = self.parse_type_annotation();
          }
          
          let mut initializer = None;
          if self.match_token(TokenType::Equals) {
-             initializer = Some(Box::new(self.parse_expression()));
+             initializer = Some(Box::new(self.parse_assignment()));
          }
          
-         self.consume(TokenType::Semicolon, "Expected ';' after variable declaration.");
-         
-         Statement::VarDeclaration {
+         let mut declarations = vec![Statement::VarDeclaration {
              pattern,
              type_annotation,
              initializer,
              is_const,
              line: start_token.line,
              _col: start_token.column
+         }];
+
+         // Handle multiple declarations: let x = 1, y = 2;
+         while self.match_token(TokenType::Comma) {
+             let p = self.parse_binding_pattern();
+             let mut ta = "".to_string();
+             if self.match_token(TokenType::Colon) { ta = self.parse_type_annotation(); }
+             let mut init = None;
+              if self.match_token(TokenType::Equals) { init = Some(Box::new(self.parse_assignment())); }
+             declarations.push(Statement::VarDeclaration {
+                 pattern: p,
+                 type_annotation: ta,
+                 initializer: init,
+                 is_const,
+                 line: start_token.line,
+                 _col: start_token.column
+             });
+         }
+         
+         if consume_semicolon {
+             self.consume(TokenType::Semicolon, "Expected ';' after variable declaration.");
+         }
+         
+         if declarations.len() == 1 {
+             return declarations.pop().unwrap();
+         } else {
+             return Statement::BlockStmt {
+                 statements: declarations,
+                 _line: start_token.line,
+                 _col: start_token.column
+             };
          }
     }
 
@@ -132,22 +192,25 @@ impl Parser {
             t
         } else {
              let t = self.peek().clone();
-             self.errors.push(format!("{} at line {}:{}", error_msg, t.line, t.column));
+             self.errors.push(crate::diagnostics::Diagnostic::new(error_msg.to_string(), t.line, t.column, self.filename.clone()));
+             // Advance to avoid infinite loops
+             self.advance();
              t
         }
     }
 
     fn is_keyword_identifier(&self) -> bool {
         match self.peek().token_type {
-            TokenType::Get | TokenType::Set | TokenType::TypeAlias | TokenType::Interface |
+            TokenType::Get | TokenType::Set | TokenType::Interface |
             TokenType::Enum | TokenType::Async | TokenType::Await | TokenType::Option | 
             TokenType::String | TokenType::Number | 
             TokenType::From | TokenType::To | TokenType::Of | TokenType::Public | TokenType::Private |
             TokenType::Protected | TokenType::Static | TokenType::Abstract |
-            TokenType::Implements | TokenType::Extends | TokenType::Protocol | TokenType::Extension |
+            TokenType::Extends | TokenType::Some | TokenType::None |
             TokenType::TypeAny | TokenType::TypeVoid | TokenType::TypeInt | TokenType::TypeFloat |
-            TokenType::TypeBigInt | TokenType::TypeBigFloat |
-            TokenType::TypeString | TokenType::TypeNumber | TokenType::TypeBoolean => true,
+            TokenType::TypeInt16 | TokenType::TypeInt64 | TokenType::TypeInt128 |
+            TokenType::TypeFloat16 | TokenType::TypeFloat64 | TokenType::TypeChar |
+            TokenType::TypeString | TokenType::TypeBoolean => true,
             _ => false
         }
     }
@@ -193,12 +256,13 @@ impl Parser {
              return BindingNode::LiteralMatch(Box::new(Expression::BooleanLiteral { value: true, _line: 0, _col: 0 }));
         } else if self.match_token(TokenType::False) {
              return BindingNode::LiteralMatch(Box::new(Expression::BooleanLiteral { value: false, _line: 0, _col: 0 }));
-        } else if self.match_token(TokenType::Undefined) {
-             return BindingNode::LiteralMatch(Box::new(Expression::UndefinedExpr { _line: 0, _col: 0 }));
         } else if self.match_token(TokenType::Number) {
-             let t = self.previous().clone();
+             let val = self.previous().clone();
              return BindingNode::LiteralMatch(Box::new(Expression::NumberLiteral { 
-                 value: t.value.parse().unwrap_or(0.0), _line: t.line, _col: t.column 
+                 value: val.value.parse().unwrap_or(0.0),
+                 _is_float: val.value.contains('.'),
+                 _line: val.line,
+                 _col: val.column 
              }));
         } else if self.match_token(TokenType::String) {
              let t = self.previous().clone();
@@ -225,12 +289,13 @@ impl Parser {
              let name = self.previous().value.clone(); // consumed by match_token
              return BindingNode::Identifier(name);
         } else {
-            // Error fallback
-            self.errors.push(format!("Expected binding pattern at line {}", self.peek().line));
+            let t = self.peek().clone();
+            self.errors.push(crate::diagnostics::Diagnostic::new(format!("Expected binding pattern"), t.line, t.column, self.filename.clone()));
             return BindingNode::Identifier("__error__".to_string());
         }
     }
 
+    #[allow(dead_code)]
     fn parse_match_expression(&mut self) -> Expression {
         let start = self.previous().clone(); // 'match' consumed by caller
         self.consume(TokenType::OpenParen, "Expected '(' after match");
@@ -310,13 +375,13 @@ impl Parser {
             loop {
                 let is_rest = self.match_token(TokenType::Ellipsis);
                 let p_name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
-                let mut p_type = "any".to_string();
+                let mut p_type = "".to_string();
                 if self.match_token(TokenType::Colon) {
                     p_type = self.parse_type_annotation();
                 }
                 let mut default_val = None;
                 if self.match_token(TokenType::Equals) {
-                    default_val = Some(Box::new(self.parse_expression()));
+                    default_val = Some(Box::new(self.parse_assignment()));
                 }
                 
                 params.push(Parameter {
@@ -331,7 +396,7 @@ impl Parser {
         }
         self.consume(TokenType::CloseParen, "Expected ')'");
         
-        let mut return_type = "any".to_string();
+        let mut return_type = "".to_string();
         if self.match_token(TokenType::Colon) {
             return_type = self.parse_type_annotation();
         }
@@ -352,9 +417,21 @@ impl Parser {
         })
     }
 
-    fn parse_class_declaration(&mut self) -> Statement {
+    fn parse_class_declaration(&mut self, is_abstract: bool) -> Statement {
         let start = self.consume(TokenType::Class, "Expected 'class'").clone();
         let name = self.consume_identifier("Expected class name").value.clone();
+        
+        // Support generic class: class Node<T>
+        let mut generic_params = Vec::new();
+        if self.match_token(TokenType::Less) {
+            loop {
+                // consume returns &Token, so .value.clone() works
+                let param = self.consume(TokenType::Identifier, "Expected type parameter").value.clone();
+                generic_params.push(param);
+                if !self.match_token(TokenType::Comma) { break; }
+            }
+            self.consume(TokenType::Greater, "Expected '>'");
+        }
         
         // Extends...
         let mut parent_name = "".to_string();
@@ -370,9 +447,9 @@ impl Parser {
             }
         }
         
-        let is_abstract_class = false; // TODO support abstract class decl
+        let is_abstract_class = is_abstract; 
         
-        self.consume(TokenType::OpenBrace, "Expected '{'");
+        self.consume(TokenType::OpenBrace, "Expected '{' before class body.");
         
         let mut members = Vec::new();
         let mut methods = Vec::new();
@@ -383,6 +460,7 @@ impl Parser {
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
              let mut is_static = false;
              let mut is_abstract_member = false;
+             let mut is_async = false;
              let mut access = AccessModifier::Public;
              
              // Modifiers
@@ -392,6 +470,7 @@ impl Parser {
                  else if self.match_token(TokenType::Protected) { access = AccessModifier::Protected; }
                  else if self.match_token(TokenType::Static) { is_static = true; }
                  else if self.match_token(TokenType::Abstract) { is_abstract_member = true; }
+                 else if self.match_token(TokenType::Async) { is_async = true; }
                  else { break; }
              }
              
@@ -402,7 +481,7 @@ impl Parser {
                  if !self.check(TokenType::CloseParen) {
                      loop {
                          let name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
-                         let mut type_name = "any".to_string();
+                         let mut type_name = "".to_string();
                          if self.match_token(TokenType::Colon) {
                              type_name = self.parse_type_annotation();
                          }
@@ -410,10 +489,10 @@ impl Parser {
                          if !self.match_token(TokenType::Comma) { break; }
                      }
                  }
-                 self.consume(TokenType::CloseParen, "Expected ')'");
-                 let body = self.parse_block();
-                 
-                 constructor = Some(FunctionDeclaration {
+                  self.consume(TokenType::CloseParen, "Expected ')' after constructor parameters.");
+                  let body = self.parse_block();
+                  
+                  constructor = Some(FunctionDeclaration {
                      name: "constructor".to_string(),
                      params,
                      return_type: "void".to_string(),
@@ -431,7 +510,7 @@ impl Parser {
                  let name = self.consume_identifier("Expected getter name").value.clone();
                  self.consume(TokenType::OpenParen, "Expected '('");
                  self.consume(TokenType::CloseParen, "Expected ')'");
-                 let mut return_type = "any".to_string();
+                 let mut return_type = "".to_string();
                  if self.match_token(TokenType::Colon) { return_type = self.parse_type_annotation(); }
                  let body = self.parse_block();
                  getters.push(ClassGetter { _name: name, _return_type: return_type, _body: Box::new(body), _access: access.clone() });
@@ -443,7 +522,7 @@ impl Parser {
                  let name = self.consume_identifier("Expected setter name").value.clone();
                  self.consume(TokenType::OpenParen, "Expected '('");
                  let param = self.consume(TokenType::Identifier, "Expected param").value.clone();
-                 let mut p_type = "any".to_string();
+                 let mut p_type = "".to_string();
                  if self.match_token(TokenType::Colon) { p_type = self.parse_type_annotation(); }
                  self.consume(TokenType::CloseParen, "Expected ')'");
                  let body = self.parse_block();
@@ -460,7 +539,7 @@ impl Parser {
                  if !self.check(TokenType::CloseParen) {
                      loop {
                          let p_name = self.consume(TokenType::Identifier, "Expected param").value.clone();
-                         let mut p_type = "any".to_string();
+                         let mut p_type = "".to_string();
                          if self.match_token(TokenType::Colon) { p_type = self.parse_type_annotation(); }
                          params.push(Parameter { name: p_name, type_name: p_type, _default_value: None, _is_rest: false });
                          if !self.match_token(TokenType::Comma) { break; }
@@ -478,14 +557,14 @@ impl Parser {
                  };
                  
                  methods.push(ClassMethod {
-                     func: FunctionDeclaration { name, params, return_type, body, _is_async: false, _line: 0, _col: 0 },
+                     func: FunctionDeclaration { name, params, return_type, body, _is_async: is_async, _line: 0, _col: 0 },
                      _access: access.clone(),
                      is_static: is_static,
                      _is_abstract: is_abstract_member
                  });
              } else {
                  // Field
-                 let mut type_name = "any".to_string();
+                 let mut type_name = "".to_string();
                  if self.match_token(TokenType::Colon) { type_name = self.parse_type_annotation(); }
                  let mut initializer = None;
                  if self.match_token(TokenType::Equals) {
@@ -502,11 +581,37 @@ impl Parser {
                  });
              }
         }
-        self.consume(TokenType::CloseBrace, "Expected '}'");
+           if self.is_at_end() && !self.check(TokenType::CloseBrace) {
+            self.errors.push(crate::diagnostics::Diagnostic::new(
+                format!("Unclosed class body for '{}' starting at line {}:{}", name, start.line, start.column),
+                self.previous().line,
+                self.previous().column + self.previous().value.len(),
+                self.filename.clone()
+            ));
+        } else {
+            self.consume(TokenType::CloseBrace, "Expected '}' after class body.");
+        }
         
+        if constructor.is_none() {
+            constructor = Some(FunctionDeclaration {
+                name: "constructor".to_string(),
+                params: vec![],
+                return_type: "void".to_string(),
+                body: Box::new(Statement::BlockStmt { 
+                    statements: vec![],
+                    _line: start.line,
+                    _col: start.column
+                }),
+                _is_async: false,
+                _line: start.line,
+                _col: start.column
+            });
+        }
+
         Statement::ClassDeclaration(ClassDeclaration {
             name,
             _parent_name: parent_name,
+            generic_params,
             _is_abstract: is_abstract_class,
             _implemented_protocols: implemented_protocols,
             _members: members,
@@ -519,59 +624,44 @@ impl Parser {
         })
     }
 
-    fn parse_protocol_declaration(&mut self) -> Statement {
-         let start = self.consume(TokenType::Protocol, "Expected 'protocol'").clone();
-         let name = self.consume_identifier("Expected protocol name").value.clone();
-         self.consume(TokenType::OpenBrace, "Expected '{'");
-         
-         let mut methods = Vec::new();
-         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-             let method_name = self.consume_identifier("Expected method name").value.clone();
-             self.consume(TokenType::OpenParen, "Expected '('");
-             let mut params = Vec::new();
-             if !self.check(TokenType::CloseParen) {
-                  loop {
-                      let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
-                      self.consume(TokenType::Colon, "Expected ':'");
-                      let p_type = self.parse_type_annotation();
-                      params.push(Parameter { name: p_name, type_name: p_type, _default_value: None, _is_rest: false });
-                      if !self.match_token(TokenType::Comma) { break; }
-                  }
-             }
-             self.consume(TokenType::CloseParen, "Expected ')'");
-             self.consume(TokenType::Colon, "Expected ':'");
-             let ret_type = self.parse_type_annotation();
-             self.consume(TokenType::Semicolon, "Expected ';'");
-             
-             methods.push(ProtocolMethod {
-                 _name: method_name,
-                 _params: params,
-                 _return_type: ret_type
-             });
-         }
-         self.consume(TokenType::CloseBrace, "Expected '}'");
-         Statement::ProtocolDeclaration(ProtocolDeclaration {
-             _name: name,
-             _methods: methods,
-             _line: start.line,
-             _col: start.column
-         })
+    // Removed parse_protocol_declaration
+
+    fn parse_type_alias_declaration(&mut self) -> Statement {
+        let start = self.consume(TokenType::TypeAlias, "Expected 'type'").clone();
+        let name = self.consume_identifier("Expected type name").value.clone();
+        self.consume(TokenType::Equals, "Expected '='");
+        // For now, type alias just stores the type string, or we could parse a TypeNode if we had one.
+        // The AST has TypeAliasDeclaration { ... _type_def: String ... }
+        let type_def = self.parse_type_annotation(); 
+        self.consume(TokenType::Semicolon, "Expected ';'");
+
+        Statement::TypeAliasDeclaration {
+            name,
+            _type_def: type_def,
+            _line: start.line,
+            _col: start.column
+        }
     }
 
     fn parse_extension_declaration(&mut self) -> Statement {
          let start = self.consume(TokenType::Extension, "Expected 'extension'").clone();
-         let target = self.consume_identifier("Expected target type").value.clone();
+         let target_type = self.consume_identifier("Expected type name").value.clone();
          self.consume(TokenType::OpenBrace, "Expected '{'");
          
          let mut methods = Vec::new();
          while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+             // Methods in extension are like methods in class but without modifiers usually?
+             // features_oop.tx uses standard method syntax: greet(name: string): void { ... }
+             // or status(): string { ... }
+             // They look like function declarations but without 'function' keyword.
+             
              let name = self.consume_identifier("Expected method name").value.clone();
              self.consume(TokenType::OpenParen, "Expected '('");
              let mut params = Vec::new();
              if !self.check(TokenType::CloseParen) {
                  loop {
-                     let p_name = self.consume_identifier("Expected param name").value.clone();
-                     let mut p_type = "any".to_string();
+                     let p_name = self.consume(TokenType::Identifier, "Param name").value.clone();
+                     let mut p_type = "".to_string();
                      if self.match_token(TokenType::Colon) {
                          p_type = self.parse_type_annotation();
                      }
@@ -594,13 +684,14 @@ impl Parser {
                  return_type,
                  body: Box::new(body),
                  _is_async: false,
-                 _line: 0, _col: 0 // Use current token line/col if tracked
+                 _line: 0,
+                 _col: 0
              });
          }
          self.consume(TokenType::CloseBrace, "Expected '}'");
          
          Statement::ExtensionDeclaration(ExtensionDeclaration {
-             _target_type: target,
+             _target_type: target_type,
              _methods: methods,
              _line: start.line,
              _col: start.column
@@ -608,7 +699,7 @@ impl Parser {
     }
 
     fn parse_enum_declaration(&mut self) -> Statement {
-        let start = self.consume(TokenType::Enum, "Expected 'enum'").clone();
+         let start = self.consume(TokenType::Enum, "Expected 'enum'").clone();
         let name = self.consume_identifier("Expected enum name").value.clone();
         self.consume(TokenType::OpenBrace, "Expected '{'");
         
@@ -632,45 +723,73 @@ impl Parser {
         })
     }
 
-    fn parse_type_alias_declaration(&mut self) -> Statement {
-        let start = self.consume(TokenType::TypeAlias, "Expected 'type'").clone();
-        let name = self.consume(TokenType::Identifier, "Expected type alias name").value.clone();
-        
-        // Handle generics <T> if present (ignoring for now)
-        if self.match_token(TokenType::Less) {
-             while !self.check(TokenType::Greater) && !self.is_at_end() {
-                 self.advance();
-             }
-             self.consume(TokenType::Greater, "Expected '>'");
-        }
-        
-        self.consume(TokenType::Equals, "Expected '='");
-        let type_def = self.parse_type_annotation();
-        self.consume(TokenType::Semicolon, "Expected ';'");
-        
-        Statement::TypeAliasDeclaration {
-            name,
-            #[allow(dead_code)]
-            _type_def: type_def,
-            _line: start.line,
-            _col: start.column
-        }
-    }
 
     fn parse_import_statement(&mut self) -> Statement {
         let start = self.consume(TokenType::Import, "Expected 'import'").clone();
         
+        // Check for 'import std:module;' syntax
+        if self.check(TokenType::Identifier) && self.peek().value == "std" {
+            self.advance(); // consume 'std'
+            if self.match_token(TokenType::Colon) {
+                let module_name = self.consume(TokenType::Identifier, "Expected module name").value.clone();
+                self.consume(TokenType::Semicolon, "Expected ';'");
+                return Statement::ImportDecl {
+                    _names: vec![],
+                    source: format!("std:{}", module_name),
+                    _is_default: false,
+                    _line: start.line,
+                    _col: start.column
+                };
+            }
+            // Fallback if it was just an identifier 'std' but not followed by ':'
+            let names = vec![ImportItem { name: "std".to_string(), alias: None }];
+            let is_default = true;
+            
+            // Re-use logic for 'import name from "..."'
+            if self.check(TokenType::Identifier) {
+                 let t = self.peek();
+                 if t.value == "from" {
+                     self.advance();
+                 }
+            } else if self.match_token(TokenType::From) {
+                 // ok
+            }
+            
+            let source = self.consume(TokenType::String, "Expected module path").value.clone();
+            self.consume(TokenType::Semicolon, "Expected ';'");
+            
+            return Statement::ImportDecl {
+                _names: names,
+                source,
+                _is_default: is_default,
+                _line: start.line,
+                _col: start.column
+            };
+        }
+
         let mut names = Vec::new();
         let mut is_default = false;
         
         // Check if default import: import name from "..."
         if self.check(TokenType::Identifier) {
-             names.push(self.consume_identifier("Expected import name").value.clone());
+             let name = self.consume_identifier("Expected import name").value.clone();
+             let mut alias = None;
+             if self.check(TokenType::Identifier) && self.peek().value == "as" {
+                 self.advance(); // consume 'as'
+                 alias = Some(self.consume_identifier("Expected alias after 'as'").value.clone());
+             }
+             names.push(ImportItem { name, alias });
              is_default = true;
         } else if self.match_token(TokenType::OpenBrace) {
-             // Named imports: import { a, b } from "..."
+             // Named imports: import { a, b as c } from "..."
              while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-                 names.push(self.consume_identifier("Expected import name").value.clone());
+                 let name = self.consume_identifier("Expected import name").value.clone();
+                 let mut alias = None;
+                 if self.check(TokenType::Identifier) && self.peek().value == "as" {
+                     self.advance(); // consume 'as'
+                     alias = Some(self.consume_identifier("Expected alias after 'as'").value.clone());
+                 }
+                 names.push(ImportItem { name, alias });
                  if self.check(TokenType::Comma) { self.advance(); }
              }
              self.consume(TokenType::CloseBrace, "Expected '}'");
@@ -728,7 +847,7 @@ impl Parser {
                 self.consume(TokenType::Colon, "Expected ':'");
                 let ret_type = self.parse_type_annotation();
                 self.consume(TokenType::Semicolon, "Expected ';'");
-                methods.push(ProtocolMethod { _name: member_name, _params: params, _return_type: ret_type });
+                methods.push(InterfaceMethod { _name: member_name, _params: params, _return_type: ret_type });
             } else {
                 // Field-like in interface: name: type;
                 self.consume(TokenType::Colon, "Expected ':'");
@@ -750,15 +869,29 @@ impl Parser {
     }
     
     fn parse_type_annotation(&mut self) -> String {
+        let mut base_type = self.parse_base_type();
+        
+        // Union Type: A | B
+        while self.match_token(TokenType::Pipe) {
+            let next_type = self.parse_single_type();
+            base_type.push_str(" | ");
+            base_type.push_str(&next_type);
+        }
+        
+        base_type
+    }
+
+    fn parse_single_type(&mut self) -> String {
+         self.parse_base_type()
+    }
+
+    fn parse_base_type(&mut self) -> String {
         // Function type: (params) => returnType
         if self.match_token(TokenType::OpenParen) {
              let mut params_str = String::new();
              params_str.push('(');
              if !self.check(TokenType::CloseParen) {
                   loop {
-                      // format: name: type or just type?
-                      // features_types.tx/features_lambdas.tx: (x: number) => ...
-                      // We need to parse identifier then colon then type, OR just identifier as type
                       if self.check(TokenType::Identifier) && self.check_next(TokenType::Colon) {
                            let name = self.consume(TokenType::Identifier, "Param name").value.clone();
                            self.consume(TokenType::Colon, "Expected ':'");
@@ -775,9 +908,10 @@ impl Parser {
                   }
              }
              self.consume(TokenType::CloseParen, "Expected ')'");
+             params_str.push(')');
              self.consume(TokenType::Arrow, "Expected '=>'");
              let ret_type = self.parse_type_annotation();
-             return format!("({}) => {}", params_str, ret_type);
+             return format!("{} => {}", params_str, ret_type);
         }
         
         // Object Type: { x: number, y: string }
@@ -822,30 +956,36 @@ impl Parser {
              }
              
         } else {
-            // Primitive keywords that might be TokenTypes
             if self.match_token(TokenType::TypeAny) { base_type = "any".to_string(); }
             else if self.match_token(TokenType::TypeVoid) { base_type = "void".to_string(); }
             else if self.match_token(TokenType::TypeInt) { base_type = "int".to_string(); }
+            else if self.match_token(TokenType::TypeInt16) { base_type = "int16".to_string(); }
+            else if self.match_token(TokenType::TypeInt64) { base_type = "int64".to_string(); }
+            else if self.match_token(TokenType::TypeInt128) { base_type = "int128".to_string(); }
             else if self.match_token(TokenType::TypeFloat) { base_type = "float".to_string(); }
-            else if self.match_token(TokenType::TypeBigInt) { base_type = "bigInt".to_string(); }
-            else if self.match_token(TokenType::TypeBigFloat) { base_type = "bigfloat".to_string(); }
+            else if self.match_token(TokenType::TypeFloat16) { base_type = "float16".to_string(); }
+            else if self.match_token(TokenType::TypeFloat64) { base_type = "float64".to_string(); }
+            else if self.match_token(TokenType::TypeChar) { base_type = "char".to_string(); }
             else if self.match_token(TokenType::TypeString) { base_type = "string".to_string(); }
-            else if self.match_token(TokenType::TypeBoolean) { base_type = "boolean".to_string(); }
-            else if self.match_token(TokenType::TypeNumber) { base_type = "number".to_string(); }
+            else if self.match_token(TokenType::TypeBoolean) { base_type = "bool".to_string(); }
             else {
                  let t = self.peek().clone();
-                 self.errors.push(format!("Expected type at line {}:{}", t.line, t.column));
+                 self.errors.push(crate::diagnostics::Diagnostic::new(format!("Expected type"), t.line, t.column, self.filename.clone()));
                  self.advance();
                  return "any".to_string();
             }
         }
         
-        // Array syntax: type[]
         while self.match_token(TokenType::OpenBracket) {
-            self.consume(TokenType::CloseBracket, "Expected ']'");
-            base_type.push_str("[]");
+            if self.check(TokenType::Number) {
+                let size = self.consume(TokenType::Number, "Expected size").value.clone();
+                self.consume(TokenType::CloseBracket, "Expected ']'");
+                base_type.push_str(&format!("[{}]", size));
+            } else {
+                self.consume(TokenType::CloseBracket, "Expected ']'");
+                base_type.push_str("[]");
+            }
         }
-        
         base_type
     }
 
@@ -897,20 +1037,32 @@ impl Parser {
         let mut statements = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
              if let Some(stmt) = self.parse_declaration() {
+
                 statements.push(stmt);
             }
         }
-        self.consume(TokenType::CloseBrace, "Expected '}'");
+        
+        if self.is_at_end() && !self.check(TokenType::CloseBrace) {
+            self.errors.push(crate::diagnostics::Diagnostic::new(
+                format!("Unclosed block starting at line {}:{}", start.line, start.column),
+                self.previous().line,
+                self.previous().column + self.previous().value.len(),
+                self.filename.clone()
+            ));
+        } else {
+            self.consume(TokenType::CloseBrace, "Expected '}' after block.");
+        }
+        
         Statement::BlockStmt { statements, _line: start.line, _col: start.column }
     }
     
     fn parse_if_statement(&mut self) -> Statement {
         let start = self.consume(TokenType::If, "Expected 'if'").clone();
-        self.consume(TokenType::OpenParen, "Expected '('");
+        self.consume(TokenType::OpenParen, "Expected '(' after 'if'.");
         let condition = self.parse_expression();
-        self.consume(TokenType::CloseParen, "Expected ')'");
+        self.consume(TokenType::CloseParen, "Expected ')' after if condition.");
         
-        let then_branch = self.parse_statement();
+        let then_branch = Box::new(self.parse_statement());
         let mut else_branch = None;
         if self.match_token(TokenType::Else) {
              else_branch = Some(Box::new(self.parse_statement()));
@@ -918,7 +1070,7 @@ impl Parser {
         
         Statement::IfStmt {
             condition: Box::new(condition),
-            then_branch: Box::new(then_branch),
+            then_branch,
             else_branch,
             _line: start.line,
             _col: start.column
@@ -927,9 +1079,9 @@ impl Parser {
     
     fn parse_while_statement(&mut self) -> Statement {
         let start = self.consume(TokenType::While, "Expected 'while'").clone();
-        self.consume(TokenType::OpenParen, "Expected '('");
+        self.consume(TokenType::OpenParen, "Expected '(' after 'while'.");
         let condition = self.parse_expression();
-        self.consume(TokenType::CloseParen, "Expected ')'");
+        self.consume(TokenType::CloseParen, "Expected ')' after while condition.");
         let body = self.parse_statement();
         
         Statement::WhileStmt {
@@ -942,45 +1094,83 @@ impl Parser {
     
     fn parse_for_statement(&mut self) -> Statement {
         let start = self.consume(TokenType::For, "Expected 'for'").clone();
-        self.consume(TokenType::OpenParen, "Expected '('");
-        
-        // Check for for-of logic (omitted for brevity in this step, doing C-style)
-        // TODO: Add for-of support properly
-        
-        let mut init = None;
-        if self.match_token(TokenType::Semicolon) {
-             // empty
-        } else if self.check(TokenType::Let) || self.check(TokenType::Const) {
-             init = Some(Box::new(self.parse_var_declaration())); 
-             // Loop logic needs cleanup as var_decl consumes semicolon.
-             // C-style for usually looks closely at semicolon usage.
-             // parse_var_declaration consumes ';'. 
-        } else {
-             init = Some(Box::new(self.parse_expression_statement()));
-             // expr_stmt consumes ';'.
+        self.consume(TokenType::OpenParen, "Expected '(' after 'for'.");
+
+        // Check for 'for (let x of y)' - simplified peek logic
+        let mut is_for_of = false;
+        let start_pos = self.current;
+        if self.match_token(TokenType::Let) || self.match_token(TokenType::Const) {
+            if self.check(TokenType::Identifier) {
+                self.advance(); // consume ident
+                if self.match_token(TokenType::Colon) { 
+                    self.parse_type_annotation(); 
+                }
+                if self.check(TokenType::Of) {
+                    is_for_of = true;
+                }
+            }
         }
-        
+        self.current = start_pos; // Reset for actual parsing
+
+        if is_for_of {
+            let is_const = self.match_token(TokenType::Const);
+            if !is_const { self.consume(TokenType::Let, "Expected 'let'"); }
+            let pattern = self.parse_binding_pattern();
+            if self.match_token(TokenType::Colon) { self.parse_type_annotation(); }
+            self.consume(TokenType::Of, "Expected 'of'");
+            let iterable = self.parse_expression();
+            self.consume(TokenType::CloseParen, "Expected ')'");
+            let body = self.parse_statement();
+            return Statement::ForOfStmt {
+                variable: pattern,
+                iterable: Box::new(iterable),
+                body: Box::new(body),
+                _line: start.line,
+                _col: start.column,
+            };
+        }
+
+        // Regular for(init; cond; step)
+        let init = if self.match_token(TokenType::Semicolon) {
+            None
+        } else if self.check(TokenType::Let) || self.check(TokenType::Const) {
+            Some(Box::new(self.parse_var_declaration_internal(false)))
+        } else {
+            let expr = self.parse_expression();
+            Some(Box::new(Statement::ExpressionStmt { 
+                _expression: Box::new(expr),
+                _line: start.line,
+                _col: start.column 
+            }))
+        };
+
+        if init.is_some() {
+            // VarDeclaration/Expression already parsed but didn't consume final ';' if we used internal(false)
+            // or if it was just an expression statement, we should expect ';'
+            self.consume(TokenType::Semicolon, "Expected ';' after for init.");
+        }
+
         let mut condition = None;
         if !self.check(TokenType::Semicolon) {
-             condition = Some(Box::new(self.parse_expression()));
+            condition = Some(Box::new(self.parse_expression()));
         }
         self.consume(TokenType::Semicolon, "Expected ';'");
-        
+
         let mut increment = None;
         if !self.check(TokenType::CloseParen) {
-             increment = Some(Box::new(self.parse_expression()));
+            increment = Some(Box::new(self.parse_expression()));
         }
-        self.consume(TokenType::CloseParen, "Expected ')'");
-        
+        self.consume(TokenType::CloseParen, "Expected ')' after for clauses.");
+
         let body = self.parse_statement();
-        
+
         Statement::ForStmt {
             init,
             condition,
             increment,
             body: Box::new(body),
             _line: start.line,
-            _col: start.column
+            _col: start.column,
         }
     }
 
@@ -1008,10 +1198,10 @@ impl Parser {
 
     fn parse_switch_statement(&mut self) -> Statement {
         let start = self.consume(TokenType::Switch, "Expected 'switch'").clone();
-        self.consume(TokenType::OpenParen, "Expected '('");
+        self.consume(TokenType::OpenParen, "Expected '(' after 'switch'.");
         let condition = self.parse_expression();
-        self.consume(TokenType::CloseParen, "Expected ')'");
-        self.consume(TokenType::OpenBrace, "Expected '{'");
+        self.consume(TokenType::CloseParen, "Expected ')' after switch condition.");
+        self.consume(TokenType::OpenBrace, "Expected '{' before switch body.");
         
         let mut cases = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
@@ -1099,7 +1289,22 @@ impl Parser {
     // --- Expressions ---
 
     fn parse_expression(&mut self) -> Expression {
-        self.parse_assignment()
+        self.parse_comma_expression()
+    }
+
+    fn parse_comma_expression(&mut self) -> Expression {
+        let expr = self.parse_assignment();
+        let line = self.peek().line;
+        let col = self.peek().column;
+
+        if self.check(TokenType::Comma) {
+            let mut expressions = vec![expr];
+            while self.match_token(TokenType::Comma) {
+                expressions.push(self.parse_assignment());
+            }
+            return Expression::SequenceExpr { expressions, _line: line, _col: col };
+        }
+        expr
     }
 
     fn parse_assignment(&mut self) -> Expression {
@@ -1107,14 +1312,19 @@ impl Parser {
         
         if self.match_token(TokenType::Equals) || self.match_token(TokenType::PlusEquals) || 
            self.match_token(TokenType::MinusEquals) || self.match_token(TokenType::StarEquals) || 
-           self.match_token(TokenType::SlashEquals) {
-            let op = self.tokens[self.current - 1].token_type.clone();
+           self.match_token(TokenType::SlashEquals) || self.match_token(TokenType::ModuloEquals) ||
+           self.match_token(TokenType::AmpersandEquals) || self.match_token(TokenType::PipeEquals) ||
+           self.match_token(TokenType::CaretEquals) || self.match_token(TokenType::LessLessEquals) ||
+           self.match_token(TokenType::GreaterGreaterEquals) {
+            let op_token = self.tokens[self.current - 1].clone();
+            let op = op_token.token_type;
             let value = self.parse_assignment();
             return Expression::AssignmentExpr {
                 target: Box::new(expr),
                 value: Box::new(value),
                 _op: op,
-                _line: 0, _col: 0
+                _line: op_token.line, 
+                _col: op_token.column
             };
         }
         expr
@@ -1170,8 +1380,57 @@ impl Parser {
     }
 
     fn parse_logical_and(&mut self) -> Expression {
-        let mut expr = self.parse_equality();
+        let mut expr = self.parse_bitwise_or();
         while self.match_token(TokenType::AmpersandAmpersand) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_equality();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+
+    fn parse_bitwise_or(&mut self) -> Expression {
+        let mut expr = self.parse_bitwise_xor();
+        while self.match_token(TokenType::Pipe) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_bitwise_xor();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Expression {
+        let mut expr = self.parse_bitwise_and();
+        while self.match_token(TokenType::Caret) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_bitwise_and();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+    fn parse_bitwise_and(&mut self) -> Expression {
+        let mut expr = self.parse_equality();
+        while self.match_token(TokenType::Ampersand) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_equality();
              expr = Expression::BinaryExpr {
@@ -1187,7 +1446,8 @@ impl Parser {
 
     fn parse_equality(&mut self) -> Expression {
         let mut expr = self.parse_comparison();
-        while self.match_token(TokenType::EqualEqual) || self.match_token(TokenType::BangEqual) {
+        while self.match_token(TokenType::EqualEqual) || self.match_token(TokenType::BangEqual) ||
+              self.match_token(TokenType::EqualEqualEqual) || self.match_token(TokenType::BangEqualEqual) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_comparison();
              expr = Expression::BinaryExpr {
@@ -1202,10 +1462,27 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Expression {
-        let mut expr = self.parse_term();
-         while self.match_token(TokenType::Greater) || self.match_token(TokenType::GreaterEqual) ||
-               self.match_token(TokenType::Less) || self.match_token(TokenType::LessEqual) ||
+        let mut expr = self.parse_shift();
+         while self.match_token(TokenType::GreaterEqual) || self.match_token(TokenType::Greater) ||
+               self.match_token(TokenType::LessEqual) || self.match_token(TokenType::Less) ||
                self.match_token(TokenType::Instanceof) {
+             let op_token = self.tokens[self.current - 1].clone();
+             let right = self.parse_term();
+             expr = Expression::BinaryExpr {
+                 left: Box::new(expr),
+                 op: op_token.token_type,
+                 right: Box::new(right),
+                 _line: op_token.line,
+                 _col: op_token.column
+             };
+        }
+        expr
+    }
+
+
+    fn parse_shift(&mut self) -> Expression {
+        let mut expr = self.parse_term();
+        while self.match_token(TokenType::LessLess) || self.match_token(TokenType::GreaterGreater) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_term();
              expr = Expression::BinaryExpr {
@@ -1253,7 +1530,10 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Expression {
         if self.match_token(TokenType::Await) {
-            let op_token = self.tokens[self.current - 1].clone();
+            let op_token = self.previous().clone();
+            if !self.async_enabled {
+                self.errors.push(crate::diagnostics::Diagnostic::new("async/await is disabled".to_string(), op_token.line, op_token.column, self.filename.clone()));
+            }
             let right = self.parse_unary();
             return Expression::AwaitExpr {
                 expr: Box::new(right),
@@ -1261,9 +1541,8 @@ impl Parser {
                 _col: op_token.column
             };
         }
-        if self.match_token(TokenType::Bang) || self.match_token(TokenType::Minus) ||
-           self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) ||
-           self.match_token(TokenType::Typeof) {
+        if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) ||
+           self.match_token(TokenType::Bang) || self.match_token(TokenType::Minus) {
              let op_token = self.tokens[self.current - 1].clone();
              let right = self.parse_unary();
              return Expression::UnaryExpr {
@@ -1275,8 +1554,8 @@ impl Parser {
         }
         let mut expr = self.parse_call();
         // Postfix ++ and --
-        if self.check(TokenType::PlusPlus) || self.check(TokenType::MinusMinus) {
-            let op_token = self.advance().clone();
+        if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
+            let op_token = self.previous().clone();
             expr = Expression::UnaryExpr {
                 op: op_token.token_type,
                 right: Box::new(expr),
@@ -1288,6 +1567,7 @@ impl Parser {
     }
     
     fn parse_call(&mut self) -> Expression {
+        let start_token = self.peek().clone(); // Capture start for location
         let mut expr = self.parse_primary();
         
         loop {
@@ -1296,44 +1576,24 @@ impl Parser {
                 let mut args = Vec::new();
                 if !self.check(TokenType::CloseParen) {
                     loop {
-                        args.push(self.parse_expression());
+                        args.push(self.parse_assignment());
                         if !self.match_token(TokenType::Comma) { break; }
                     }
                 }
-                let end_token = self.consume(TokenType::CloseParen, "Expected ')'").clone();
-                // If expr is identifier, we have callee name. If complex, well AST.h used string for callee...
-                // But complex call `foo()()` or `obj.method()`
-                // AST.h: CallExpr(string callee, args)
-                // MemberAccessExpr(object, member)
-                // This AST design in C++ was a bit restrictive if it required string callee.
-                // But my Rust AST `CallExpr` has `callee: String`. This is a limitation I copied.
-                // `foo()` works (callee="foo").
-                // `obj.method()` works (MemberAccess -> then what? invoke?)
-                // If I have `obj.method`, it's an expression. `obj.method()` is a Call?
-                // In C++, maybe MemberAccess logic handled calls specially?
-                // Let's check AST.h again...
-                // `struct CallExpr : Expression { std::string callee; ... }`
-                // This means `(expr)()` is not supported if callee must be string.
-                // I should change my Rust AST to allow Expression callee or just stick to Identifier for now and fix later.
-                // For `features_arrays.tx`: `console.log(...)`.
-                // This is `MemberAccess(console, log)`? 
-                // Or `CallExpr("console.log", args)`?
-                // Let's assume for now I can map complex callee to string or just use Identifier.
-                
-                let callee_name = Self::expr_to_callee_name(&expr);
+                let _end_token = self.consume(TokenType::CloseParen, "Expected ')'").clone(); // unused now for loc
                 
                 expr = Expression::CallExpr {
-                    callee: callee_name,
+                    callee: Box::new(expr),
                     args,
-                    _line: end_token.line,
-                    _col: end_token.column
+                    _line: start_token.line,
+                    _col: start_token.column
                 };
             } else if self.match_token(TokenType::QuestionDot) {
                 if self.match_token(TokenType::OpenParen) {
                      let mut args = Vec::new();
                      if !self.check(TokenType::CloseParen) {
                         loop {
-                            args.push(self.parse_expression());
+                            args.push(self.parse_assignment());
                             if !self.match_token(TokenType::Comma) { break; }
                         }
                     }
@@ -1346,11 +1606,10 @@ impl Parser {
                     };
                 } else if self.match_token(TokenType::OpenBracket) {
                      let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
-                     // match_token(QuestionDot) advanced. match_token(OpenBracket) ?
-                     // Wait, logic above: matched QuestionDot. current is at next token.
+                     // match_token(QuestionDot) advanced. current is at next token.
                      // if next token is OpenParen -> call.
                      // else if next is OpenBracket -> index.
-                     let index = self.parse_expression();
+                     let index = self.parse_assignment();
                      self.consume(TokenType::CloseBracket, "Expected ']'");
                      expr = Expression::OptionalArrayAccessExpr {
                          target: Box::new(expr),
@@ -1365,15 +1624,17 @@ impl Parser {
                          _line: 0, _col: 0
                      };
                 }
-            } else if self.match_token(TokenType::Dot) {
-                let name = self.consume_identifier("Expected property name after '.'").value.clone();
+            } else if self.match_token(TokenType::Dot) || self.match_token(TokenType::DoubleColon) {
+                let is_double_colon = self.tokens[self.current - 1].token_type == TokenType::DoubleColon;
+                let name = self.consume_identifier("Expected property name after separator").value.clone();
                 expr = Expression::MemberAccessExpr {
                     object: Box::new(expr),
                     member: name,
-                    _line: 0, _col: 0 // TODO fix
+                    _line: 0, _col: 0,
+                    _is_namespace: is_double_colon
                 };
             } else if self.match_token(TokenType::OpenBracket) {
-                 let index = self.parse_expression();
+                 let index = self.parse_assignment();
                  self.consume(TokenType::CloseBracket, "Expected ']'");
                  expr = Expression::ArrayAccessExpr {
                      target: Box::new(expr),
@@ -1390,15 +1651,28 @@ impl Parser {
 
     fn parse_new_expression(&mut self) -> Expression {
          let start = self.consume(TokenType::New, "Expected 'new'").clone();
-         let class_name = self.consume(TokenType::Identifier, "Expected class name").value.clone();
+         let mut class_name = self.consume(TokenType::Identifier, "Expected class name").value.clone();
+         
+         // Support generics: new MaxHeap<int>()
+         if self.match_token(TokenType::Less) {
+             class_name.push('<');
+             loop {
+                 class_name.push_str(&self.parse_type_annotation());
+                 if self.match_token(TokenType::Comma) {
+                     class_name.push_str(", ");
+                 } else { break; }
+             }
+             self.consume(TokenType::Greater, "Expected '>'");
+             class_name.push('>');
+         }
          self.consume(TokenType::OpenParen, "Expected '('");
          let mut args = Vec::new();
          if !self.check(TokenType::CloseParen) {
-             loop {
-                 args.push(self.parse_expression());
-                 if !self.match_token(TokenType::Comma) { break; }
-             }
-         }
+            loop {
+                args.push(self.parse_assignment());
+                if !self.match_token(TokenType::Comma) { break; }
+            }
+        }
          self.consume(TokenType::CloseParen, "Expected ')'");
          
          Expression::NewExpr {
@@ -1415,9 +1689,6 @@ impl Parser {
         }
         if self.match_token(TokenType::False) {
             return Expression::BooleanLiteral { value: false, _line: 0, _col: 0 };
-        }
-        if self.match_token(TokenType::Undefined) {
-             return Expression::UndefinedExpr { _line: 0, _col: 0 };
         }
         if self.match_token(TokenType::None) {
              return Expression::NoneExpr { _line: 0, _col: 0 };
@@ -1444,9 +1715,6 @@ impl Parser {
              return self.parse_new_expression();
         }
         
-        if self.match_token(TokenType::Match) {
-             return self.parse_match_expression();
-        }
 
         // Literal null/none check?
         
@@ -1456,6 +1724,7 @@ impl Parser {
                 self.advance();
                 return Expression::NumberLiteral { 
                     value: token.value.parse().unwrap_or(0.0),
+                    _is_float: token.value.contains('.'),
                     _line: token.line,
                     _col: token.column
                 };
@@ -1470,7 +1739,7 @@ impl Parser {
             }
             TokenType::TemplateString => {
                  self.advance();
-                 return Expression::StringLiteral { value: token.value, _line: token.line, _col: token.column }; // Treat as normal string for now
+                 return self.parse_template_string(token);
             }
             TokenType::Identifier => {
                 if self.check_next(TokenType::Arrow) {
@@ -1520,19 +1789,26 @@ impl Parser {
             }
             _ => {
                 let err_token = token.clone();
-                self.errors.push(format!("Unexpected token '{}' at line {}:{}", err_token.value, err_token.line, err_token.column));
+                self.errors.push(crate::diagnostics::Diagnostic::new(format!("Unexpected token '{}'", err_token.value), err_token.line, err_token.column, self.filename.clone()));
                 self.advance();
                 Expression::Identifier { name: "__error__".to_string(), _line: err_token.line, _col: err_token.column }
             }
         }
     }
     
+    #[allow(dead_code)]
     fn expr_to_callee_name(expr: &Expression) -> String {
         match expr {
+            Expression::ArrayLiteral { .. } => "(array)".to_string(),
+            Expression::ObjectLiteralExpr { .. } => "(object)".to_string(),
+            Expression::SequenceExpr { .. } => "(sequence)".to_string(),
             Expression::Identifier { name, .. } => name.clone(),
-            Expression::MemberAccessExpr { object, member, .. } => {
+            Expression::ThisExpr { .. } => "this".to_string(),
+            Expression::SuperExpr { .. } => "super".to_string(),
+            Expression::MemberAccessExpr { object, member, _is_namespace, .. } => {
                 let obj_name = Self::expr_to_callee_name(object);
-                format!("{}.{}", obj_name, member)
+                let sep = if *_is_namespace { "::" } else { "." };
+                format!("{}{}{}", obj_name, sep, member)
             }
             _ => "__callee__".to_string(),
         }
@@ -1563,7 +1839,7 @@ impl Parser {
             let name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
             params.push(Parameter {
                 name,
-                type_name: "any".to_string(), 
+                type_name: "".to_string(), 
                 _default_value: None,
                 _is_rest: false
             });
@@ -1574,7 +1850,7 @@ impl Parser {
                 loop {
                     let is_rest = self.match_token(TokenType::Ellipsis);
                     let name = self.consume(TokenType::Identifier, "Expected param name").value.clone();
-                    let mut type_name = "any".to_string();
+                    let mut type_name = "".to_string();
                     if self.match_token(TokenType::Colon) {
                         type_name = self.parse_type_annotation();
                     }
@@ -1625,14 +1901,14 @@ impl Parser {
 
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             if self.match_token(TokenType::Ellipsis) {
-                let expr = self.parse_expression();
+                let expr = self.parse_assignment();
                 spreads.push(expr);
             } else {
-                let key_token = self.consume(TokenType::Identifier, "Expected property name").clone();
-                let key = key_token.value;
+                let key_token = self.consume_identifier("Expected property name");
+                let key = key_token.value.clone();
                 
                 let value = if self.match_token(TokenType::Colon) {
-                    self.parse_expression()
+                    self.parse_assignment()
                 } else {
                      Expression::Identifier { 
                          name: key.clone(), 
@@ -1665,14 +1941,14 @@ impl Parser {
         while !self.check(TokenType::CloseBracket) && !self.is_at_end() {
              if self.match_token(TokenType::Ellipsis) {
                  let spread_start = self.tokens[self.current - 1].clone();
-                 let expr = self.parse_expression();
+                 let expr = self.parse_assignment();
                  elements.push(Expression::SpreadExpr {
                      _expr: Box::new(expr),
                      _line: spread_start.line,
                      _col: spread_start.column
                  });
              } else {
-                 elements.push(self.parse_expression());
+                 elements.push(self.parse_assignment());
              }
              if self.check(TokenType::Comma) { self.advance(); }
         }
@@ -1717,19 +1993,200 @@ impl Parser {
     fn match_token(&mut self, token_type: TokenType) -> bool {
         if self.check(token_type) {
             self.advance();
-            true
-        } else {
-            false
+            return true;
         }
+
+        // Spacing issue: handle split operators
+        match token_type {
+            TokenType::EqualEqual => {
+                if self.check(TokenType::Equals) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::EqualEqual;
+                    self.tokens[self.current - 1].value = "==".to_string();
+                    return true;
+                }
+            }
+            TokenType::BangEqual => {
+                if self.check(TokenType::Bang) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::BangEqual;
+                    self.tokens[self.current - 1].value = "!=".to_string();
+                    return true;
+                }
+            }
+            TokenType::LessEqual => {
+                if self.check(TokenType::Less) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::LessEqual;
+                    self.tokens[self.current - 1].value = "<=".to_string();
+                    return true;
+                }
+            }
+            TokenType::GreaterEqual => {
+                if self.check(TokenType::Greater) && self.check_next(TokenType::Equals) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::GreaterEqual;
+                    self.tokens[self.current - 1].value = ">=".to_string();
+                    return true;
+                }
+            }
+            TokenType::PlusPlus => {
+                if self.check(TokenType::Plus) && self.check_next(TokenType::Plus) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::PlusPlus;
+                    self.tokens[self.current - 1].value = "++".to_string();
+                    return true;
+                }
+            }
+            TokenType::MinusMinus => {
+                if self.check(TokenType::Minus) && self.check_next(TokenType::Minus) {
+                    self.advance(); self.advance();
+                    self.tokens[self.current - 1].token_type = TokenType::MinusMinus;
+                    self.tokens[self.current - 1].value = "--".to_string();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        false
     }
 
     fn consume(&mut self, token_type: TokenType, message: &str) -> &Token {
         if self.check(token_type) {
             self.advance()
         } else {
-            // Panic for now, real compiler would log error and synchronize
-            panic!("{} at {:?}, expected {:?}", message, self.peek(), token_type);
+            let t = self.peek().clone();
+            let (line, col) = if token_type == TokenType::Semicolon && self.current > 0 {
+                // Report missing semicolon at the end of the previous token
+                let prev = self.previous();
+                (prev.line, prev.column + prev.value.len())
+            } else {
+                (t.line, t.column)
+            };
+
+            self.errors.push(crate::diagnostics::Diagnostic::new(
+                message.to_string(),
+                line,
+                col,
+                self.filename.clone()
+            ));
+            
+            // Advance to avoid infinite loops
+            self.advance()
         }
     }
-    
+
+    fn synchronize(&mut self) {
+        // If we're already at a boundary, don't skip anything
+        match self.peek().token_type {
+            TokenType::Class | TokenType::Function | TokenType::Let | TokenType::Const | 
+            TokenType::For | TokenType::If | TokenType::While | TokenType::Return |
+            TokenType::Switch | TokenType::Export | TokenType::Import | TokenType::CloseBrace => return,
+            _ => {}
+        }
+
+        self.advance();
+
+        while !self.is_at_end() {
+            if self.previous().token_type == TokenType::Semicolon { return; }
+
+            match self.peek().token_type {
+                TokenType::Class | TokenType::Function | TokenType::Let | TokenType::Const | 
+                TokenType::For | TokenType::If | TokenType::While | TokenType::Return |
+                TokenType::Switch | TokenType::Export | TokenType::Import | TokenType::CloseBrace => return,
+                _ => {}
+            }
+
+            self.advance();
+        }
+    }
+    fn parse_template_string(&mut self, token: Token) -> Expression {
+        let value = &token.value;
+        let mut expr = None;
+        let mut current_pos = 0;
+
+        while let Some(start_idx) = value[current_pos..].find("${") {
+            let actual_start = current_pos + start_idx;
+            
+            // Text before ${
+            let prefix = &value[current_pos..actual_start];
+            if !prefix.is_empty() {
+                let part = Expression::StringLiteral { 
+                    value: prefix.to_string(), 
+                    _line: token.line, 
+                    _col: token.column 
+                };
+                expr = match expr {
+                    None => Some(part),
+                    Some(e) => Some(Expression::BinaryExpr {
+                        left: Box::new(e),
+                        op: TokenType::Plus,
+                        right: Box::new(part),
+                        _line: token.line, _col: token.column
+                    }),
+                };
+            }
+
+            // Find matching }
+            let after_start = actual_start + 2;
+            let mut depth = 1;
+            let mut end_idx = None;
+            for (i, c) in value[after_start..].chars().enumerate() {
+                if c == '{' { depth += 1; }
+                if c == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = Some(after_start + i);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(actual_end) = end_idx {
+                let inter_content = &value[after_start..actual_end];
+                // Parse interpolation
+                let mut lexer = crate::lexer::Lexer::new(inter_content, &self.filename);
+                let tokens = lexer.tokenize();
+                let mut parser = crate::parser::Parser::new(tokens, &self.filename);
+                let inter_expr = parser.parse_expression();
+
+                expr = match expr {
+                    None => Some(inter_expr),
+                    Some(e) => Some(Expression::BinaryExpr {
+                        left: Box::new(e),
+                        op: TokenType::Plus,
+                        right: Box::new(inter_expr),
+                        _line: token.line, _col: token.column
+                    }),
+                };
+                current_pos = actual_end + 1;
+            } else {
+                // Unclosed ${...}
+                break;
+            }
+        }
+
+        // Remaining text
+        if current_pos < value.len() {
+             let suffix = &value[current_pos..];
+             let part = Expression::StringLiteral { 
+                value: suffix.to_string(), 
+                _line: token.line, 
+                _col: token.column 
+            };
+            expr = match expr {
+                None => Some(part),
+                Some(e) => Some(Expression::BinaryExpr {
+                    left: Box::new(e),
+                    op: TokenType::Plus,
+                    right: Box::new(part),
+                    _line: token.line, _col: token.column
+                }),
+            };
+        }
+
+        expr.unwrap_or(Expression::StringLiteral { value: "".to_string(), _line: token.line, _col: token.column })
+    }
+
 }

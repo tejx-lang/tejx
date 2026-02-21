@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that 'break' and 'continue' cannot be used outside of loops.
+
+function test() {
+    break; // Error: break outside of loop
+}
+
+function main() {
+    test();
+}

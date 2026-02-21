@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that reassignment to a constant variable causes a compile error.
+
+function main() {
+    const PI: float = 3.14159;
+    PI = 3.14; // Error: Cannot assign to constant variable
+}

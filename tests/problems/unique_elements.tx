@@ -1,0 +1,20 @@
+import { Set } from "std:collections";
+
+function getUniqueItems(input: int[]): int[] {
+  let seen: Set = new Set();
+  let result: int[] = [];
+
+  for (let i = 0; i < input.length; i++) {
+    if (!seen.has(input[i])) {
+      seen.add(input[i]);
+      result.push(input[i]); // Building the unique list
+    }
+  }
+  return result;
+}
+
+function main(): void {
+  let data: int[] = [1, 2, 2, 3, 4, 4, 4, 5];
+  let unique = getUniqueItems(data);
+  print("Unique items count: Expected: 5, Actual: ", unique.length);
+}

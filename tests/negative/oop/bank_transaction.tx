@@ -1,0 +1,25 @@
+
+// Bank Transaction - Negative Test
+// ================================
+
+class Account {
+    balance: int32;
+    constructor(b: int32) { this.balance = b; }
+}
+
+class Transaction {
+    acc: Account;
+    constructor(a: Account) {
+        this.acc = a; // Moves 'a' into 'this.acc'
+    }
+}
+
+function main() {
+    let myAcc = new Account(100);
+    
+    // Move myAcc into Transaction
+    let tx = new Transaction(myAcc); 
+    
+    // Error: myAcc is moved
+    print("Balance:", myAcc.balance); 
+}

@@ -1,0 +1,29 @@
+// EXPECTED: RUNTIME_ERROR
+// Description: Verify that unhandled 'throw' statements cause the program to crash.
+// But writing OOB might expand or crash if very large?
+// Let's try to access a clearly invalid index and ASSERT strictly.
+
+function main() {
+    let arr = [1, 2, 3];
+    // Access index 100
+    let val = arr[100]; 
+    // Currently, TejX might return 0. 
+    // If we want this to be a negative test for "runtime error checking", 
+    // we'd need runtime bounds checking enabled that throws.
+    // If TejX is designed to be permissive (return undefined/0), then this test 
+    // might actually PASS compilation and run fine (printing 0).
+    // In that case, it wouldn't be a "negative test" that FAILS.
+    // 
+    // Let's make it a test that EXPECTS to fail if we try to treat the result as strict?
+    // Or maybe test a runtime crash scenario like division by zero if trapped?
+    // 
+    // Let's try valid code that should throw a visible runtime error if we had exceptions.
+    // Since we don't have exceptions fully standardized for OOB, let's try 
+    // a throw statement that isn't caught.
+    
+    function fail() {
+        throw "Runtime Crash detected";
+    }
+    
+    fail();
+}

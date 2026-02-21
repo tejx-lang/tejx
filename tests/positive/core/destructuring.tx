@@ -1,0 +1,49 @@
+// Destructuring Tests
+// ===================
+
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+function main() {
+    print("--- Destructuring Tests ---");
+
+    // Array Destructuring
+    let point = [100, 200];
+    let [x, y] = point;
+    assert_eq_int(100, x, "Array destructuring x");
+    assert_eq_int(200, y, "Array destructuring y");
+
+    // Rest Pattern in Array
+    let [head, ...tail] = [1, 2, 3, 4];
+    assert_eq_int(1, head, "Array rest head");
+    assert_eq_int(3, len(tail), "Array rest tail length");
+    assert_eq_int(2, tail[0], "Array rest tail[0]");
+
+    // Object Destructuring
+    let obj = {name: "TejX", age: 1};
+    let {name, age} = obj;
+    assert_eq_string("TejX", name, "Object destructuring name");
+    assert_eq_int(1, age, "Object destructuring age");
+
+    // Custom target names
+    let {name: n, age: g} = {name: "Antigravity", age: 5};
+    assert_eq_string("Antigravity", n, "Object destructuring renamed n");
+    assert_eq_int(5, g, "Object destructuring renamed g");
+
+    // Nested Destructuring - Array inside Array
+    let [x2, [y2]] = [10, [20]];
+    assert_eq_int(10, x2, "Nested array destructuring x2");
+    assert_eq_int(20, y2, "Nested array destructuring y2");
+
+    // Nested Destructuring - Object inside Object
+    let userObj = {user: {profile: {firstName: "John"}}};
+    let {user: {profile: {firstName}}} = userObj;
+    assert_eq_string("John", firstName, "Nested object destructuring");
+
+    // Mixed Nesting
+    let mixed = [10, {val: 20}];
+    let [m1, {val: m2}] = mixed;
+    assert_eq_int(10, m1, "Mixed destructuring m1");
+    assert_eq_int(20, m2, "Mixed destructuring m2");
+
+    print("Destructuring tests complete!");
+}

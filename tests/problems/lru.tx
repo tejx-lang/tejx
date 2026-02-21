@@ -1,0 +1,57 @@
+class CacheNode {
+  key: string;
+  val: int;
+  next: CacheNode | None = None;
+  prev: CacheNode | None = None;
+  constructor(k: string, v: int) { this.key = k; this.val = v; }
+}
+
+class LRUCache {
+  capacity: int;
+  map: Map<string, CacheNode> = new Map();
+  head: CacheNode = new CacheNode("", 0); // Dummy Head
+  tail: CacheNode = new CacheNode("", 0); // Dummy Tail
+
+  constructor(cap: int) {
+    this.capacity = cap;
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+  }
+
+  get(key: string): int {
+    if (!this.map.has(key)) return -1;
+    let node = this.map.get(key);
+    return node.val;
+  }
+
+  put(key: string, value: int): void {
+    if (this.map.has(key)) {
+      let node = this.map.get(key);
+      node.val = value;
+    } else {
+      let newNode = new CacheNode(key, value);
+      this.map.set(key, newNode);
+    }
+  }
+}
+
+function assert(condition: bool, message: string): void {
+  if (!condition) {
+    print("❌ ASSERT FAILED: ", message);
+  } else {
+    print("✅ PASS: ", message);
+  }
+}
+
+function main() {
+  let cache = new LRUCache(2);
+  cache.put("A", 1);
+  cache.put("B", 2);
+  
+  let valA = cache.get("A");
+  assert(valA == 1, "Get A: Expected 1, Actual " + valA); 
+  
+  cache.put("A", 10);
+  let valA2 = cache.get("A");
+  assert(valA2 == 10, "Get A Updated: Expected 10, Actual " + valA2);
+}

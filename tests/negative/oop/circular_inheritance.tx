@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that circular inheritance is detected and reported as an error.
+
+class A extends B {
+    x: int;
+}
+
+class B extends A {
+    y: int;
+}
+
+function main() {
+    let a = new A();
+}

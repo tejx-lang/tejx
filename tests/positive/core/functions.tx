@@ -1,0 +1,23 @@
+// Function Tests
+// ==============
+
+import { assert_eq_int, assert_true } from "../utils.tx";
+
+function sumVariadic(...nums: int32[]): int32 {
+    let total = 0;
+    for (let i = 0; i < nums.length; i = i + 1) {
+        total = total + nums[i];
+    }
+    return total;
+}
+
+function main() {
+    print("--- Function Tests ---");
+
+    // Rest Arguments
+    assert_eq_int(6, sumVariadic(1, 2, 3), "Rest args sum(1, 2, 3)");
+    assert_eq_int(30, sumVariadic(10, 20), "Rest args sum(10, 20)");
+    assert_eq_int(0, sumVariadic(), "Rest args sum()");
+
+    print("Function tests complete!");
+}

@@ -1,0 +1,80 @@
+class Node {
+  data: int;
+  next: Node | None;
+  constructor(val: int) { 
+      this.data = val; 
+      this.next = None;
+  }
+}
+
+// Reverse a linked list
+function reverseList(head: Node | None): Node | None {
+  let prev: Node | None = None;
+  let current: Node | None = head;
+  let next: Node | None = None;
+
+
+  let loopCount = 0;
+  while (!(current == None)) {
+    loopCount = loopCount + 1;
+    
+    if (loopCount > 5) {
+        print("Runaway loop!");
+        break;
+    }
+
+    next = current.next;     
+    current.next = prev;     
+    prev = current;          
+    current = next;          
+  }
+  return prev; 
+}
+
+function assert(condition: bool, message: string): void {
+    if (!condition) {
+        print("❌ ASSERT FAILED: " + message);
+    } else {
+        print("✅ PASS: " + message);
+    }
+}
+
+function main(): void {
+  let n1 = new Node(1);
+  let n2 = new Node(2);
+  let n3 = new Node(3);
+  
+  n2.next = n3;
+  n1.next = n2;
+
+  let head = reverseList(n1);
+  
+  print("New Head ID:", head);
+
+  print("Reversed List Check:");
+  if (head != None) {
+      print("Head data:", head.data);
+      if (head.data == 3) {
+           print("Head data Correct");
+           // Traverse
+           let second = head.next;
+           if (second != None) {
+             print("Second data:", second.data);
+             let third = second.next;
+             if (third != None) { 
+                 print("Third data:", third.data);
+                 if (third.next == None) {
+                     print("Tail Correct");
+                 } else {
+                     print("Tail Next is NOT None!");
+                 }
+             }
+           }
+      } else {
+          print("Head data Wrong! Found:", head.data);
+      }
+  } else {
+     // assert(false, "Head is None!");
+     print("Head is None");
+  }
+}

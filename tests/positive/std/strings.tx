@@ -1,0 +1,37 @@
+// String Tests
+// ============
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function main() {
+    print("--- String Methods ---");
+    let s = "5";
+    assert_eq_string("005", s.padStart(3, "0"), "padStart");
+    assert_eq_string("500", s.padEnd(3, "0"), "padEnd");
+    assert_eq_string("555", s.repeat(3), "repeat");
+
+    let strVal = "  Hello, TejX!  ";
+    assert_eq_string("  Hello, TejX!  ", strVal, "Original String");
+
+    let trimmed = strVal.trim();
+    assert_eq_string("Hello, TejX!", trimmed, "Trimmed");
+
+    let lower = trimmed.toLowerCase();
+    assert_eq_string("hello, tejx!", lower, "Lower");
+
+    let upper = trimmed.toUpperCase();
+    assert_eq_string("HELLO, TEJX!", upper, "Upper");
+
+    assert_true(trimmed.startsWith("Hello"), "startsWith('Hello')");
+    assert_false(trimmed.startsWith("X"), "startsWith('X')");
+
+    assert_true(trimmed.endsWith("!"), "endsWith('!')");
+    assert_false(trimmed.endsWith("?"), "endsWith('?')");
+
+    let replaced = trimmed.replace("TejX", "World");
+    assert_eq_string("Hello, World!", replaced, "Replaced");
+
+    // len() from prelude
+    let s2 = "Hello";
+    assert_eq_int(5, len(s2), "len(String)");
+}

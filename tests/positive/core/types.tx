@@ -1,0 +1,111 @@
+// Types & Language Features Tests
+// ===============================
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+import { Thread, Mutex } from "std:thread";
+
+// --- Declarations ---
+
+function add(a: int32, b: int32): int32 {
+    return a + b;
+}
+
+function process(val: int32, op: (n: int32) => int32): int32 {
+    return op(val);
+}
+
+function test_declarations() {
+    print("--- Declarations ---");
+    let x = 10;
+    let y: int32 = 20;
+    const PI = 3.14;
+    let name = "TejX";
+    let isAwesome = true;
+
+    assert_eq_int(30, add(x, y), "Function call add");
+    
+    // Lambdas
+    const multiply = (a: int32, b: int32) => a * b;
+    assert_eq_int(25, multiply(5, 5), "Lambda multiply");
+
+    const complexCalc = (val: int32) => {
+        let temp = val * 2;
+        return temp + 1;
+    };
+    assert_eq_int(21, complexCalc(10), "Lambda block");
+
+    // Passing lambda
+    let squared = process(4, (n) => n * n);
+    assert_eq_int(16, squared, "Lambda as arg");
+
+    // Typeof
+    assert_eq_string("int32", typeof(42), "typeof int"); // or "number" if JS style
+    // check features_declarations output: "Expected: int32/42 ... Actual: int32/number/..."
+    // Based on previous file, it prints result. We assume typeof works.
+    let t_str = typeof("hello");
+    // We check if it returns string containing "string" or "String". 
+    // Since assert_eq_string requires exact match, let's rely on truthiness or verify specific implementation return value later.
+    // For now logging it.
+    print("typeof 'hello': ", t_str);
+
+    // Block scoping
+    let gVar = "Global";
+    {
+        let gVar = "Local";
+        assert_eq_string("Local", gVar, "Shadowed local var");
+    }
+    assert_eq_string("Global", gVar, "Global var preserved");
+}
+
+// --- Types ---
+
+type ID = int;
+type Point = { x: int, y: int };
+
+function processId(id: ID) {
+    print("ID: ", id);
+}
+
+function test_types() {
+    print("--- Type Aliases ---");
+    let myId: ID = 123;
+    processId(myId);
+    let p: Point = { x: 1, y: 2 };
+    assert_eq_int(1, p.x, "Type alias struct x");
+}
+
+// --- Concurrency ---
+
+function runThread(state: object) {
+    let m = state.mutex;
+    m.lock();
+    let c = state.count;
+    // sleep/yield?
+    let temp = c + 1;
+    state.count = temp;
+    m.unlock();
+}
+
+function test_concurrency() {
+    print("--- Concurrency ---");
+    let state = {
+        count: 0,
+        mutex: new Mutex()
+    };
+
+    let t1 = new Thread(runThread, state);
+    let t2 = new Thread(runThread, state);
+
+    t1.join();
+    t2.join();
+
+    print("Final thread count: ", state.count);
+    assert_eq_int(2, state.count, "Thread mutex count");
+}
+
+function main() {
+    print("=== TYPES & LANG TESTS START ===");
+    test_declarations();
+    test_types();
+    test_concurrency();
+    print("=== TYPES & LANG TESTS COMPLETE ===");
+}

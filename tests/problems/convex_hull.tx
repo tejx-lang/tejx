@@ -1,0 +1,19 @@
+class Point {
+  x: float; y: float;
+  constructor(x: float, y: float) { this.x = x; this.y = y; }
+}
+
+function orientation(p: Point, q: Point, r: Point): int {
+  let val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+  if (val > -0.0001 && val < 0.0001) return 0;  // Collinear
+  return (val > 0.0) ? 1 : 2; // Clockwise or Counter-clockwise
+}
+
+
+function main() {
+  let p1 = new Point(0.0, 0.0);
+  let p2 = new Point(2.0, 0.0);
+  let p3 = new Point(1.0, 1.0);
+
+  print("Orientation: Expected: 1/2, Actual: ", orientation(p1, p2, p3));
+}

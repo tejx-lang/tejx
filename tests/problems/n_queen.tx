@@ -1,0 +1,58 @@
+function f_Solver_isSafe(board: string[][], n: int, row: int, col: int): bool {
+    // print("Checking safe: ", row, col);
+    for (let i = 0; i < col; i++) {
+        if (board[row][i] == "Q") return false;
+    }
+    for (let i = row, j = col; i >= 0 && j >= 0; i--, j--) {
+        if (board[i][j] == "Q") return false;
+    }
+    for (let i = row, j = col; j >= 0 && i < n; i++, j--) {
+        if (board[i][j] == "Q") return false;
+    }
+    return true;
+}
+
+function f_Solver_backtrack(board: string[][], n: int, col: int): bool {
+    // print("Backtrack col: ", col);
+    if (col >= n) return true; // All queens placed
+
+    for (let i = 0; i < n; i++) {
+      if (f_Solver_isSafe(board, n, i, col)) {
+        board[i][col] = "Q";
+        if (f_Solver_backtrack(board, n, col + 1)) return true;
+        board[i][col] = "."; // Backtrack
+      }
+    }
+    return false;
+}
+
+function solveNQueens(n: int): void {
+  let board: string[][] = new Array(n);
+  print("Init board...");
+  for(let i = 0; i < n; i++) {
+      board[i] = new Array(n).fill(".");
+      // print("Filled row ", i);
+  }
+
+  print("Starting backtrack...");
+  let found = f_Solver_backtrack(board, n, 0);
+  assert(found == true, "N-Queens Solution should be found for n=4");
+  
+  if (found) {
+       print("Board generated."); 
+  }
+}
+
+function assert(condition: bool, message: string): void {
+  if (!condition) {
+    print("❌ ASSERT FAILED: ", message);
+  } else {
+    print("✅ PASS: ", message);
+  }
+}
+
+function main() {
+  print("STARTING_N_QUEEN");
+  solveNQueens(4);
+  print("FINISHED_N_QUEEN");
+}

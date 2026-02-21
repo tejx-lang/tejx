@@ -1,0 +1,83 @@
+// Control Flow Tests
+// ==================
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_fail } from "../utils.tx";
+
+function getFruitColor(fruit: string): string {
+    switch (fruit) {
+        case "Apple":
+            return "Red";
+        case "Banana":
+            return "Yellow";
+        default:
+            return "Unknown";
+    }
+}
+
+function main() {
+    print("--- Control Flow Tests ---");
+
+    // If/Else
+    let n = 15;
+    if (n > 10) {
+        assert_true(true, "If condition > 10");
+    } else {
+        assert_fail("If condition > 10 failed");
+    }
+
+    // Switch
+    assert_eq_string("Red", getFruitColor("Apple"), "Switch Apple");
+    assert_eq_string("Yellow", getFruitColor("Banana"), "Switch Banana");
+    assert_eq_string("Unknown", getFruitColor("Kiwi"), "Switch Default");
+
+    // While Loop
+    let idx = 0;
+    while (idx < 3) {
+        idx = idx + 1;
+    }
+    assert_eq_int(3, idx, "While loop count");
+
+    // For Loop
+    let forCount = 0;
+    for (let j = 0; j < 3; j = j + 1) {
+        forCount += 1;
+    }
+    assert_eq_int(3, forCount, "For loop count");
+
+    // Break
+    let k = 0;
+    while (true) {
+        if (k >= 3) break;
+        k = k + 1;
+    }
+    assert_eq_int(3, k, "Break loop");
+
+    // Continue
+    let continueSum = 0;
+    for (let i = 0; i < 5; i++) {
+        if (i == 2) continue;
+        continueSum += i;
+    }
+    // 0 + 1 + 3 + 4 = 8 (skipped 2)
+    assert_eq_int(8, continueSum, "Continue loop");
+
+    // Logical Operators
+    assert_true(true && true, "true && true");
+    assert_false(true && false, "true && false");
+    assert_true(true || false, "true || false");
+    assert_false(false || false, "false || false");
+
+    // Short-circuit
+    let sideEffect = 0;
+    if (true || (sideEffect += 1) > 0) {
+        // Should not execute RHS
+    }
+    assert_eq_int(0, sideEffect, "Short-circuit OR");
+
+    if (false && (sideEffect += 1) > 0) {
+        // Should not execute RHS
+    }
+    assert_eq_int(0, sideEffect, "Short-circuit AND");
+
+    print("Control flow tests complete!");
+}

@@ -1,0 +1,23 @@
+// Object Tests
+// ============
+
+import { assert_eq_int, assert_eq_string } from "../utils.tx";
+
+function main() {
+    print("--- Object Static Methods ---");
+    let obj = { a: 1, b: 2 };
+
+    let keys = Object.keys(obj);
+    assert_eq_int(2, len(keys), "Object.keys length");
+    // Order is not guaranteed, so just check length for now or check existence
+    
+    let values = Object.values(obj);
+    assert_eq_int(2, len(values), "Object.values length");
+    // Sort to handle potential non-deterministic order
+    values.sort();
+    assert_eq_int(1, values[0], "Object.values[0]");
+    assert_eq_int(2, values[1], "Object.values[1]");
+
+    let entries = Object.entries(obj);
+    assert_eq_int(2, len(entries), "Object.entries length");
+}

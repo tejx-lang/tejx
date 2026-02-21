@@ -1,0 +1,53 @@
+import std:collections;
+
+function test_stack(): void {
+    print("Testing Stack...");
+    let s = new Stack();
+    s.push(10);
+    s.push(20);
+    assert(s.size() == 2);
+    assert(s.pop() == 20);
+    assert(s.peek() == 10);
+    print("Stack OK");
+}
+
+function test_queue(): void {
+    print("Testing Queue...");
+    let q = new Queue();
+    q.enqueue(1);
+    q.enqueue(2);
+    assert(q.size() == 2);
+    assert(q.dequeue() == 1);
+    print("Queue OK");
+}
+
+function test_map(): void {
+    print("Testing Map...");
+    let m = new Map();
+    m.put("key", 123);
+    assert(m.has("key") == true);
+    assert(m.at("key") == 123);
+    assert(m.size() == 1);
+    print("Map OK");
+}
+
+function test_set(): void {
+    print("Testing Set...");
+    let s = new Set();
+    s.add(100);
+    s.add(200);
+    s.add(100);
+    assert(s.size() == 2);
+    assert(s.has(100) == true);
+    print("Set OK");
+}
+
+function main(): void {
+    test_stack();
+    test_queue();
+    test_map();
+    test_set();
+    print("All collections class tests passed!");
+}
+
+

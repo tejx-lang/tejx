@@ -1,0 +1,14 @@
+function testBits(): void {
+  let a = 5;  // 0101
+  let b = 3;  // 0011
+
+  print("5 & 3: Expected: 1, Actual: ", a & b);
+  print("5 | 3: Expected: 7, Actual: ", a | b);
+  print("5 ^ 3: Expected: 6, Actual: ", a ^ b);
+  print("5 << 1: Expected: 10, Actual: ", a << 1);
+}
+
+
+function main(): void {
+  testBits();
+}
