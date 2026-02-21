@@ -33,12 +33,6 @@ jobs:
             bin: tejxc
             asset_name: tejxc-macos-x64
             ext: .tar.gz
-          - os: windows-latest
-            os-name: Windows
-            target: x86_64-pc-windows-msvc
-            bin: tejxc.exe
-            asset_name: tejxc-windows-x64
-            ext: .zip
 
     steps:
       - name: Checkout code
@@ -58,18 +52,10 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.platform.target }}
 
-      - name: Archive binary (Unix)
-        if: matrix.platform.os != 'windows-latest'
+      - name: Archive binary
         run: |
           cd target/${{ matrix.platform.target }}/release
           tar -czvf ../../../${{ matrix.platform.asset_name }}${{ matrix.platform.ext }} ${{ matrix.platform.bin }}
-
-      - name: Archive binary (Windows)
-        if: matrix.platform.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          cd target/${{ matrix.platform.target }}/release
-          Compress-Archive -Path ${{ matrix.platform.bin }} -DestinationPath ../../../${{ matrix.platform.asset_name }}${{ matrix.platform.ext }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -119,7 +105,6 @@ jobs:
         with:
           files: |
             artifacts/**/*.tar.gz
-            artifacts/**/*.zip
             artifacts/**/*.wasm
           generate_release_notes: true
         env:
