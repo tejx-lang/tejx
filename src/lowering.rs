@@ -1937,6 +1937,54 @@ impl Lowering {
                              ty: ty.clone(),
                          }
                     }
+                    TokenType::ModuloEquals => {
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(self.lower_expression(target)),
+                             op: TokenType::Modulo,
+                             right: Box::new(v),
+                             ty: ty.clone(),
+                         }
+                    }
+                    TokenType::AmpersandEquals => {
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(self.lower_expression(target)),
+                             op: TokenType::Ampersand,
+                             right: Box::new(v),
+                             ty: ty.clone(),
+                         }
+                    }
+                    TokenType::PipeEquals => {
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(self.lower_expression(target)),
+                             op: TokenType::Pipe,
+                             right: Box::new(v),
+                             ty: ty.clone(),
+                         }
+                    }
+                    TokenType::CaretEquals => {
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(self.lower_expression(target)),
+                             op: TokenType::Caret,
+                             right: Box::new(v),
+                             ty: ty.clone(),
+                         }
+                    }
+                    TokenType::LessLessEquals => {
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(self.lower_expression(target)),
+                             op: TokenType::LessLess,
+                             right: Box::new(v),
+                             ty: ty.clone(),
+                         }
+                    }
+                    TokenType::GreaterGreaterEquals => {
+                         HIRExpression::BinaryExpr { line: line, 
+                             left: Box::new(self.lower_expression(target)),
+                             op: TokenType::GreaterGreater,
+                             right: Box::new(v),
+                             ty: ty.clone(),
+                         }
+                    }
                     _ => v // Direct assignment
                 };
 

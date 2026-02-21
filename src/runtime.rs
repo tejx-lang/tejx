@@ -66,7 +66,7 @@ pub enum TaggedValue {
     TCPStream(Arc<Mutex<std::net::TcpStream>>),
 }
 
-const HEAP_OFFSET: i64 = 1000000;
+const HEAP_OFFSET: i64 = 200000000;
 
 pub struct Heap {
     pub next_id: i64,
@@ -335,7 +335,7 @@ unsafe fn get_string_ext_internal(heap: &Heap, id: i64) -> Option<String> {
         if let TaggedValue::String(s) = obj {
             return Some(s.clone());
         }
-    } else if id > 0x10000 && (id < 1000000 || id > 0x100000000) {
+    } else if id > 0x10000 && (id < HEAP_OFFSET || id > 0x100000000) {
         // Fallback for pointers. 0x100000000+ is common for macOS/Linux segments.
         // We also allow small pointers above 0x10000 just in case.
         let p = id as *const c_char;
@@ -355,12 +355,12 @@ unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
     }
     
     // 1. Heap ID check (new safe range)
-    if key_ptr >= 1000000 && key_ptr < 2000000000 {
+    if key_ptr >= HEAP_OFFSET && key_ptr < 2000000000 {
         return format!("<id:{}>", key_ptr);
     }
     
-    // 2. Small raw integer (0...1M)
-    if key_ptr >= 0 && key_ptr < 1000000 {
+    // 2. Small raw integer (0...HEAP_OFFSET)
+    if key_ptr >= 0 && key_ptr < HEAP_OFFSET {
         return key_ptr.to_string();
     }
 
@@ -384,7 +384,7 @@ unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
-    if key_ptr < 2000000000 && key_ptr > 1000000 {
+    if key_ptr < 2000000000 && key_ptr > HEAP_OFFSET {
          let k = unsafe { get_string_key(&HEAP.lock().unwrap(), key_ptr) };
     }
     let mut heap = HEAP.lock().unwrap();
@@ -1239,7 +1239,7 @@ pub extern "C" fn rt_div(a: i64, b: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_box_number(n: f64) -> i64 {
     // Optimization: If n is a small integer (BUT NOT 0, as 0 is null), return it as literal ID
-    if n.fract() == 0.0 && n > 0.0 && n < 1000000.0 {
+    if n.fract() == 0.0 && n > 0.0 && n < (HEAP_OFFSET as f64) {
         return n as i64;
     }
 
@@ -1316,8 +1316,8 @@ pub fn rt_to_number_internal(heap: &Heap, id: i64) -> f64 {
             _ => std::f64::NAN
         }
     } else {
-        // Small integer optimization: values between -1,000,000 and 1,000,000 are treated as direct numbers
-        if id > -1000000 && id < 1000000 {
+        // Small integer optimization: values are treated as direct numbers
+        if id > -HEAP_OFFSET && id < HEAP_OFFSET {
             return id as f64;
         }
         f64::from_bits(id as u64)
@@ -1725,7 +1725,7 @@ pub unsafe extern "C" fn rt_move_member(id: i64, key_ptr: i64) -> i64 {
             TaggedValue::Map(map) => {
                 // Check if we should move or copy
                 if let Some(&val) = map.get(&key) {
-                     if val < 1000000 {
+                     if val < HEAP_OFFSET {
                          // Primitive: Copy (Keep in map)
                          return val;
                      } else {
@@ -1738,7 +1738,7 @@ pub unsafe extern "C" fn rt_move_member(id: i64, key_ptr: i64) -> i64 {
             TaggedValue::OrderedMap(_, map) => {
                 // Same logic for OrderedMap (keys order vector is left as is, effectively "sparse" if removed)
                  if let Some(&val) = map.get(&key) {
-                     if val < 1000000 {
+                     if val < HEAP_OFFSET {
                          return val;
                      } else {
                          map.remove(&key);
@@ -1816,8 +1816,8 @@ pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     
     // Check if either is a bitcasted double (Any type number)
-    let val_a = if a > -1000000 && a < 1000000 { None } else if a > 0xFFFFFFFFFFFF || a < -1000000 { Some(f64::from_bits(a as u64)) } else { None };
-    let val_b = if b > -1000000 && b < 1000000 { None } else if b > 0xFFFFFFFFFFFF || b < -1000000 { Some(f64::from_bits(b as u64)) } else { None };
+    let val_a = if a > -HEAP_OFFSET && a < HEAP_OFFSET { None } else if a > 0xFFFFFFFFFFFF || a < -HEAP_OFFSET { Some(f64::from_bits(a as u64)) } else { None };
+    let val_b = if b > -HEAP_OFFSET && b < HEAP_OFFSET { None } else if b > 0xFFFFFFFFFFFF || b < -HEAP_OFFSET { Some(f64::from_bits(b as u64)) } else { None };
 
     let obj_a = heap.get(a);
     let obj_b = heap.get(b);
@@ -3701,6 +3701,11 @@ pub unsafe extern "C" fn rt_map_set_fast(id: i64, key_ptr: i64, val: i64) -> i64
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_f64_to_i8(f: f64) -> i8 {
     f as i8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rt_i64_to_i8(i: i64) -> i8 {
+    i as i8
 }
 
 #[unsafe(no_mangle)]
