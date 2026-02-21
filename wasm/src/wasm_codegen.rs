@@ -5,6 +5,8 @@ use crate::token::TokenType;
 pub struct WasmCodeGen {
     buffer: String,
     string_constants: Vec<String>,
+    dynamic_imports: Vec<(String, usize)>,
+    local_func_names: std::collections::HashMap<String, usize>,
 }
 
 impl WasmCodeGen {
@@ -12,6 +14,8 @@ impl WasmCodeGen {
         Self {
             buffer: String::new(),
             string_constants: Vec::new(),
+            dynamic_imports: Vec::new(),
+            local_func_names: std::collections::HashMap::new(),
         }
     }
 
@@ -28,6 +32,41 @@ impl WasmCodeGen {
     pub fn generate_wat(&mut self, functions: &[MIRFunction]) -> String {
         self.buffer.clear();
         self.string_constants.clear();
+        self.dynamic_imports.clear();
+        self.local_func_names.clear();
+
+        // Collect local function names before generating
+        let local_func_set: std::collections::HashSet<String> = functions.iter()
+            .map(|f| f.name.replace(".", "_")).collect();
+        // Build function-name-to-table-index mapping
+        for (i, func) in functions.iter().enumerate() {
+            let name = func.name.replace(".", "_");
+            self.local_func_names.insert(name, i);
+        }
+
+        // Pre-scan: collect external callees that need dynamic imports
+        for func in functions {
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    if let MIRInstruction::Call { callee, args, .. } = inst {
+                        let name = callee.replace(".", "_");
+                        // Skip builtins, known imports, and local functions
+                        if callee == "print" || callee.starts_with("rt_") || callee.starts_with("m_")
+                            || callee == "a_new" || callee == "Array_push"
+                            || callee == "print_raw" || callee == "print_space" || callee == "print_newline"
+                            || matches!(callee.as_str(), "min" | "max" | "abs" | "round" | "floor" | "ceil" | "pow" | "sqrt" | "sin" | "cos")
+                            || local_func_set.contains(&name) {
+                            continue;
+                        }
+                        let nargs = args.len();
+                        if !self.dynamic_imports.iter().any(|(n, _)| n == &name) {
+                            self.dynamic_imports.push((name, nargs));
+                        }
+                    }
+                }
+            }
+        }
+        let dynamic_imports = self.dynamic_imports.clone();
 
         self.emit("(module\n");
         
@@ -60,6 +99,16 @@ impl WasmCodeGen {
         self.emit_line("(import \"env\" \"rt_sin\" (func $f_sin (param i64) (result i64)))");
         self.emit_line("(import \"env\" \"rt_cos\" (func $f_cos (param i64) (result i64)))");
         self.emit_line("(import \"env\" \"memory\" (memory 1))");
+
+        // Dynamic imports for std_* functions and other external callees
+        for (name, nargs) in &dynamic_imports {
+            let mut params = String::new();
+            for _ in 0..*nargs {
+                params.push_str(" i64");
+            }
+            let param_str = if params.is_empty() { String::new() } else { format!(" (param{})", params) };
+            self.emit_line(&format!("(import \"env\" \"{}\" (func $f_{}{} (result i64)))", name, name, param_str));
+        }
 
         // Types for Indirect Calls (Support up to 10 args for now)
         for n in 0..11 {
@@ -292,7 +341,7 @@ impl WasmCodeGen {
 
         // Local variables
         for (var_name, _ty) in &func.variables {
-            if !func.params.contains(var_name) {
+            if !func.params.contains(var_name) && !self.local_func_names.contains_key(var_name) {
                 self.emit_line(&format!("(local ${} i64)", var_name));
             }
         }
@@ -393,6 +442,7 @@ impl WasmCodeGen {
                         TokenType::Minus => self.emit_line("i64.sub"),
                         TokenType::Star => self.emit_line("i64.mul"),
                         TokenType::Slash => self.emit_line("i64.div_s"),
+                        TokenType::Modulo => self.emit_line("i64.rem_s"),
                         TokenType::Ampersand => self.emit_line("i64.and"),
                         TokenType::Pipe => self.emit_line("i64.or"),
                         TokenType::Caret => self.emit_line("i64.xor"),
@@ -501,13 +551,14 @@ impl WasmCodeGen {
                     for arg in args {
                         self.push_boxed(arg);
                     }
+                    let callee_name = callee.replace(".", "_");
                     if callee == "print_raw" || callee == "print_space" || callee == "print_newline" ||
                        callee.starts_with("rt_") || callee.starts_with("m_") || callee == "a_new" || callee == "Array_push" {
                         self.emit_line(&format!("call ${}", callee));
                     } else if matches!(callee.as_str(), "min" | "max" | "abs" | "round" | "floor" | "ceil" | "pow" | "sqrt" | "sin" | "cos") {
                         self.emit_line(&format!("call $f_{}", callee));
                     } else {
-                        self.emit_line(&format!("call $f_{}", callee.replace(".", "_")));
+                        self.emit_line(&format!("call $f_{}", callee_name));
                     }
                     
                     if dst != "" {
@@ -518,23 +569,43 @@ impl WasmCodeGen {
                 }
             }
             MIRInstruction::IndirectCall { dst, callee, args, .. } => {
-                for arg in args {
-                    self.push_boxed(arg);
-                }
-                self.push_boxed(callee);
-                // In TejX/Wasm, we treat the i64 value as an index into the WASM table
-                self.emit_line("i32.wrap_i64");
-                
-                let mut params = String::new();
-                for _ in args {
-                    params.push_str(" i64");
-                }
-                self.emit_line(&format!("call_indirect (func (param {}) (result i64))", params));
-                
-                if dst != "" {
-                    self.emit_set(dst);
+                // Check if callee is a known function (not a true indirect call)
+                let is_known_func = if let MIRValue::Variable { name, .. } = callee {
+                    // Variable names starting with "f_" are function references from the lowering
+                    name.starts_with("f_")
+                } else { false };
+
+                if is_known_func {
+                    // Direct call to known function
+                    let func_name = if let MIRValue::Variable { name, .. } = callee { name.clone() } else { String::new() };
+                    for arg in args {
+                        self.push_boxed(arg);
+                    }
+                    self.emit_line(&format!("call ${}", func_name));
+                    if dst != "" {
+                        self.emit_set(dst);
+                    } else {
+                        self.emit_line("drop");
+                    }
                 } else {
-                    self.emit_line("drop");
+                    // True indirect call via function table
+                    for arg in args {
+                        self.push_boxed(arg);
+                    }
+                    self.push_boxed(callee);
+                    self.emit_line("i32.wrap_i64");
+                    
+                    let mut params = String::new();
+                    for _ in args {
+                        params.push_str(" i64");
+                    }
+                    self.emit_line(&format!("call_indirect (func (param {}) (result i64))", params));
+                    
+                    if dst != "" {
+                        self.emit_set(dst);
+                    } else {
+                        self.emit_line("drop");
+                    }
                 }
             }
             MIRInstruction::Return { value, .. } => {
@@ -547,7 +618,7 @@ impl WasmCodeGen {
             }
             MIRInstruction::Jump { target, .. } => {
                 self.emit_line(&format!("i32.const {}", target));
-                self.emit_set("$state");
+                self.emit_set("state");
             }
             MIRInstruction::Branch { condition, true_target, false_target, .. } => {
                 self.push_boxed(condition);
@@ -557,10 +628,10 @@ impl WasmCodeGen {
                 self.emit_line("i64.ne");
                 self.emit_line("if");
                 self.emit_line(&format!("  i32.const {}", true_target));
-                self.emit_set("$state");
+                self.emit_set("state");
                 self.emit_line("else");
                 self.emit_line(&format!("  i32.const {}", false_target));
-                self.emit_set("$state");
+                self.emit_set("state");
                 self.emit_line("end");
             }
             MIRInstruction::ObjectLiteral { dst, entries, .. } => {
@@ -642,7 +713,12 @@ impl WasmCodeGen {
     fn push_boxed(&mut self, val: &MIRValue) {
         match val {
             MIRValue::Variable { name, .. } => {
-                self.emit_get(name);
+                // Check if this variable is actually a function reference
+                if let Some(&table_idx) = self.local_func_names.get(name.as_str()) {
+                    self.emit_line(&format!("i64.const {}", table_idx));
+                } else {
+                    self.emit_get(name);
+                }
             }
             MIRValue::Constant { value, ty } => {
                 if ty.is_float() {
@@ -703,11 +779,21 @@ impl WasmCodeGen {
     }
 
     fn emit_get(&mut self, name: &str) {
+        // Function references: push the table index instead of local.get
+        if let Some(&table_idx) = self.local_func_names.get(name) {
+            self.emit_line(&format!("i64.const {}", table_idx));
+            return;
+        }
         let op = if name.starts_with("g_") { "global.get" } else { "local.get" };
         self.emit_line(&format!("{} ${}", op, name));
     }
 
     fn emit_set(&mut self, name: &str) {
+        // Function references: drop the value (function assignment is a no-op in WASM)
+        if self.local_func_names.contains_key(name) {
+            self.emit_line("drop");
+            return;
+        }
         let op = if name.starts_with("g_") { "global.set" } else { "local.set" };
         self.emit_line(&format!("{} ${}", op, name));
     }

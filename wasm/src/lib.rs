@@ -8,14 +8,14 @@
 #[path = "../../src/types.rs"] pub mod types;
 #[path = "../../src/hir.rs"] pub mod hir;
 #[path = "../../src/lowering.rs"] pub mod lowering;
-#[path = "../../src/runtime.rs"] pub mod runtime;
 #[path = "../../src/type_checker.rs"] pub mod type_checker;
 #[path = "../../src/mir.rs"] pub mod mir;
 #[path = "../../src/mir_lowering.rs"] pub mod mir_lowering;
 #[path = "../../src/borrow_checker.rs"] pub mod borrow_checker;
-#[path = "../../src/codegen.rs"] pub mod codegen;
-#[path = "../../src/linker.rs"] pub mod linker;
 #[path = "../../src/diagnostics.rs"] pub mod diagnostics;
+
+// WASM-local runtime shim (provides StdLib metadata without OS dependencies)
+pub mod runtime;
 
 // WASM-specific modules
 pub mod wasm_codegen;
@@ -68,8 +68,7 @@ pub fn compile_to_wat(source: String, filename: String, async_enabled: bool) -> 
 
     let mut borrow_checker = BorrowChecker::new();
     for mir_func in &mut mir_functions {
-        let (_, _) = borrow_checker.check(mir_func, &filename);
-        // We skip drop injection for now in Wasm as it's a prototype
+        let (_, _, _) = borrow_checker.check(mir_func, &filename);
     }
 
     let mut wasm_codegen = WasmCodeGen::new();
@@ -163,7 +162,7 @@ fn render_diagnostic(diag: &crate::diagnostics::Diagnostic, source: &str) -> Str
 
 pub fn compile_to_wasm(source: String, filename: String, async_enabled: bool) -> Result<Vec<u8>, String> {
     let wat = compile_to_wat(source, filename, async_enabled)?;
-    wat::parse_str(wat).map_err(|e| format!("WAT to WASM conversion failed: {}", e))
+    wat::parse_str(&wat).map_err(|e| format!("WAT to WASM conversion failed: {}", e))
 }
 
 // --- C-style FFI for manual Wasm usage ---
