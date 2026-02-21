@@ -29,15 +29,16 @@ impl BorrowChecker {
         }
     }
 
-    pub fn check(&mut self, func: &MIRFunction, filename: &str) -> (HashMap<usize, Vec<String>>, Vec<ReassignDrop>) {
+    pub fn check(&mut self, func: &MIRFunction, filename: &str) -> (HashMap<usize, Vec<String>>, Vec<ReassignDrop>, Vec<(usize, usize)>) {
         self.filename = filename.to_string();
         let mut drops = HashMap::new();
         let mut reassignment_drops: Vec<ReassignDrop> = Vec::new();
+        let mut dead_frees = Vec::new();
         self.errors.clear();
         
         // 1. Initialize State Vectors for each block
         let num_blocks = func.blocks.len();
-        if num_blocks == 0 { return (drops, reassignment_drops); }
+        if num_blocks == 0 { return (drops, reassignment_drops, Vec::new()); }
 
         let mut in_states: Vec<HashMap<String, VarState>> = vec![HashMap::new(); num_blocks];
         let mut out_states: Vec<HashMap<String, VarState>> = vec![HashMap::new(); num_blocks];
@@ -126,9 +127,9 @@ impl BorrowChecker {
             }
         }
 
-        // 4. Final Pass: Report Errors & Collect Drops
+        // 4. Final Pass: Report Errors & Collect Drops & Dead Frees
         for (i, block_in) in in_states.iter().enumerate() {
-             self.report_errors_in_block(func, i, block_in);
+             self.report_errors_in_block(func, i, block_in, &mut dead_frees);
         }
 
         // Collect drops for leaf blocks
@@ -140,7 +141,7 @@ impl BorrowChecker {
                    for (var_name, state) in &out_states[i] {
                         // EXEMPT ALL PARAMETERS: They are owned by the caller
                         // EXEMPT INTERNAL VARIABLES: Managed by compiler machinery
-                        if *state == VarState::Live && !func.params.contains(var_name) {
+                        if *state == VarState::Live {
                              if var_name.starts_with("__") {
                                  // Skipping internal variable
                              } else {
@@ -157,7 +158,7 @@ impl BorrowChecker {
             self.collect_reassignment_drops(func, block_idx, block_in, &mut reassignment_drops);
         }
 
-        (drops, reassignment_drops)
+        (drops, reassignment_drops, dead_frees)
     }
 
     fn build_predecessors(&self, func: &MIRFunction) -> HashMap<usize, Vec<usize>> {
@@ -229,19 +230,33 @@ impl BorrowChecker {
 
     fn transfer_block(&mut self, func: &MIRFunction, block_idx: usize, in_state: &HashMap<String, VarState>) -> HashMap<String, VarState> {
         let mut state = in_state.clone();
-        let block = &func.blocks[block_idx];
-
-        for inst in &block.instructions {
+        for inst in &func.blocks[block_idx].instructions {
             self.apply_instruction(func, inst, &mut state, false); // False = don't report errors
         }
         state
     }
 
-    fn report_errors_in_block(&mut self, func: &MIRFunction, block_idx: usize, in_state: &HashMap<String, VarState>) {
+    fn report_errors_in_block(&mut self, func: &MIRFunction, block_idx: usize, in_state: &HashMap<String, VarState>, dead_frees: &mut Vec<(usize, usize)>) {
         let mut state = in_state.clone();
         let block = &func.blocks[block_idx];
-         for inst in &block.instructions {
-            self.apply_instruction(func, inst, &mut state, true); // True = report errors
+         for (inst_idx, inst) in block.instructions.iter().enumerate() {
+            let mut is_dead_free = false;
+            if let MIRInstruction::Free { value, .. } = inst {
+                 if let MIRValue::Variable { name, .. } = value {
+                      if let Some(s) = state.get(name) {
+                           if *s == VarState::Moved || *s == VarState::Uninitialized {
+                               is_dead_free = true;
+                           }
+                      }
+                 }
+            }
+            if is_dead_free {
+                 dead_frees.push((block_idx, inst_idx));
+                 // Still apply it to state machine to keep it consistent, but silently
+                 self.apply_instruction(func, inst, &mut state, false); 
+            } else {
+                 self.apply_instruction(func, inst, &mut state, true); // True = report errors
+            }
         }
     }
 
@@ -405,7 +420,10 @@ impl BorrowChecker {
             },
             MIRInstruction::Call { dst, callee, args, line } => {
                 let is_constructor = callee.ends_with("_constructor");
-                let is_method = callee.starts_with("f_") && callee.matches('_').count() >= 2;
+                let is_method = callee.starts_with("m_") 
+                             || callee.starts_with("rt_") 
+                             || callee.contains("___") 
+                             || (callee.starts_with("f_") && callee.chars().nth(2).unwrap_or('a').is_uppercase());
                 
                 for (i, arg) in args.iter().enumerate() {
                     self.check_use(arg, state, report, *line);
@@ -514,6 +532,18 @@ impl BorrowChecker {
             MIRInstruction::TrySetup { .. } => {},
             MIRInstruction::PopHandler { .. } => {},
             MIRInstruction::Free { value, line } => {
+                if let MIRValue::Variable { name, .. } = value {
+                     if let Some(s) = state.get(name) {
+                          if *s == VarState::MaybeMoved && report {
+                              self.errors.push(
+                                  Diagnostic::new(format!("Cannot safely drop conditionally moved variable '{}'", name), *line, 1, self.filename.clone())
+                                      .with_code("E0308")
+                                      .with_hint("Variable was moved in some control flow paths but not others. Reinitialize it or ensure it is always moved.")
+                                      .with_label("drop of conditionally moved value")
+                              );
+                          }
+                     }
+                }
                 self.check_use(value, state, report, *line);
                 self.mark_moved(value, state);
             }

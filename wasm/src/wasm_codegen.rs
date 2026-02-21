@@ -49,6 +49,16 @@ impl WasmCodeGen {
         self.emit_line("(import \"env\" \"print_space\" (func $print_space))");
         self.emit_line("(import \"env\" \"print_newline\" (func $print_newline))");
         self.emit_line("(import \"env\" \"rt_free\" (func $rt_free (param i64)))");
+        self.emit_line("(import \"env\" \"rt_min\" (func $f_min (param i64 i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_max\" (func $f_max (param i64 i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_abs\" (func $f_abs (param i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_round\" (func $f_round (param i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_floor\" (func $f_floor (param i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_ceil\" (func $f_ceil (param i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_pow\" (func $f_pow (param i64 i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_sqrt\" (func $f_sqrt (param i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_sin\" (func $f_sin (param i64) (result i64)))");
+        self.emit_line("(import \"env\" \"rt_cos\" (func $f_cos (param i64) (result i64)))");
         self.emit_line("(import \"env\" \"memory\" (memory 1))");
 
         // Types for Indirect Calls (Support up to 10 args for now)
@@ -58,6 +68,29 @@ impl WasmCodeGen {
                 params.push_str(" i64");
             }
             self.emit_line(&format!("(type $t_func_{} (func (param {}) (result i64)))", n, params));
+        }
+
+        // Scan for globals
+        let mut globals = std::collections::HashSet::new();
+        for func in functions {
+            // Check params
+            for param in &func.params {
+                if param.starts_with("g_") { globals.insert(param.clone()); }
+            }
+            // Check locals
+            for (var_name, _) in &func.variables {
+                if var_name.starts_with("g_") { globals.insert(var_name.clone()); }
+            }
+            // Check instructions
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    self.collect_globals(inst, &mut globals);
+                }
+            }
+        }
+
+        for global in &globals {
+            self.emit_line(&format!("(global ${} (mut i64) (i64.const 0))", global));
         }
 
         // Scan for strings first to build data section
@@ -172,6 +205,69 @@ impl WasmCodeGen {
         }
     }
 
+    fn collect_globals(&mut self, inst: &MIRInstruction, globals: &mut std::collections::HashSet<String>) {
+        match inst {
+            MIRInstruction::Move { dst, src, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                self.add_global_if_var(src, globals);
+            }
+            MIRInstruction::BinaryOp { dst, left, right, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                self.add_global_if_var(left, globals);
+                self.add_global_if_var(right, globals);
+            }
+            MIRInstruction::Call { dst, args, .. } => {
+                if dst != "" && dst.starts_with("g_") { globals.insert(dst.clone()); }
+                for arg in args { self.add_global_if_var(arg, globals); }
+            }
+            MIRInstruction::Cast { dst, src, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                self.add_global_if_var(src, globals);
+            }
+            MIRInstruction::ObjectLiteral { dst, entries, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                for (_, val) in entries { self.add_global_if_var(val, globals); }
+            }
+            MIRInstruction::ArrayLiteral { dst, elements, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                for el in elements { self.add_global_if_var(el, globals); }
+            }
+            MIRInstruction::LoadMember { dst, obj, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                self.add_global_if_var(obj, globals);
+            }
+            MIRInstruction::LoadIndex { dst, obj, index, .. } => {
+                if dst.starts_with("g_") { globals.insert(dst.clone()); }
+                self.add_global_if_var(obj, globals);
+                self.add_global_if_var(index, globals);
+            }
+            MIRInstruction::Return { value, .. } => {
+                if let Some(val) = value { self.add_global_if_var(val, globals); }
+            }
+            MIRInstruction::Branch { condition, .. } => self.add_global_if_var(condition, globals),
+            MIRInstruction::StoreMember { obj, src, .. } => {
+                self.add_global_if_var(obj, globals);
+                self.add_global_if_var(src, globals);
+            }
+            MIRInstruction::StoreIndex { obj, index, src, .. } => {
+                self.add_global_if_var(obj, globals);
+                self.add_global_if_var(index, globals);
+                self.add_global_if_var(src, globals);
+            }
+            MIRInstruction::Throw { value, .. } => self.add_global_if_var(value, globals),
+            MIRInstruction::Free { value, .. } => self.add_global_if_var(value, globals),
+            _ => {}
+        }
+    }
+
+    fn add_global_if_var(&mut self, val: &MIRValue, globals: &mut std::collections::HashSet<String>) {
+        if let MIRValue::Variable { name, .. } = val {
+            if name.starts_with("g_") {
+                globals.insert(name.clone());
+            }
+        }
+    }
+
     fn add_string_if_const(&mut self, val: &MIRValue) {
         if let MIRValue::Constant { value, ty } = val {
             if matches!(ty, TejxType::String) {
@@ -247,7 +343,7 @@ impl WasmCodeGen {
         match inst {
             MIRInstruction::Move { dst, src, .. } => {
                 self.push_boxed(src);
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
             }
             MIRInstruction::BinaryOp { dst, left, op, right, .. } => {
                 let is_float = left.get_type().is_float() || right.get_type().is_float();
@@ -330,7 +426,7 @@ impl WasmCodeGen {
                         self.emit_line("call $rt_box_int");
                     }
                 }
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
             }
             MIRInstruction::Call { dst, callee, args, .. } => {
                 if callee == "print" {
@@ -344,13 +440,13 @@ impl WasmCodeGen {
                     self.emit_line("call $print_newline");
                     if dst != "" {
                         self.emit_line("i64.const 0");
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     }
                 } else if callee == "rt_box_number" {
                     self.push_raw_float(&args[0]);
                     self.emit_line("call $rt_box_number");
                     if dst != "" {
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
                     }
@@ -358,7 +454,7 @@ impl WasmCodeGen {
                     self.push_raw_int(&args[0]);
                     self.emit_line("call $rt_box_int");
                     if dst != "" {
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
                     }
@@ -373,7 +469,7 @@ impl WasmCodeGen {
                         self.push_boxed(&args[0]);
                     }
                     if dst != "" {
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
                     }
@@ -387,7 +483,7 @@ impl WasmCodeGen {
                     }
                     self.emit_line("call $rt_box_boolean");
                     if dst != "" {
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
                     }
@@ -397,7 +493,7 @@ impl WasmCodeGen {
                     if dst != "" {
                         // We must box it back to i64 because our locals are all i64
                         self.emit_line("call $rt_box_number");
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
                     }
@@ -408,12 +504,14 @@ impl WasmCodeGen {
                     if callee == "print_raw" || callee == "print_space" || callee == "print_newline" ||
                        callee.starts_with("rt_") || callee.starts_with("m_") || callee == "a_new" || callee == "Array_push" {
                         self.emit_line(&format!("call ${}", callee));
+                    } else if matches!(callee.as_str(), "min" | "max" | "abs" | "round" | "floor" | "ceil" | "pow" | "sqrt" | "sin" | "cos") {
+                        self.emit_line(&format!("call $f_{}", callee));
                     } else {
                         self.emit_line(&format!("call $f_{}", callee.replace(".", "_")));
                     }
                     
                     if dst != "" {
-                        self.emit_line(&format!("local.set ${}", dst));
+                        self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
                     }
@@ -434,7 +532,7 @@ impl WasmCodeGen {
                 self.emit_line(&format!("call_indirect (func (param {}) (result i64))", params));
                 
                 if dst != "" {
-                    self.emit_line(&format!("local.set ${}", dst));
+                    self.emit_set(dst);
                 } else {
                     self.emit_line("drop");
                 }
@@ -449,7 +547,7 @@ impl WasmCodeGen {
             }
             MIRInstruction::Jump { target, .. } => {
                 self.emit_line(&format!("i32.const {}", target));
-                self.emit_line("local.set $state");
+                self.emit_set("$state");
             }
             MIRInstruction::Branch { condition, true_target, false_target, .. } => {
                 self.push_boxed(condition);
@@ -459,17 +557,17 @@ impl WasmCodeGen {
                 self.emit_line("i64.ne");
                 self.emit_line("if");
                 self.emit_line(&format!("  i32.const {}", true_target));
-                self.emit_line("  local.set $state");
+                self.emit_set("$state");
                 self.emit_line("else");
                 self.emit_line(&format!("  i32.const {}", false_target));
-                self.emit_line("  local.set $state");
+                self.emit_set("$state");
                 self.emit_line("end");
             }
             MIRInstruction::ObjectLiteral { dst, entries, .. } => {
                 self.emit_line("call $m_new");
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
                 for (name, val) in entries {
-                    self.emit_line(&format!("local.get ${}", dst));
+                    self.emit_get(dst);
                     self.push_string_const_ptr(name);
                     self.push_boxed(val);
                     self.emit_line("call $m_set");
@@ -478,9 +576,9 @@ impl WasmCodeGen {
             }
             MIRInstruction::ArrayLiteral { dst, elements, .. } => {
                 self.emit_line("call $a_new");
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
                 for val in elements {
-                    self.emit_line(&format!("local.get ${}", dst));
+                    self.emit_get(dst);
                     self.push_boxed(val);
                     self.emit_line("call $Array_push");
                     self.emit_line("drop");
@@ -490,7 +588,7 @@ impl WasmCodeGen {
                 self.push_boxed(obj);
                 self.push_string_const_ptr(member);
                 self.emit_line("call $m_get");
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
             }
             MIRInstruction::StoreMember { obj, member, src, .. } => {
                 self.push_boxed(obj);
@@ -507,7 +605,7 @@ impl WasmCodeGen {
                 self.emit_line("call $rt_to_number");
                 self.emit_line("i64.trunc_f64_s");
                 self.emit_line("call $rt_array_get_fast");
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
             }
             MIRInstruction::StoreIndex { obj, index, src, .. } => {
                 self.push_boxed(obj);
@@ -529,7 +627,7 @@ impl WasmCodeGen {
                         self.emit_line("i64.trunc_f64_s");
                     }
                 }
-                self.emit_line(&format!("local.set ${}", dst));
+                self.emit_set(dst);
             }
             MIRInstruction::Free { value, .. } => {
                 self.push_boxed(value);
@@ -544,7 +642,7 @@ impl WasmCodeGen {
     fn push_boxed(&mut self, val: &MIRValue) {
         match val {
             MIRValue::Variable { name, .. } => {
-                self.emit_line(&format!("local.get ${}", name));
+                self.emit_get(name);
             }
             MIRValue::Constant { value, ty } => {
                 if ty.is_float() {
@@ -568,7 +666,7 @@ impl WasmCodeGen {
     fn push_raw_int(&mut self, val: &MIRValue) {
         match val {
             MIRValue::Variable { name, .. } => {
-                self.emit_line(&format!("local.get ${}", name));
+                self.emit_get(name);
                 self.emit_line("call $rt_to_number");
                 self.emit_line("i64.trunc_f64_s");
             }
@@ -590,7 +688,7 @@ impl WasmCodeGen {
     fn push_raw_float(&mut self, val: &MIRValue) {
         match val {
             MIRValue::Variable { name, .. } => {
-                self.emit_line(&format!("local.get ${}", name));
+                self.emit_get(name);
                 self.emit_line("call $rt_to_number");
             }
             MIRValue::Constant { value, ty } => {
@@ -602,6 +700,16 @@ impl WasmCodeGen {
                 }
             }
         }
+    }
+
+    fn emit_get(&mut self, name: &str) {
+        let op = if name.starts_with("g_") { "global.get" } else { "local.get" };
+        self.emit_line(&format!("{} ${}", op, name));
+    }
+
+    fn emit_set(&mut self, name: &str) {
+        let op = if name.starts_with("g_") { "global.set" } else { "local.set" };
+        self.emit_line(&format!("{} ${}", op, name));
     }
 
 

@@ -20,6 +20,7 @@ pub enum TejxType {
     FixedArray(Box<TejxType>, usize),
     Void,
     Any,
+    Ref(Box<TejxType>), // Non-owning borrow
 }
 
 impl TejxType {
@@ -31,27 +32,37 @@ impl TejxType {
         match self {
             TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |
             TejxType::Float16 | TejxType::Float32 | TejxType::Float64 |
-            TejxType::Bool | TejxType::Char | TejxType::Void => false,
-            // DISABLE DROPS for Ref types to prevent Double Free corruption in aliased scenarios (e.g. Map.get)
-            // This leaks memory but ensures correctness for logic tests.
-            // TeixType::String | TejxType::Class(_) | TejxType::Any | TejxType::FixedArray(_, _) => true,
-            _ => false,
+            TejxType::Bool | TejxType::Char | TejxType::Void |
+            TejxType::Ref(_) => false,
+            // Re-enabling drops. Strict checking in borrow checker will prevent double-frees.
+            TejxType::String | TejxType::Class(_) | TejxType::Any | TejxType::FixedArray(_, _) => true,
         }
     }
 
     pub fn is_numeric(&self) -> bool {
-        matches!(self, 
+        match self {
             TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |
-            TejxType::Float16 | TejxType::Float32 | TejxType::Float64
-        )
+            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => true,
+            TejxType::Ref(inner) => inner.is_numeric(),
+            _ => false,
+        }
     }
 
     pub fn is_float(&self) -> bool {
-        matches!(self, TejxType::Float16 | TejxType::Float32 | TejxType::Float64)
+        match self {
+            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => true,
+            TejxType::Ref(inner) => inner.is_float(),
+            _ => false,
+        }
     }
 
     pub fn is_array(&self) -> bool {
-        matches!(self, TejxType::FixedArray(_, _)) || if let TejxType::Class(name) = self { name == "Array" || name.starts_with("Array<") || name.ends_with("[]") } else { false }
+        match self {
+            TejxType::FixedArray(_, _) => true,
+            TejxType::Class(name) => name == "Array" || name.starts_with("Array<") || name.ends_with("[]"),
+            TejxType::Ref(inner) => inner.is_array(),
+            _ => false,
+        }
     }
 
     pub fn get_array_element_type(&self) -> TejxType {
@@ -67,6 +78,7 @@ impl TejxType {
                 TejxType::from_name(inner)
             }
             TejxType::Class(name) if name == "ByteArray" => TejxType::Bool,
+            TejxType::Ref(inner) => inner.get_array_element_type(), // Delegate to underlying type
             _ => TejxType::Any
         }
     }
@@ -79,33 +91,22 @@ impl TejxType {
             TejxType::Int128 => 16,
             TejxType::Bool => 1,
             TejxType::Char => 4,
-            TejxType::String | TejxType::Class(_) | TejxType::Any => 8, // Pointers/Boxed
+            TejxType::String | TejxType::Class(_) | TejxType::Any | TejxType::Ref(_) => 8, // Pointers/Boxed/Borrows
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Void => 0,
         }
     }
 
     pub fn is_copyable(&self) -> bool {
-        match self {
-            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |
-            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 |
-            TejxType::Bool | TejxType::Char | TejxType::Void => true,
-            TejxType::String => true, // Strings are shared/immutable pointers
-            TejxType::Class(name) => {
-                // Special move-only types
-                // We only move Thread to preserve strict single-owner thread lifecycle.
-                if name == "Thread" {
-                    return false;
-                }
-                true // All other classes (including Mutex, SharedQueue) are reference-shared pointers
-            },
-            TejxType::Any => true, // Boxed values are shared
-            TejxType::FixedArray(_, _) => false, // Fixed arrays are moved/stored by value
-        }
+        !self.needs_drop()
     }
 
     pub fn from_name(name: &str) -> TejxType {
         let name = name.trim();
+        if name.starts_with("ref ") {
+            return TejxType::Ref(Box::new(TejxType::from_name(&name[4..])));
+        }
+
         if name.contains('|') {
             // Simple union handling: T | None -> T (nullable)
             // We split by |, verify if one parts match "None" or "null"
@@ -140,6 +141,7 @@ impl TejxType {
             "float64" => TejxType::Float64,
             "float16" => TejxType::Float16,
             "string" => TejxType::String,
+            "char" => TejxType::Char,
             "boolean" | "bool" => TejxType::Bool,
             "any" | "" => TejxType::Any,
             other => TejxType::Class(other.to_string()),

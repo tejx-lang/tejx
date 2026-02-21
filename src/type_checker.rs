@@ -3,6 +3,7 @@ use crate::token::TokenType;
 use crate::diagnostics::Diagnostic; // Import Diagnostic
 use std::collections::HashMap;
 
+
 // TypeInfo struct removed (unused)
 
 
@@ -154,7 +155,7 @@ impl TypeChecker {
         let mut map_members = HashMap::new();
         map_members.insert("put".to_string(), MemberInfo { type_name: "function:void:$0,$1".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         map_members.insert("set".to_string(), MemberInfo { type_name: "function:void:$0,$1".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
-        map_members.insert("get".to_string(), MemberInfo { type_name: "function:$1:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+        map_members.insert("get".to_string(), MemberInfo { type_name: "function:ref $1:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         map_members.insert("has".to_string(), MemberInfo { type_name: "function:bool:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         map_members.insert("delete".to_string(), MemberInfo { type_name: "function:bool:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
         map_members.insert("clear".to_string(), MemberInfo { type_name: "function:void:".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
@@ -767,7 +768,7 @@ impl TypeChecker {
     }
 
     fn is_copy_type(&self, t: &str) -> bool {
-        if t.starts_with("function:") || t == "function" || t == "any" || t == "object" || t == "string" {
+        if t.starts_with("ref ") || t.starts_with("function:") || t == "function" || t == "any" || t == "object" || t == "string" {
             return true;
         }
         // Arrays ARE copy — they are heap-allocated but passed as reference pointers (i64 handles)
@@ -796,8 +797,20 @@ impl TypeChecker {
     }
 
     fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
-        let (e_norm, _, _) = self.parse_signature(expected.to_string());
-        let (a_norm, _, _) = self.parse_signature(actual.to_string());
+        let e_is_ref = expected.starts_with("ref ");
+        let a_is_ref = actual.starts_with("ref ");
+        
+        let expected_base = if e_is_ref { expected[4..].trim() } else { expected };
+        let actual_base = if a_is_ref { actual[4..].trim() } else { actual };
+
+        // Ownership logic: We cannot implicitly assign a borrowed reference to an owned slot without cloning
+        // (unless the underlying type does not require drops, i.e. primitives which copy natively).
+        if a_is_ref && !e_is_ref {
+             // Let the underlying type signature compatibility fall through instead of aggressively blocking
+        }
+
+        let (e_norm, _, _) = self.parse_signature(expected_base.to_string());
+        let (a_norm, _, _) = self.parse_signature(actual_base.to_string());
         
         let mut e_str = e_norm;
         let mut a_str = a_norm;
@@ -1018,14 +1031,14 @@ impl TypeChecker {
                 }
                 if let Some(expr) = initializer {
                     let init_type = self.check_expression(expr)?;
-                    if !self.are_types_compatible(type_annotation, &init_type) {
+                    if !type_annotation.is_empty() && !self.are_types_compatible(type_annotation, &init_type) {
                          self.report_error_detailed(format!("Type mismatch: expected '{}', got '{}'", type_annotation, init_type), *line, *_col, "E0100", Some(&format!("Consider converting with 'as {}' or change the variable type", type_annotation)));
                     }
 
                     // Handle Move Semantics: If initializer is an Identifier
                     if let Expression::Identifier { name: src_name, .. } = &**expr {
                         let is_copy_type = |t: &str| -> bool {
-                            matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float64" | "bool" | "char")
+                            t.starts_with("ref ") || matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float64" | "bool" | "char")
                         };
                         if !is_copy_type(&init_type) && init_type != "any" {
                              self.mark_moved(src_name, *line, *_col);
@@ -1387,7 +1400,7 @@ impl TypeChecker {
                           // Map (shadows global Map but likely meant to be same)
                           self.define("Map".to_string(), "class".to_string());
                           if let Some(mut members) = self.class_members.get("Map").cloned() {
-                               members.insert("at".to_string(), MemberInfo { type_name: "function:$1:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
+                               members.insert("at".to_string(), MemberInfo { type_name: "function:ref $1:$0".to_string(), is_static: false, access: AccessLevel::Public, is_readonly: true });
                                self.class_members.insert("Map".to_string(), members);
                           }
 
@@ -1753,6 +1766,10 @@ impl TypeChecker {
             Expression::MemberAccessExpr { object, member, _line, _col, .. } => {
                 let mut obj_type = self.check_expression(object)?;
                 
+                if obj_type.starts_with("ref ") {
+                    obj_type = obj_type[4..].to_string();
+                }
+
                 // Resolve alias if needed
                 if let Some(sym) = self.lookup(&obj_type) {
                      if let Some(aliased) = &sym.aliased_type {
@@ -1824,13 +1841,17 @@ impl TypeChecker {
                         .unwrap_or(target_type.clone());
                 }
 
+                if unwrapped_type.starts_with("ref ") {
+                    unwrapped_type = unwrapped_type[4..].to_string();
+                }
+
                 if unwrapped_type.ends_with("[]") {
-                     return Ok(unwrapped_type[..unwrapped_type.len()-2].to_string());
+                     return Ok(format!("ref {}", &unwrapped_type[..unwrapped_type.len()-2]));
                 }
                 if unwrapped_type == "string" {
-                     return Ok("string".to_string());
+                     return Ok("ref string".to_string());
                 }
-                Ok("any".to_string())
+                Ok("ref any".to_string())
             },
             Expression::AssignmentExpr { target, value, _line, _col, .. } => {
                 let target_type = match target.as_ref() {
@@ -2026,7 +2047,10 @@ impl TypeChecker {
             Expression::ObjectLiteralExpr { .. } => Ok("any".to_string()),
             Expression::ArrayLiteral { elements, .. } => {
                 if !elements.is_empty() {
-                    let first_type = self.check_expression(&elements[0])?;
+                    let mut first_type = self.check_expression(&elements[0])?;
+                    if first_type.starts_with("ref ") {
+                        first_type = first_type[4..].to_string();
+                    }
                     Ok(format!("{}[]", first_type))
                 } else {
                     Ok("[]".to_string())
@@ -2059,7 +2083,7 @@ impl TypeChecker {
                     let arg_type = self.check_expression(arg)?; 
                     if let Expression::Identifier { name: src_name, .. } = arg {
                          let is_copy_type = |t: &str| -> bool {
-                             matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float64" | "bool" | "char")
+                             t.starts_with("ref ") || matches!(t, "int" | "int16" | "int32" | "int64" | "float" | "float64" | "bool" | "char" | "enum")
                          };
                          if !is_copy_type(&arg_type) && arg_type != "any" {
                               self.mark_moved(src_name, *_line, *_col);

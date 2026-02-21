@@ -102,8 +102,6 @@ fn render_diagnostic(diag: &crate::diagnostics::Diagnostic, source: &str) -> Str
     let mut output = String::new();
     let sev_name = match diag.severity {
         crate::diagnostics::Severity::Error   => "error",
-        crate::diagnostics::Severity::Warning => "warning",
-        crate::diagnostics::Severity::Note    => "note",
     };
 
     if diag.code.is_empty() {

@@ -202,7 +202,24 @@ fn main() {
 
     let mut borrow_checker = BorrowChecker::new();
     for mir_func in &mut mir_functions {
-        let (drops, reassignment_drops) = borrow_checker.check(mir_func, &filename);
+        let (drops, reassignment_drops, dead_frees) = borrow_checker.check(mir_func, &filename);
+
+        // Remove dead Free instructions 
+        {
+            let mut by_block: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+            for (block_idx, inst_idx) in dead_frees {
+                by_block.entry(block_idx).or_default().push(inst_idx);
+            }
+            for (block_idx, mut inst_indices) in by_block {
+                inst_indices.sort_by(|a, b| b.cmp(a)); // Descending order
+                let bb = &mut mir_func.blocks[block_idx];
+                for inst_idx in inst_indices {
+                    if inst_idx < bb.instructions.len() {
+                        bb.instructions.remove(inst_idx);
+                    }
+                }
+            }
+        }
 
         // Inject reassignment drops: Free the old value before it's overwritten.
         // Process in reverse order within each block to maintain correct instruction indices.
@@ -236,7 +253,11 @@ fn main() {
             let mut insert_idx = bb.instructions.len();
             if insert_idx > 0 {
                 match bb.instructions[insert_idx - 1] {
-                    MIRInstruction::Return { .. } | MIRInstruction::Jump { .. } | MIRInstruction::Branch { .. } | MIRInstruction::Throw { .. } => {
+                    MIRInstruction::Return { .. } 
+                    | MIRInstruction::Jump { .. } 
+                    | MIRInstruction::Branch { .. } 
+                    | MIRInstruction::Throw { .. } 
+                    | MIRInstruction::TrySetup { .. } => {
                         insert_idx -= 1;
                     }
                     _ => {}
