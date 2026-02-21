@@ -1,11 +1,9 @@
 use crate::mir::*;
 use crate::types::TejxType;
 use crate::token::TokenType;
-use std::collections::HashSet;
 
 pub struct WasmCodeGen {
     buffer: String,
-    label_counter: usize,
     string_constants: Vec<String>,
 }
 
@@ -13,7 +11,6 @@ impl WasmCodeGen {
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
-            label_counter: 0,
             string_constants: Vec::new(),
         }
     }
