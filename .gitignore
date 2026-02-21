@@ -18,3 +18,4 @@ build/
 cmake-build-debug/
 target
 libruntime.a
+*.mjs
