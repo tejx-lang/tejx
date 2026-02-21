@@ -82,13 +82,34 @@ impl Parser {
             // TokenType::Protocol => Some(self.parse_protocol_declaration()), // Removed
             TokenType::TypeAlias => Some(self.parse_type_alias_declaration()), // Added
             TokenType::Export => {
-                self.advance(); // consume export
+                let export_token = self.advance().clone(); // consume export
                 let is_default = self.match_token(TokenType::Default);
-                if let Some(decl) = self.parse_declaration() {
+                
+                let decl = match self.peek().token_type {
+                    TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
+                    TokenType::Function => Some(self.parse_function_declaration(false)),
+                    TokenType::Async => {
+                        self.advance(); // consume async
+                        Some(self.parse_function_declaration(true))
+                    }
+                    TokenType::Class => Some(self.parse_class_declaration(false)),
+                    TokenType::Abstract => {
+                        self.advance(); // consume abstract
+                        Some(self.parse_class_declaration(true))
+                    }
+                    TokenType::Interface => Some(self.parse_interface_declaration()),
+                    TokenType::Extension => Some(self.parse_extension_declaration()),
+                    TokenType::Enum => Some(self.parse_enum_declaration()),
+                    TokenType::TypeAlias => Some(self.parse_type_alias_declaration()),
+                    _ => None,
+                };
+
+                if let Some(d) = decl {
                      Some(Statement::ExportDecl {
-                         declaration: Box::new(decl),
+                         declaration: Box::new(d),
                          _is_default: is_default,
-                         _line: 0, _col: 0
+                         _line: export_token.line,
+                         _col: export_token.column
                      })
                 } else {
                     None
@@ -718,7 +739,7 @@ impl Parser {
                 };
             }
             // Fallback if it was just an identifier 'std' but not followed by ':'
-            let names = vec!["std".to_string()];
+            let names = vec![ImportItem { name: "std".to_string(), alias: None }];
             let is_default = true;
             
             // Re-use logic for 'import name from "..."'
@@ -748,12 +769,24 @@ impl Parser {
         
         // Check if default import: import name from "..."
         if self.check(TokenType::Identifier) {
-             names.push(self.consume_identifier("Expected import name").value.clone());
+             let name = self.consume_identifier("Expected import name").value.clone();
+             let mut alias = None;
+             if self.check(TokenType::Identifier) && self.peek().value == "as" {
+                 self.advance(); // consume 'as'
+                 alias = Some(self.consume_identifier("Expected alias after 'as'").value.clone());
+             }
+             names.push(ImportItem { name, alias });
              is_default = true;
         } else if self.match_token(TokenType::OpenBrace) {
-             // Named imports: import { a, b } from "..."
+             // Named imports: import { a, b as c } from "..."
              while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-                 names.push(self.consume_identifier("Expected import name").value.clone());
+                 let name = self.consume_identifier("Expected import name").value.clone();
+                 let mut alias = None;
+                 if self.check(TokenType::Identifier) && self.peek().value == "as" {
+                     self.advance(); // consume 'as'
+                     alias = Some(self.consume_identifier("Expected alias after 'as'").value.clone());
+                 }
+                 names.push(ImportItem { name, alias });
                  if self.check(TokenType::Comma) { self.advance(); }
              }
              self.consume(TokenType::CloseBrace, "Expected '}'");

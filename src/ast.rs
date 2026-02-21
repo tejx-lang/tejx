@@ -100,7 +100,7 @@ pub enum Statement {
         _col: usize,
     },
     ImportDecl {
-        _names: Vec<String>,
+        _names: Vec<ImportItem>,
         source: String,
         _is_default: bool,
         _line: usize,
@@ -112,6 +112,12 @@ pub enum Statement {
         _line: usize,
         _col: usize,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportItem {
+    pub name: String,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone)]

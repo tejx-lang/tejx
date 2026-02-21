@@ -144,9 +144,35 @@ fn main() {
     }
 
 
+    let mut lowering = Lowering::new();
+    lowering.async_enabled = async_enabled;
+    *lowering.filename.borrow_mut() = filename.clone();
+    let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
+
+    // Resolve imports before type checking
+    let mut processed_files = std::collections::HashSet::new();
+    let mut import_stack = Vec::new();
+    if let Ok(p) = std::fs::canonicalize(base_path.join(&filename)) {
+        processed_files.insert(p.clone());
+        import_stack.push(p);
+    }
+    let merged_statements = lowering.resolve_imports(program.statements.clone(), base_path, &mut processed_files, &mut import_stack);
+    let merged_program = ast::Program { statements: merged_statements };
+
+    // Check for lowering errors (import validation happens in resolve_imports)
+    {
+        let diagnostics = lowering.diagnostics.borrow();
+        if !diagnostics.is_empty() {
+            for diag in diagnostics.iter() {
+                diag.report(&contents);
+            }
+            process::exit(1);
+        }
+    }
+
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
-    if let Err(_) = type_checker.check(&program, &filename) {
+    if let Err(_) = type_checker.check(&merged_program, &filename) {
         eprintln!("Type Checking Failed:");
         for diag in &type_checker.diagnostics {
             diag.report(&contents);
@@ -154,12 +180,7 @@ fn main() {
         process::exit(1);
     }
 
-
-    let mut lowering = Lowering::new();
-    lowering.async_enabled = async_enabled;
-    *lowering.filename.borrow_mut() = filename.clone();
-    let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
-    let lowering_result = lowering.lower(&program, base_path);
+    let lowering_result = lowering.lower(&merged_program, base_path);
 
     // Check for lowering errors (import validation, etc.)
     {

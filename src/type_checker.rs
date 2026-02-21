@@ -548,11 +548,7 @@ impl TypeChecker {
                           self.define("http".to_string(), "Http".to_string());
                           self.define("https".to_string(), "Https".to_string());
                       }
-                 } else if !_names.is_empty() {
-                     for name in _names {
-                         self.define(name.clone(), "any".to_string());
-                     }
-                 }
+                  }
             }
             Statement::ExportDecl { declaration, .. } => {
                 self.collect_declarations(declaration);
@@ -1308,7 +1304,7 @@ impl TypeChecker {
                  self.check_statement(declaration)?;
                  Ok(())
             },
-            Statement::ImportDecl { _names, source, .. } => {
+             Statement::ImportDecl { _names, source, .. } => {
                  if source.starts_with("std:") {
                       if source == "std:math" {
                           self.define_with_params("min".to_string(), "function".to_string(), vec!["any".to_string(), "any".to_string()]);
@@ -1428,11 +1424,7 @@ impl TypeChecker {
                           self.define_with_params("receive".to_string(), "function".to_string(), vec!["any".to_string(), "int32".to_string()]);
                           self.define_with_params("close".to_string(), "function".to_string(), vec!["any".to_string()]);
                       }
-                 } else if !_names.is_empty() {
-                     for name in _names {
-                         self.define(name.clone(), "any".to_string());
-                     }
-                 }
+                  }
                  Ok(())
             },
             Statement::ExtensionDeclaration(ext_decl) => {
@@ -1751,7 +1743,8 @@ impl TypeChecker {
                 if matches!(op, TokenType::EqualEqual | TokenType::BangEqual | 
                            TokenType::Less | TokenType::LessEqual | 
                            TokenType::Greater | TokenType::GreaterEqual |
-                           TokenType::AmpersandAmpersand | TokenType::PipePipe) {
+                           TokenType::AmpersandAmpersand | TokenType::PipePipe |
+                           TokenType::Instanceof) {
                     return Ok("bool".to_string());
                 }
 

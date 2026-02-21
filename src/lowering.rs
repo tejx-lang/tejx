@@ -157,234 +157,19 @@ impl Lowering {
         let line = 0; // Top level
         let mut functions = Vec::new();
         let mut main_stmts = Vec::new();
-        let mut merged_statements = program.statements.clone();
-
-        // Pass 0: Handle imports (simplistic recursive merge for tests)
-        let valid_std_modules = ["math", "fs", "collections", "time", "net", "json", "http", "https", "thread", "system"];
-        let filename = self.filename.borrow().clone();
-        
+        // Pass 0: Handle imports (recursive merge for nested modules)
         let mut processed_files = HashSet::new();
+        let filename = self.filename.borrow().clone();
         if let Ok(p) = std::fs::canonicalize(base_path.join(&filename)) {
             processed_files.insert(p);
         }
 
-        let mut i = 0;
-        while i < merged_statements.len() {
-            if let Statement::ImportDecl { source, _names, _is_default, _line, _col } = &merged_statements[i] {
-                if source.starts_with("std:") {
-                    let mod_name = &source[4..];
-
-                    // Validate std module name
-                    if !valid_std_modules.contains(&mod_name) {
-                        let avail = valid_std_modules.join(", ");
-                        self.diagnostics.borrow_mut().push(
-                            Diagnostic::new(
-                                format!("Unknown standard module 'std:{}'", mod_name),
-                                *_line, *_col, filename.clone(),
-                            )
-                            .with_code("E0201")
-                            .with_hint(&format!("Available standard modules: {}", avail))
-                            .with_label(&format!("'std:{}' is not a valid module", mod_name))
-                        );
-                        i += 1;
-                        continue;
-                    }
-
-                    let mut imports = self.std_imports.borrow_mut();
-                    
-                    let new_mode = if _names.is_empty() {
-                        ImportMode::All
-                    } else {
-                        let mut set = HashSet::new();
-                        for n in _names { set.insert(n.clone()); }
-                        ImportMode::Named(set)
-                    };
-
-                    // Merge strategy: All > Named
-                    let entry = imports.entry(mod_name.to_string()).or_insert(ImportMode::Named(HashSet::new()));
-                    match (entry.clone(), new_mode) {
-                        (ImportMode::All, _) => {}, // Already All, stay All
-                        (_, ImportMode::All) => { *entry = ImportMode::All; }, // Upgrade to All
-                        (ImportMode::Named(mut existing), ImportMode::Named(new_set)) => {
-                            existing.extend(new_set);
-                            *entry = ImportMode::Named(existing);
-                        }
-                    }
-
-                    if mod_name == "net" {
-                        imports.insert("http".to_string(), ImportMode::All);
-                        imports.insert("https".to_string(), ImportMode::All);
-                    }
-
-                    if mod_name == "collections" {
-                        let mut class_methods = self.class_methods.borrow_mut();
-                        let mut user_functions = self.user_functions.borrow_mut();
-                        
-                        let collections = [
-                            ("Stack", vec!["push", "pop", "peek", "size", "isEmpty"]),
-                            ("Queue", vec!["enqueue", "dequeue", "size", "isEmpty"]),
-                            ("MinHeap", vec!["insert", "extractMin", "size", "isEmpty"]),
-                            ("MaxHeap", vec!["insertMax", "extractMax", "size", "isEmpty"]),
-                            ("PriorityQueue", vec!["insert", "extractMin", "size", "isEmpty"]),
-                            ("Map", vec!["set", "get", "put", "at", "delete", "remove", "has", "size", "isEmpty", "keys", "values"]),
-                            ("Set", vec!["add", "delete", "remove", "has", "size", "isEmpty", "values"]),
-                            ("OrderedMap", vec!["put", "at", "has", "size", "isEmpty"]),
-                            ("OrderedSet", vec!["add", "has", "size", "isEmpty"]),
-                            ("BloomFilter", vec!["add", "contains"]),
-                            ("Trie", vec!["addPath", "find"]),
-                        ];
-
-                        for (cls, methods) in collections {
-                            class_methods.insert(cls.to_string(), methods.iter().map(|s| s.to_string()).collect());
-                            for m in methods {
-                                let mangled = format!("{}_{}", cls, m);
-                                user_functions.insert(mangled, TejxType::Any);
-                            }
-                            // Also register constructor
-                            user_functions.insert(format!("{}_constructor", cls), TejxType::Void);
-                        }
-                    }
-
-                    i += 1;
-                    continue;
-                }
-
-                // File-based import: resolve path
-                let import_names = _names.clone();
-                let import_line = *_line;
-                let import_col = *_col;
-                let is_default = *_is_default;
-                let source_str = source.clone();
-                
-                let mut path = base_path.to_path_buf();
-                let clean_source = source_str.trim_matches('"');
-                if clean_source.starts_with("./") {
-                    path.push(&clean_source[2..]);
-                } else {
-                    path.push(clean_source);
-                }
-
-                if !path.exists() {
-                    // File not found error
-                    self.diagnostics.borrow_mut().push(
-                        Diagnostic::new(
-                            format!("Module file not found: '{}'", clean_source),
-                            import_line, import_col, filename.clone(),
-                        )
-                        .with_code("E0200")
-                        .with_hint("Check the file path or create the module file")
-                        .with_label(&format!("no file at '{}'", path.display()))
-                    );
-                    i += 1;
-                    continue;
-                }
-
-                // Canonicalize to detect duplicates/cycles
-                let canon_path = match std::fs::canonicalize(&path) {
-                    Ok(p) => p,
-                    Err(_) => path.clone(), // Fallback
-                };
-
-                if processed_files.contains(&canon_path) {
-                    // Already included (circular or diamond dependency)
-                    // Skip to avoid infinite recursion
-                    // We remove the Import statement to avoid infinite loop in this Pass 0
-                    merged_statements.remove(i);
-                    // Do NOT increment i, as next statement shifts down
-                    continue;
-                }
-                processed_files.insert(canon_path.clone());
-
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let mut lexer = crate::lexer::Lexer::new(&content, &path.to_string_lossy());
-                    let tokens = lexer.tokenize();
-                    let mut parser = crate::parser::Parser::new(tokens, &path.to_string_lossy());
-                    let imported_program = parser.parse_program();
-                    
-                    let new_stmts = imported_program.statements;
-
-                    // Validate exported symbols
-                    if !import_names.is_empty() {
-                        let mut exported_names: Vec<String> = Vec::new();
-                        let mut has_default_export = false;
-                        
-                        for stmt in &new_stmts {
-                            if let Statement::ExportDecl { declaration, _is_default: is_def, .. } = stmt {
-                                if *is_def {
-                                    has_default_export = true;
-                                }
-                                // Extract name from the declaration
-                                match declaration.as_ref() {
-                                    Statement::FunctionDeclaration(func) => {
-                                        exported_names.push(func.name.clone());
-                                    }
-                                    Statement::ClassDeclaration(class) => {
-                                        exported_names.push(class.name.clone());
-                                    }
-                                    Statement::VarDeclaration { pattern: crate::ast::BindingNode::Identifier(name), .. } => {
-                                        exported_names.push(name.clone());
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        if is_default && !has_default_export {
-                            self.diagnostics.borrow_mut().push(
-                                Diagnostic::new(
-                                    format!("Module '{}' has no default export", clean_source),
-                                    import_line, import_col, filename.clone(),
-                                )
-                                .with_code("E0203")
-                                .with_hint(&if exported_names.is_empty() {
-                                    "Add 'export default' to a function or class in the module".to_string()
-                                } else {
-                                    format!("Use named imports: import {{ {} }} from \"{}\"", exported_names.join(", "), clean_source)
-                                })
-                            );
-                        } else if !is_default && !exported_names.is_empty() {
-                            // Check each named import exists in exports
-                            for name in &import_names {
-                                if !exported_names.contains(name) {
-                                    self.diagnostics.borrow_mut().push(
-                                        Diagnostic::new(
-                                            format!("'{}' is not exported from '{}'", name, clean_source),
-                                            import_line, import_col, filename.clone(),
-                                        )
-                                        .with_code("E0202")
-                                        .with_hint(&format!("Available exports: {}", exported_names.join(", ")))
-                                        .with_label(&format!("'{}' not found in module", name))
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // If this is a default import, rename the default-exported function to match the import alias
-                    let mut final_stmts = new_stmts;
-                    if is_default && !import_names.is_empty() {
-                        let alias = import_names[0].clone();
-                        for stmt in final_stmts.iter_mut() {
-                            if let Statement::ExportDecl { declaration, _is_default: true, .. } = stmt {
-                                match declaration.as_mut() {
-                                    Statement::FunctionDeclaration(func) => {
-                                        func.name = alias.clone();
-                                    }
-                                    Statement::ClassDeclaration(class) => {
-                                        class.name = alias.clone();
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-
-                    merged_statements.splice(i..i+1, final_stmts);
-                    continue;
-                }
-            }
-            i += 1;
+        let mut import_stack = Vec::new();
+        if let Ok(p) = std::fs::canonicalize(base_path.join(&filename)) {
+            import_stack.push(p);
         }
+
+        let merged_statements = self.resolve_imports(program.statements.clone(), base_path, &mut processed_files, &mut import_stack);
 
         // Pass 0.5: Scan for Variadic Functions
         for stmt in &merged_statements {
@@ -415,7 +200,6 @@ impl Lowering {
              }
         }
 
-        // Pass 1: Collect user functions
         // Pass 1: Collect user functions and top-level variables
         self.scopes.borrow_mut().clear(); // Reset scopes
         self.enter_scope(); // Global scope
@@ -3176,5 +2960,250 @@ impl Lowering {
         }
 
         TejxType::Any
+    }
+
+    pub fn resolve_imports(&self, mut statements: Vec<Statement>, current_dir: &std::path::Path, processed_files: &mut HashSet<std::path::PathBuf>, import_stack: &mut Vec<std::path::PathBuf>) -> Vec<Statement> {
+        let valid_std_modules = ["math", "fs", "collections", "time", "net", "json", "http", "https", "thread", "system"];
+        let filename = self.filename.borrow().clone();
+        
+        let mut i = 0;
+        while i < statements.len() {
+            if let Statement::ImportDecl { source, _names, _is_default, _line, _col } = &statements[i] {
+                if source.starts_with("std:") {
+                    let mod_name = &source[4..];
+
+                    // Validate std module name
+                    if !valid_std_modules.contains(&mod_name) {
+                        let avail = valid_std_modules.join(", ");
+                        self.diagnostics.borrow_mut().push(
+                            Diagnostic::new(
+                                format!("Unknown standard module 'std:{}'", mod_name),
+                                *_line, *_col, filename.clone(),
+                            )
+                            .with_code("E0201")
+                            .with_hint(&format!("Available standard modules: {}", avail))
+                            .with_label(&format!("'std:{}' is not a valid module", mod_name))
+                        );
+                        i += 1;
+                        continue;
+                    }
+
+                    let mut imports = self.std_imports.borrow_mut();
+                    
+                    let new_mode = if _names.is_empty() {
+                        ImportMode::All
+                    } else {
+                        let mut set = HashSet::new();
+                        for n in _names { set.insert(n.name.clone()); }
+                        ImportMode::Named(set)
+                    };
+
+                    // Merge strategy: All > Named
+                    let entry = imports.entry(mod_name.to_string()).or_insert(ImportMode::Named(HashSet::new()));
+                    match (entry.clone(), new_mode) {
+                        (ImportMode::All, _) => {}, // Already All, stay All
+                        (_, ImportMode::All) => { *entry = ImportMode::All; }, // Upgrade to All
+                        (ImportMode::Named(mut existing), ImportMode::Named(new_set)) => {
+                            existing.extend(new_set);
+                            *entry = ImportMode::Named(existing);
+                        }
+                    }
+
+                    if mod_name == "net" {
+                        imports.insert("http".to_string(), ImportMode::All);
+                        imports.insert("https".to_string(), ImportMode::All);
+                    }
+
+                    if mod_name == "collections" {
+                        let mut class_methods = self.class_methods.borrow_mut();
+                        let mut user_functions = self.user_functions.borrow_mut();
+                        
+                        let collections = [
+                            ("Stack", vec!["push", "pop", "peek", "size", "isEmpty"]),
+                            ("Queue", vec!["enqueue", "dequeue", "size", "isEmpty"]),
+                            ("MinHeap", vec!["insert", "extractMin", "size", "isEmpty"]),
+                            ("MaxHeap", vec!["insertMax", "extractMax", "size", "isEmpty"]),
+                            ("PriorityQueue", vec!["insert", "extractMin", "size", "isEmpty"]),
+                            ("Map", vec!["set", "get", "put", "at", "delete", "remove", "has", "size", "isEmpty", "keys", "values"]),
+                            ("Set", vec!["add", "delete", "remove", "has", "size", "isEmpty", "values"]),
+                            ("OrderedMap", vec!["put", "at", "has", "size", "isEmpty"]),
+                            ("OrderedSet", vec!["add", "has", "size", "isEmpty"]),
+                            ("BloomFilter", vec!["add", "contains"]),
+                            ("Trie", vec!["addPath", "find"]),
+                        ];
+
+                        for (cls, methods) in collections {
+                            class_methods.insert(cls.to_string(), methods.iter().map(|s| s.to_string()).collect());
+                            for m in methods {
+                                let mangled = format!("{}_{}", cls, m);
+                                user_functions.insert(mangled, TejxType::Any);
+                            }
+                            // Also register constructor
+                            user_functions.insert(format!("{}_constructor", cls), TejxType::Void);
+                        }
+                    }
+
+                    i += 1;
+                    continue;
+                }
+
+                // File-based import: resolve path
+                let import_items = _names.clone();
+                let import_line = *_line;
+                let import_col = *_col;
+                let is_default = *_is_default;
+                let source_str = source.clone();
+                
+                let mut path = current_dir.to_path_buf();
+                let clean_source = source_str.trim_matches('"');
+                if clean_source.starts_with("./") {
+                    path.push(&clean_source[2..]);
+                } else {
+                    path.push(clean_source);
+                }
+
+                if !path.exists() {
+                    // File not found error
+                    self.diagnostics.borrow_mut().push(
+                        Diagnostic::new(
+                            format!("Module file not found: '{}'", clean_source),
+                            import_line, import_col, filename.clone(),
+                        )
+                        .with_code("E0200")
+                        .with_hint("Check the file path or create the module file")
+                        .with_label(&format!("no file at '{}'", path.display()))
+                    );
+                    i += 1;
+                    continue;
+                }
+
+                // Canonicalize to detect duplicates/cycles
+                let canon_path = match std::fs::canonicalize(&path) {
+                    Ok(p) => p,
+                    Err(_) => path.clone(), // Fallback
+                };
+
+                if import_stack.contains(&canon_path) {
+                    self.diagnostics.borrow_mut().push(
+                        Diagnostic::new(
+                            format!("Circular dependency detected: '{}'", clean_source),
+                            import_line, import_col, filename.clone(),
+                        )
+                        .with_code("E0204")
+                        .with_label("circularly imported here")
+                    );
+                    statements.remove(i);
+                    continue;
+                }
+
+                if processed_files.contains(&canon_path) {
+                    statements.remove(i);
+                    continue;
+                }
+                processed_files.insert(canon_path.clone());
+                import_stack.push(canon_path.clone());
+
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let mut lexer = crate::lexer::Lexer::new(&content, &path.to_string_lossy());
+                    let tokens = lexer.tokenize();
+                    let mut parser = crate::parser::Parser::new(tokens, &path.to_string_lossy());
+                    let imported_program = parser.parse_program();
+                    
+                    let new_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                    let mut new_stmts = self.resolve_imports(imported_program.statements, new_dir, processed_files, import_stack);
+                    import_stack.pop();
+
+                    // Handle Aliasing (Rename symbols first)
+                    for item in &import_items {
+                        if is_default {
+                            let target_name = item.alias.as_ref().unwrap_or(&item.name);
+                            for stmt in new_stmts.iter_mut() {
+                                if let Statement::ExportDecl { declaration, _is_default: true, .. } = stmt {
+                                    match declaration.as_mut() {
+                                        Statement::FunctionDeclaration(func) => func.name = target_name.clone(),
+                                        Statement::ClassDeclaration(class) => class.name = target_name.clone(),
+                                        Statement::VarDeclaration { pattern: crate::ast::BindingNode::Identifier(name), .. } => *name = target_name.clone(),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        } else if let Some(alias) = &item.alias {
+                            // Named alias: import { add as myAdd }
+                            for stmt in new_stmts.iter_mut() {
+                                if let Statement::ExportDecl { declaration, .. } = stmt {
+                                    match declaration.as_mut() {
+                                        Statement::FunctionDeclaration(func) if func.name == item.name => func.name = alias.clone(),
+                                        Statement::ClassDeclaration(class) if class.name == item.name => class.name = alias.clone(),
+                                        Statement::VarDeclaration { pattern: crate::ast::BindingNode::Identifier(name), .. } if name == &item.name => *name = alias.clone(),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Validate exported symbols
+                    let mut exported_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let mut has_default_export = false;
+                    
+                    fn collect_exported_names(stmt: &Statement, exported_names: &mut std::collections::HashSet<String>) {
+                        match stmt {
+                            Statement::FunctionDeclaration(func) => {
+                                exported_names.insert(func.name.clone());
+                            }
+                            Statement::ClassDeclaration(class) => {
+                                exported_names.insert(class.name.clone());
+                            }
+                            Statement::VarDeclaration { pattern: crate::ast::BindingNode::Identifier(name), .. } => {
+                                exported_names.insert(name.clone());
+                            }
+                            Statement::BlockStmt { statements, .. } => {
+                                for s in statements {
+                                    collect_exported_names(s, exported_names);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    for stmt in &new_stmts {
+                        if let Statement::ExportDecl { declaration, _is_default: is_def, .. } = stmt {
+                            if *is_def {
+                                has_default_export = true;
+                            }
+                            collect_exported_names(declaration, &mut exported_names);
+                        }
+                    }
+
+                    if is_default && !has_default_export {
+                        self.diagnostics.borrow_mut().push(
+                            Diagnostic::new(
+                                format!("Module '{}' has no default export", clean_source),
+                                import_line, import_col, filename.clone(),
+                            )
+                            .with_code("E0203")
+                        );
+                    } else if !is_default && !import_items.is_empty() {
+                        for item in &import_items {
+                            let lookup_name = item.alias.as_ref().unwrap_or(&item.name);
+                            if !exported_names.contains(lookup_name) {
+                                self.diagnostics.borrow_mut().push(
+                                    Diagnostic::new(
+                                        format!("'{}' is not exported from '{}'", item.name, clean_source),
+                                        import_line, import_col, filename.clone(),
+                                    )
+                                    .with_code("E0202")
+                                );
+                            }
+                        }
+                    }
+
+                    statements.splice(i..i+1, new_stmts);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        statements
     }
 }
