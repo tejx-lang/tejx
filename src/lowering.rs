@@ -20,7 +20,8 @@ pub struct Lowering {
     user_functions: RefCell<HashMap<String, TejxType>>,
     variadic_functions: RefCell<HashMap<String, usize>>,
     lambda_functions: RefCell<Vec<HIRStatement>>,
-    scopes: RefCell<Vec<HashMap<String, (String, TejxType)>>>, // name -> (mangled_name, type)
+    scopes: RefCell<Vec<(HashMap<String, (String, TejxType)>, usize)>>, // (name -> (mangled_name, type), lambda_depth)
+    lambda_depth: RefCell<usize>,
     next_scope_id: RefCell<usize>,
     std_imports: RefCell<HashMap<String, ImportMode>>,
     stdlib: StdLib,
@@ -54,7 +55,8 @@ impl Lowering {
             user_functions: RefCell::new(HashMap::new()),
             variadic_functions: RefCell::new(HashMap::new()),
             lambda_functions: RefCell::new(Vec::new()),
-            scopes: RefCell::new(vec![HashMap::new()]), // Global scope
+            scopes: RefCell::new(vec![(HashMap::new(), 0)]), // Global scope at lambda_depth=0
+            lambda_depth: RefCell::new(0),
             next_scope_id: RefCell::new(1), // Global is 0
             std_imports: RefCell::new(HashMap::new()),
             stdlib: StdLib::new(),
@@ -75,11 +77,33 @@ impl Lowering {
     }
 
     fn enter_scope(&self) {
-        self.scopes.borrow_mut().push(HashMap::new());
+        let depth = *self.lambda_depth.borrow();
+        self.scopes.borrow_mut().push((HashMap::new(), depth));
+    }
+
+    /// Enter a scope that represents a lambda/closure boundary.
+    /// Variables accessed from inside a lambda that were defined outside
+    /// will be marked as captured.
+    fn enter_lambda_scope(&self) {
+        *self.lambda_depth.borrow_mut() += 1;
+        let depth = *self.lambda_depth.borrow();
+        self.scopes.borrow_mut().push((HashMap::new(), depth));
     }
 
     fn _exit_scope(&self) {
-        self.scopes.borrow_mut().pop();
+        let popped = self.scopes.borrow_mut().pop();
+        // If we're exiting a lambda scope, restore the lambda_depth
+        if let Some((_, scope_depth)) = popped {
+            let current = *self.lambda_depth.borrow();
+            if scope_depth > 0 && scope_depth == current {
+                // Check if any remaining scope has this depth
+                let scopes = self.scopes.borrow();
+                let any_at_depth = scopes.iter().any(|(_, d)| *d == scope_depth);
+                if !any_at_depth {
+                    *self.lambda_depth.borrow_mut() = scope_depth - 1;
+                }
+            }
+        }
     }
 
     fn define(&self, name: String, ty: TejxType) -> String {
@@ -93,7 +117,7 @@ impl Lowering {
             mangled
         };
 
-        if let Some(scope) = self.scopes.borrow_mut().last_mut() {
+        if let Some((scope, _)) = self.scopes.borrow_mut().last_mut() {
             scope.insert(name, (mangled.clone(), ty));
         }
         mangled
@@ -101,13 +125,13 @@ impl Lowering {
 
     fn lookup(&self, name: &str) -> Option<(String, TejxType)> {
         let scopes = self.scopes.borrow();
-        let depth = scopes.len() - 1;
-        for (i, scope) in scopes.iter().enumerate().rev() {
+        let current_lambda_depth = scopes.last().map(|(_, d)| *d).unwrap_or(0);
+        for (i, (scope, scope_lambda_depth)) in scopes.iter().enumerate().rev() {
             if let Some(info) = scope.get(name) {
                 let mangled = &info.0;
-                // Capture detection: If it's found in a parent scope (i < depth) 
-                // and it's NOT the global scope (i > 0), it's a capture.
-                if i < depth && i > 0 {
+                // Only capture if accessing across a lambda boundary
+                // (not from simple nested blocks like for-loops/if-blocks)
+                if *scope_lambda_depth < current_lambda_depth && i > 0 {
                     self.captured_vars.borrow_mut().insert(mangled.clone());
                 }
                 return Some(info.clone());
@@ -229,7 +253,7 @@ impl Lowering {
                     let mut s_fields = Vec::new();
                     for member in &class_decl._members {
                         let ty = TejxType::from_name(&member._type_name);
-                        let init = member._initializer.as_ref().map(|e| *e.clone()).unwrap_or(Expression::NumberLiteral { value: 0.0, _line: 0, _col: 0 });
+                        let init = member._initializer.as_ref().map(|e| *e.clone()).unwrap_or(Expression::NumberLiteral { value: 0.0, _is_float: false, _line: 0, _col: 0 });
                         if member._is_static {
                             s_fields.push((member._name.clone(), ty, init));
                         } else {
@@ -1562,11 +1586,11 @@ impl Lowering {
                 }
             }
 
-            Expression::NumberLiteral { value, .. } => {
-                let (val_str, ty) = if value.fract() == 0.0 {
-                    (format!("{:.0}", value), TejxType::Int32)
-                } else {
+            Expression::NumberLiteral { value, _is_float, .. } => {
+                let (val_str, ty) = if *_is_float || value.fract() != 0.0 {
                     (value.to_string(), TejxType::Float32)
+                } else {
+                    (format!("{:.0}", value), TejxType::Int32)
                 };
                 HIRExpression::Literal { line: line, 
                     value: val_str,
@@ -2724,7 +2748,7 @@ impl Lowering {
                     .map(|p| (p.name.clone(), if p.type_name.is_empty() { TejxType::Any } else { TejxType::from_name(&p.type_name) }))
                     .collect();
                 
-                self.enter_scope();
+                self.enter_lambda_scope();
                 let mut mangled_params: Vec<(String, TejxType)> = hir_params.iter()
                     .map(|(name, ty)| (self.define(name.clone(), ty.clone()), ty.clone()))
                     .collect();

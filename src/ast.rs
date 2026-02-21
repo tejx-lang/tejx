@@ -122,7 +122,7 @@ pub struct ImportItem {
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    NumberLiteral { value: f64, _line: usize, _col: usize },
+    NumberLiteral { value: f64, _is_float: bool, _line: usize, _col: usize },
     StringLiteral { value: String, _line: usize, _col: usize },
     BooleanLiteral { value: bool, _line: usize, _col: usize },
     Identifier { name: String, _line: usize, _col: usize },

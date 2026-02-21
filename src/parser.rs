@@ -257,9 +257,12 @@ impl Parser {
         } else if self.match_token(TokenType::False) {
              return BindingNode::LiteralMatch(Box::new(Expression::BooleanLiteral { value: false, _line: 0, _col: 0 }));
         } else if self.match_token(TokenType::Number) {
-             let t = self.previous().clone();
+             let val = self.previous().clone();
              return BindingNode::LiteralMatch(Box::new(Expression::NumberLiteral { 
-                 value: t.value.parse().unwrap_or(0.0), _line: t.line, _col: t.column 
+                 value: val.value.parse().unwrap_or(0.0),
+                 _is_float: val.value.contains('.'),
+                 _line: val.line,
+                 _col: val.column 
              }));
         } else if self.match_token(TokenType::String) {
              let t = self.previous().clone();
@@ -1721,6 +1724,7 @@ impl Parser {
                 self.advance();
                 return Expression::NumberLiteral { 
                     value: token.value.parse().unwrap_or(0.0),
+                    _is_float: token.value.contains('.'),
                     _line: token.line,
                     _col: token.column
                 };

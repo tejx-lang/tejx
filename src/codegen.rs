@@ -1323,6 +1323,108 @@ impl CodeGen {
                          let ptr = self.resolve_ptr(dst);
                          self.emit_line(&format!("store i64 0, i64* {}", ptr));
                     }
+                } else if callee.starts_with("std_math_") {
+                    // Emit LLVM intrinsics directly for math functions
+                    // This avoids the runtime call overhead (i64→f64 unbox → math → f64→i64 box)
+                    let intrinsic = match callee.as_str() {
+                        "std_math_sqrt"  => Some(("llvm.sqrt.f64", 1)),
+                        "std_math_sin"   => Some(("llvm.sin.f64", 1)),
+                        "std_math_cos"   => Some(("llvm.cos.f64", 1)),
+                        "std_math_pow"   => Some(("llvm.pow.f64", 2)),
+                        "std_math_floor" => Some(("llvm.floor.f64", 1)),
+                        "std_math_ceil"  => Some(("llvm.ceil.f64", 1)),
+                        "std_math_abs"   => Some(("llvm.fabs.f64", 1)),
+                        "std_math_round" => Some(("llvm.round.f64", 1)),
+                        _ => None,
+                    };
+
+                    if let Some((intrinsic_name, param_count)) = intrinsic {
+                        // Declare the intrinsic
+                        if !self.declared_functions.contains(intrinsic_name) {
+                            if param_count == 1 {
+                                self.global_buffer.push_str(&format!("declare double @{}(double)\n", intrinsic_name));
+                            } else {
+                                self.global_buffer.push_str(&format!("declare double @{}(double, double)\n", intrinsic_name));
+                            }
+                            self.declared_functions.insert(intrinsic_name.to_string());
+                        }
+
+                        // Convert arg(s) from i64 to double
+                        // For Float types: bitcast i64 to double (i64 holds bitcasted double)
+                        // For Any types: call rt_to_number to unbox (i64 is a heap ID)
+                        // For Int types: sitofp i64 to double
+                        let arg1_val = self.resolve_value(&args[0]);
+                        let arg1_ty = args[0].get_type();
+                        self.temp_counter += 1;
+                        let arg1_f = format!("%intrinsic_arg1_{}", self.temp_counter);
+                        if arg1_ty.is_float() {
+                            self.emit_line(&format!("{} = bitcast i64 {} to double", arg1_f, arg1_val));
+                        } else if matches!(arg1_ty, TejxType::Any) {
+                            if !self.declared_functions.contains("rt_to_number") {
+                                self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                                self.declared_functions.insert("rt_to_number".to_string());
+                            }
+                            self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", arg1_f, arg1_val));
+                        } else {
+                            self.emit_line(&format!("{} = sitofp i64 {} to double", arg1_f, arg1_val));
+                        }
+
+                        let result_f;
+                        if param_count == 2 && args.len() >= 2 {
+                            let arg2_val = self.resolve_value(&args[1]);
+                            let arg2_ty = args[1].get_type();
+                            self.temp_counter += 1;
+                            let arg2_f = format!("%intrinsic_arg2_{}", self.temp_counter);
+                            if arg2_ty.is_float() {
+                                self.emit_line(&format!("{} = bitcast i64 {} to double", arg2_f, arg2_val));
+                            } else if matches!(arg2_ty, TejxType::Any) {
+                                if !self.declared_functions.contains("rt_to_number") {
+                                    self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                                    self.declared_functions.insert("rt_to_number".to_string());
+                                }
+                                self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", arg2_f, arg2_val));
+                            } else {
+                                self.emit_line(&format!("{} = sitofp i64 {} to double", arg2_f, arg2_val));
+                            }
+                            self.temp_counter += 1;
+                            result_f = format!("%intrinsic_res_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = call double @{}(double {}, double {})", result_f, intrinsic_name, arg1_f, arg2_f));
+                        } else {
+                            self.temp_counter += 1;
+                            result_f = format!("%intrinsic_res_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = call double @{}(double {})", result_f, intrinsic_name, arg1_f));
+                        }
+
+                        // Convert result back to i64 (bitcast double to i64)
+                        self.temp_counter += 1;
+                        let result_i = format!("%intrinsic_bits_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = bitcast double {} to i64", result_i, result_f));
+
+                        if !dst.is_empty() {
+                            let ptr = self.resolve_ptr(dst);
+                            self.emit_line(&format!("store i64 {}, i64* {}", result_i, ptr));
+                        }
+                    } else {
+                        // Fallback to runtime call for unsupported math functions (random, min, max)
+                        let mut arg_vals = Vec::new();
+                        for arg in args {
+                            let arg_val = self.resolve_value(arg);
+                            arg_vals.push(format!("i64 {}", arg_val));
+                        }
+                        let args_str = arg_vals.join(", ");
+                        if !self.declared_functions.contains(callee) {
+                            let decl_args = vec!["i64"; arg_vals.len()].join(", ");
+                            self.global_buffer.push_str(&format!("declare i64 @{}({}) readnone\n", callee, decl_args));
+                            self.declared_functions.insert(callee.clone());
+                        }
+                        self.temp_counter += 1;
+                        let result_tmp = format!("%call{}", self.temp_counter);
+                        self.emit_line(&format!("{} = call i64 @{}({})", result_tmp, callee, args_str));
+                        if !dst.is_empty() {
+                            let ptr = self.resolve_ptr(dst);
+                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        }
+                    }
                 } else {
                     let mut arg_vals = Vec::new();
                     for arg in args {
