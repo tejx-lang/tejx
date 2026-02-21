@@ -502,7 +502,7 @@ impl MIRLowering {
                 // Replaced by TrySetup which branches to try or catch
                 self.emit(MIRInstruction::TrySetup { line: 0, 
                      try_target: try_start_idx,
-                     catch_target: catch_block_idx 
+                     _catch_target: catch_block_idx 
                 });
 
                 self.current_block = try_start_idx;
@@ -746,7 +746,7 @@ impl MIRLowering {
                         let l_val = self.lower_expression(left);
                         let result_temp = self.new_temp(ty.clone());
                         
-                        let nullish_check_block = self.new_block("nullish_check");
+                        let _nullish_check_block = self.new_block("nullish_check");
                         let not_null_block = self.new_block("not_null");
                         let null_block = self.new_block("is_null");
                         let merge_block = self.new_block("nullish_merge");

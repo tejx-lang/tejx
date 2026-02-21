@@ -444,7 +444,7 @@ pub fn exports() -> HashSet<String> {
     // Let's create proper structure.
     // .. original runtime used loop to create inner arrays.
     
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     // Logic:
     // Need to alloc string key and array, so we must drop lock before boxing.
 

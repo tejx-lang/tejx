@@ -1257,7 +1257,7 @@ impl Parser {
     }
 
     fn parse_comma_expression(&mut self) -> Expression {
-        let mut expr = self.parse_assignment();
+        let expr = self.parse_assignment();
         let line = self.peek().line;
         let col = self.peek().column;
 

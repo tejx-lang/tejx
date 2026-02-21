@@ -990,7 +990,7 @@ impl Lowering {
             let mut hir_body = self.lower_statement(&func_decl.body)
                 .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });
             
-            if let HIRStatement::Block { line: line,  ref mut statements } = hir_body {
+            if let HIRStatement::Block { line,  ref mut statements } = hir_body {
                  // Inject method attachments for constructor
                  if func_decl.name == "constructor" {
                      let mangled_this = self.lookup("this").map(|(n, _)| n).unwrap_or("this".to_string());
@@ -2871,32 +2871,6 @@ impl Lowering {
                     target: Box::new(lowered_target),
                     index: Box::new(self.lower_expression(index)),
                     ty,
-                }
-            }
-            Expression::ObjectLiteralExpr { entries, _spreads, .. } => {
-                let lower_entries: Vec<(String, HIRExpression)> = entries.iter()
-                    .map(|(k, v)| (k.clone(), self.lower_expression(v)))
-                    .collect();
-                
-                let base_obj = HIRExpression::ObjectLiteral { line: line, 
-                    entries: lower_entries,
-                    ty: TejxType::Any,
-                };
-
-                if _spreads.is_empty() {
-                    base_obj
-                } else {
-                    // Reduce spreads: rt_object_merge(base, spread)
-                    let mut current = base_obj;
-                    for spread_expr in _spreads {
-                        let spread_hir = self.lower_expression(spread_expr);
-                        current = HIRExpression::Call { line: line, 
-                            callee: "rt_object_merge".to_string(),
-                            args: vec![current, spread_hir],
-                            ty: TejxType::Any,
-                        };
-                    }
-                    current
                 }
             }
             Expression::ArrayLiteral { elements, .. } => {

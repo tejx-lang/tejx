@@ -56,6 +56,19 @@ To compile a `.tx` file into a native executable:
 ./tests/hello
 ```
 
+### CLI Command Reference
+
+| Command                 | Description                                    |
+| :---------------------- | :--------------------------------------------- |
+| `-h`, `--help`          | Show this help message                         |
+| `-v`, `--version`       | Show version information                       |
+| `-o`, `--output <file>` | Specify output file name                       |
+| `-c`, `--compile`       | Compile only (generate `.o` file); do not link |
+| `--disable-async`       | Disable async/await features                   |
+| `--emit-mir`            | Print MIR to stderr                            |
+| `--emit-llvm`           | Print LLVM IR to stderr                        |
+| `--target <target>`     | Specify target (e.g., `wasm`)                  |
+
 ### Run the Test Suite
 
 To verify the compiler against the comprehensive test suite:

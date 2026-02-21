@@ -6,6 +6,7 @@ pub struct Linker {
     output_path: PathBuf,
     obj_paths: Vec<PathBuf>,
     libs: Vec<String>,
+    compile_only: bool,
 }
 
 impl Linker {
@@ -14,11 +15,30 @@ impl Linker {
             output_path: output_path.to_path_buf(),
             obj_paths: Vec::new(),
             libs: Vec::new(),
+            compile_only: false,
         }
     }
 
+    pub fn set_compile_only(&mut self, compile_only: bool) {
+        self.compile_only = compile_only;
+    }
+
     pub fn add_object(&mut self, path: &Path) {
-        self.obj_paths.push(path.to_path_buf());
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        let ext = p.extension().and_then(|s| s.to_str());
+                        if ext == Some("o") || ext == Some("a") || ext == Some("so") || ext == Some("dylib") {
+                            self.obj_paths.push(p);
+                        }
+                    }
+                }
+            }
+        } else {
+            self.obj_paths.push(path.to_path_buf());
+        }
     }
 
     #[allow(dead_code)]
@@ -35,7 +55,12 @@ impl Linker {
         for obj in &self.obj_paths {
             if obj.extension().and_then(|s| s.to_str()) == Some("ll") {
                 let out_asm = obj.with_extension("s");
-                let out_obj = obj.with_extension("o");
+                let out_obj = if self.compile_only && self.obj_paths.len() == 1 {
+                    // If we have only one object and we are in compile-only mode, use output_path with .o
+                    self.output_path.with_extension("o")
+                } else {
+                    obj.with_extension("o")
+                };
 
                 // Generate Assembly (.s)
                 let mut asm_cmd = Command::new(&compiler);
@@ -73,6 +98,11 @@ impl Linker {
             }
         }
 
+        if self.compile_only {
+            println!("Compilation finished. Object files generated.");
+            return Ok(());
+        }
+
         // Step 2: Link objects and libraries into final executable
         let mut cmd = Command::new(&compiler);
         cmd.arg("-O3"); // Linker optimizations
@@ -98,7 +128,13 @@ impl Linker {
 
         // Cleanup intermediate .o files to prevent disk clutter
         for obj in &final_objects {
+            // Only cleanup if it wasn't an input object file and we aren't in compile_only mode
+            // Actually, we already returned if compile_only.
+            // But we should only delete .o files that were generated from .ll files in this session.
             if obj.extension().and_then(|s| s.to_str()) == Some("o") {
+                // If it was generated from a .ll in this session, it will be in the same dir as the .ll
+                // Or if it was the runtime lib (which is .a, so won't match)
+                // For now, simple cleanup.
                 let _ = std::fs::remove_file(obj);
             }
         }

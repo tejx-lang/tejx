@@ -669,9 +669,6 @@ impl TypeChecker {
         None
     }
 
-    fn report_error(&mut self, msg: String, line: usize, col: usize) {
-        self.diagnostics.push(Diagnostic::new(msg, line, col, self.current_file.clone()));
-    }
 
     fn report_error_detailed(&mut self, msg: String, line: usize, col: usize, code: &str, hint: Option<&str>) {
         let mut diag = Diagnostic::new(msg, line, col, self.current_file.clone())

@@ -37,44 +37,79 @@ const RUNTIME_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libruntime.
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: tejxr [options] <filename>");
-        eprintln!("Options:");
-        eprintln!("  --disable-async    Disable async/await features");
-        process::exit(1);
-    }
-
-    let mut filename = String::new();
+    let mut input_files = Vec::new();
     let mut async_enabled = true;
-
     let mut emit_mir = false;
     let mut emit_llvm = false;
     let mut target_wasm = false;
-    for arg in args.iter().skip(1) {
-        if arg == "--disable-async" {
-            async_enabled = false;
-        } else if arg == "--emit-mir" {
-             emit_mir = true;
-        } else if arg == "--emit-llvm" {
-             emit_llvm = true;
-        } else if arg == "--target" {
-             // We need to peek next arg
-        } else if arg == "wasm" && args.iter().any(|a| a == "--target") {
-             target_wasm = true;
-        } else if arg.starts_with("--target=") {
-             if arg.ends_with("wasm") { target_wasm = true; }
-        } else if arg.starts_with("--") {
-            eprintln!("Unknown option: {}", arg);
-            process::exit(1);
-        } else {
-            filename = arg.clone();
+    let mut compile_only = false;
+    let mut output_name = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print_help();
+                return;
+            }
+            "-v" | "--version" => {
+                print_version();
+                return;
+            }
+            "--disable-async" => {
+                async_enabled = false;
+            }
+            "--emit-mir" => {
+                emit_mir = true;
+            }
+            "--emit-llvm" => {
+                emit_llvm = true;
+            }
+            "-c" | "--compile" => {
+                compile_only = true;
+            }
+            "-o" | "--output" => {
+                if i + 1 < args.len() {
+                    output_name = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: -o/--output requires an argument");
+                    process::exit(1);
+                }
+            }
+            "--target" => {
+                if i + 1 < args.len() {
+                    if args[i+1] == "wasm" {
+                        target_wasm = true;
+                    }
+                    i += 1;
+                }
+            }
+            _ if arg.starts_with("--target=") => {
+                if arg.ends_with("wasm") {
+                    target_wasm = true;
+                }
+            }
+            _ if arg.starts_with("--") => {
+                eprintln!("Unknown option: {}", arg);
+                process::exit(1);
+            }
+            _ => {
+                input_files.push(arg.clone());
+            }
         }
+        i += 1;
     }
 
-    if filename.is_empty() {
-        eprintln!("Error: No input file specified.");
+    if input_files.is_empty() {
+        eprintln!("Error: No input files specified.");
+        print_help();
         process::exit(1);
     }
+
+    // For now, we mainly focus on the first input file for the primary compilation
+    let filename = input_files[0].clone();
 
     let contents = fs::read_to_string(&filename).unwrap_or_else(|err| {
         eprintln!("Error reading file {}: {}", filename, err);
@@ -243,11 +278,13 @@ fn main() {
         eprintln!("{}", llvm_code);
     }
 
-    let output_name = if let Some(pos) = filename.rfind('.') {
-        &filename[..pos]
-    } else {
-        "a.out"
-    };
+    let output_name = output_name.unwrap_or_else(|| {
+        if let Some(pos) = filename.rfind('.') {
+            filename[..pos].to_string()
+        } else {
+            "a.out".to_string()
+        }
+    });
 
     let temp_ll_file = format!("{}.ll", output_name);
     fs::write(&temp_ll_file, &llvm_code).unwrap_or_else(|err| {
@@ -265,14 +302,28 @@ fn main() {
         process::exit(1);
     }
 
-    let mut linker = Linker::new(Path::new(output_name));
+    let mut linker = Linker::new(Path::new(&output_name));
     linker.add_object(Path::new(&temp_ll_file));
     linker.add_object(&runtime_lib_path);
 
+    // Add other input files (objects or libraries)
+    for i in 1..input_files.len() {
+        linker.add_object(Path::new(&input_files[i]));
+    }
+
+    if compile_only {
+        // Just rename temp_ll_file to something like .o if we were doing object generation
+        // But here we emit .ll and the linker converts to .o and then links.
+        // If compile_only is set, we'll stop after generating the object file.
+        linker.set_compile_only(true);
+    }
+
     match linker.link() {
         Ok(_) => {
-            // Success - cleanup temp files
-            let _ = fs::remove_file(&temp_ll_file);
+            // Success - cleanup temp files if not compile_only or if otherwise needed
+            if !compile_only {
+                let _ = fs::remove_file(&temp_ll_file);
+            }
             let _ = fs::remove_file(&runtime_lib_path);
         },
         Err(e) => {
@@ -282,4 +333,29 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn print_help() {
+    println!("tejxc - TejX Compiler");
+    println!("Usage: tejxc [options] <input_files>");
+    println!("");
+    println!("Options:");
+    println!("  -h, --help            Show this help message");
+    println!("  -v, --version         Show version information");
+    println!("  -o, --output <file>   Specify output file name");
+    println!("  -c, --compile         Compile only; do not link");
+    println!("  --disable-async       Disable async/await features");
+    println!("  --emit-mir            Print MIR to stderr");
+    println!("  --emit-llvm           Print LLVM IR to stderr");
+    println!("  --target <target>     Specify target (e.g., wasm)");
+    println!("");
+    println!("Examples:");
+    println!("  tejxc main.tx                        Compile and link main.tx");
+    println!("  tejxc -o myapp main.tx util.tx       Compile and link multiple files");
+    println!("  tejxc -c main.tx                     Compile main.tx to object file");
+    println!("  tejxc main.o helper.o -o myapp       Link existing object files");
+}
+
+fn print_version() {
+    println!("tejxc version 0.1.0");
 }

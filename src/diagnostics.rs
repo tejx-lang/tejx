@@ -1,8 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Severity {
     Error,
-    Warning,
-    Note,
 }
 
 #[derive(Debug, Clone)]
@@ -48,21 +46,10 @@ impl Diagnostic {
         self
     }
 
-    pub fn with_length(mut self, length: usize) -> Self {
-        self.length = length;
-        self
-    }
-
-    pub fn with_severity(mut self, severity: Severity) -> Self {
-        self.severity = severity;
-        self
-    }
     
     pub fn report(&self, source: &str) {
         let (sev_color, sev_name) = match self.severity {
             Severity::Error   => ("\x1b[31;1m", "error"),
-            Severity::Warning => ("\x1b[33;1m", "warning"),
-            Severity::Note    => ("\x1b[36;1m", "note"),
         };
 
         // Header: error[E0100]: message

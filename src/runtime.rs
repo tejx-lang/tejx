@@ -149,7 +149,7 @@ pub static HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
  #[unsafe(no_mangle)]
  static mut LAST_LEN: usize = 0;
  #[unsafe(no_mangle)]
- #[unsafe(no_mangle)]
+ 
  static mut LAST_ELEM_SIZE: usize = 0;
  
  #[unsafe(no_mangle)]
@@ -391,7 +391,7 @@ unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 {
     if key_ptr < 2000000000 && key_ptr > HEAP_OFFSET {
-         let k = unsafe { get_string_key(&HEAP.lock().unwrap(), key_ptr) };
+         let _k = unsafe { get_string_key(&HEAP.lock().unwrap(), key_ptr) };
     }
     let mut heap = HEAP.lock().unwrap();
     
@@ -809,7 +809,6 @@ pub extern "C" fn Array_clone(id: i64) -> i64 {
     }
 }
 
-#[unsafe(no_mangle)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Array_push(id: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
@@ -1933,7 +1932,6 @@ pub unsafe extern "C" fn Array_indexOf(id: i64, val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)] 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_shift(id: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
@@ -2569,7 +2567,6 @@ pub unsafe extern "C" fn trimmed_repeat(s_id: i64, count: i64) -> i64 {
 
 
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_join(id: i64, sep_id: i64) -> i64 {
     // Release lock during stringify? No, stringify_value takes value not ID, or ID?
     // stringify_value(id) locks HEAP!

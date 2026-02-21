@@ -81,7 +81,7 @@ impl CodeGen {
                     let args = vec!["i64"; count].join(", ");
                     let fn_ptr = format!("ptrtoint (i64 ({})* @{} to i64)", args, value);
                     
-                    let mut has_func_captures = !self.captured_vars.is_empty();
+                    let has_func_captures = !self.captured_vars.is_empty();
 
                     if has_func_captures || self.current_env.is_some() {
                          // Box as closure Map { "ptr": fn_ptr, "env": env }

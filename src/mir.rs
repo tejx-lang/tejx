@@ -127,7 +127,7 @@ pub enum MIRInstruction {
     },
     TrySetup {
         try_target: usize,
-        catch_target: usize,
+        _catch_target: usize,
         line: usize,
     },
     PopHandler {
