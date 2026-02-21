@@ -173,7 +173,7 @@ function test_objects() {
     assert_eq_string("Metropolis", user.address.city, "Nested object property");
 
     // Bracket notation
-    assert_eq_string("TejX", user["name"], "Bracket notation");
+    assert_eq_string("TejX", "" + user["name"], "Bracket notation");
 
     // Array inside object
     let o = { list: [1, 2, 3] };
