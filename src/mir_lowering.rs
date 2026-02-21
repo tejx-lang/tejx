@@ -475,16 +475,23 @@ impl MIRLowering {
                 self.current_block = switch_exit;
             }
             HIRStatement::Try { try_block, catch_var, catch_block, finally_block, .. } => {
-                let catch_block_idx = self.new_block("catch");
                 let exit_block_idx = self.new_block("try_exit");
 
                 // Variables to track unwinding state across finally block
-                // We reuse temps. We need to declare them early so they are available in all blocks.
                 let is_unwinding_var = self.new_temp(TejxType::Bool);
                 let saved_ex_var = self.new_temp(TejxType::Any);
 
                 let finally_handler_idx = if finally_block.is_some() { Some(self.new_block("finally_unwind")) } else { None };
                 let finally_body_idx = if finally_block.is_some() { Some(self.new_block("finally_body")) } else { None };
+
+                // 2. Setup catch block entry with finally handler if needed
+                if let Some(fh_idx) = finally_handler_idx {
+                    self.exception_handler_stack.push(fh_idx);
+                }
+                let catch_block_idx = self.new_block("catch");
+                if finally_handler_idx.is_some() {
+                    self.exception_handler_stack.pop();
+                }
 
                 // 1. Lower Try Block
                 // Handler: Catch

@@ -17,7 +17,9 @@ pub struct CodeGen {
     declared_globals: HashSet<String>,
     current_function_params: HashSet<String>,
     local_vars: HashSet<String>,
-    local_moved_flags: HashMap<String, String>, // var name -> alloca i1 ptr
+    local_moved_flags: HashMap<String, String>,
+    captured_vars: HashSet<String>,
+    current_env: Option<String>,
 }
 
 impl CodeGen {
@@ -34,11 +36,28 @@ impl CodeGen {
             current_function_params: HashSet::new(),
             local_vars: HashSet::new(),
             local_moved_flags: HashMap::new(),
+            captured_vars: HashSet::new(),
+            current_env: None,
         }
     }
 
     fn emit(&mut self, code: &str) {
         self.buffer.push_str(code);
+    }
+
+    fn get_captured_key(&self, name: &str) -> Option<String> {
+        if self.captured_vars.contains(name) { return Some(name.to_string()); }
+        // Handle MIR mangling suffixes like _123
+        for cap in &self.captured_vars {
+            if name.starts_with(cap) && (name.len() == cap.len() || name[cap.len()..].starts_with('_')) {
+                return Some(cap.clone());
+            }
+        }
+        None
+    }
+
+    fn is_captured(&self, name: &str) -> bool {
+        self.get_captured_key(name).is_some()
     }
 
     fn emit_line(&mut self, code: &str) {
@@ -60,7 +79,64 @@ impl CodeGen {
                 if value.starts_with("lambda_") {
                     let count = self.function_param_counts.get(value).cloned().unwrap_or(1);
                     let args = vec!["i64"; count].join(", ");
-                    return format!("ptrtoint (i64 ({})* @{} to i64)", args, value);
+                    let fn_ptr = format!("ptrtoint (i64 ({})* @{} to i64)", args, value);
+                    
+                    let mut has_func_captures = !self.captured_vars.is_empty();
+
+                    if has_func_captures || self.current_env.is_some() {
+                         // Box as closure Map { "ptr": fn_ptr, "env": env }
+                         if !self.declared_functions.contains("rt_map_new") {
+                             self.global_buffer.push_str("declare i64 @rt_map_new()\n");
+                             self.declared_functions.insert("rt_map_new".to_string());
+                         }
+                         if !self.declared_functions.contains("rt_Map_set") {
+                             self.global_buffer.push_str("declare i64 @rt_Map_set(i64, i64, i64)\n");
+                             self.declared_functions.insert("rt_Map_set".to_string());
+                         }
+                         if !self.declared_functions.contains("rt_box_string") {
+                             self.global_buffer.push_str("declare i64 @rt_box_string(i64)\n");
+                             self.declared_functions.insert("rt_box_string".to_string());
+                         }
+
+                         self.temp_counter += 1;
+                         let closure_id = format!("%closure{}", self.temp_counter);
+                         self.emit_line(&format!("{} = call i64 @rt_map_new()", closure_id));
+
+                         // Set "ptr"
+                         let ptr_key = "@str_key_ptr";
+                         if !self.declared_globals.contains(ptr_key) {
+                             self.global_buffer.push_str("@str_key_ptr = private unnamed_addr constant [4 x i8] c\"ptr\\00\"\n");
+                             self.declared_globals.insert(ptr_key.to_string());
+                         }
+                         self.temp_counter += 1;
+                         let ptr_key_id = format!("%ptr_key{}", self.temp_counter);
+                         self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([4 x i8]* @str_key_ptr to i64))", ptr_key_id));
+                         self.emit_line(&format!("call i64 @rt_Map_set(i64 {}, i64 {}, i64 {})", closure_id, ptr_key_id, fn_ptr));
+
+                         // Set "env"
+                         let env_to_pass = if let Some(env) = self.current_env.clone() {
+                             env
+                         } else {
+                             // Create a fresh empty environment if the parent doesn't have one
+                             self.temp_counter += 1;
+                             let fresh_env = format!("%fresh_env{}", self.temp_counter);
+                             self.emit_line(&format!("{} = call i64 @rt_map_new()", fresh_env));
+                             fresh_env
+                         };
+
+                         let env_key = "@str_key_env";
+                         if !self.declared_globals.contains(env_key) {
+                             self.global_buffer.push_str("@str_key_env = private unnamed_addr constant [4 x i8] c\"env\\00\"\n");
+                             self.declared_globals.insert(env_key.to_string());
+                         }
+                         self.temp_counter += 1;
+                         let env_key_id = format!("%env_key{}", self.temp_counter);
+                         self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([4 x i8]* @str_key_env to i64))", env_key_id));
+                         self.emit_line(&format!("call i64 @rt_Map_set(i64 {}, i64 {}, i64 {})", closure_id, env_key_id, env_to_pass));
+
+                         return closure_id;
+                    }
+                    return fn_ptr;
                 }
                 if value.starts_with("new ") {
                     return "0".to_string();
@@ -126,15 +202,79 @@ impl CodeGen {
                 // Return ptrtoint cast to i64
                 format!("ptrtoint ([{} x i8]* {} to i64)", byte_len, str_lbl)
             }
-            MIRValue::Variable { name, .. } => {
+            MIRValue::Variable { name, ty } => {
                 if name.starts_with("g_") {
                     self.temp_counter += 1;
                     let tmp = format!("%t{}", self.temp_counter);
                     self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
                     return tmp;
                 }
+                if name == "__env" {
+                    if let Some(env) = &self.current_env {
+                        return env.clone();
+                    }
+                    return "0".to_string();
+                }
+
                 if name.starts_with("%") || name.starts_with("@") {
                     return name.to_string();
+                }
+
+                if let Some(cap_key) = self.get_captured_key(name) {
+                    if let Some(env) = self.current_env.clone() {
+                        if !self.declared_functions.contains("rt_Map_get") {
+                            self.global_buffer.push_str("declare i64 @rt_Map_get(i64, i64)\n");
+                            self.declared_functions.insert("rt_Map_get".to_string());
+                        }
+                        if !self.declared_functions.contains("rt_box_string") {
+                            self.global_buffer.push_str("declare i64 @rt_box_string(i64)\n");
+                            self.declared_functions.insert("rt_box_string".to_string());
+                        }
+
+                        // Get/Create key string - use base captured name for consistent keys
+                        let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
+                        if !self.declared_globals.contains(&key_global) {
+                            self.global_buffer.push_str(&format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n", 
+                                key_global, cap_key.len() + 1, cap_key));
+                            self.declared_globals.insert(key_global.clone());
+                        }
+                        
+                        self.temp_counter += 1;
+                        let key_id = format!("%key_id{}", self.temp_counter);
+                        self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))", 
+                            key_id, cap_key.len() + 1, key_global));
+
+                        self.temp_counter += 1;
+                        let val_reg = format!("%cap_val{}", self.temp_counter);
+                        self.emit_line(&format!("{} = call i64 @rt_Map_get(i64 {}, i64 {})", 
+                            val_reg, env, key_id));
+
+                        // Unbox if necessary - retrieved values from Map are TaggedValues
+                        if ty.is_numeric() || matches!(ty, TejxType::Bool) {
+                             if !self.declared_functions.contains("rt_to_number") {
+                                 self.global_buffer.push_str("declare double @rt_to_number(i64)\n");
+                                 self.declared_functions.insert("rt_to_number".to_string());
+                             }
+                             self.temp_counter += 1;
+                             let d_tmp = format!("%d_tmp{}", self.temp_counter);
+                             self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", d_tmp, val_reg));
+                             
+                             if ty.is_float() {
+                                 self.temp_counter += 1;
+                                 let i_tmp = format!("%bit_tmp{}", self.temp_counter);
+                                 self.emit_line(&format!("{} = bitcast double {} to i64", i_tmp, d_tmp));
+                                 return i_tmp;
+                             } else {
+                                 // int or bool
+                                 self.temp_counter += 1;
+                                 let i_tmp = format!("%i_tmp{}", self.temp_counter);
+                                 self.emit_line(&format!("{} = fptosi double {} to i64", i_tmp, d_tmp));
+                                 return i_tmp;
+                             }
+                        }
+
+                        return val_reg;
+                    }
                 }
                 
                 if let Some(reg_ref) = self.value_map.get(name) {
@@ -221,7 +361,8 @@ impl CodeGen {
 
 /// Second pass: fix Jump and Branch instructions to use block names
 impl CodeGen {
-    pub fn generate_with_blocks(&mut self, functions: &[MIRFunction]) -> String {
+    pub fn generate_with_blocks(&mut self, functions: &[MIRFunction], captured_vars: HashSet<String>) -> String {
+        self.captured_vars = captured_vars;
         self.buffer.clear();
         self.global_buffer.clear();
         self.declared_functions.clear();
@@ -309,7 +450,8 @@ impl CodeGen {
         self.temp_counter = 0;
         self.current_function_params.clear();
         self.local_vars.clear();
-
+        self.current_env = None;
+        
         for p in &func.params {
             self.current_function_params.insert(p.clone());
         }
@@ -351,8 +493,28 @@ impl CodeGen {
             }
         }
 
+        // Create environment if needed
+        let has_captures = self.local_vars.iter().any(|v| self.is_captured(v)) ||
+                           func.params.iter().any(|p| self.is_captured(p));
+        
+        if func.name.starts_with("lambda_") {
+            if !func.params.is_empty() {
+                self.current_env = Some(format!("%{}", func.params[0]));
+            }
+        } else if has_captures {
+            if !self.declared_functions.contains("rt_map_new") {
+                self.global_buffer.push_str("declare i64 @rt_map_new()\n");
+                self.declared_functions.insert("rt_map_new".to_string());
+            }
+            self.temp_counter += 1;
+            let env_reg = format!("%env_id{}", self.temp_counter);
+            self.emit_line(&format!("{} = call i64 @rt_map_new()", env_reg));
+            self.current_env = Some(env_reg);
+        }
+
         // Allocas for parameters first
         for p in &func.params {
+            if self.is_captured(p) { continue; } // Skip alloca for captured params
             if !self.value_map.contains_key(p) {
                 let reg_name = format!("%{}_ptr", p);
                 self.emit_line(&format!("{} = alloca i64", reg_name));
@@ -366,10 +528,42 @@ impl CodeGen {
         // Allocas for all local variables
         let locals: Vec<String> = self.local_vars.iter().cloned().collect();
         for name in &locals {
+            if self.is_captured(name) { continue; } // Skip alloca for captured locals
             if !self.value_map.contains_key(name) {
                 let reg_name = format!("%{}_ptr", name);
                 self.emit_line(&format!("{} = alloca i64", reg_name));
                 self.value_map.insert(name.clone(), reg_name);
+            }
+        }
+
+        // Sync parameters to environment if captured
+        for p in &func.params {
+            if let Some(cap_key) = self.get_captured_key(p) {
+                if let Some(env) = self.current_env.clone() {
+                    if !self.declared_functions.contains("rt_Map_set") {
+                        self.global_buffer.push_str("declare i64 @rt_Map_set(i64, i64, i64)\n");
+                        self.declared_functions.insert("rt_Map_set".to_string());
+                    }
+                    if !self.declared_functions.contains("rt_box_string") {
+                        self.global_buffer.push_str("declare i64 @rt_box_string(i64)\n");
+                        self.declared_functions.insert("rt_box_string".to_string());
+                    }
+
+                    // Create key string - use base captured name
+                    let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
+                    if !self.declared_globals.contains(&key_global) {
+                        self.global_buffer.push_str(&format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n", 
+                            key_global, cap_key.len() + 1, cap_key));
+                        self.declared_globals.insert(key_global.clone());
+                    }
+                    
+                    self.temp_counter += 1;
+                    let key_id = format!("%key_id{}", self.temp_counter);
+                    self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))", 
+                        key_id, cap_key.len() + 1, key_global));
+                    
+                    self.emit_line(&format!("call i64 @rt_Map_set(i64 {}, i64 {}, i64 %{})", env, key_id, p));
+                }
             }
         }
         
@@ -457,6 +651,35 @@ impl CodeGen {
             MIRInstruction::Move { dst, src, .. } => {
                 let val = self.resolve_value(src);
                 
+                if let Some(cap_key) = self.get_captured_key(dst) {
+                    if let Some(env) = self.current_env.clone() {
+                        if !self.declared_functions.contains("rt_Map_set") {
+                            self.global_buffer.push_str("declare i64 @rt_Map_set(i64, i64, i64)\n");
+                            self.declared_functions.insert("rt_Map_set".to_string());
+                        }
+                        if !self.declared_functions.contains("rt_box_string") {
+                            self.global_buffer.push_str("declare i64 @rt_box_string(i64)\n");
+                            self.declared_functions.insert("rt_box_string".to_string());
+                        }
+
+                        // Get/Create key string - use base captured name
+                        let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
+                        if !self.declared_globals.contains(&key_global) {
+                            self.global_buffer.push_str(&format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n", 
+                                key_global, cap_key.len() + 1, cap_key));
+                            self.declared_globals.insert(key_global.clone());
+                        }
+                        
+                        self.temp_counter += 1;
+                        let key_id = format!("%key_id{}", self.temp_counter);
+                        self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))", 
+                            key_id, cap_key.len() + 1, key_global));
+                        
+                        self.emit_line(&format!("call i64 @rt_Map_set(i64 {}, i64 {}, i64 {})", env, key_id, val));
+                        return;
+                    }
+                }
+
                 // 1. Free DST if it is currently Live (and not Primitive)
                 if let Some(flag_ptr) = self.local_moved_flags.get(dst).cloned() {
                     self.temp_counter += 1;
@@ -1290,12 +1513,31 @@ impl CodeGen {
                 
                 self.emit(&format!("{}:\n", ok_label));
 
+                if !self.declared_functions.contains("rt_get_closure_ptr") {
+                    self.global_buffer.push_str("declare i64 @rt_get_closure_ptr(i64)\n");
+                    self.declared_functions.insert("rt_get_closure_ptr".to_string());
+                }
+                if !self.declared_functions.contains("rt_get_closure_env") {
+                    self.global_buffer.push_str("declare i64 @rt_get_closure_env(i64)\n");
+                    self.declared_functions.insert("rt_get_closure_env".to_string());
+                }
+
+                self.temp_counter += 1;
+                let ptr_reg = format!("%cb_ptr{}", self.temp_counter);
+                self.emit_line(&format!("{} = call i64 @rt_get_closure_ptr(i64 {})", ptr_reg, callee_val));
+                
+                self.temp_counter += 1;
+                let env_reg = format!("%cb_env{}", self.temp_counter);
+                self.emit_line(&format!("{} = call i64 @rt_get_closure_env(i64 {})", env_reg, callee_val));
+
                 self.temp_counter += 1;
                 let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
-                let ptr_args = vec!["i64"; args.len()].join(", ");
-                self.emit_line(&format!("{} = inttoptr i64 {} to i64 ({})*", func_ptr_tmp, callee_val, ptr_args));
+                let mut arg_types = vec!["i64"]; // First arg is always env
+                for _ in 0..args.len() { arg_types.push("i64"); }
+                let ptr_args = arg_types.join(", ");
+                self.emit_line(&format!("{} = inttoptr i64 {} to i64 ({})*", func_ptr_tmp, ptr_reg, ptr_args));
                 
-                let mut arg_vals = Vec::new();
+                let mut arg_vals = vec![format!("i64 {}", env_reg)];
                 for arg in args {
                     let val = self.resolve_value(arg);
                     arg_vals.push(format!("i64 {}", val));

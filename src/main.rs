@@ -237,7 +237,7 @@ fn main() {
     }
 
     let mut codegen = CodeGen::new();
-    let llvm_code = codegen.generate_with_blocks(&mir_functions);
+    let llvm_code = codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars);
 
     if emit_llvm {
         eprintln!("{}", llvm_code);

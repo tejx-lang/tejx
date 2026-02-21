@@ -409,9 +409,11 @@ pub fn exports() -> HashSet<String> {
 
     let heap = HEAP.lock().unwrap();
     let values = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        m.values().cloned().collect::<Vec<i64>>()
-    } else if let Some(TaggedValue::OrderedMap(_, m)) = heap.get(id) {
-        m.values().cloned().collect::<Vec<i64>>()
+        m.iter().filter(|(k, _)| *k != "toString" && *k != "constructor")
+            .map(|(_, v)| *v).collect::<Vec<i64>>()
+    } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
+        order.iter().filter(|k| *k != "toString" && *k != "constructor")
+            .map(|k| m.get(k).cloned().unwrap_or(0)).collect::<Vec<i64>>()
     } else {
         Vec::new()
     };

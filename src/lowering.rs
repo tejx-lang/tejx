@@ -36,6 +36,7 @@ pub struct Lowering {
     current_async_promise_id: RefCell<Option<String>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
     pub filename: RefCell<String>,
+    pub captured_vars: RefCell<HashSet<String>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -43,6 +44,7 @@ pub struct Lowering {
 pub struct LoweringResult {
     pub functions: Vec<HIRStatement>,  // Each should be HIRStatement::Function
     pub signatures: HashMap<String, Vec<TejxType>>,
+    pub captured_vars: HashSet<String>,
 }
 
 impl Lowering {
@@ -68,6 +70,7 @@ impl Lowering {
             current_async_promise_id: RefCell::new(None),
             diagnostics: RefCell::new(Vec::new()),
             filename: RefCell::new(String::new()),
+            captured_vars: RefCell::new(HashSet::new()),
         }
     }
 
@@ -98,8 +101,15 @@ impl Lowering {
 
     fn lookup(&self, name: &str) -> Option<(String, TejxType)> {
         let scopes = self.scopes.borrow();
-        for (_i, scope) in scopes.iter().enumerate().rev() {
+        let depth = scopes.len() - 1;
+        for (i, scope) in scopes.iter().enumerate().rev() {
             if let Some(info) = scope.get(name) {
+                let mangled = &info.0;
+                // Capture detection: If it's found in a parent scope (i < depth) 
+                // and it's NOT the global scope (i > 0), it's a capture.
+                if i < depth && i > 0 {
+                    self.captured_vars.borrow_mut().insert(mangled.clone());
+                }
                 return Some(info.clone());
             }
         }
@@ -659,7 +669,7 @@ impl Lowering {
             }
         }
 
-        LoweringResult { functions, signatures }
+        LoweringResult { functions, signatures, captured_vars: self.captured_vars.borrow().clone() }
     }
 
     fn lower_function_declaration(&self, func: &FunctionDeclaration, functions: &mut Vec<HIRStatement>) {
@@ -1737,10 +1747,13 @@ impl Lowering {
                     
                     // Create lambda
                     let lambda_name = format!("lambda_spread_{}", self.lambda_counter.replace_with(|&mut c| c + 1));
+                    let mut lambda_params = vec![(self.define("__env".to_string(), TejxType::Any), TejxType::Any)];
+                    lambda_params.push((param_mangled.clone(), TejxType::Any));
+                    
                     let lambda = HIRStatement::Function {
                         line,
                         name: lambda_name.clone(),
-                        params: vec![(param_mangled.clone(), TejxType::Any)],
+                        params: lambda_params,
                         _return_type: TejxType::Any,
                         body: Box::new(HIRStatement::Block { line, statements: lambda_body_stmts }),
                     };
@@ -1755,7 +1768,10 @@ impl Lowering {
                     
                     HIRExpression::Call {
                          callee: lambda_name,
-                         args: vec![base_obj_expr], // Pass base object
+                         args: vec![
+                             HIRExpression::Variable { name: "__env".to_string(), ty: TejxType::Any, line }, // Pass current env
+                             base_obj_expr
+                         ],
                          ty: TejxType::Any,
                          line 
                     }
@@ -2951,9 +2967,12 @@ impl Lowering {
                     .collect();
                 
                 self.enter_scope();
-                let mangled_params: Vec<(String, TejxType)> = hir_params.iter()
+                let mut mangled_params: Vec<(String, TejxType)> = hir_params.iter()
                     .map(|(name, ty)| (self.define(name.clone(), ty.clone()), ty.clone()))
                     .collect();
+                
+                // Add implicit environment parameter - all lambdas called from JS-like env need this
+                mangled_params.insert(0, (self.define("__env".to_string(), TejxType::Any), TejxType::Any));
                 
                 let hir_body = self.lower_statement(body)
                     .unwrap_or(HIRStatement::Block { line: line,  statements: vec![] });

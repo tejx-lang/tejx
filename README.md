@@ -58,11 +58,17 @@ To compile a `.tx` file into a native executable:
 
 ### Run the Test Suite
 
-To verify the compiler against all positive test cases:
+To verify the compiler against the comprehensive test suite:
 
 ```bash
-./test_all.sh
+./test.sh
 ```
+
+You can also run specific subsets:
+
+- **Positive Tests**: `./test.sh --positive`
+- **Negative Tests**: `./test.sh --negative`
+- **Problem Tests**: `./test.sh --problems`
 
 ---
 
