@@ -1,7 +1,7 @@
 // Test Utilities for TejX
 // =========================
 
-function assert_eq_int(expected: int, actual: int, msg: string) {
+export function assert_eq_int(expected: int, actual: int, msg: string) {
     if (expected == actual) {
         print("✅ PASS: " + msg + " - Expected: " + expected + ", Actual: " + actual);
     } else {
@@ -11,7 +11,7 @@ function assert_eq_int(expected: int, actual: int, msg: string) {
     }
 }
 
-function assert_eq_float(expected: float, actual: float, msg: string) {
+export function assert_eq_float(expected: float, actual: float, msg: string) {
     if (expected == actual) {
         print("✅ PASS: " + msg + " - Expected: " + expected + ", Actual: " + actual);
     } else {
@@ -21,7 +21,7 @@ function assert_eq_float(expected: float, actual: float, msg: string) {
     }
 }
 
-function assert_eq_string(expected: string, actual: string, msg: string) {
+export function assert_eq_string(expected: string, actual: string, msg: string) {
     if (expected == actual) {
         print("✅ PASS: " + msg + " - Expected: '" + expected + "', Actual: '" + actual + "'");
     } else {
@@ -31,7 +31,7 @@ function assert_eq_string(expected: string, actual: string, msg: string) {
     }
 }
 
-function assert_true(cond: bool, msg: string) {
+export function assert_true(cond: bool, msg: string) {
     if (cond) {
         print("✅ PASS: " + msg + " - Expected: true, Actual: true");
     } else {
@@ -41,7 +41,7 @@ function assert_true(cond: bool, msg: string) {
     }
 }
 
-function assert_false(cond: bool, msg: string) {
+export function assert_false(cond: bool, msg: string) {
     if (!cond) {
         print("✅ PASS: " + msg + " - Expected: false, Actual: false");
     } else {
@@ -51,6 +51,6 @@ function assert_false(cond: bool, msg: string) {
     }
 }
 
-function assert_fail(msg: string) {
+export function assert_fail(msg: string) {
     print("❌ FAIL: " + msg);
 }
