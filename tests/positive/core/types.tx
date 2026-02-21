@@ -18,7 +18,7 @@ function test_declarations() {
     let x = 10;
     let y: int32 = 20;
     const PI = 3.14;
-    let name = "NovaJs";
+    let name = "TejX";
     let isAwesome = true;
 
     assert_eq_int(30, add(x, y), "Function call add");

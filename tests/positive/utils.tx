@@ -1,4 +1,4 @@
-// Test Utilities for NovaJs
+// Test Utilities for TejX
 // =========================
 
 function assert_eq_int(expected: int, actual: int, msg: string) {

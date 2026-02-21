@@ -7,10 +7,10 @@ function main() {
     let arr = [1, 2, 3];
     // Access index 100
     let val = arr[100]; 
-    // Currently, NovaJs might return 0. 
+    // Currently, TejX might return 0. 
     // If we want this to be a negative test for "runtime error checking", 
     // we'd need runtime bounds checking enabled that throws.
-    // If NovaJs is designed to be permissive (return undefined/0), then this test 
+    // If TejX is designed to be permissive (return undefined/0), then this test 
     // might actually PASS compilation and run fine (printing 0).
     // In that case, it wouldn't be a "negative test" that FAILS.
     // 

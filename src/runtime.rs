@@ -682,7 +682,7 @@ pub fn stringify_value(id: i64) -> String {
         drop(heap);
         // Optimization: Values between -1 billion and 1 billion (including 0) are treated as direct integers.
         // Wait, if id is 0, we want "null" for JS compatibility usually, but user says "0 should be 0".
-        // Actually, in NovaJs, we want to distinguish null (0) from integer 0.
+        // Actually, in TejX, we want to distinguish null (0) from integer 0.
         // We ensure integer 0 is boxed.
         if id == 0 { return "null".to_string(); }
         
@@ -2084,7 +2084,7 @@ pub unsafe extern "C" fn Array_splice(id: i64, start: i64, delete_count: i64, ar
         }
         
         // Items insertion - for now handle arg3 and arg4 as potential items 
-        // In NovaJs, if they are valid heap IDs or numbers, they should be inserted.
+        // In TejX, if they are valid heap IDs or numbers, they should be inserted.
         // We assume they are passed if they are non-zero (simple heuristic for this test)
         if arg4 != 0 {
              arr.insert(actual_start, arg4);

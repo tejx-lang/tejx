@@ -34,7 +34,7 @@ impl WasmCodeGen {
 
         self.emit("(module\n");
         
-        // Imports (ENV matches NovaJs runtime)
+        // Imports (ENV matches TejX runtime)
         self.emit_line("(import \"env\" \"rt_box_int\" (func $rt_box_int (param i64) (result i64)))");
         self.emit_line("(import \"env\" \"rt_box_string\" (func $rt_box_string (param i64) (result i64)))");
         self.emit_line("(import \"env\" \"rt_box_boolean\" (func $rt_box_boolean (param i64) (result i64)))");
@@ -427,7 +427,7 @@ impl WasmCodeGen {
                     self.push_boxed(arg);
                 }
                 self.push_boxed(callee);
-                // In NovaJs/Wasm, we treat the i64 value as an index into the WASM table
+                // In TejX/Wasm, we treat the i64 value as an index into the WASM table
                 self.emit_line("i32.wrap_i64");
                 
                 let mut params = String::new();
@@ -456,7 +456,7 @@ impl WasmCodeGen {
             }
             MIRInstruction::Branch { condition, true_target, false_target, .. } => {
                 self.push_boxed(condition);
-                // rt_to_boolean would be safer here, but for now we assume it's already a truthy number as expected by NovaJs
+                // rt_to_boolean would be safer here, but for now we assume it's already a truthy number as expected by TejX
                 self.emit_line("call $rt_to_boolean"); 
                 self.emit_line("i64.const 0");
                 self.emit_line("i64.ne");
@@ -504,7 +504,7 @@ impl WasmCodeGen {
             }
             MIRInstruction::LoadIndex { dst, obj, index, .. } => {
                 self.push_boxed(obj);
-                // In NovaJs, indexes are often also numbers or strings. rt_array_get_fast expects i64 index.
+                // In TejX, indexes are often also numbers or strings. rt_array_get_fast expects i64 index.
                 // We assume indexing is numeric for now.
                 self.push_boxed(index);
                 self.emit_line("call $rt_to_number");

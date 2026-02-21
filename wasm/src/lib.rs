@@ -35,7 +35,7 @@ pub fn compile_to_wat(source: String, filename: String, async_enabled: bool) -> 
 
     if !lexer.errors.is_empty() {
         let err = &lexer.errors[0];
-        return Err(error_json(&err.message, err.line, err.col));
+        return Err(error_json(&err.message, err.line, err.col, &render_diagnostic(err, &source)));
     }
 
     let mut parser = Parser::new(tokens, &filename);
@@ -44,14 +44,14 @@ pub fn compile_to_wat(source: String, filename: String, async_enabled: bool) -> 
 
     if parser.has_errors() {
         let err = &parser.get_errors()[0];
-        return Err(error_json(&err.message, err.line, err.col));
+        return Err(error_json(&err.message, err.line, err.col, &render_diagnostic(err, &source)));
     }
 
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
     if let Err(_) = type_checker.check(&program, &filename) {
         let err = &type_checker.diagnostics[0];
-        return Err(error_json(&err.message, err.line, err.col));
+        return Err(error_json(&err.message, err.line, err.col, &render_diagnostic(err, &source)));
     }
 
     let mut lowering = Lowering::new();
@@ -91,11 +91,76 @@ fn escape_json(s: &str) -> String {
     output
 }
 
-fn error_json(msg: &str, line: usize, col: usize) -> String {
+fn error_json(msg: &str, line: usize, col: usize, full_error: &str) -> String {
     format!(
-        r#"{{"error":true,"message":"{}","line":{},"col":{}}}"#,
-        escape_json(msg), line, col
+        r#"{{"error":true,"message":"{}","line":{},"col":{},"full_error":"{}"}}"#,
+        escape_json(msg), line, col, escape_json(full_error)
     )
+}
+
+fn render_diagnostic(diag: &crate::diagnostics::Diagnostic, source: &str) -> String {
+    let mut output = String::new();
+    let sev_name = match diag.severity {
+        crate::diagnostics::Severity::Error   => "error",
+        crate::diagnostics::Severity::Warning => "warning",
+        crate::diagnostics::Severity::Note    => "note",
+    };
+
+    if diag.code.is_empty() {
+        output.push_str(&format!("{}: {}\n", sev_name, diag.message));
+    } else {
+        output.push_str(&format!("{}[{}]: {}\n", sev_name, diag.code, diag.message));
+    }
+
+    output.push_str(&format!("  --> {}:{}:{}\n", diag.file, diag.line, diag.col));
+
+    let lines: Vec<&str> = source.lines().collect();
+    if diag.line > 0 && diag.line <= lines.len() {
+        let line_content = lines[diag.line - 1];
+        let line_num_str = diag.line.to_string();
+        let pad = " ".repeat(line_num_str.len());
+
+        if diag.line >= 2 {
+            let prev_line = lines[diag.line - 2];
+            let prev_num = (diag.line - 1).to_string();
+            let prev_pad = " ".repeat(line_num_str.len().saturating_sub(prev_num.len()));
+            output.push_str(&format!("  {} |\n", pad));
+            output.push_str(&format!("  {}{} | {}\n", prev_pad, prev_num, prev_line));
+        } else {
+            output.push_str(&format!("  {} |\n", pad));
+        }
+
+        output.push_str(&format!("  {} | {}\n", line_num_str, line_content));
+
+        let mut pointer = String::new();
+        for _ in 0..diag.col.saturating_sub(1) {
+            pointer.push(' ');
+        }
+        for _ in 0..diag.length.max(1) {
+            pointer.push('^');
+        }
+
+        let inline_label = diag.label.as_deref().unwrap_or(&diag.message);
+        output.push_str(&format!("  {} | {}{}\n", pad, pointer, inline_label));
+        output.push_str(&format!("  {} |\n", pad));
+
+        if let Some(hint) = &diag.hint {
+            output.push_str(&format!("  {} = hint: {}\n", pad, hint));
+        }
+    } else if diag.line > lines.len() {
+        let line_num = diag.line;
+        let pad = " ".repeat(line_num.to_string().len());
+        output.push_str(&format!("  {} |\n", pad));
+        output.push_str(&format!("  {} | (EOF)\n", line_num));
+        output.push_str(&format!("  {} | ^{}\n", pad, diag.message));
+        output.push_str(&format!("  {} |\n", pad));
+        if let Some(hint) = &diag.hint {
+            output.push_str(&format!("  {} = hint: {}\n", pad, hint));
+        }
+    } else {
+        output.push_str(&format!("  (Unexpected line {} with total lines: {})\n", diag.line, lines.len()));
+    }
+    output
 }
 
 pub fn compile_to_wasm(source: String, filename: String, async_enabled: bool) -> Result<Vec<u8>, String> {
