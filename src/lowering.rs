@@ -2532,7 +2532,11 @@ impl Lowering {
                     ty,
                 }
             }
-            Expression::ArrayLiteral { elements, .. } => {
+            Expression::ArrayLiteral { elements, ty, .. } => {
+                let inferred_ty = match &*ty.borrow() {
+                    Some(t) => TejxType::from_name(t),
+                    None => TejxType::Class("any[]".to_string())
+                };
                 // Handle spreads: [a, ...b, c] -> concat(concat([a], b), [c])
                 let mut chunks: Vec<HIRExpression> = Vec::new();
                 let mut current_chunk: Vec<HIRExpression> = Vec::new();
@@ -2543,7 +2547,7 @@ impl Lowering {
                         if !current_chunk.is_empty() {
                             chunks.push(HIRExpression::ArrayLiteral { line: line, 
                                 elements: current_chunk.clone(),
-                                ty: TejxType::Class("any[]".to_string()),
+                                ty: inferred_ty.clone(),
                             });
                             current_chunk.clear();
                         }
@@ -2557,13 +2561,13 @@ impl Lowering {
                 if !current_chunk.is_empty() {
                     chunks.push(HIRExpression::ArrayLiteral { line: line, 
                         elements: current_chunk,
-                        ty: TejxType::Class("any[]".to_string()),
+                        ty: inferred_ty.clone(),
                     });
                 }
                 
                 if chunks.is_empty() {
                      // Empty array []
-                     HIRExpression::ArrayLiteral { line: line,  elements: vec![], ty: TejxType::Class("any[]".to_string()) }
+                     HIRExpression::ArrayLiteral { line: line,  elements: vec![], ty: inferred_ty.clone() }
                 } else {
                     // Reduce chunks with Array_concat
                     let mut expr = chunks[0].clone();

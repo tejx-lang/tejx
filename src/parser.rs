@@ -1955,6 +1955,7 @@ impl Parser {
         self.consume(TokenType::CloseBracket, "Expected ']'");
         Expression::ArrayLiteral {
             elements,
+            ty: std::cell::RefCell::new(None),
             _line: start.line,
             _col: start.column
         }

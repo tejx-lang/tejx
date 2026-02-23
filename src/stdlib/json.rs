@@ -1,4 +1,4 @@
-use crate::runtime::{rt_box_string, HEAP, TaggedValue};
+use crate::runtime::{rt_box_string, HEAP, TaggedValue, new_fast_map};
 use std::ffi::CString;
 use std::collections::HashMap;
 
@@ -7,9 +7,8 @@ fn stringify_json_recursive(id: i64) -> String {
     if let Some(obj) = heap.get(id) {
         match obj {
             TaggedValue::Map(map) => {
-                let entries: Vec<(String, i64)> = map.iter()
+                let entries: Vec<(String, i64)> = map.iter_entries().into_iter()
                     .filter(|(k, _v)| *k != "toString" && *k != "__proto__" && *k != "constructor")
-                    .map(|(k, v)| (k.clone(), *v))
                     .collect();
                 drop(heap);
                 let parts: Vec<String> = entries.iter().map(|(k, v)| {
@@ -61,7 +60,7 @@ fn parse_val(chars: &mut std::iter::Peekable<std::str::Chars>) -> i64 {
     match first {
         '{' => {
             chars.next();
-            let mut map = HashMap::new();
+            let mut map = new_fast_map();
             while let Some(&c) = chars.peek() {
                 if c.is_whitespace() { chars.next(); continue; }
                 if c == '}' { chars.next(); break; }

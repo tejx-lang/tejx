@@ -2045,15 +2045,19 @@ impl TypeChecker {
                 Ok(return_type)
             },
             Expression::ObjectLiteralExpr { .. } => Ok("any".to_string()),
-            Expression::ArrayLiteral { elements, .. } => {
+            Expression::ArrayLiteral { elements, ty, .. } => {
                 if !elements.is_empty() {
                     let mut first_type = self.check_expression(&elements[0])?;
                     if first_type.starts_with("ref ") {
                         first_type = first_type[4..].to_string();
                     }
-                    Ok(format!("{}[]", first_type))
+                    let inferred = format!("{}[{}]", first_type, elements.len());
+                    *ty.borrow_mut() = Some(inferred.clone());
+                    Ok(inferred)
                 } else {
-                    Ok("[]".to_string())
+                    let inferred = "[]".to_string();
+                    *ty.borrow_mut() = Some(inferred.clone());
+                    Ok(inferred)
                 }
             },
 

@@ -1,4 +1,5 @@
 use crate::token::TokenType;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -178,6 +179,7 @@ pub enum Expression {
     },
     ArrayLiteral {
         elements: Vec<Expression>,
+        ty: RefCell<Option<String>>,
         _line: usize,
         _col: usize,
     },

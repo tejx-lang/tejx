@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
-use crate::runtime::{HEAP, TaggedValue, rt_box_number, rt_box_boolean, rt_box_string, stringify_value};
+use crate::runtime::{HEAP, TaggedValue, rt_box_number, rt_box_boolean, rt_box_string, stringify_value, new_fast_map};
 
 /// Convert an i64 value to f64 WITHOUT locking the HEAP.
 /// This is safe for numeric values (small ints and bitcasted doubles)
@@ -181,7 +181,7 @@ pub fn exports() -> HashSet<String> {
 // --- Map ---
 #[unsafe(no_mangle)] pub extern "C" fn rt_Map_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    heap.insert(this, TaggedValue::Map(HashMap::new()));
+    heap.insert(this, TaggedValue::Map(new_fast_map()));
     this
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_Map_set(this: i64, key: i64, val: i64) -> i64 {
@@ -223,7 +223,7 @@ pub fn exports() -> HashSet<String> {
 #[unsafe(no_mangle)] pub extern "C" fn rt_Map_keys(this: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) {
-        let keys_str: Vec<String> = map.keys().cloned().collect();
+        let keys_str: Vec<String> = map.keys();
         drop(heap); 
         let mut boxed_keys = Vec::new();
         for k in keys_str {
@@ -241,7 +241,7 @@ pub fn exports() -> HashSet<String> {
 #[unsafe(no_mangle)] pub extern "C" fn rt_Map_values(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(map)) = heap.get(this) {
-        let vals: Vec<i64> = map.values().cloned().collect();
+        let vals: Vec<i64> = map.values();
         // Use alloc loop or insert
         let new_id = heap.next_id; heap.next_id += 1;
         heap.insert(new_id, TaggedValue::Array(vals));
@@ -310,7 +310,7 @@ pub fn exports() -> HashSet<String> {
 // --- OrderedMap ---
 #[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_constructor(this: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    heap.insert(this, TaggedValue::OrderedMap(Vec::new(), HashMap::new()));
+    heap.insert(this, TaggedValue::OrderedMap(Vec::new(), new_fast_map()));
     this
 }
 #[unsafe(no_mangle)] pub extern "C" fn rt_OrderedMap_put(this: i64, key: i64, val: i64) -> i64 {
@@ -368,7 +368,7 @@ pub fn exports() -> HashSet<String> {
 #[unsafe(no_mangle)] pub extern "C" fn rt_Collection_keys(id: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     let keys = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        m.keys().filter(|k| *k != "toString" && *k != "constructor").cloned().collect::<Vec<String>>()
+        m.keys().into_iter().filter(|k| *k != "toString" && *k != "constructor").collect::<Vec<String>>()
     } else if let Some(TaggedValue::OrderedMap(order, _)) = heap.get(id) {
         order.iter().filter(|k| *k != "toString" && *k != "constructor").cloned().collect::<Vec<String>>()
     } else {
@@ -409,8 +409,8 @@ pub fn exports() -> HashSet<String> {
 
     let heap = HEAP.lock().unwrap();
     let values = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        m.iter().filter(|(k, _)| *k != "toString" && *k != "constructor")
-            .map(|(_, v)| *v).collect::<Vec<i64>>()
+        m.iter_entries().into_iter().filter(|(k, _)| *k != "toString" && *k != "constructor")
+            .map(|(_, v)| v).collect::<Vec<i64>>()
     } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
         order.iter().filter(|k| *k != "toString" && *k != "constructor")
             .map(|k| m.get(k).cloned().unwrap_or(0)).collect::<Vec<i64>>()
@@ -428,8 +428,8 @@ pub fn exports() -> HashSet<String> {
 #[unsafe(no_mangle)] pub extern "C" fn rt_Collection_entries(id: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
     let entries = if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        m.iter().filter(|(k, _)| *k != "toString" && *k != "constructor")
-            .map(|(k, v)| (k.clone(), *v)).collect::<Vec<(String, i64)>>()
+        m.iter_entries().into_iter().filter(|(k, _)| *k != "toString" && *k != "constructor")
+            .collect::<Vec<(String, i64)>>()
     } else if let Some(TaggedValue::OrderedMap(order, m)) = heap.get(id) {
         order.iter().filter(|k| *k != "toString" && *k != "constructor")
             .map(|k| (k.clone(), m.get(k).cloned().unwrap_or(0))).collect::<Vec<(String, i64)>>()
