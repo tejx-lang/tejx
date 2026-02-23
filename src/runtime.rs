@@ -892,23 +892,21 @@ pub extern "C" fn Array_pop(id: i64) -> i64 {
 pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
     unsafe {
         if LAST_ID == id {
-            let i = if idx >= 0 && idx < 200000000 {
-                idx as usize
-            } else {
-                let top = (idx >> 48) & 0xFFFF;
-                if top == 0 || top == 0xFFFF { idx as usize } else { f64::from_bits(idx as u64) as usize }
-            };
-            if i < LAST_LEN {
-                if LAST_ELEM_SIZE == 1 {
-                    return *LAST_PTR.add(i) as i64;
+            if idx >= 0 && idx < 200000000 {
+                let i = idx as usize;
+                if i < LAST_LEN {
+                    if LAST_ELEM_SIZE == 1 {
+                        return *LAST_PTR.add(i) as i64;
+                    } else {
+                        return *(LAST_PTR as *mut i64).add(i);
+                    }
                 } else {
-                    return *(LAST_PTR as *mut i64).add(i);
+                    let last_len = LAST_LEN;
+                    eprintln!("Array index out of bounds (fast path): {} (length: {})", i, last_len);
+                    std::process::exit(1);
                 }
-            } else {
-                let last_len = LAST_LEN;
-                eprintln!("Array index out of bounds (fast path): {} (length: {})", i, last_len);
-                std::process::exit(1);
             }
+            // If idx is a pointer or double, fall through to slow path to unbox it
         }
     }
 
@@ -961,19 +959,16 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
 pub extern "C" fn rt_array_set_fast(id: i64, idx: i64, val: i64) -> i64 {
     unsafe {
         if LAST_ID == id {
-            let i = if idx >= 0 && idx < 200000000 {
-                idx as usize
-            } else {
-                let top = (idx >> 48) & 0xFFFF;
-                if top == 0 || top == 0xFFFF { idx as usize } else { f64::from_bits(idx as u64) as usize }
-            };
-            if i < LAST_LEN {
-                if LAST_ELEM_SIZE == 1 {
-                    *LAST_PTR.add(i) = (val != 0) as u8;
-                    return val;
-                } else {
-                    *(LAST_PTR as *mut i64).add(i) = val;
-                    return val;
+            if idx >= 0 && idx < 200000000 {
+                let i = idx as usize;
+                if i < LAST_LEN {
+                    if LAST_ELEM_SIZE == 1 {
+                        *LAST_PTR.add(i) = (val != 0) as u8;
+                        return val;
+                    } else {
+                        *(LAST_PTR as *mut i64).add(i) = val;
+                        return val;
+                    }
                 }
             }
         }

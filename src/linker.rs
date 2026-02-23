@@ -65,7 +65,7 @@ impl Linker {
                 // Generate Assembly (.s)
                 let mut asm_cmd = Command::new(&compiler);
                 asm_cmd.arg("-S");
-                asm_cmd.arg("-O3"); // Disable all optimizations to bypass ARM64 Clang driver crash
+                asm_cmd.arg("-O0"); // Disable all optimizations to bypass ARM64 Clang driver crash
                 asm_cmd.arg(obj);
                 asm_cmd.arg("-o");
                 asm_cmd.arg(&out_asm);

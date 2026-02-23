@@ -1135,10 +1135,19 @@ impl Lowering {
                 })
             }
             Statement::ForStmt { init, condition, increment, body, .. } => {
+                self.enter_scope();
                 let mut outer_stmts = Vec::new();
                 if let Some(init_stmt) = init {
-                    if let Some(h) = self.lower_statement(init_stmt) {
-                        outer_stmts.push(h);
+                    if let Statement::BlockStmt { statements, .. } = init_stmt.as_ref() {
+                        for s in statements {
+                            if let Some(h) = self.lower_statement(s) {
+                                outer_stmts.push(h);
+                            }
+                        }
+                    } else {
+                        if let Some(h) = self.lower_statement(init_stmt) {
+                            outer_stmts.push(h);
+                        }
                     }
                 }
                 let cond = condition.as_ref()
@@ -1163,6 +1172,8 @@ impl Lowering {
                     increment: inc,
                     _is_do_while: false,
                 });
+
+                self._exit_scope();
 
                 Some(HIRStatement::Block { line: line,  statements: outer_stmts })
             }
@@ -1411,178 +1422,18 @@ impl Lowering {
                 if _spreads.is_empty() {
                     base_obj
                 } else {
-                    // Handle spreads: merge spreads into base_obj
-                    // Sequence:
-                    // let obj = base_obj;
-                    // rt_object_merge(obj, spread1);
-                    // rt_object_merge(obj, spread2);
-                    // obj
-                    
-                    self.enter_scope();
-                    let obj_var = self.define("obj_spread_target".to_string(), TejxType::Any);
-                    
-                    let mut seq_exprs = Vec::new();
-                    
-                    // 1. Declare and init obj
-                     seq_exprs.push(HIRExpression::Assignment {
-                        target: Box::new(HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line }),
-                        value: Box::new(base_obj),
-                        ty: TejxType::Any,
-                        line,
-                    });
-
-                    // 2. Merge spreads
+                    // Handle spreads: merge spreads into base_obj by chaining calls
+                    let mut expr = base_obj;
                     for spread in _spreads {
                         let spread_val = self.lower_expression(spread);
-                        seq_exprs.push(HIRExpression::Call {
+                        expr = HIRExpression::Call {
                             callee: "rt_object_merge".to_string(),
-                            args: vec![
-                                HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line },
-                                spread_val
-                            ],
+                            args: vec![expr, spread_val],
                             ty: TejxType::Any,
                             line,
-                        });
+                        };
                     }
-                    
-                    // 3. Return obj
-                    seq_exprs.push(HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line });
-
-                    self._exit_scope(); // Variables defined will be handled by HIR lowering logic assuming unique names?
-                    // wait, HIR Sequence is list of *Expressions*. 
-                    // `Declaration` is a Statement. 
-                    // Lowering `Variable` logic in `mir_lowering` expects variable to be declared in `Function`.
-                    // But `lowering.rs` defines scopes.
-                    // If we use `HIRExpression::Sequence`, we can't easily declare a variable?
-                    // HIR Sequence returns result of last expression.
-                    // We can use a BlockExpr?
-                    // `HIRBlockExpr` is an Expression that contains Statements!
-                    // So we can use Statements inside.
-                    
-                    let mut block_stmts = Vec::new();
-                    
-                    // Var Decl
-                    block_stmts.push(HIRStatement::VarDecl {
-                        name: obj_var.clone(),
-                        initializer: None, // We will assign next
-                        ty: TejxType::Any,
-                        _is_const: false,
-                        line,
-                    });
-                     block_stmts.push(HIRStatement::ExpressionStmt {
-                        expr: HIRExpression::Assignment {
-                            target: Box::new(HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line }),
-                            value: Box::new(HIRExpression::ObjectLiteral { entries: entries.iter().map(|(k,v)| (k.clone(), self.lower_expression(v))).collect(), ty: TejxType::Any, line }), // Re-construct base obj here?
-                            // Issue: I reconstructed base_obj above but consumed entries.
-                            // Let's refactor.
-                            ty: TejxType::Any,
-                            line,
-                        },
-                        line,
-                    });
-                    
-                    // Spreads
-                     for spread in _spreads {
-                        let spread_val = self.lower_expression(spread);
-                         block_stmts.push(HIRStatement::ExpressionStmt {
-                            expr: HIRExpression::Call {
-                                callee: "rt_object_merge".to_string(),
-                                args: vec![
-                                    HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line },
-                                    spread_val
-                                ],
-                                ty: TejxType::Any,
-                                line,
-                            },
-                            line,
-                        });
-                    }
-
-                    // Return
-                    block_stmts.push(HIRStatement::ExpressionStmt {
-                         expr: HIRExpression::Variable { name: obj_var.clone(), ty: TejxType::Any, line },
-                         line
-                    });
-                    
-                    // Creating BlockExpr
-                    // HIRExpression::BlockExpr { statements: block_stmts ... }
-                    // Does BlockExpr return the last statement's value?
-                    // MIR Lowering for BlockExpr:
-                    // It lowers statements. 
-                    // It does NOT implicitly return the last value unless it's an expression block logic?
-                    // `mir_lowering.rs`: `HIDExpression::BlockExpr` -> `lower_statement` for all stmts.
-                    // It returns `MIRValue`?
-                    // Checked `mir_lowering.rs`: `BlockExpr` case in `lower_expression`?
-                    // I verified `mir_lowering` earlier.
-                    // `HIRExpression::BlockExpr` WAS in `mir_lowering.rs` struct definition (Line 94).
-                    // BUT `lower_expression` implementation (Line 556+) did NOT have `BlockExpr` case!
-                    // Check logic again.
-                    // `mir_lowering.rs` Lines 556+.
-                    // I scrolled down. `BlockExpr` was NOT visible in snippet.
-                    // It was likely missing or I missed it.
-                    // If missing, `BlockExpr` won't work.
-                    // Use `Sequence` instead.
-                    // `Sequence` takes `Vec<HIRExpression>`.
-                    // We need a variable.
-                    // Can we abuse `Call`? 
-                    // `(lambda(obj) { merge...; return obj; })(base_obj)`
-                    // This is cleaner.
-                    
-                    let mut lambda_body_stmts = Vec::new();
-                    let param_name = "base_obj_param".to_string();
-                    let param_mangled = self.define(param_name.clone(), TejxType::Any);
-                    
-                    for spread in _spreads {
-                         let spread_val = self.lower_expression(spread);
-                         lambda_body_stmts.push(HIRStatement::ExpressionStmt {
-                            expr: HIRExpression::Call {
-                                callee: "rt_object_merge".to_string(),
-                                args: vec![
-                                    HIRExpression::Variable { name: param_mangled.clone(), ty: TejxType::Any, line },
-                                    spread_val
-                                ],
-                                ty: TejxType::Any,
-                                line,
-                            },
-                            line,
-                        });
-                    }
-                    
-                    lambda_body_stmts.push(HIRStatement::Return {
-                         value: Some(HIRExpression::Variable { name: param_mangled.clone(), ty: TejxType::Any, line }),
-                         line
-                    });
-                    
-                    // Create lambda
-                    let lambda_name = format!("lambda_spread_{}", self.lambda_counter.replace_with(|&mut c| c + 1));
-                    let mut lambda_params = vec![(self.define("__env".to_string(), TejxType::Any), TejxType::Any)];
-                    lambda_params.push((param_mangled.clone(), TejxType::Any));
-                    
-                    let lambda = HIRStatement::Function {
-                        line,
-                        name: lambda_name.clone(),
-                        params: lambda_params,
-                        _return_type: TejxType::Any,
-                        body: Box::new(HIRStatement::Block { line, statements: lambda_body_stmts }),
-                    };
-                    self.lambda_functions.borrow_mut().push(lambda);
-                    
-                    // Call lambda
-                    let base_obj_expr = HIRExpression::ObjectLiteral {
-                        entries: entries.iter().map(|(k,v)| (k.clone(), self.lower_expression(v))).collect(),
-                        ty: TejxType::Any,
-                        line,
-                    };
-                    
-                    HIRExpression::Call {
-                         callee: lambda_name,
-                         args: vec![
-                             HIRExpression::Variable { name: "__env".to_string(), ty: TejxType::Any, line }, // Pass current env
-                             base_obj_expr
-                         ],
-                         ty: TejxType::Any,
-                         line 
-                    }
+                    expr
                 }
             }
 

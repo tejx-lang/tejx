@@ -548,6 +548,9 @@ impl MIRLowering {
                 // Catch success path
                 let cb = self.current_block;
                 if !self.current_function.blocks[cb].is_terminated() {
+                     if finally_handler_idx.is_some() {
+                         self.emit(MIRInstruction::PopHandler { line: 0 });
+                     }
                      if let Some(fb_idx) = finally_body_idx {
                          self.emit(MIRInstruction::Move { line: 0,  dst: is_unwinding_var.clone(), src: MIRValue::Constant { value: "false".to_string(), ty: TejxType::Bool } });
                          self.emit(MIRInstruction::Jump { line: 0,  target: fb_idx  });
