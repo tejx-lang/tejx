@@ -1,0 +1,16 @@
+// Scenario 1: Basic Assignment (Implicit Move)
+// Description: Assigning a class instance to a new variable moves it. Using the original is an error.
+// EXPECTED: COMPILE_ERROR
+
+class User {
+    name: string;
+    constructor(n: string) { this.name = n; }
+}
+
+function main() {
+    let a = new User("Alice");
+    let b = a; // Move: 'a' is never used again after this → ownership transfers to 'b'
+
+    // ERROR: 'a' is now a Ghost — ownership was moved to 'b'
+    print(a.name);
+}

@@ -1,6 +1,6 @@
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::env;
 
 pub struct Linker {
     output_path: PathBuf,
@@ -30,7 +30,11 @@ impl Linker {
                     let p = entry.path();
                     if p.is_file() {
                         let ext = p.extension().and_then(|s| s.to_str());
-                        if ext == Some("o") || ext == Some("a") || ext == Some("so") || ext == Some("dylib") {
+                        if ext == Some("o")
+                            || ext == Some("a")
+                            || ext == Some("so")
+                            || ext == Some("dylib")
+                        {
                             self.obj_paths.push(p);
                         }
                     }
@@ -41,14 +45,9 @@ impl Linker {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn add_lib(&mut self, lib: &str) {
-        self.libs.push(lib.to_string());
-    }
-
     pub fn link(&self) -> Result<(), String> {
         let compiler = self.find_compiler()?;
-        
+
         let mut final_objects = Vec::new();
 
         // Step 1: Compile any .ll files to .s (assembly) to bypass Apple Clang object emitter bugs, then assemble to .o
@@ -70,10 +69,16 @@ impl Linker {
                 asm_cmd.arg("-o");
                 asm_cmd.arg(&out_asm);
 
-                let output_asm = asm_cmd.output().map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
+                let output_asm = asm_cmd
+                    .output()
+                    .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
                 if !output_asm.status.success() {
                     let stderr = String::from_utf8_lossy(&output_asm.stderr);
-                    return Err(format!("LLVM assembly generation failed for {}:\n{}", obj.display(), stderr));
+                    return Err(format!(
+                        "LLVM assembly generation failed for {}:\n{}",
+                        obj.display(),
+                        stderr
+                    ));
                 }
 
                 // Assemble to Object (.o)
@@ -83,12 +88,18 @@ impl Linker {
                 obj_cmd.arg("-o");
                 obj_cmd.arg(&out_obj);
 
-                let output_obj = obj_cmd.output().map_err(|e| format!("Failed to assemble {}: {}", out_asm.display(), e))?;
+                let output_obj = obj_cmd
+                    .output()
+                    .map_err(|e| format!("Failed to assemble {}: {}", out_asm.display(), e))?;
                 if !output_obj.status.success() {
                     let stderr = String::from_utf8_lossy(&output_obj.stderr);
-                    return Err(format!("Assembly failed for {}:\n{}", out_asm.display(), stderr));
+                    return Err(format!(
+                        "Assembly failed for {}:\n{}",
+                        out_asm.display(),
+                        stderr
+                    ));
                 }
-                
+
                 // Cleanup intermediate .s
                 let _ = std::fs::remove_file(&out_asm);
 
@@ -124,7 +135,9 @@ impl Linker {
             cmd.arg(format!("-l{}", lib));
         }
 
-        let output = cmd.output().map_err(|e| format!("Failed to execute linker {}: {}", compiler, e))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to execute linker {}: {}", compiler, e))?;
 
         // Cleanup intermediate .o files to prevent disk clutter
         for obj in &final_objects {

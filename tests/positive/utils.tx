@@ -54,3 +54,23 @@ export function assert_false(cond: bool, msg: string) {
 export function assert_fail(msg: string) {
     print("❌ FAIL: " + msg);
 }
+
+export function assert_ne_int(notExpected: int, actual: int, msg: string) {
+    if (notExpected != actual) {
+        print("✅ PASS: " + msg + " - Not: " + notExpected + ", Got: " + actual);
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Should NOT be: " + notExpected);
+        print("   Actual:        " + actual);
+    }
+}
+
+export function assert_ne_string(notExpected: string, actual: string, msg: string) {
+    if (notExpected != actual) {
+        print("✅ PASS: " + msg + " - Not: '" + notExpected + "', Got: '" + actual + "'");
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Should NOT be: '" + notExpected + "'");
+        print("   Actual:        '" + actual + "'");
+    }
+}

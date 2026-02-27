@@ -1,11 +1,15 @@
-use std::collections::{HashSet, HashMap};
+use crate::runtime::{
+    __resolve_promise, ACTIVE_ASYNC_OPS, HEAP, Promise_new, TaggedValue, rt_box_number,
+    tejx_enqueue_task,
+};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::sync::atomic::{Ordering, AtomicBool, AtomicI64};
-use std::sync::{Arc, Mutex, LazyLock};
-use crate::runtime::{Promise_new, __resolve_promise, rt_box_number, HEAP, TaggedValue, ACTIVE_ASYNC_OPS, tejx_enqueue_task};
 
-static TIMERS: LazyLock<Mutex<HashMap<i64, Arc<AtomicBool>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static TIMERS: LazyLock<Mutex<HashMap<i64, Arc<AtomicBool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
 
 // --- Exports ---
@@ -35,7 +39,7 @@ unsafe fn unbox_ms(ms_id: i64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_time_sleep(ms_id: i64) -> i64 {
-    let ms = unbox_ms(ms_id);
+    let ms = unsafe { unbox_ms(ms_id) };
     thread::sleep(Duration::from_millis(ms));
     0 // void return
 }
@@ -53,72 +57,73 @@ pub unsafe extern "C" fn std_time_now() -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_time_delay(ms_id: i64) -> i64 {
-    let ms = unbox_ms(ms_id);
-    let pid = Promise_new(0);
-    
-    ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(ms));
-        __resolve_promise(pid, 0);
-        ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
-    });
-    
+    let ms = unsafe { unbox_ms(ms_id) };
+    let pid = { Promise_new(0) };
+
+    // Synchronous sleep + resolve on the same thread.
+    // Since async TejX functions already run on worker threads via tejx_enqueue_task,
+    // spawning another thread would cause thread-local HEAP isolation issues.
+    thread::sleep(Duration::from_millis(ms));
+    {
+        __resolve_promise(pid, 0)
+    };
+
     pid
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_time_setTimeout(callback: i64, ms_id: i64) -> i64 {
-    let ms = unbox_ms(ms_id);
+    let ms = unsafe { unbox_ms(ms_id) };
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
     let cancelled = Arc::new(AtomicBool::new(false));
-    
+
     {
         let mut timers = TIMERS.lock().unwrap();
         timers.insert(timer_id, cancelled.clone());
     }
 
     ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
-    
+
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(ms));
-        
+
         if !cancelled.load(Ordering::SeqCst) {
-            tejx_enqueue_task(callback, 0); // 0 as dummy arg for now
-            
+            unsafe { tejx_enqueue_task(callback, 0) }; // 0 as dummy arg for now
+
             // Clean up from map
             let mut timers = TIMERS.lock().unwrap();
             timers.remove(&timer_id);
         }
-        
+
         ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
     });
-    
+
     timer_id
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_time_setInterval(callback: i64, ms_id: i64) -> i64 {
-    let ms = unbox_ms(ms_id);
+    let ms = unsafe { unbox_ms(ms_id) };
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
     let cancelled = Arc::new(AtomicBool::new(false));
-    
+
     {
         let mut timers = TIMERS.lock().unwrap();
         timers.insert(timer_id, cancelled.clone());
     }
 
     ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
-    
+
     thread::spawn(move || {
         while !cancelled.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(ms));
             if !cancelled.load(Ordering::SeqCst) {
-                tejx_enqueue_task(callback, 0);
+                unsafe { tejx_enqueue_task(callback, 0) };
             }
         }
         ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
     });
-    
+
     timer_id
 }
 
@@ -133,5 +138,5 @@ pub unsafe extern "C" fn std_time_clearTimeout(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_time_clearInterval(id: i64) -> i64 {
-    std_time_clearTimeout(id)
+    unsafe { std_time_clearTimeout(id) }
 }

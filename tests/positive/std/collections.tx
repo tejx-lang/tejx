@@ -2,7 +2,7 @@
 // ================
 
 import { Map, Set } from "std:collections";
-import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_int } from "../utils.tx";
 
 function main() {
     print("--- Map Tests ---");
@@ -11,8 +11,10 @@ function main() {
     m.put("version", 1);
 
     assert_true(m.has("name"), "Map.has('name')");
+    assert_false(m.has("missing"), "Map not has('missing')");
     assert_eq_string("TejX", m.at("name"), "Map.get('name')");
     assert_eq_int(2, m.size(), "Map.size()");
+    assert_ne_int(0, m.size(), "Map.size() not zero");
 
     // Verify instance keys()
     // Note: keys() format check might need adjustment depending on toString implementation
@@ -36,5 +38,7 @@ function main() {
 
     setObj.delete(1);
     assert_eq_int(2, setObj.size(), "Set size after delete");
+    assert_ne_int(3, setObj.size(), "Set size not pre-delete");
     assert_false(setObj.has(1), "Set.has(1) after delete");
+    assert_true(setObj.has(2), "Set still has(2) after delete");
 }

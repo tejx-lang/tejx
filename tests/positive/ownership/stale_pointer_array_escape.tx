@@ -1,0 +1,25 @@
+// Description: Object pushed into array from inner scope — borrow checker preserves ownership
+// EXPECTED: RUNTIME_SUCCESS
+// NOTE: With the borrow checker's ownership transfer for Call args, arr.push(local_target)
+//       transfers ownership to the array. The object is NOT freed at end of block.
+
+class Target {
+    val: int32;
+    constructor() { this.val = 99; }
+}
+
+function main() {
+    let arr = [new Target()];
+    
+    {
+        let local_target = new Target();
+        local_target.val = 42;
+        // With updated borrow checker, push() takes ownership — no premature Free.
+        arr.push(local_target); 
+    }
+
+    // Access the escaped reference — now correctly owned by the array.
+    let smuggled = arr[1];
+    print(smuggled.val);
+    print("Stale pointer test passed — object stays alive via array.");
+}

@@ -1,7 +1,7 @@
+use crate::runtime::stringify_value;
 use std::collections::HashSet;
 use std::env;
 use std::ffi::CString;
-use crate::runtime::stringify_value;
 
 pub fn exports() -> HashSet<String> {
     let mut s = HashSet::new();
@@ -24,19 +24,19 @@ pub extern "C" fn std_system_args() -> i64 {
     let args: Vec<String> = std::env::args().collect();
     let mut heap = crate::runtime::HEAP.lock().unwrap();
     let mut arr_ids = Vec::new();
-    
+
     for arg in args {
         if let Some(&id) = heap.strings.get(&arg) {
             arr_ids.push(id);
         } else {
-             let id = heap.next_id;
-             heap.next_id += 1;
-             heap.insert(id, crate::runtime::TaggedValue::String(arg.clone()));
-             heap.strings.insert(arg, id);
-             arr_ids.push(id);
+            let id = heap.next_id;
+            heap.next_id += 1;
+            heap.insert(id, crate::runtime::TaggedValue::String(arg.clone()));
+            heap.strings.insert(arg, id);
+            arr_ids.push(id);
         }
     }
-    
+
     let arr_id = heap.next_id;
     heap.next_id += 1;
     heap.insert(arr_id, crate::runtime::TaggedValue::Array(arr_ids));
@@ -47,8 +47,8 @@ pub extern "C" fn std_system_args() -> i64 {
 pub unsafe extern "C" fn std_system_env(key_id: i64) -> i64 {
     let key = stringify_value(key_id);
     if let Ok(val) = env::var(&key) {
-         let c_str = CString::new(val).unwrap();
-         c_str.into_raw() as i64
+        let c_str = CString::new(val).unwrap();
+        c_str.into_raw() as i64
     } else {
         0
     }
@@ -67,5 +67,5 @@ pub extern "C" fn std_os_args() -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn std_os_env(key_id: i64) -> i64 {
-    std_system_env(key_id)
+    unsafe { std_system_env(key_id) }
 }

@@ -1,0 +1,19 @@
+// Scenario 2: Reusing a Variable (Implicit Borrow)
+// The compiler detects that 'user' is used again after sayHello(),
+// so it automatically borrows instead of moving.
+
+class User {
+    name: string;
+    constructor(n: string) { this.name = n; }
+}
+
+function sayHello(user: User) {
+    print("Hello", user.name);
+}
+
+function main() {
+    let user = new User("Bob");
+    sayHello(user);   // Compiler: 'user' is used again later → BORROW (no move)
+    print(user.name); // Success: 'user' is still valid
+    print("Implicit borrow test passed!");
+}

@@ -1,18 +1,28 @@
-#![allow(unsafe_op_in_unsafe_fn)]
-
 // Re-declare modules from main src directory using #[path]
-#[path = "../../src/token.rs"] pub mod token;
-#[path = "../../src/lexer.rs"] pub mod lexer;
-#[path = "../../src/parser.rs"] pub mod parser;
-#[path = "../../src/ast.rs"] pub mod ast;
-#[path = "../../src/types.rs"] pub mod types;
-#[path = "../../src/hir.rs"] pub mod hir;
-#[path = "../../src/lowering.rs"] pub mod lowering;
-#[path = "../../src/type_checker.rs"] pub mod type_checker;
-#[path = "../../src/mir.rs"] pub mod mir;
-#[path = "../../src/mir_lowering.rs"] pub mod mir_lowering;
-#[path = "../../src/borrow_checker.rs"] pub mod borrow_checker;
-#[path = "../../src/diagnostics.rs"] pub mod diagnostics;
+#[path = "../../src/ast.rs"]
+pub mod ast;
+#[path = "../../src/borrow_checker.rs"]
+pub mod borrow_checker;
+#[path = "../../src/diagnostics.rs"]
+pub mod diagnostics;
+#[path = "../../src/hir.rs"]
+pub mod hir;
+#[path = "../../src/lexer.rs"]
+pub mod lexer;
+#[path = "../../src/lowering.rs"]
+pub mod lowering;
+#[path = "../../src/mir.rs"]
+pub mod mir;
+#[path = "../../src/mir_lowering.rs"]
+pub mod mir_lowering;
+#[path = "../../src/parser.rs"]
+pub mod parser;
+#[path = "../../src/token.rs"]
+pub mod token;
+#[path = "../../src/type_checker.rs"]
+pub mod type_checker;
+#[path = "../../src/types.rs"]
+pub mod types;
 
 // WASM-local runtime shim (provides StdLib metadata without OS dependencies)
 pub mod runtime;
@@ -20,22 +30,31 @@ pub mod runtime;
 // WASM-specific modules
 pub mod wasm_codegen;
 
-use std::path::Path;
+use crate::borrow_checker::BorrowChecker;
 use crate::lexer::Lexer;
-use crate::parser::Parser;
-use crate::type_checker::TypeChecker;
 use crate::lowering::Lowering;
 use crate::mir_lowering::MIRLowering;
-use crate::borrow_checker::BorrowChecker;
+use crate::parser::Parser;
+use crate::type_checker::TypeChecker;
 use crate::wasm_codegen::WasmCodeGen;
+use std::path::Path;
 
-pub fn compile_to_wat(source: String, filename: String, async_enabled: bool) -> Result<String, String> {
+pub fn compile_to_wat(
+    source: String,
+    filename: String,
+    async_enabled: bool,
+) -> Result<String, String> {
     let mut lexer = Lexer::new(&source, &filename);
     let tokens = lexer.tokenize();
 
     if !lexer.errors.is_empty() {
         let err = &lexer.errors[0];
-        return Err(error_json(&err.message, err.line, err.col, &render_diagnostic(err, &source)));
+        return Err(error_json(
+            &err.message,
+            err.line,
+            err.col,
+            &render_diagnostic(err, &source),
+        ));
     }
 
     let mut parser = Parser::new(tokens, &filename);
@@ -44,14 +63,24 @@ pub fn compile_to_wat(source: String, filename: String, async_enabled: bool) -> 
 
     if parser.has_errors() {
         let err = &parser.get_errors()[0];
-        return Err(error_json(&err.message, err.line, err.col, &render_diagnostic(err, &source)));
+        return Err(error_json(
+            &err.message,
+            err.line,
+            err.col,
+            &render_diagnostic(err, &source),
+        ));
     }
 
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
     if let Err(_) = type_checker.check(&program, &filename) {
         let err = &type_checker.diagnostics[0];
-        return Err(error_json(&err.message, err.line, err.col, &render_diagnostic(err, &source)));
+        return Err(error_json(
+            &err.message,
+            err.line,
+            err.col,
+            &render_diagnostic(err, &source),
+        ));
     }
 
     let mut lowering = Lowering::new();
@@ -93,14 +122,17 @@ fn escape_json(s: &str) -> String {
 fn error_json(msg: &str, line: usize, col: usize, full_error: &str) -> String {
     format!(
         r#"{{"error":true,"message":"{}","line":{},"col":{},"full_error":"{}"}}"#,
-        escape_json(msg), line, col, escape_json(full_error)
+        escape_json(msg),
+        line,
+        col,
+        escape_json(full_error)
     )
 }
 
 fn render_diagnostic(diag: &crate::diagnostics::Diagnostic, source: &str) -> String {
     let mut output = String::new();
     let sev_name = match diag.severity {
-        crate::diagnostics::Severity::Error   => "error",
+        crate::diagnostics::Severity::Error => "error",
     };
 
     if diag.code.is_empty() {
@@ -155,12 +187,20 @@ fn render_diagnostic(diag: &crate::diagnostics::Diagnostic, source: &str) -> Str
             output.push_str(&format!("  {} = hint: {}\n", pad, hint));
         }
     } else {
-        output.push_str(&format!("  (Unexpected line {} with total lines: {})\n", diag.line, lines.len()));
+        output.push_str(&format!(
+            "  (Unexpected line {} with total lines: {})\n",
+            diag.line,
+            lines.len()
+        ));
     }
     output
 }
 
-pub fn compile_to_wasm(source: String, filename: String, async_enabled: bool) -> Result<Vec<u8>, String> {
+pub fn compile_to_wasm(
+    source: String,
+    filename: String,
+    async_enabled: bool,
+) -> Result<Vec<u8>, String> {
     let wat = compile_to_wat(source, filename, async_enabled)?;
     wat::parse_str(&wat).map_err(|e| format!("WAT to WASM conversion failed: {}", e))
 }
@@ -173,7 +213,9 @@ unsafe extern "C" {
 }
 
 fn debug_print(msg: &str) {
-    unsafe { compiler_log(msg.as_ptr(), msg.len()); }
+    unsafe {
+        compiler_log(msg.as_ptr(), msg.len());
+    }
 }
 
 static mut LAST_RESULT: Vec<u8> = Vec::new();
@@ -193,25 +235,32 @@ pub unsafe extern "C" fn tejx_free(ptr: *mut u8, size: usize) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tejx_compile(
-    src_ptr: *const u8, 
-    src_len: usize, 
-    file_ptr: *const u8, 
-    file_len: usize, 
-    async_enabled: bool
+    src_ptr: *const u8,
+    src_len: usize,
+    file_ptr: *const u8,
+    file_len: usize,
+    async_enabled: bool,
 ) -> *const u8 {
     let source = String::from_utf8_lossy(std::slice::from_raw_parts(src_ptr, src_len)).into_owned();
-    let filename = String::from_utf8_lossy(std::slice::from_raw_parts(file_ptr, file_len)).into_owned();
-    
-    debug_print(&format!("WASM Compiler: Starting generic compilation for file: {}", filename));
+    let filename =
+        String::from_utf8_lossy(std::slice::from_raw_parts(file_ptr, file_len)).into_owned();
+
+    debug_print(&format!(
+        "WASM Compiler: Starting generic compilation for file: {}",
+        filename
+    ));
     let result = match compile_to_wasm(source, filename, async_enabled) {
         Ok(res) => {
-            debug_print(&format!("WASM Compiler: Compilation Success ({} bytes)", res.len()));
+            debug_print(&format!(
+                "WASM Compiler: Compilation Success ({} bytes)",
+                res.len()
+            ));
             res
-        },
+        }
         Err(e) => {
             debug_print(&format!("WASM Compiler: Compilation Error: {}", e));
             format!("WASM_COMPILE_ERROR: {}", e).into_bytes()
-        },
+        }
     };
 
     let last_result = unsafe { &mut *std::ptr::addr_of_mut!(LAST_RESULT) };

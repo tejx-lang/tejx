@@ -18,31 +18,35 @@ pub enum Statement {
     },
     FunctionDeclaration(FunctionDeclaration),
     ClassDeclaration(ClassDeclaration),
-    #[allow(dead_code)]
+
     // ProtocolDeclaration(ProtocolDeclaration), // Removed
- 
-    #[allow(dead_code)]
     ExtensionDeclaration(ExtensionDeclaration), // If needed
     EnumDeclaration(EnumDeclaration),
     TypeAliasDeclaration {
         name: String,
-        _type_def: String, 
-        _line: usize, 
-        _col: usize 
+        _type_def: String,
+        _line: usize,
+        _col: usize,
     },
     InterfaceDeclaration {
         name: String,
         _methods: Vec<InterfaceMethod>,
-        _line: usize, 
-        _col: usize
+        _line: usize,
+        _col: usize,
     },
     ReturnStmt {
         value: Option<Box<Expression>>,
         _line: usize,
         _col: usize,
     },
-    BreakStmt { _line: usize, _col: usize },
-    ContinueStmt { _line: usize, _col: usize },
+    BreakStmt {
+        _line: usize,
+        _col: usize,
+    },
+    ContinueStmt {
+        _line: usize,
+        _col: usize,
+    },
     BlockStmt {
         statements: Vec<Statement>,
         _line: usize,
@@ -90,7 +94,7 @@ pub enum Statement {
     TryStmt {
         _try_block: Box<Statement>, // BlockStmt
         _catch_var: String,
-        _catch_block: Box<Statement>, // BlockStmt
+        _catch_block: Box<Statement>,           // BlockStmt
         _finally_block: Option<Box<Statement>>, // BlockStmt
         _line: usize,
         _col: usize,
@@ -123,10 +127,27 @@ pub struct ImportItem {
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    NumberLiteral { value: f64, _is_float: bool, _line: usize, _col: usize },
-    StringLiteral { value: String, _line: usize, _col: usize },
-    BooleanLiteral { value: bool, _line: usize, _col: usize },
-    Identifier { name: String, _line: usize, _col: usize },
+    NumberLiteral {
+        value: f64,
+        _is_float: bool,
+        _line: usize,
+        _col: usize,
+    },
+    StringLiteral {
+        value: String,
+        _line: usize,
+        _col: usize,
+    },
+    BooleanLiteral {
+        value: bool,
+        _line: usize,
+        _col: usize,
+    },
+    Identifier {
+        name: String,
+        _line: usize,
+        _col: usize,
+    },
     BinaryExpr {
         left: Box<Expression>,
         op: TokenType,
@@ -148,7 +169,7 @@ pub enum Expression {
         _col: usize,
     },
     CallExpr {
-        callee: Box<Expression>, 
+        callee: Box<Expression>,
         args: Vec<Expression>,
         _line: usize,
         _col: usize,
@@ -184,13 +205,19 @@ pub enum Expression {
         _col: usize,
     },
     NewExpr {
-         class_name: String,
-         args: Vec<Expression>,
-         _line: usize,
-         _col: usize,
+        class_name: String,
+        args: Vec<Expression>,
+        _line: usize,
+        _col: usize,
     },
-    ThisExpr { _line: usize, _col: usize },
-    SuperExpr { _line: usize, _col: usize },
+    ThisExpr {
+        _line: usize,
+        _col: usize,
+    },
+    SuperExpr {
+        _line: usize,
+        _col: usize,
+    },
     // TemplateLiteralExpr removed
     LambdaExpr {
         params: Vec<Parameter>,
@@ -203,15 +230,7 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
-    // TypeofExpr removed
 
-    #[allow(dead_code)]
-    MatchExpr {
-        target: Box<Expression>,
-        arms: Vec<MatchArm>,
-        _line: usize,
-        _col: usize,
-    },
     TernaryExpr {
         _condition: Box<Expression>,
         _true_branch: Box<Expression>,
@@ -219,14 +238,7 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
-    #[allow(dead_code)]
-    UndefinedExpr { _line: usize, _col: usize },
-    NoneExpr { _line: usize, _col: usize },
-    SomeExpr {
-        _value: Box<BindingNode>, // Or ASTNode? C++ says ASTNode. But usually Expression?
-        _line: usize,
-        _col: usize,
-    },
+
     // Optional chaining
     OptionalMemberAccessExpr {
         object: Box<Expression>,
@@ -254,12 +266,6 @@ pub enum Expression {
     },
     SpreadExpr {
         _expr: Box<Expression>,
-        _line: usize,
-        _col: usize,
-    },
-    #[allow(dead_code)]
-    BlockExpr {
-        statements: Vec<Statement>, // For match arms with blocks
         _line: usize,
         _col: usize,
     },
@@ -361,7 +367,6 @@ pub struct Case {
     pub statements: Vec<Statement>,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct InterfaceMethod {
     pub _name: String,
@@ -373,10 +378,10 @@ pub struct InterfaceMethod {
 
 #[derive(Debug, Clone)]
 pub struct ExtensionDeclaration {
-     pub _target_type: String,
-     pub _methods: Vec<FunctionDeclaration>,
-     pub _line: usize,
-     pub _col: usize,
+    pub _target_type: String,
+    pub _methods: Vec<FunctionDeclaration>,
+    pub _line: usize,
+    pub _col: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -391,14 +396,6 @@ pub enum BindingNode {
     },
     // C++ parsed literals in patterns too, but BindingNode usually implies destructuring.
     // We'll stick to this for now.
-    LiteralMatch(Box<Expression>), // To handle pattern matching literals
-}
-
-#[derive(Debug, Clone)]
-pub struct MatchArm {
-    pub pattern: BindingNode,
-    pub guard: Option<Box<Expression>>,
-    pub body: Box<Expression>,
 }
 
 impl Expression {
@@ -427,35 +424,30 @@ impl Expression {
 
     pub fn get_line(&self) -> usize {
         match self {
-             Expression::NumberLiteral { _line, .. } => *_line,
-             Expression::StringLiteral { _line, .. } => *_line,
-             Expression::BooleanLiteral { _line, .. } => *_line,
-             Expression::Identifier { _line, .. } => *_line,
-             Expression::BinaryExpr { _line, .. } => *_line,
-             Expression::UnaryExpr { _line, .. } => *_line,
-             Expression::AssignmentExpr { _line, .. } => *_line,
-             Expression::CallExpr { _line, .. } => *_line,
-             Expression::MemberAccessExpr { _line, .. } => *_line,
-             Expression::ArrayAccessExpr { _line, .. } => *_line,
-             Expression::ObjectLiteralExpr { _line, .. } => *_line,
-             Expression::ArrayLiteral { _line, .. } => *_line,
-             Expression::NewExpr { _line, .. } => *_line,
-             Expression::ThisExpr { _line, .. } => *_line,
-             Expression::SuperExpr { _line, .. } => *_line,
-             Expression::LambdaExpr { _line, .. } => *_line,
-             Expression::AwaitExpr { _line, .. } => *_line,
-             Expression::MatchExpr { _line, .. } => *_line,
-             Expression::TernaryExpr { _line, .. } => *_line,
-             Expression::UndefinedExpr { _line, .. } => *_line,
-             Expression::NoneExpr { _line, .. } => *_line,
-             Expression::SomeExpr { _line, .. } => *_line,
-             Expression::OptionalMemberAccessExpr { _line, .. } => *_line,
-             Expression::OptionalCallExpr { _line, .. } => *_line,
-             Expression::OptionalArrayAccessExpr { _line, .. } => *_line,
-             Expression::NullishCoalescingExpr { _line, .. } => *_line,
-             Expression::SpreadExpr { _line, .. } => *_line,
-             Expression::BlockExpr { _line, .. } => *_line,
-             Expression::SequenceExpr { _line, .. } => *_line,
+            Expression::NumberLiteral { _line, .. } => *_line,
+            Expression::StringLiteral { _line, .. } => *_line,
+            Expression::BooleanLiteral { _line, .. } => *_line,
+            Expression::Identifier { _line, .. } => *_line,
+            Expression::BinaryExpr { _line, .. } => *_line,
+            Expression::UnaryExpr { _line, .. } => *_line,
+            Expression::AssignmentExpr { _line, .. } => *_line,
+            Expression::CallExpr { _line, .. } => *_line,
+            Expression::MemberAccessExpr { _line, .. } => *_line,
+            Expression::ArrayAccessExpr { _line, .. } => *_line,
+            Expression::ObjectLiteralExpr { _line, .. } => *_line,
+            Expression::ArrayLiteral { _line, .. } => *_line,
+            Expression::NewExpr { _line, .. } => *_line,
+            Expression::ThisExpr { _line, .. } => *_line,
+            Expression::SuperExpr { _line, .. } => *_line,
+            Expression::LambdaExpr { _line, .. } => *_line,
+            Expression::AwaitExpr { _line, .. } => *_line,
+            Expression::TernaryExpr { _line, .. } => *_line,
+            Expression::OptionalMemberAccessExpr { _line, .. } => *_line,
+            Expression::OptionalCallExpr { _line, .. } => *_line,
+            Expression::OptionalArrayAccessExpr { _line, .. } => *_line,
+            Expression::NullishCoalescingExpr { _line, .. } => *_line,
+            Expression::SpreadExpr { _line, .. } => *_line,
+            Expression::SequenceExpr { _line, .. } => *_line,
         }
     }
 }

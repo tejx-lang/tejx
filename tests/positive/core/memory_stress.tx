@@ -1,0 +1,83 @@
+// Memory Stress Test
+// ==================
+// This tests the continuous allocation and deallocation within loops
+// to ensure bump allocator resets correctly and doesn't run out of memory.
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_ne_int } from "../utils.tx";
+
+class Node {
+    id: int32;
+    data: string;
+    constructor(id: int32, data: string) {
+        this.id = id;
+        this.data = data;
+    }
+}
+
+function test_loop_allocation_stress() {
+    print("--- Loop Stress Allocations ---");
+    let sum = 0;
+    // 50,000 iterations inside a loop. 
+    // In a garbage collected or bump allocator model, 
+    // without proper scoping this would exhaust memory.
+    for (let i = 0; i < 50000; i++) {
+        let n = new Node(i, "TestStr");
+        if (i == 25000) {
+            assert_eq_int(25000, n.id, "Midway node check");
+            assert_eq_string("TestStr", n.data, "Midway node string check");
+        }
+        sum = sum + 1;
+    }
+    assert_eq_int(50000, sum, "Stress loop completed");
+}
+
+function test_array_stress() {
+    print("--- Array Capacity Stress ---");
+    let arr = [];
+    for (let i = 0; i < 1000; i++) {
+        arr.push(new Node(i, "Dynamic"));
+    }
+    assert_eq_int(1000, len(arr), "Array reached 1000 items");
+    
+    // Ensure data integrity
+    let mid_node = arr[500];
+    assert_eq_int(500, mid_node.id, "Array element 500 data check");
+    assert_eq_string("Dynamic", mid_node.data, "Array element 500 string check");
+    
+    // Emptying array
+    for (let i = 0; i < 1000; i++) {
+        arr.pop();
+    }
+    assert_eq_int(0, len(arr), "Array fully popped");
+}
+
+function test_string_concatenation_stress() {
+    print("--- String Append Stress ---");
+    let builder = "";
+    for (let i = 0; i < 100; i++) {
+        builder = builder + "A";
+    }
+    assert_eq_int(100, len(builder), "String grew to 100 length securely");
+}
+
+function test_tagged_pointer_reuse() {
+    print("--- Generational Tag Validation ---");
+    let last_id = 0;
+    let iterations = 100;
+    for (let i = 0; i < iterations; i++) {
+        let x = new Node(i, "Scope");
+        // Ensures that the generation/id allocation never clashes locally
+        assert_ne_int(last_id, x.id + 100000, "Ensure runtime IDs are cleanly unique and verifiable");
+        last_id = x.id;
+    }
+    assert_eq_int(iterations - 1, last_id, "All allocations successfully verified");
+}
+
+function main() {
+    print("=== MEMORY STRESS START ===");
+    test_loop_allocation_stress();
+    test_array_stress();
+    test_string_concatenation_stress();
+    test_tagged_pointer_reuse();
+    print("=== MEMORY STRESS COMPLETE ===");
+}

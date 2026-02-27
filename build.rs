@@ -14,7 +14,8 @@ fn main() {
     let status = Command::new("rustc")
         .args(&["--crate-type=staticlib", "-O", "-g"]) // -g for debug symbols if needed, -O for optimized
         .arg("--emit=dep-info,link") // Ensure we get the .a file
-        .arg("--cfg").arg("runtime_build")
+        .arg("--cfg")
+        .arg("runtime_build")
         .arg("-o")
         .arg(&runtime_lib)
         .arg(runtime_src)

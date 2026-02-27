@@ -1,9 +1,7 @@
+use crate::token::TokenType;
 /// High-level Intermediate Representation (HIR), mirroring C++ HIR.h
 /// HIR is a typed AST with desugared control flow (all loops → unified HIRLoop)
-
 use crate::types::TejxType;
-use crate::token::TokenType;
-use crate::ast::BindingNode;
 
 #[derive(Debug, Clone)]
 pub enum HIRExpression {
@@ -57,9 +55,10 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
-    OptionalChain { // Unified optional access
+    OptionalChain {
+        // Unified optional access
         target: Box<HIRExpression>, // Object or array
-        operation: String, // ".prop" or "[index]" or "()"
+        operation: String,          // ".prop" or "[index]" or "()"
         ty: TejxType,
         line: usize,
     },
@@ -85,17 +84,6 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
-    Match {
-        target: Box<HIRExpression>,
-        arms: Vec<HIRMatchArm>,
-        ty: TejxType,
-        line: usize,
-    },
-    BlockExpr {
-        statements: Vec<HIRStatement>,
-        ty: TejxType,
-        line: usize,
-    },
     If {
         condition: Box<HIRExpression>,
         then_branch: Box<HIRExpression>,
@@ -103,13 +91,6 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
-}
-
-#[derive(Debug, Clone)]
-pub struct HIRMatchArm {
-    pub pattern: BindingNode,
-    pub guard: Option<Box<HIRExpression>>,
-    pub body: Box<HIRExpression>,
 }
 
 impl HIRExpression {
@@ -128,8 +109,6 @@ impl HIRExpression {
             HIRExpression::MemberAccess { ty, .. } => ty.clone(),
             HIRExpression::ObjectLiteral { ty, .. } => ty.clone(),
             HIRExpression::ArrayLiteral { ty, .. } => ty.clone(),
-            HIRExpression::Match { ty, .. } => ty.clone(),
-            HIRExpression::BlockExpr { ty, .. } => ty.clone(),
             HIRExpression::If { ty, .. } => ty.clone(),
             HIRExpression::Sequence { ty, .. } => ty.clone(),
         }
@@ -150,8 +129,6 @@ impl HIRExpression {
             HIRExpression::MemberAccess { line, .. } => *line,
             HIRExpression::ObjectLiteral { line, .. } => *line,
             HIRExpression::ArrayLiteral { line, .. } => *line,
-            HIRExpression::Match { line, .. } => *line,
-            HIRExpression::BlockExpr { line, .. } => *line,
             HIRExpression::If { line, .. } => *line,
             HIRExpression::Sequence { line, .. } => *line,
         }
@@ -185,7 +162,7 @@ pub enum HIRStatement {
         name: String,
         params: Vec<(String, TejxType)>,
         _return_type: TejxType,
-        body: Box<HIRStatement>,  // Should be a Block
+        body: Box<HIRStatement>, // Should be a Block
         line: usize,
     },
     Return {
@@ -194,7 +171,7 @@ pub enum HIRStatement {
     },
     Loop {
         condition: HIRExpression,
-        body: Box<HIRStatement>,  // Should be a Block
+        body: Box<HIRStatement>, // Should be a Block
         increment: Option<Box<HIRStatement>>,
         _is_do_while: bool,
         line: usize,
@@ -210,8 +187,12 @@ pub enum HIRStatement {
         cases: Vec<HIRCase>,
         line: usize,
     },
-    Break { line: usize },
-    Continue { line: usize },
+    Break {
+        line: usize,
+    },
+    Continue {
+        line: usize,
+    },
     Try {
         try_block: Box<HIRStatement>,
         catch_var: Option<String>,
@@ -248,4 +229,3 @@ impl HIRStatement {
         }
     }
 }
-

@@ -1,0 +1,20 @@
+// Scenario 4: Collections and Ownership Handoff
+// Description: Moving a class instance into another variable transfers ownership.
+// EXPECTED: COMPILE_ERROR
+
+class Item {
+    id: int32;
+    constructor(i: int32) { this.id = i; }
+}
+
+function consume(item: Item) {
+    print("Consumed item:", item.id);
+}
+
+function main() {
+    let item = new Item(42);
+    let stored = item; // 'item' moved to 'stored'
+
+    // ERROR: 'item' is now owned by 'stored'
+    print(item.id);
+}

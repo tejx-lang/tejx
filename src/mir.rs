@@ -1,19 +1,12 @@
+use crate::token::TokenType;
 /// Mid-level Intermediate Representation (MIR), mirroring C++ MIR.h
 /// SSA-like form with basic blocks and low-level instructions.
-
 use crate::types::TejxType;
-use crate::token::TokenType;
 
 #[derive(Debug, Clone)]
 pub enum MIRValue {
-    Variable {
-        name: String,
-        ty: TejxType,
-    },
-    Constant {
-        value: String,
-        ty: TejxType,
-    },
+    Variable { name: String, ty: TejxType },
+    Constant { value: String, ty: TejxType },
 }
 
 impl MIRValue {
@@ -23,21 +16,12 @@ impl MIRValue {
             MIRValue::Constant { ty, .. } => ty,
         }
     }
-
-    #[allow(dead_code)]
-    pub fn get_name(&self) -> String {
-        match self {
-            MIRValue::Variable { name, .. } => name.clone(),
-            MIRValue::Constant { value, .. } => value.clone(),
-        }
-    }
 }
-
 
 #[derive(Debug, Clone)]
 pub enum MIRInstruction {
     Move {
-        dst: String,    // destination variable name
+        dst: String, // destination variable name
         src: MIRValue,
         line: usize,
     },
@@ -50,12 +34,12 @@ pub enum MIRInstruction {
     },
     Branch {
         condition: MIRValue,
-        true_target: usize,   // index into MIRFunction.blocks
+        true_target: usize, // index into MIRFunction.blocks
         false_target: usize,
         line: usize,
     },
     Jump {
-        target: usize,        // index into MIRFunction.blocks
+        target: usize, // index into MIRFunction.blocks
         line: usize,
     },
     Return {
@@ -91,6 +75,8 @@ pub enum MIRInstruction {
         dst: String,
         obj: MIRValue,
         member: String,
+        #[allow(dead_code)]
+        borrow: bool,
         line: usize,
     },
     StoreMember {
@@ -205,10 +191,11 @@ impl BasicBlock {
 
     pub fn is_terminated(&self) -> bool {
         if let Some(last) = self.instructions.last() {
-            matches!(last,
-                MIRInstruction::Return { .. } |
-                MIRInstruction::Jump { .. } |
-                MIRInstruction::Branch { .. }
+            matches!(
+                last,
+                MIRInstruction::Return { .. }
+                    | MIRInstruction::Jump { .. }
+                    | MIRInstruction::Branch { .. }
             )
         } else {
             false
@@ -219,10 +206,10 @@ impl BasicBlock {
 #[derive(Debug, Clone)]
 pub struct MIRFunction {
     pub name: String,
-    pub params: Vec<String>,  // parameter names
+    pub params: Vec<String>, // parameter names
     pub variables: std::collections::HashMap<String, TejxType>, // variable types
     pub blocks: Vec<BasicBlock>,
-    pub entry_block: usize,  // index into blocks
+    pub entry_block: usize, // index into blocks
 }
 
 impl MIRFunction {

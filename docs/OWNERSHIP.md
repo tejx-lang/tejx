@@ -1,356 +1,254 @@
 # Memory Ownership in TejX
 
-TejX uses a **single-ownership** memory model to guarantee memory safety at compile time — no garbage collector, no manual `free`, no runtime overhead. Every heap-allocated value has exactly one owner at any given time. When that owner goes out of scope, the value is automatically freed.
+TejX implements a **hybrid compile-time/runtime memory management system** to guarantee safety without the overhead of tracking all objects with a garbage collector (GC). It operates on a **single-ownership** model backed by a **Generational Heap** and **Runtime Borrow Tracking**.
 
-This guide covers how ownership works, when values are moved vs. copied, and the rules you need to follow when writing TejX code.
+Every heap-allocated value (classes, arrays, strings) has **exactly one owner** at any time. When that owner goes out of scope, the compile-time Drop Generator faithfully inserts an `rt_free` instruction to reclaim the memory automatically.
 
----
-
-## 1. Declaring Variables
-
-TejX provides two keywords for variable declarations:
-
-| Keyword | Mutability | Reassignable? |
-| :------ | :--------- | :------------ |
-| `let`   | Mutable    | ✅ Yes        |
-| `const` | Immutable  | ❌ No         |
-
-```ts
-function main() {
-  let x = 10; // mutable — can be reassigned
-  x = 20; // ✅ OK
-
-  const PI = 3.14; // immutable — cannot be reassigned
-  PI = 3.0; // ❌ COMPILE ERROR: cannot assign to constant
-}
-```
-
-Both `let` and `const` variables follow the same ownership rules described below. The difference is purely about reassignment — `const` prevents you from rebinding the name to a new value.
+This guide explores the foundational rules of this model and the seamless integration of temporary runtime borrows.
 
 ---
 
-## 2. Ownership Rules (The Big Three)
+## 1. Primitives vs. Heap Types
 
-1. **Every value has exactly one owner.**
-2. **When the owner goes out of scope, the value is automatically dropped (freed).**
-3. **Assigning or passing an owned value transfers ownership (a "move").**
+TejX variables have two primary modes of transfer based on their type:
 
-### Automatic Drop
+### 1.1 Primitives (Copy Semantics)
 
-When a variable goes out of scope, TejX inserts a `Free` instruction automatically. You never call `free` yourself:
+Basic data types such as `int32`, `float64`, and `bool` live completely on the stack (when possible) or are purely copied by value. Assigning them to variables or passing them into functions duplicates their contents. The original variable remains completely valid.
 
 ```ts
 function main() {
-  let r = new Resource(1);
-  print("Using", r.id);
-  // ← 'r' is automatically freed here at end of scope
+  let num = 42;
+  let other = num; // COPIED
+  print(num); // ✅ OK — 42
 }
 ```
 
-Scoped blocks also trigger drops:
+### 1.2 Heap Types (Move Semantics)
 
-```ts
-function main() {
-  {
-    let temp = new Resource(2);
-    print(temp.id);
-  }
-  // ← 'temp' is freed here, not at end of main
-}
-```
+Complex data dynamically sized or instantiated via Constructors, such as `Class instances`, `Arrays`, and `Strings`, live on the **Generational Heap**. They fall under **Move Semantics**.
 
----
-
-## 3. Move Semantics (Heap Types)
-
-For **class instances**, **arrays**, and **strings**, assignment transfers ownership. The original variable becomes **invalid** and cannot be used again.
-
-### 3.1 Move on Assignment
+Assigning them or passing them into functions transfers ownership to the target. The original variable is explicitly **invalidated**.
 
 ```ts
 class Box {
-  value: int;
+  value: int32;
 }
+
+function process(box: Box) {}
 
 function main() {
   let a = new Box();
-  a.value = 10;
 
-  let b = a; // ← ownership MOVES from 'a' to 'b'
-
-  print(b.value); // ✅ OK — 'b' owns the Box
+  // Ownership MOVES from 'a' to 'b'
+  let b = a;
   print(a.value); // ❌ COMPILE ERROR: use of moved variable 'a'
+
+  // Ownership MOVES from 'b' into the 'process' function
+  process(b);
+  print(b.value); // ❌ COMPILE ERROR: use of moved variable 'b'
 }
 ```
 
-After `let b = a`, the variable `a` is in a **Moved** state. The compiler will reject any further use of `a`.
+If a variable goes out of scope while holding ownership, the memory is dropped. Period.
 
-### 3.2 Move into Functions
+`let` bindings are for variables that can be reassigned (mutable bindings), while `const` bindings prevent name rebinding. However, both obey the identical Ownership/Move rules above.
 
-Passing a heap value to a function also transfers ownership:
+---
 
-```ts
-class Item {
-  name: string;
-  constructor(n: string) {
-    this.name = n;
-  }
-}
+## 2. Returning Ownership & Reinitialization
 
-function consume(item: Item) {
-  print("Consumed:", item.name);
-  // 'item' is freed at end of function
-}
+You aren't locked out forever if you move a variable. You can regain ownership or bind a new value entirely!
 
-function main() {
-  let item = new Item("Apple");
+### 2.1 Reinitializing a Moved Variable
 
-  consume(item); // ← ownership moves into 'consume'
-
-  print(item.name); // ❌ COMPILE ERROR: use of moved variable 'item'
-}
-```
-
-### 3.3 Returning Ownership
-
-A function can give ownership back to the caller by returning the value:
-
-```ts
-function passThrough(c: Container): Container {
-  print("Passing through:", c.id);
-  return c; // ← ownership transfers to the caller
-}
-
-function main() {
-  let c1 = new Container(100);
-  let c2 = passThrough(c1); // c1 → moved, c2 → live
-
-  print(c2.id); // ✅ OK — 'c2' owns the Container
-}
-```
-
-### 3.4 Reinitializing After a Move
-
-A moved variable can be **reinitialized** by assigning a new value to it:
+A variable in the Moved state can be revived by assigning a completely new value:
 
 ```ts
 function main() {
   let a = new Box();
-  let b = a; // 'a' is moved
+  let b = a; // 'a' moved
 
-  a = new Box(); // ← 'a' is reinitialized with a new value
-  print(a.value); // ✅ OK — 'a' is live again
+  a = new Box(); // 'a' is reinitialized!
+  print(a.value); // ✅ OK
+}
+```
+
+### 2.2 Returning Ownership from Functions
+
+Functions can process an owned value and return it back to the caller's scope:
+
+```ts
+function processBox(box: Box): Box {
+  box.value += 1;
+  return box; // Ownership transferred back out
+}
+
+function main() {
+  let a = new Box();
+  let b = processBox(a); // a -> moved mapping. b -> owns the returned modified Box.
 }
 ```
 
 ---
 
-## 4. Copy Semantics (Primitives)
+## 3. The Generational Heap & Borrow Flags
 
-**Primitives** (`int32`, `float64`, `bool`) use **copy semantics**. They are duplicated on assignment or when passed to functions. The original remains fully valid.
+The TejX compiler uses a **Generational Arena** for its heap implementation. Pointers in TejX are 64-bit handles, structured as `[32-bit Generation][32-bit ID]`.
 
-```ts
-function takePrimitive(val: int32) {
-  print("Received:", val);
-}
+If a program attempts to access a freed object, the generation encoded in the pointer will no longer match the current generation in the arena's metadata, triggering a safe runtime trap instead of a Use-After-Free (UAF) exploit.
 
-function main() {
-  let num = 42;
-  takePrimitive(num); // 'num' is COPIED, not moved
+Additionally, TejX employs a **Borrow Flag** at the Most Significant Bit (MSB, bit 63).
 
-  print(num); // ✅ OK — primitives are always valid
-}
-```
-
-**Summary:**
-
-| Type                       | Semantics | After Assignment / Pass |
-| :------------------------- | :-------- | :---------------------- |
-| `int32`, `float64`, `bool` | **Copy**  | Original stays valid    |
-| Class instances            | **Move**  | Original is invalidated |
-| Arrays                     | **Move**  | Original is invalidated |
-| Strings                    | **Move**  | Original is invalidated |
+- `rt_borrow` dynamically tags heap pointers with this flag.
+- When `rt_free` is called, it instantly returns if the flag is set, preventing double-frees of borrowed references.
 
 ---
 
-## 5. Borrowing (Method Calls)
+## 4. Borrowing & Static Alias Tracking
 
-When you call a **method** on an object, TejX **borrows** the receiver (`this`) instead of moving it. This means the object stays valid after the method call.
+Moving arguments back-and-forth constantly via Returns is cumbersome. Often, a function just needs to "look" at data. This is where **Borrowing** comes in.
+
+Borrowing creates a temporary reference that delegates access without revoking ownership from the primary variable.
+
+### 4.1 Compile-Time Borrows (Method Calls)
+
+Calling a method on an object directly borrows `this` for the duration of the execution context. The original variable remains totally valid.
 
 ```ts
-class BankAccount {
-  private balance: int32 = 0;
-
-  constructor(initial: int32) {
-    this.balance = initial;
-  }
-
-  deposit(amount: int32): void {
-    this.balance += amount;
-  }
-
-  getBalance(): int32 {
-    return this.balance;
+class Counter {
+  count: int32;
+  increment() {
+    this.count += 1;
   }
 }
 
 function main() {
-  let acc = new BankAccount(100);
-
-  acc.deposit(50); // ← borrows 'acc', does NOT move it
-  acc.deposit(25); // ← still valid, can call again!
-
-  print(acc.getBalance()); // ✅ prints 175
+  let c = new Counter();
+  c.increment(); // Borrows 'c'. Does not move it.
+  c.increment(); // ✅ STILL VALID.
 }
 ```
 
-### Borrowing Rules Summary
+### 4.2 Local Borrows (Navigation & Property Access)
 
-| Call Type          | `this` / receiver | Other arguments |
-| :----------------- | :---------------- | :-------------- |
-| Method call        | **Borrowed**      | **Moved**       |
-| Global function    | N/A               | **Moved**       |
-| Constructor        | **Borrowed**      | **Moved**       |
-| Stdlib / Intrinsic | **Borrowed**      | **Borrowed**    |
+When you extract elements from collections or properties off an object, the compiler cannot permanently "move" them out of the overarching structure, as that would invalidate the internal tree.
 
-> **Key insight:** Accessing a field like `obj.value` is a borrow — the object remains live. But passing `obj` to a global function moves it.
-
----
-
-## 6. Ownership in Control Flow
-
-The compiler tracks ownership through branches and loops. If a variable is moved in only _some_ paths, it enters a **MaybeMoved** state and cannot be used afterward.
-
-### 6.1 Conditional Moves
+Instead, accessing arrays (`arr[index]`) or members (`obj.property`) yields a **Temporarily Borrowed Reference**.
 
 ```ts
 function main() {
-  let a = new Data();
+  let list = [new Box("A"), new Box("B")] as Box[];
+
+  // 'item' is a Borrowed Reference pointing to exactly what list[0] holds.
+  let item = list[0];
+  print(item.value); // ✅ OK — "A"
+}
+```
+
+**How it works physically via BORROW_FLAG:**
+Under the hood, retrieving a member via `LoadIndex` or `LoadMember` yields a pointer that has been dynamically tagged with the `BORROW_FLAG` (the 63rd bit is set to 1). The destination variable (like `item`) is also recorded as an explicit `borrowed_var` in the compiler's **Borrow Checker**.
+
+When `item` drops at the end of its block, the compile-time `BorrowChecker` injects an `rt_free(item)` instruction. However, because the pointer has the `BORROW_FLAG` set, the runtime `rt_free` instantly returns a no-op! The system defers actual deallocation until the true parent owner (the array itself) is freed.
+
+This architecture seamlessly combines static analysis (preventing moves out of borrowed data) with zero-cost runtime safety.
+
+### 4.3 Borrow Limitations (Dataflow Checks)
+
+While borrows drop gracefully, **they cannot be freely mutated, cloned blindly, or relocated** like standalone data! You cannot move a borrowed reference to another scope or treat it structurally as an owned instance.
+
+Because TejX employs a secondary Dataflow Liveness Checker, it will interrupt compilation if you assign a borrow elsewhere without explicitly calling `.clone()`:
+
+```ts
+function processData(b: Box) {}
+
+function main() {
+  let list = [new Box("A")] as Box[];
+  let borrowedItem = list[0];
+
+  let cloned = borrowedItem; // ❌ COMPILE ERROR: Cannot move a borrowed reference
+  processData(borrowedItem); // ❌ COMPILE ERROR: Cannot move a borrowed reference
+}
+```
+
+---
+
+## 5. Last-Use Detection & Implicit Moves
+
+Because TejX values performance, the compiler uses **Liveness Analysis** to find the absolute final time an owned variable is read.
+
+At the variable's final usage site, the compiler implicitly **Upgrades the operation to a Move**, freeing up local resources early rather than waiting artificially for the enclosing scope loop to terminate. This enables heavy memory reuse throughout long methods.
+
+### 5.1 Conditional Moves (MaybeMoved)
+
+If an owned variable is moved inside one branch but ignored in another, the compiler evaluates it defensively as `MaybeMoved` at the merge point. You can no longer access it after the branch structure resolves.
+
+```ts
+function main() {
+  let a = new Box();
 
   if (someCondition) {
-    let b = a; // moved in this branch only
+    let b = a; // Moved on this branch
   }
 
-  print(a.value); // ❌ COMPILE ERROR: variable 'a' maybe moved
+  print(a.value); // ❌ COMPILE ERROR: variable 'a' maybe moved.
 }
 ```
 
-Even though `a` might not have been moved (the `else` branch doesn't touch it), the compiler conservatively rejects the use because it _could_ have been moved.
+### 5.2 Loop Scopes
 
-### 6.2 Loop Moves
-
-Moving inside a loop is always an error, because the second iteration would try to move an already-moved value:
+Ownership moves executed within an iterative loop are evaluated as unconditional compile-time errors. Moving an owned variable inside an iteration block would immediately break iteration #2, confusing the scope bounds.
 
 ```ts
 function main() {
   let a = new Box();
 
   while (true) {
-    let b = a; // ❌ COMPILE ERROR: use of moved variable 'a'
-    // (moved on the first iteration)
+    let b = a; // ❌ COMPILE ERROR: Use of moved variable 'a' in repetition body
   }
 }
 ```
 
 ---
 
-## 7. Ownership with Collections
+## 6. End-to-End Walkthrough
 
-When you insert an object into a collection (e.g., `Array.push`), ownership transfers into the collection. When you remove it (e.g., `Array.pop`), ownership transfers back out.
-
-```ts
-class Resource {
-  id: int32;
-  constructor(id: int32) {
-    this.id = id;
-  }
-}
-
-class Pool {
-  items: Resource[];
-
-  constructor() {
-    this.items = [];
-  }
-
-  add(r: Resource) {
-    this.items.push(r); // ← 'r' is moved into the array
-  }
-
-  take(): Resource {
-    return this.items.pop(); // ← ownership moves out to caller
-  }
-}
-
-function main() {
-  let pool = new Pool();
-
-  let r1 = new Resource(1);
-  pool.add(r1); // r1 is moved into pool
-  // r1 is now invalid
-
-  let r2 = pool.take(); // ownership comes back out
-  print(r2.id); // ✅ OK
-}
-```
-
----
-
-## 8. Scoping and Shadowing
-
-Variables are block-scoped. An inner block can shadow an outer variable without affecting it:
+Here is a visual map of how ownership propagates, scales, and is deterministically torn down statically:
 
 ```ts
-function main() {
-  let x = 10;
+function spawn(): Array<Node> {
+  const root = new Node("A"); // 1. Root allocation ID [200]
+  const list = new Array(); // 2. Collection allocation ID [201]
 
-  {
-    let x = 20; // shadows outer 'x'
-    print(x); // prints 20
-  }
+  list.push(root); // 3. 'root' -> MOVED inside to Array [200].
+  //    'root' binding is now statically invalidated.
 
-  print(x); // prints 10 — outer 'x' is unchanged
+  return list; // 4. 'list' -> MOVES out to Caller block.
+}
+
+function process() {
+  let nodes = spawn(); // 5. 'nodes' binds ID [201]. (which owns ID [200]).
+
+  let pointer = nodes[0]; // 6. LoadIndex applies BORROW_FLAG to the returned handle.
+
+  print(pointer.data); // 7. Borrows successfully.
+
+  // 8. End of Context!
+  // -> BorrowChecker injects rt_free(pointer). Runtime sees BORROW_FLAG=1 and no-ops!
+  // -> BorrowChecker injects rt_free(nodes). Runtime sees BORROW_FLAG=0 and deallocates!
+  // -> The Runtime Array teardown triggers recursively, executing rt_free on node [200]
+  // -> Memory cleans up seamlessly with ZERO garbage collection!
 }
 ```
 
-Variables declared inside a block are not accessible outside it:
+**Quick Referencing Chart**
 
-```ts
-function main() {
-  if (true) {
-    let y = 30;
-  }
-  print(y); // ❌ COMPILE ERROR: 'y' not in scope
-}
-```
-
----
-
-## 9. Summary Cheat Sheet
-
-```
-┌─────────────────────────────────────────────────────┐
-│            TejX Ownership Quick Reference           │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  let x = value;     → mutable, can be reassigned    │
-│  const x = value;   → immutable, cannot reassign    │
-│                                                     │
-│  let b = a;          → MOVE (heap) or COPY (prim)   │
-│  foo(a);             → MOVE into function            │
-│  return a;           → MOVE out to caller            │
-│                                                     │
-│  obj.method();       → BORROW (obj stays valid)      │
-│  obj.field           → BORROW (obj stays valid)      │
-│                                                     │
-│  arr.push(item);     → MOVE item into collection     │
-│  arr.pop();          → MOVE item out of collection   │
-│                                                     │
-│  Moved variable?     → Reassign to make it live      │
-│  End of scope?       → Automatic free (no GC!)       │
-│                                                     │
-│  Conditional move?   → "MaybeMoved" = compile error  │
-│  Loop move?          → Always a compile error         │
-│                                                     │
-└─────────────────────────────────────────────────────┘
-```
+| Action                  | Result                           | Original Status After Evaluated    |
+| ----------------------- | -------------------------------- | ---------------------------------- |
+| `let a = b` (Primitive) | Copy allocated                   | Fully Valid                        |
+| `let a = b` (Heap Type) | Ownership moves (Implicit)       | **Invalidated (Moved)**            |
+| `func(b)` (Heap Type)   | Ownership passed inside limits   | **Invalidated (Moved)**            |
+| `return a;` (Heap Type) | Ownership transfers up hierarchy | Transfer Complete                  |
+| `obj.method()`          | Object execution                 | Borrowed temporarily (Fully Valid) |
+| `let val = arr[index]`  | Emits Static Borrow Tracking     | `borrowed_vars` exclusion recorded |
+| End of Scope (`{ }`)    | Drop Generator (`rt_free`)       | All underlying owned values flush  |

@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use crate::runtime::rt_to_number;
+use std::collections::HashSet;
 
 pub fn exports() -> HashSet<String> {
     let mut s = HashSet::new();
@@ -69,7 +69,7 @@ pub extern "C" fn std_math_round(x: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn std_math_random() -> i64 {
     // Stub
-    let v: f64 = 0.42; 
+    let v: f64 = 0.42;
     v.to_bits() as i64
 }
 
