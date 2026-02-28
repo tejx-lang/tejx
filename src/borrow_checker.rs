@@ -338,12 +338,6 @@ impl BorrowChecker {
                             && !borrowed_vars.contains(dst_name)
                         {
                             reassignment_drops.push((block_idx, inst_idx, dst_name.clone()));
-                            if dst_name == "row$1_4" {
-                                println!(
-                                    "DEBUG: pushed row$1_4 to reassignment_drops (Reassignment) at block {}, inst {}",
-                                    block_idx, inst_idx
-                                );
-                            }
                         }
                     }
                     state.insert(dst_name.clone(), VarState::Live);
@@ -436,15 +430,6 @@ impl BorrowChecker {
                                 && !borrowed_vars.contains(used_var)
                             {
                                 reassignment_drops.push((block_idx, drop_idx, used_var.clone()));
-                                if used_var == "row$1_4" {
-                                    println!(
-                                        "DEBUG: pushed row$1_4 to reassignment_drops (Last Use) at block {}, inst {}. is_moved={}, is_returned={}",
-                                        block_idx,
-                                        drop_idx,
-                                        is_moved(used_var),
-                                        is_returned(used_var)
-                                    );
-                                }
                             }
                             state.insert(used_var.clone(), VarState::Moved);
                         }
@@ -461,12 +446,6 @@ impl BorrowChecker {
                         };
                         if !borrowed_vars.contains(def_var) && !def_var.starts_with("g_") {
                             reassignment_drops.push((block_idx, drop_idx, def_var.clone()));
-                            if def_var == "row$1_4" {
-                                println!(
-                                    "DEBUG: pushed row$1_4 to reassignment_drops (Dead Store) at block {}, inst {}",
-                                    block_idx, drop_idx
-                                );
-                            }
                         }
                         state.insert(def_var.clone(), VarState::Moved);
                     }

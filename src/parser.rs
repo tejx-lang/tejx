@@ -1087,6 +1087,12 @@ impl Parser {
                 self.consume(TokenType::Greater, "Expected '>'");
                 base_type.push('>');
             }
+        } else if self.match_token(TokenType::Ref) {
+            let inner_type = self.parse_base_type();
+            base_type = format!("ref {}", inner_type);
+        } else if self.match_token(TokenType::Weak) {
+            let inner_type = self.parse_base_type();
+            base_type = format!("weak {}", inner_type);
         } else {
             if self.match_token(TokenType::TypeAny) {
                 base_type = "any".to_string();

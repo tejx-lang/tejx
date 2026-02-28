@@ -1702,17 +1702,17 @@ impl CodeGen {
                             }
                             let label_id = self.temp_counter;
                             self.temp_counter += 1;
-                            let is_neg = format!("%iarg_neg{}", label_id);
-                            self.emit_line(&format!("{} = icmp slt i64 {}, 0", is_neg, arg1_val));
+                            let is_pos = format!("%iarg_pos{}", label_id);
+                            self.emit_line(&format!("{} = icmp sge i64 {}, 0", is_pos, arg1_val));
                             self.temp_counter += 1;
                             let is_big = format!("%iarg_big{}", label_id);
                             self.emit_line(&format!(
-                                "{} = icmp sgt i64 {}, 2000000000",
+                                "{} = icmp sgt i64 {}, 2100000000",
                                 is_big, arg1_val
                             ));
                             self.temp_counter += 1;
                             let is_fast = format!("%iarg_fast{}", label_id);
-                            self.emit_line(&format!("{} = or i1 {}, {}", is_fast, is_neg, is_big));
+                            self.emit_line(&format!("{} = and i1 {}, {}", is_fast, is_pos, is_big));
                             let fast_lbl = format!("iarg_fast_path{}", label_id);
                             let slow_lbl = format!("iarg_slow_path{}", label_id);
                             let done_lbl = format!("iarg_done{}", label_id);
@@ -1768,22 +1768,22 @@ impl CodeGen {
                                 }
                                 let label_id2 = self.temp_counter;
                                 self.temp_counter += 1;
-                                let is_neg2 = format!("%iarg2_neg{}", label_id2);
+                                let is_pos2 = format!("%iarg2_pos{}", label_id2);
                                 self.emit_line(&format!(
-                                    "{} = icmp slt i64 {}, 0",
-                                    is_neg2, arg2_val
+                                    "{} = icmp sge i64 {}, 0",
+                                    is_pos2, arg2_val
                                 ));
                                 self.temp_counter += 1;
                                 let is_big2 = format!("%iarg2_big{}", label_id2);
                                 self.emit_line(&format!(
-                                    "{} = icmp sgt i64 {}, 2000000000",
+                                    "{} = icmp sgt i64 {}, 2100000000",
                                     is_big2, arg2_val
                                 ));
                                 self.temp_counter += 1;
                                 let is_fast2 = format!("%iarg2_fast{}", label_id2);
                                 self.emit_line(&format!(
-                                    "{} = or i1 {}, {}",
-                                    is_fast2, is_neg2, is_big2
+                                    "{} = and i1 {}, {}",
+                                    is_fast2, is_pos2, is_big2
                                 ));
                                 let fast_lbl2 = format!("iarg2_fast_path{}", label_id2);
                                 let slow_lbl2 = format!("iarg2_slow_path{}", label_id2);
@@ -3997,7 +3997,14 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let tmp = format!("%cast{}", self.temp_counter);
 
-                if src_ty.is_numeric() && ty.is_numeric() {
+                // SOI: Handle Reference Bit-Flipping for Runtime Memory Safety
+                if matches!(ty, TejxType::Ref(_) | TejxType::Weak(_)) {
+                    // Set BORROW_FLAG (1 << 63)
+                    self.emit_line(&format!("{} = or i64 {}, -9223372036854775808", tmp, s));
+                } else if matches!(src_ty, TejxType::Ref(_) | TejxType::Weak(_)) {
+                    // Clear BORROW_FLAG to recover raw pointer if needed
+                    self.emit_line(&format!("{} = and i64 {}, 9223372036854775807", tmp, s));
+                } else if src_ty.is_numeric() && ty.is_numeric() {
                     if src_ty.is_float() && !ty.is_float() {
                         // bits(double) -> int
                         self.temp_counter += 1;

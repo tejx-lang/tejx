@@ -1,254 +1,314 @@
-# Memory Ownership in TejX
+# Memory Ownership in TejX (PRD & Compiler Spec)
 
-TejX implements a **hybrid compile-time/runtime memory management system** to guarantee safety without the overhead of tracking all objects with a garbage collector (GC). It operates on a **single-ownership** model backed by a **Generational Heap** and **Runtime Borrow Tracking**.
+TejX implements a **hybrid compile-time/runtime memory management system** designed to achieve zero-cost garbage collection, 100% memory safety (leak-proof), and an ergonomic developer experience identical to TypeScript.
 
-Every heap-allocated value (classes, arrays, strings) has **exactly one owner** at any time. When that owner goes out of scope, the compile-time Drop Generator faithfully inserts an `rt_free` instruction to reclaim the memory automatically.
+> [!TIP]
+> **TL;DR for TypeScript Developers**
+> TejX feels exactly like TypeScript with a Garbage Collector, with just two extra rules:
+>
+> 1. **Move by default**: Assigning an object to a new variable or passing it to a function transfers ownership. The old variable can no longer be used.
+> 2. **Borrow to share**: If a function only needs to read or mutate an object without taking ownership, type the parameter as `ref Object`. You retain the original variable.
+>
+> Result: Zero memory leaks. Zero GC pause times.
 
-This guide explores the foundational rules of this model and the seamless integration of temporary runtime borrows.
+This document serves as the formal **Product Requirements Document (PRD) and exhaustive Implementation Specification** for compiler developers building the TejX Memory Model. It resolves all edge cases deterministically.
 
 ---
 
-## 1. Primitives vs. Heap Types
+## 1. The Mental Model: Explicit Control without GC
 
-TejX variables have two primary modes of transfer based on their type:
+TejX shifts memory management away from the developer by enforcing a **Single-Ownership** model. Every object has exactly one owner at a time. When that owner goes out of scope, the compiler automatically drops it.
 
-### 1.1 Primitives (Copy Semantics)
+**Zero Auto-Cloning Rule**: TejX values explicit performance. The compiler will **never** automatically `.clone()` memory for you. If a deep copy is needed to resolve a compiler error, the developer must explicitly type `.clone()`. This guarantees predictable `O(1)` performance across the language unless `O(N)` is asked for.
 
-Basic data types such as `int32`, `float64`, and `bool` live completely on the stack (when possible) or are purely copied by value. Assigning them to variables or passing them into functions duplicates their contents. The original variable remains completely valid.
+### 1.1 Primitives (Copied)
+
+Basic state (`int32`, `float64`, `boolean`) lives on the stack. Assigning them copies their value entirely.
 
 ```ts
-function main() {
-  let num = 42;
-  let other = num; // COPIED
-  print(num); // ✅ OK — 42
-}
+// CASE: Primitive Assignment
+let num = 42;
+let other = num; // Copied safely!
+print(num); // ✅ Output: 42
 ```
 
-### 1.2 Heap Types (Move Semantics)
+### 1.2 Heap Objects (Moved)
 
-Complex data dynamically sized or instantiated via Constructors, such as `Class instances`, `Arrays`, and `Strings`, live on the **Generational Heap**. They fall under **Move Semantics**.
-
-Assigning them or passing them into functions transfers ownership to the target. The original variable is explicitly **invalidated**.
+Complex data (`Class instances`, `Arrays`, `Strings`) lives on the Generational Heap. Assigning them **Moves** the ownership to the target.
 
 ```ts
 class Box {
   value: int32;
 }
 
-function process(box: Box) {}
+// CASE: Object Reassignment
+let a = new Box();
+let b = a; // Ownership MOVES from 'a' to 'b'.
+print(a.value); // ❌ COMPILE ERROR: Use of moved variable 'a'
 
-function main() {
-  let a = new Box();
+// CASE: Last-Use Function Argument (Moved)
+function process(param: Box) {}
+let c = new Box();
+process(c); // Ownership MOVES into 'process' because 'c' is never used again.
+// print(c.value); -> If this was uncommented, the compiler would Auto-Borrow instead!
 
-  // Ownership MOVES from 'a' to 'b'
-  let b = a;
-  print(a.value); // ❌ COMPILE ERROR: use of moved variable 'a'
-
-  // Ownership MOVES from 'b' into the 'process' function
-  process(b);
-  print(b.value); // ❌ COMPILE ERROR: use of moved variable 'b'
-}
-```
-
-If a variable goes out of scope while holding ownership, the memory is dropped. Period.
-
-`let` bindings are for variables that can be reassigned (mutable bindings), while `const` bindings prevent name rebinding. However, both obey the identical Ownership/Move rules above.
-
----
-
-## 2. Returning Ownership & Reinitialization
-
-You aren't locked out forever if you move a variable. You can regain ownership or bind a new value entirely!
-
-### 2.1 Reinitializing a Moved Variable
-
-A variable in the Moved state can be revived by assigning a completely new value:
-
-```ts
-function main() {
-  let a = new Box();
-  let b = a; // 'a' moved
-
-  a = new Box(); // 'a' is reinitialized!
-  print(a.value); // ✅ OK
-}
-```
-
-### 2.2 Returning Ownership from Functions
-
-Functions can process an owned value and return it back to the caller's scope:
-
-```ts
-function processBox(box: Box): Box {
-  box.value += 1;
-  return box; // Ownership transferred back out
-}
-
-function main() {
-  let a = new Box();
-  let b = processBox(a); // a -> moved mapping. b -> owns the returned modified Box.
-}
+// CASE: Variable Revival
+a = new Box(); // Developers can always revive a moved variable with a new instance!
+print(a.value); // ✅ Output: 0
 ```
 
 ---
 
-## 3. The Generational Heap & Borrow Flags
+## 2. Borrowing: Looking without Taking
 
-The TejX compiler uses a **Generational Arena** for its heap implementation. Pointers in TejX are 64-bit handles, structured as `[32-bit Generation][32-bit ID]`.
+Moving arguments back-and-forth natively is cumbersome. Often, you just need to "look" at data. TejX handles this flawlessly via **Borrowing**.
 
-If a program attempts to access a freed object, the generation encoded in the pointer will no longer match the current generation in the arena's metadata, triggering a safe runtime trap instead of a Use-After-Free (UAF) exploit.
+Calling a method (`obj.method()`), accessing a property (`obj.child`), or indexing an array (`arr[0]`) yields a **Temporarily Borrowed Reference**. The original variable remains completely valid.
 
-Additionally, TejX employs a **Borrow Flag** at the Most Significant Bit (MSB, bit 63).
+### 2.1 Pass-by-Borrow (`ref`)
 
-- `rt_borrow` dynamically tags heap pointers with this flag.
-- When `rt_free` is called, it instantly returns if the flag is set, preventing double-frees of borrowed references.
-
----
-
-## 4. Borrowing & Static Alias Tracking
-
-Moving arguments back-and-forth constantly via Returns is cumbersome. Often, a function just needs to "look" at data. This is where **Borrowing** comes in.
-
-Borrowing creates a temporary reference that delegates access without revoking ownership from the primary variable.
-
-### 4.1 Compile-Time Borrows (Method Calls)
-
-Calling a method on an object directly borrows `this` for the duration of the execution context. The original variable remains totally valid.
+To allow a function to observe or mutate an object without stripping ownership, use the `ref` keyword.
 
 ```ts
-class Counter {
-  count: int32;
-  increment() {
-    this.count += 1;
-  }
+// CASE: Standard Borrowing
+function inspect(box: ref Box) {
+  box.value = 99; // Borrows can mutate data
 }
 
-function main() {
-  let c = new Counter();
-  c.increment(); // Borrows 'c'. Does not move it.
-  c.increment(); // ✅ STILL VALID.
-}
-```
-
-### 4.2 Local Borrows (Navigation & Property Access)
-
-When you extract elements from collections or properties off an object, the compiler cannot permanently "move" them out of the overarching structure, as that would invalidate the internal tree.
-
-Instead, accessing arrays (`arr[index]`) or members (`obj.property`) yields a **Temporarily Borrowed Reference**.
-
-```ts
-function main() {
-  let list = [new Box("A"), new Box("B")] as Box[];
-
-  // 'item' is a Borrowed Reference pointing to exactly what list[0] holds.
-  let item = list[0];
-  print(item.value); // ✅ OK — "A"
-}
-```
-
-**How it works physically via BORROW_FLAG:**
-Under the hood, retrieving a member via `LoadIndex` or `LoadMember` yields a pointer that has been dynamically tagged with the `BORROW_FLAG` (the 63rd bit is set to 1). The destination variable (like `item`) is also recorded as an explicit `borrowed_var` in the compiler's **Borrow Checker**.
-
-When `item` drops at the end of its block, the compile-time `BorrowChecker` injects an `rt_free(item)` instruction. However, because the pointer has the `BORROW_FLAG` set, the runtime `rt_free` instantly returns a no-op! The system defers actual deallocation until the true parent owner (the array itself) is freed.
-
-This architecture seamlessly combines static analysis (preventing moves out of borrowed data) with zero-cost runtime safety.
-
-### 4.3 Borrow Limitations (Dataflow Checks)
-
-While borrows drop gracefully, **they cannot be freely mutated, cloned blindly, or relocated** like standalone data! You cannot move a borrowed reference to another scope or treat it structurally as an owned instance.
-
-Because TejX employs a secondary Dataflow Liveness Checker, it will interrupt compilation if you assign a borrow elsewhere without explicitly calling `.clone()`:
-
-```ts
-function processData(b: Box) {}
-
-function main() {
-  let list = [new Box("A")] as Box[];
-  let borrowedItem = list[0];
-
-  let cloned = borrowedItem; // ❌ COMPILE ERROR: Cannot move a borrowed reference
-  processData(borrowedItem); // ❌ COMPILE ERROR: Cannot move a borrowed reference
-}
-```
-
----
-
-## 5. Last-Use Detection & Implicit Moves
-
-Because TejX values performance, the compiler uses **Liveness Analysis** to find the absolute final time an owned variable is read.
-
-At the variable's final usage site, the compiler implicitly **Upgrades the operation to a Move**, freeing up local resources early rather than waiting artificially for the enclosing scope loop to terminate. This enables heavy memory reuse throughout long methods.
-
-### 5.1 Conditional Moves (MaybeMoved)
-
-If an owned variable is moved inside one branch but ignored in another, the compiler evaluates it defensively as `MaybeMoved` at the merge point. You can no longer access it after the branch structure resolves.
-
-```ts
 function main() {
   let a = new Box();
-
-  if (someCondition) {
-    let b = a; // Moved on this branch
-  }
-
-  print(a.value); // ❌ COMPILE ERROR: variable 'a' maybe moved.
+  inspect(a); // ✅ Ownership stays in 'a'. 'a' is temporarily borrowed.
+  print(a.value); // ✅ Output: 99
 }
 ```
 
-### 5.2 Loop Scopes
+**Compiler Constraints on Borrows:**
 
-Ownership moves executed within an iterative loop are evaluated as unconditional compile-time errors. Moving an owned variable inside an iteration block would immediately break iteration #2, confusing the scope bounds.
+- Borrows are strictly scoped to the call stack.
+- You **cannot return a `ref` type** from a function.
+- You **cannot store a `ref` type** in a Class field or Array (to prevent dangling pointers).
+
+---
+
+## 3. "Max Like TS": Invisible Borrow Checker Ergonomics
+
+To truly achieve a "Max Like TypeScript" experience, the TejX Borrow Checker hides friction points by performing implicit coercion _without_ generating expensive clones.
+
+### 3.1 The "Read-Only" Implicit Borrow Coercion
+
+If a developer passes an object to a built-in read-only API (like `print(obj)` or `toString(obj)`), TejX natively coerces the value to a `ref` _automatically_ on the caller's behalf.
 
 ```ts
-function main() {
-  let a = new Box();
+// CASE: Ergonomic Printing
+let a = new Box();
+print(a); // ✅ Automatically passed as 'ref Box'
+print(a); // ✅ Still valid!
+```
 
-  while (true) {
-    let b = a; // ❌ COMPILE ERROR: Use of moved variable 'a' in repetition body
-  }
+### 3.2 Implicit Method Ref Coercion (Auto-Deref)
+
+If a function receives a `ref Box` and calls a sub-method on it (e.g., `box.update()`), the compiler automatically chains the borrow downward without any C++ style `->` pointer syntax. Object mutations feel 100% identical to TypeScript references.
+
+### 3.3 Liveness Auto-Borrowing (Future-Use Coercion)
+
+The most advanced DX feature in TejX is **Liveness Auto-Borrowing**. Instead of failing compilation when you use a variable after passing it to a function, the TejX compiler runs a Backward Liveness Analysis pass.
+
+If the compiler statically detects that a variable is **used again in the future** after a function call, it will _automatically mutate the function call_ to pass the argument as a `ref` (borrow), preventing the move entirely.
+
+```ts
+// CASE: Function Argument Auto-Borrow
+function process(param: Box) {}
+
+let b = new Box();
+process(b); // Compiler detects 'b' is used below. Invisible Auto-Coercion to 'ref Box'.
+
+print(b.value); // ✅ Output: 0. (Valid! No move occurred!)
+```
+
+This ensures developers almost never see "Moved Value" errors unless they have genuinely reached the final instruction for that variable.
+
+---
+
+## 4. TypeScript Structural Patterns
+
+TejX natively supports common TS idioms with safe compile-time checks based on the ownership rules above.
+
+### 4.1 Returning Properties (Explicit Clone Required)
+
+A huge hurdle in strict-ownership programming is trying to `return obj.child;` because you cannot "move" a child piece out of its parent. Because TejX does not auto-clone, developers must explicitly call `.clone()` to satisfy the return signature safely.
+
+```ts
+// CASE: Returning a struct mapping
+function getBody(req: ref Request): Body {
+    // return req.body; ❌ ERROR: Cannot move property out of reference
+    return req.body.clone(); // ✅ OK: Explicit deep copy returned
+}
+```
+
+### 4.2 Destructuring (Partial Moves)
+
+In TejX, destructuring an object that contains heap properties is evaluated as a **Partial Move**. The parent object is immediately invalidated because pieces of it have been stripped away.
+
+```ts
+// CASE: Object Destructuring
+let req = new Request();
+let { body, headers } = req; // 'body' and 'headers' are moved out into local variables.
+
+print(req.url); // ❌ COMPILE ERROR: 'req' was partially moved and is now invalid.
+```
+
+### 4.3 Callbacks & Closures
+
+Closures intuitively default to **Borrow Captures** for heap types. You can write array iterators exactly as you would in JS/TS.
+
+```ts
+// CASE: Array Mapping Iterator
+let state = new State();
+let arr = [1, 2, 3];
+
+arr.forEach((num) => {
+  state.total += num; // ✅ Closure implicitly borrows 'state' by reference
+});
+
+print(state.total); // ✅ Output: 6
+```
+
+---
+
+## 5. Memory Leak Proofing Mechanics
+
+TejX handles all edge cases of memory safety locally. It guarantees **0 memory leaks** deterministically, without a garbage collector.
+
+### 5.1 Cyclic Graphs (`weak` References)
+
+If a developer builds a doubly-linked list or DOM tree, standard ownership would leak due to cycles (A owns B, B owns A). TejX provides the `weak` keyword directly to resolve this natively.
+
+A `weak T` pointer **does not keep an object alive**. If the primary owner is dropped, any subsequent access to the `weak` handle safely traps or evaluates to null.
+
+```ts
+// CASE: Doubly-Linked List Cycles
+class Node {
+  next: Node | null;
+  prev: weak Node | null; // Prevents the cycle!
+}
+
+let parent = new Node();
+let child = new Node();
+parent.next = child; // 'parent' owns 'child'
+child.prev = weak parent; // 'child' holds weak reference to 'parent'
+
+// When 'parent' goes out of scope, both node IDs are safely freed automatically!
+```
+
+### 5.2 Auto-Cleanup on Target Reassignment
+
+Overwriting an index or property automatically triggers a drop of the old value before the new value takes ownership. This prevents the previous memory from floating un-owned.
+
+```ts
+// CASE: Reassigning an Array Index
+let list = [new Box("A")];
+list[0] = new Box("B"); // Compiler statically injects rt_free(list[0]) before storing "B"
+```
+
+### 5.3 Exception Safety (RAII)
+
+Before a `throw` executes, the TejX compiler statically analyzes the active scope stack and injects exact `rt_free` instructions for every currently alive owned variable. Thus, stack-unwinding will never leak memory.
+
+---
+
+## 6. Exhaustive Edge Cases & Control Flow
+
+To guarantee safety, the TejX compiler runs **Backward Liveness Analysis** to intelligently strip ownership from variables upon their final usage. Here are the exact compiler checks required for all branches:
+
+### 6.1 Branching (`if`, `switch`, `try/catch`)
+
+If a variable is moved conditionally, it enters a `MaybeMoved` state at the merge point. Reusing it is immediately caught by the compiler.
+Furthermore, the compiler must _statically inject_ the cleanup code into the `else` blocks where the move did _not_ occur!
+
+```ts
+// CASE: Conditional Moves
+let a = new Box();
+
+if (condition) {
+  process(a); // 'a' moved
+} else {
+  // Compiler silently injects rt_free(a) here!
+}
+
+print(a); // ❌ COMPILE ERROR: variable 'a' maybe moved.
+```
+
+### 6.2 Definite Assignment (Reviving Objects)
+
+If a variable is rendered `MaybeMoved` or cleanly `Moved` in a branch, it can be mathematically revived for subsequent logic by re-assigning a fresh instance to it.
+
+```ts
+// CASE: Reviving a Branch Variable
+let a = new Box();
+
+if (true) {
+  process(a); // 'a' moves
+}
+
+a = new Box(); // Definitive Variable Re-initialization
+print(a.value); // ✅ Developer can reuse 'a' seamlessly now
+```
+
+### 6.3 `while` & `for` Loop Boundaries
+
+Moves of external variables within iterative loops represent a fundamental scope violation. Moving an owned variable inside an iteration block would immediately break iteration #2.
+
+- **Rule:** Unconditional compile-time error if an external heap variable is moved within a loop body.
+- **Solution:** Reassign the variable, pass it as `ref`, or explicitly `.clone()` it for the loop body to consume.
+
+```ts
+// CASE: Loop Scoping
+let a = new Box();
+while (true) {
+  let b = a; // ❌ COMPILE ERROR: Use of moved variable 'a' in repetition body
 }
 ```
 
 ---
 
-## 6. End-to-End Walkthrough
+## 7. Under the Hood Engine (Generations & Borrows)
 
-Here is a visual map of how ownership propagates, scales, and is deterministically torn down statically:
+How does TejX achieve memory safety without Rust's complex lifetime annotations or Java's heavy Garbage Collector?
 
-```ts
-function spawn(): Array<Node> {
-  const root = new Node("A"); // 1. Root allocation ID [200]
-  const list = new Array(); // 2. Collection allocation ID [201]
+It uses a **Generational Arena** with hardware-efficient pointer bitmasking.
+Pointers are 64-bit handles: `[1-bit Borrow Flag][31-bit Generation][32-bit Allocation ID]`.
 
-  list.push(root); // 3. 'root' -> MOVED inside to Array [200].
-  //    'root' binding is now statically invalidated.
+1. **Generational Safety**: When you access an object, the runtime checks if the 31-bit Generation in your pointer matches the current Arena block. If the object was freed and reallocated, the generations won't match, and the runtime cleanly panics (preventing C++ style Use-After-Free/Iterator Invalidation exploits).
+2. **Borrow Flag Check**: When the compiler cleans up variables, it inserts `rt_free(ptr)`. A borrowed reference has the MSB set to `1`. The runtime `rt_free` function simply reads `if (ptr >> 63) return;` — a single-cycle hardware no-op that skips deallocation for borrows!
 
-  return list; // 4. 'list' -> MOVES out to Caller block.
-}
+---
 
-function process() {
-  let nodes = spawn(); // 5. 'nodes' binds ID [201]. (which owns ID [200]).
+## 8. Compiler Developer Implementation Checklist
 
-  let pointer = nodes[0]; // 6. LoadIndex applies BORROW_FLAG to the returned handle.
+When building or auditing the TejX compiler architecture, a compiler engineer MUST ensure these steps are implemented linearly to achieve the leak-proof TS-like spec outline above:
 
-  print(pointer.data); // 7. Borrows successfully.
+### Lexer / Type Checker
 
-  // 8. End of Context!
-  // -> BorrowChecker injects rt_free(pointer). Runtime sees BORROW_FLAG=1 and no-ops!
-  // -> BorrowChecker injects rt_free(nodes). Runtime sees BORROW_FLAG=0 and deallocates!
-  // -> The Runtime Array teardown triggers recursively, executing rt_free on node [200]
-  // -> Memory cleans up seamlessly with ZERO garbage collection!
-}
-```
+- [ ] Parse `ref` and `weak` keywords natively.
+- [ ] Implement `is_moved` / `MaybeMoved` boolean state tracking across all AST control flow branches.
+- [ ] Implement implicit Auto-Deref logic for `ref T` method delegation tracking.
+- [ ] **[DX-Ergonomics]** Implement implicit `ref` coercion for Built-In Print/Logging APIs.
+- [ ] Prevent moving external heap variables out of `while`/`for` loop bodies to maintain loop integrity.
+- [ ] Invalidate parent structs when properties are destructured (Partial Moves).
+- [ ] Ensure AST Closures capture outer context via `ref` implicitly.
+- [ ] Prevent storing `ref` types inside heap arrays, maps, or class properties (stack-only).
+- [ ] Verify `return obj.child` triggers an explicit error asking the user to call `.clone()`.
 
-**Quick Referencing Chart**
+### MIR / Borrow Checker Pass
 
-| Action                  | Result                           | Original Status After Evaluated    |
-| ----------------------- | -------------------------------- | ---------------------------------- |
-| `let a = b` (Primitive) | Copy allocated                   | Fully Valid                        |
-| `let a = b` (Heap Type) | Ownership moves (Implicit)       | **Invalidated (Moved)**            |
-| `func(b)` (Heap Type)   | Ownership passed inside limits   | **Invalidated (Moved)**            |
-| `return a;` (Heap Type) | Ownership transfers up hierarchy | Transfer Complete                  |
-| `obj.method()`          | Object execution                 | Borrowed temporarily (Fully Valid) |
-| `let val = arr[index]`  | Emits Static Borrow Tracking     | `borrowed_vars` exclusion recorded |
-| End of Scope (`{ }`)    | Drop Generator (`rt_free`)       | All underlying owned values flush  |
+- [ ] Compute **Backward Liveness Analysis** to isolate the Last-Use boundaries of all block variables.
+- [ ] Inject `rt_free` (Drops) AST nodes at last-use sites and standard end-of-blocks.
+- [ ] Inject `rt_free` nodes for the prior value immediately before a Property/Index Reassignment node.
+- [ ] Inject `rt_free` nodes on negative branches to compensate for `if/else` conditional moves.
+- [ ] Inject `rt_free` nodes for all alive variables immediately prior to `throw` AST nodes.
+
+### Codegen & Runtime Allocation Layer
+
+- [ ] Ensure explicit setting of MSB `BORROW_FLAG` (`1 << 63`) on all emitted LLVM / Assembly property accesses, index accesses, and `ref` arguments.
+- [ ] Hardcode the fast-path in `rt_free` to `O(1)` return if the MSB is `1`.
+- [ ] Ensure the Allocator strictly increments a 31-bit Generation ticker upon `rt_free`, validating it on every read/write to prevent UAF exceptions.

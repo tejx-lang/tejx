@@ -2144,6 +2144,12 @@ impl TypeChecker {
             return true;
         }
 
+        // SOI: Allow references as valid variable/argument types
+        if type_name.starts_with("ref ") || type_name.starts_with("weak ") {
+            return self.is_valid_type(&type_name[4..].trim_start())
+                || self.is_valid_type(&type_name[5..].trim_start());
+        }
+
         if type_name.contains('|') {
             return type_name
                 .split('|')
@@ -2606,7 +2612,12 @@ impl TypeChecker {
                                 )
                         };
                         if !is_copy_type(&init_type) && init_type != "any" {
-                            self.mark_moved(src_name, *line, *_col);
+                            // SOI: Do not mark moved if we are explicitly assigning to a reference!
+                            let is_ref_assignment = type_annotation.starts_with("ref ")
+                                || type_annotation.starts_with("weak ");
+                            if !is_ref_assignment {
+                                self.mark_moved(src_name, *line, *_col);
+                            }
                         }
                     }
 
@@ -4199,7 +4210,11 @@ impl TypeChecker {
                 // Handle Move Semantics: If value is an Identifier and it's not Copy type, mark as moved
                 if let Expression::Identifier { name: src_name, .. } = &**value {
                     if !self.is_copy_type(&value_type) && value_type != "any" {
-                        self.mark_moved(src_name, *_line, *_col);
+                        let is_ref_assignment =
+                            target_type.starts_with("ref ") || target_type.starts_with("weak ");
+                        if !is_ref_assignment {
+                            self.mark_moved(src_name, *_line, *_col);
+                        }
                     }
                 }
 
@@ -4443,22 +4458,13 @@ impl TypeChecker {
                 for arg in args {
                     let arg_type = self.check_expression(arg)?;
                     if let Expression::Identifier { name: src_name, .. } = arg {
-                        let is_copy_type = |t: &str| -> bool {
-                            t.starts_with("ref ")
-                                || matches!(
-                                    t,
-                                    "int"
-                                        | "int16"
-                                        | "int32"
-                                        | "int64"
-                                        | "float"
-                                        | "float64"
-                                        | "bool"
-                                        | "char"
-                                        | "enum"
-                                )
-                        };
-                        if !is_copy_type(&arg_type) && arg_type != "any" {
+                        // SOI: Check Liveness Auto-Borrowing
+                        let is_used_later = self
+                            .remaining_stmts
+                            .iter()
+                            .any(|s| Self::stmt_contains_identifier(s, src_name));
+
+                        if !self.is_copy_type(&arg_type) && arg_type != "any" && !is_used_later {
                             self.mark_moved(src_name, *_line, *_col);
                         }
                     }

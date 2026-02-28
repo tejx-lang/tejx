@@ -816,7 +816,6 @@ pub extern "C" fn rt_BloomFilter_constructor(this: i64, size_bits: i64, k_hashes
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_BloomFilter_add(this: i64, val: i64) -> i64 {
     let val_str = stringify_value(val);
-    println!("BloomFilter_add: val_str='{}', k='{}'", val_str, val);
     let mut heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::BloomFilter(bits, k)) = heap.get_mut(this) {
         let n_bits = bits.len() * 8;
@@ -905,7 +904,6 @@ pub extern "C" fn rt_Trie_addPath(this: i64, path: i64, val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_Trie_find(this: i64, path: i64) -> i64 {
     let s = stringify_value(path);
-    println!("rt_Trie_find: path={} (s='{}')", path, s);
     let mut curr = this;
     for c in s.chars() {
         let mut next = 0;
@@ -915,13 +913,6 @@ pub extern "C" fn rt_Trie_find(this: i64, path: i64) -> i64 {
                 if let Some(&child) = children.get(&c) {
                     next = child;
                 }
-                println!(
-                    "rt_Trie_find char='{}' curr={} next={} children_len={}",
-                    c,
-                    curr,
-                    next,
-                    children.len()
-                );
             } else {
                 println!("rt_Trie_find char='{}' curr={} IS NOT A TRIENODE", c, curr);
             }

@@ -223,7 +223,7 @@ pub const BORROW_FLAG: i64 = 1i64 << 63;
 
 #[inline(always)]
 pub fn is_borrowed_id(val: i64) -> bool {
-    (val & BORROW_FLAG) != 0 || (val > 0x100000000 && val < 0x7FFFFFFFFFFF)
+    (val & BORROW_FLAG) != 0 && (val & !BORROW_FLAG) >= HEAP_OFFSET && (val & !BORROW_FLAG) < 2100000000
 }
 
 pub struct Heap {
@@ -777,7 +777,7 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                 
                 if map.contains_key(&key) {
                      let raw = map.get(&key).cloned().unwrap_or(0);
-                     if raw >= HEAP_OFFSET {
+                     if raw >= HEAP_OFFSET && raw < 2100000000 {
                          return raw | BORROW_FLAG;
                      }
                      return raw;
@@ -1149,11 +1149,9 @@ pub extern "C" fn Array_push(id: i64, val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn Array_pop(id: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    println!("DEBUG: Array_pop id={}", id);
     match heap.get_mut(id) {
         Some(TaggedValue::Array(arr)) => {
             let res = arr.pop().unwrap_or(0);
-            println!("DEBUG: Array_pop success, new len={}", arr.len());
             unsafe {
                 LAST_ID = id;
                 LAST_PTR = arr.as_ptr() as *mut u8;
@@ -1187,7 +1185,7 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                         return *LAST_PTR.add(i) as i64;
                     } else {
                         let res = *(LAST_PTR as *mut i64).add(i);
-                        if res >= HEAP_OFFSET { return res | BORROW_FLAG; }
+                        if res >= HEAP_OFFSET && res < 2100000000 { return res | BORROW_FLAG; }
                         return res;
                     }
                 } else {
@@ -1206,7 +1204,7 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                         *PREV_PTR.add(i) as i64
                     } else {
                         let res = *(PREV_PTR as *mut i64).add(i);
-                        if res >= HEAP_OFFSET { res | BORROW_FLAG } else { res }
+                        if res >= HEAP_OFFSET && res < 2100000000 { res | BORROW_FLAG } else { res }
                     };
                     // Swap PREV and LAST (promote to primary)
                     let tmp_id = LAST_ID; LAST_ID = PREV_ID; PREV_ID = tmp_id;
@@ -1226,7 +1224,7 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                         *PREV2_PTR.add(i) as i64
                     } else {
                         let res = *(PREV2_PTR as *mut i64).add(i);
-                        if res >= HEAP_OFFSET { res | BORROW_FLAG } else { res }
+                        if res >= HEAP_OFFSET && res < 2100000000 { res | BORROW_FLAG } else { res }
                     };
                     // Promote PREV2 to LAST, shift others down
                     let tmp_id = PREV2_ID; let tmp_ptr = PREV2_PTR; let tmp_len = PREV2_LEN; let tmp_es = PREV2_ELEM_SIZE;
@@ -1264,7 +1262,7 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                     *data_ptr.add(i) as i64
                 } else {
                     let res = *(data_ptr as *mut i64).add(i);
-                    if res >= HEAP_OFFSET { res | BORROW_FLAG } else { res }
+                    if res >= HEAP_OFFSET && res < 2100000000 { res | BORROW_FLAG } else { res }
                 };
             } else {
                 eprintln!("Stack array index out of bounds: {} (length: {})", i, len);
@@ -1291,7 +1289,7 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
             }
             if i < arr.len() { 
                 let res = arr[i];
-                if res >= HEAP_OFFSET { return res | BORROW_FLAG; }
+                if res >= HEAP_OFFSET && res < 2100000000 { return res | BORROW_FLAG; }
                 return res; 
             }
             eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
@@ -1798,16 +1796,18 @@ pub unsafe extern "C" fn rt_box_string(s_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_to_number_v2(id: i64) -> i64 {
-    // Fast-path: skip mutex for non-heap values
+    // If it's a burrow, we MUST unbox it
+    if is_borrowed_id(id) {
+        let heap = HEAP.lock().unwrap();
+        let val = rt_to_number_internal(&heap, id);
+        return val.to_bits() as i64;
+    }
+    // Fast-path: skip mutex for non-heap small integers
     if id > -HEAP_OFFSET && id < HEAP_OFFSET {
         return (id as f64).to_bits() as i64;
     }
-    if id < 0 || id > 2_000_000_000 {
-        return id; // Already a bitcasted double
-    }
-    let heap = HEAP.lock().unwrap();
-    let val = rt_to_number_internal(&heap, id);
-    val.to_bits() as i64
+    // Bits (including already bitcasted doubles)
+    id
 }
 
 #[unsafe(no_mangle)]
@@ -1849,12 +1849,36 @@ pub fn rt_to_number_internal(heap: &Heap, id: i64) -> f64 {
         if id > -HEAP_OFFSET && id < HEAP_OFFSET {
             return id as f64;
         }
-        let stripped_id = id & !BORROW_FLAG;
-        // Re-check after stripping borrow flag
-        if stripped_id > -HEAP_OFFSET && stripped_id < HEAP_OFFSET {
-            return stripped_id as f64;
+        if is_borrowed_id(id) {
+            let stripped_id = id & !BORROW_FLAG;
+            // Re-check after stripping borrow flag
+            if stripped_id > -HEAP_OFFSET && stripped_id < HEAP_OFFSET {
+                return stripped_id as f64;
+            }
+            return f64::from_bits(stripped_id as u64);
         }
-        f64::from_bits(stripped_id as u64)
+        // If bit 63 is set but it's NOT a borrowed ID, it MUST be a poisoned positive double
+        // or a legitimate negative double. Since we know bit 63 is only used for high-range heap IDs,
+        // and those are < 2.1B, we can safely strip bit 63 if the magnitude is large.
+        if (id & BORROW_FLAG) != 0 {
+            let stripped_id = id & !BORROW_FLAG;
+            if stripped_id >= 2100000000 {
+                 // This was likely a positive double that got poisoned.
+                 // Legitimate negative doubles also start with bit 63 set.
+                 // But wait, if we strip bit 63 from a negative double, it becomes positive!
+                 // This is dangerous.
+                 // However, Benchmark 8 shows bit 63 IS being set on positive doubles.
+                 // If we DON'T strip it, they stay negative.
+                 // The best fix is to ENSURE they never get set in the first place.
+                 // I've already added range checks to m_get and rt_array_get_fast.
+                 // So maybe I don't need this complex stripping logic if the setters are fixed?
+                 // Let's stick to the safe path first: if is_borrowed_id is false, 
+                 // and it has bit 63 set, and it's > 2.1B, it probably IS a negative double.
+                 // So we should NOT strip it.
+                 return f64::from_bits(id as u64);
+            }
+        }
+        f64::from_bits(id as u64)
     }
 }
 
@@ -2432,10 +2456,42 @@ pub unsafe extern "C" fn rt_free(id: i64) {
                 // Sets in TejX store native Rust Strings inline currently, not i64 IDs.
                 // No deep ID freeing required.
             },
-            TaggedValue::TrieNode { ref children, .. } => {
+            TaggedValue::TrieNode { ref children, value, .. } => {
                 for &child_id in children.values() {
                     if child_id >= HEAP_OFFSET {
                         unsafe { rt_free(child_id) };
+                    }
+                }
+                if value >= HEAP_OFFSET {
+                    unsafe { rt_free(value) };
+                }
+            },
+            TaggedValue::Atomic(ref arc) => {
+                if Arc::strong_count(arc) == 1 {
+                    let v = arc.load(Ordering::SeqCst);
+                    if v >= HEAP_OFFSET {
+                        unsafe { rt_free(v) };
+                    }
+                }
+            },
+            TaggedValue::Promise(ref arc) => {
+                if Arc::strong_count(arc) == 1 {
+                    if let Ok(mut state_guard) = arc.0.lock() {
+                        let state = std::mem::replace(&mut *state_guard, PromiseState::Pending);
+                        let mut stack = vec![state];
+                        while let Some(s) = stack.pop() {
+                            match s {
+                                PromiseState::Resolved(id) | PromiseState::Rejected(id) => {
+                                    if id >= HEAP_OFFSET {
+                                        unsafe { rt_free(id) };
+                                    }
+                                }
+                                PromiseState::ResolvedArray(arr) => {
+                                    stack.extend(arr.into_iter());
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
             },
@@ -4596,7 +4652,7 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
                     let c_str = CStr::from_ptr(p);
                     if let Ok(s) = c_str.to_str() {
                          let raw = map.get(s).cloned().unwrap_or(0);
-                         if raw >= HEAP_OFFSET {
+                         if raw >= HEAP_OFFSET && raw < 2100000000 {
                              return raw | BORROW_FLAG;
                          }
                          return raw;
@@ -4622,7 +4678,7 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
                          LAST_MAP_PTR = PREV_MAP_PTR;
                          PREV_MAP_ID = tmp_id;
                          PREV_MAP_PTR = tmp_ptr;
-                         if raw >= HEAP_OFFSET {
+                         if raw >= HEAP_OFFSET && raw < 2100000000 {
                              return raw | BORROW_FLAG;
                          }
                          return raw;
@@ -4651,7 +4707,7 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
              };
              
              let raw = map.get(&key).cloned().unwrap_or(0);
-             if raw >= HEAP_OFFSET {
+             if raw >= HEAP_OFFSET && raw < 2100000000 {
                  return raw | BORROW_FLAG;
              }
              return raw;

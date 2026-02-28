@@ -19,7 +19,8 @@ pub enum TejxType {
     FixedArray(Box<TejxType>, usize),
     Void,
     Any,
-    Ref(Box<TejxType>), // Non-owning borrow
+    Ref(Box<TejxType>),  // Non-owning borrow
+    Weak(Box<TejxType>), // Non-owning cycle-breaker
 }
 
 impl TejxType {
@@ -39,7 +40,8 @@ impl TejxType {
             | TejxType::Bool
             | TejxType::Char
             | TejxType::Void
-            | TejxType::Ref(_) => false,
+            | TejxType::Ref(_)
+            | TejxType::Weak(_) => false,
             // Re-enabling drops. Strict checking in borrow checker will prevent double-frees.
             TejxType::String | TejxType::Class(_) | TejxType::Any | TejxType::FixedArray(_, _) => {
                 true
@@ -56,7 +58,7 @@ impl TejxType {
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64 => true,
-            TejxType::Ref(inner) => inner.is_numeric(),
+            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_numeric(),
             _ => false,
         }
     }
@@ -64,7 +66,7 @@ impl TejxType {
     pub fn is_float(&self) -> bool {
         match self {
             TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => true,
-            TejxType::Ref(inner) => inner.is_float(),
+            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_float(),
             _ => false,
         }
     }
@@ -75,7 +77,7 @@ impl TejxType {
             TejxType::Class(name) => {
                 name == "Array" || name.starts_with("Array<") || name.ends_with("[]")
             }
-            TejxType::Ref(inner) => inner.is_array(),
+            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_array(),
             _ => false,
         }
     }
@@ -93,7 +95,7 @@ impl TejxType {
                 TejxType::from_name(inner)
             }
             TejxType::Class(name) if name == "ByteArray" => TejxType::Bool,
-            TejxType::Ref(inner) => inner.get_array_element_type(), // Delegate to underlying type
+            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.get_array_element_type(), // Delegate to underlying type
             _ => TejxType::Any,
         }
     }
@@ -106,7 +108,11 @@ impl TejxType {
             TejxType::Int128 => 16,
             TejxType::Bool => 1,
             TejxType::Char => 4,
-            TejxType::String | TejxType::Class(_) | TejxType::Any | TejxType::Ref(_) => 8, // Pointers/Boxed/Borrows
+            TejxType::String
+            | TejxType::Class(_)
+            | TejxType::Any
+            | TejxType::Ref(_)
+            | TejxType::Weak(_) => 8, // Pointers/Boxed/Borrows
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Void => 0,
         }
@@ -116,6 +122,9 @@ impl TejxType {
         let name = name.trim();
         if name.starts_with("ref ") {
             return TejxType::Ref(Box::new(TejxType::from_name(&name[4..])));
+        }
+        if name.starts_with("weak ") {
+            return TejxType::Weak(Box::new(TejxType::from_name(&name[5..])));
         }
 
         if name.contains('|') {

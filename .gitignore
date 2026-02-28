@@ -19,3 +19,5 @@ cmake-build-debug/
 target
 libruntime.a
 *.mjs
+
+editors/
