@@ -269,6 +269,15 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    NoneLiteral {
+        _line: usize,
+        _col: usize,
+    },
+    SomeExpr {
+        value: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -418,6 +427,8 @@ impl Expression {
             Expression::BooleanLiteral { .. } => "(bool)".to_string(),
             Expression::ArrayLiteral { .. } => "(array)".to_string(),
             Expression::ObjectLiteralExpr { .. } => "(object)".to_string(),
+            Expression::NoneLiteral { .. } => "None".to_string(),
+            Expression::SomeExpr { .. } => "Some".to_string(),
             _ => "".to_string(),
         }
     }
@@ -448,6 +459,8 @@ impl Expression {
             Expression::NullishCoalescingExpr { _line, .. } => *_line,
             Expression::SpreadExpr { _line, .. } => *_line,
             Expression::SequenceExpr { _line, .. } => *_line,
+            Expression::NoneLiteral { _line, .. } => *_line,
+            Expression::SomeExpr { _line, .. } => *_line,
         }
     }
 }

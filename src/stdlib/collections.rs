@@ -1,4 +1,6 @@
-use crate::runtime::{HEAP, TaggedValue, new_fast_map, rt_box_string, stringify_value};
+use crate::runtime::{
+    BORROW_FLAG, HEAP, HEAP_OFFSET, TaggedValue, new_fast_map, rt_box_string, stringify_value,
+};
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 
@@ -257,9 +259,14 @@ pub extern "C" fn rt_Map_constructor(this: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_Map_set(this: i64, key: i64, val: i64) -> i64 {
     let k_str = stringify_value(key);
+    let stored_val = if crate::runtime::is_borrowed_id(val) {
+        let mut heap = HEAP.lock().unwrap();
+        heap.clone_if_heap(val)
+    } else {
+        val
+    };
+
     let mut heap = HEAP.lock().unwrap();
-    // Clone heap values before storing — the borrow checker may free the original
-    let stored_val = heap.clone_if_heap(val);
     if let Some(TaggedValue::Map(map)) = heap.get_mut(this) {
         map.insert(k_str, stored_val);
     }
@@ -274,7 +281,11 @@ pub extern "C" fn rt_Map_get_ref(this: i64, key: i64) -> i64 {
     let k_str = stringify_value(key);
     let heap = crate::runtime::HEAP.lock().unwrap();
     if let Some(crate::runtime::TaggedValue::Map(map)) = heap.get(this) {
-        return map.get(&k_str).cloned().unwrap_or(0);
+        let raw = map.get(&k_str).cloned().unwrap_or(0);
+        if raw >= HEAP_OFFSET {
+            return raw | BORROW_FLAG;
+        }
+        return raw;
     }
     0
 }
@@ -286,18 +297,15 @@ pub extern "C" fn rt_Map_get(this: i64, val: i64) -> i64 {
         let heap = HEAP.lock().unwrap();
         if let Some(TaggedValue::Map(map)) = heap.get(this) {
             let raw = map.get(&k_str).cloned().unwrap_or(0);
-            // Clone heap values so caller's Free doesn't destroy map's data
-            drop(heap);
-            let mut heap2 = HEAP.lock().unwrap();
-            heap2.clone_if_heap(raw)
+            if raw >= HEAP_OFFSET {
+                raw | BORROW_FLAG
+            } else {
+                raw
+            }
         } else {
             0
         }
     };
-    eprintln!(
-        "rt_Map_get this={} val={} ({}) -> {}",
-        this, val, k_str, res
-    );
     res
 }
 #[unsafe(no_mangle)]
@@ -328,10 +336,7 @@ pub extern "C" fn rt_Map_has(this: i64, val: i64) -> i64 {
             false
         }
     };
-    eprintln!(
-        "rt_Map_has this={} val={} ({}) -> {}",
-        this, val, k_str, result
-    );
+
     if result { 1 } else { 0 }
 }
 #[unsafe(no_mangle)]
@@ -642,7 +647,7 @@ pub extern "C" fn rt_Collection_entries(id: i64) -> i64 {
         order
             .iter()
             .filter(|k| *k != "toString" && *k != "constructor")
-            .map(|k| (k.clone(), m.get(k).cloned().unwrap_or(0)))
+            .map(|k: &String| (k.clone(), m.get(k).cloned().unwrap_or(0)))
             .collect::<Vec<(String, i64)>>()
     } else {
         Vec::new()

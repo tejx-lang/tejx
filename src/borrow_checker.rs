@@ -218,14 +218,33 @@ impl BorrowChecker {
         let mut out_states: Vec<HashMap<String, VarState>> = vec![HashMap::new(); num_blocks];
 
         let mut borrowed_vars = std::collections::HashSet::new();
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                match inst {
-                    MIRInstruction::LoadMember { dst, .. }
-                    | MIRInstruction::LoadIndex { dst, .. } => {
-                        borrowed_vars.insert(dst.clone());
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    match inst {
+                        MIRInstruction::LoadMember { dst, borrow, .. } => {
+                            if *borrow && borrowed_vars.insert(dst.clone()) {
+                                changed = true;
+                            }
+                        }
+                        MIRInstruction::LoadIndex { dst, borrow, .. } => {
+                            if *borrow && borrowed_vars.insert(dst.clone()) {
+                                changed = true;
+                            }
+                        }
+                        MIRInstruction::Move { dst, src, .. } => {
+                            if let MIRValue::Variable { name, .. } = src {
+                                if borrowed_vars.contains(name) {
+                                    if borrowed_vars.insert(dst.clone()) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
@@ -315,6 +334,7 @@ impl BorrowChecker {
                     if let Some(&VarState::Live) = state.get(dst_name) {
                         if !func.params.contains(dst_name)
                             && !dst_name.starts_with("__")
+                            && !dst_name.starts_with("g_")
                             && !borrowed_vars.contains(dst_name)
                         {
                             reassignment_drops.push((block_idx, inst_idx, dst_name.clone()));
@@ -412,6 +432,7 @@ impl BorrowChecker {
                             };
                             if !is_returned(used_var)
                                 && !is_moved(used_var)
+                                && !used_var.starts_with("g_")
                                 && !borrowed_vars.contains(used_var)
                             {
                                 reassignment_drops.push((block_idx, drop_idx, used_var.clone()));
@@ -438,7 +459,7 @@ impl BorrowChecker {
                         } else {
                             inst_idx + 1
                         };
-                        if !borrowed_vars.contains(def_var) {
+                        if !borrowed_vars.contains(def_var) && !def_var.starts_with("g_") {
                             reassignment_drops.push((block_idx, drop_idx, def_var.clone()));
                             if def_var == "row$1_4" {
                                 println!(
@@ -459,6 +480,7 @@ impl BorrowChecker {
                     if *state == VarState::Live
                         && !func.params.contains(var_name)
                         && !var_name.starts_with("__")
+                        && !var_name.starts_with("g_")
                         && !borrowed_vars.contains(var_name)
                     {
                         drops.entry(i).or_insert(Vec::new()).push(var_name.clone());

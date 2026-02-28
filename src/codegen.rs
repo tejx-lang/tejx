@@ -397,7 +397,7 @@ impl CodeGen {
                     // Intercept and load from alloca
                     self.temp_counter += 1;
                     let val_reg = format!("%val_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", val_reg, reg));
+                    self.emit_line(&format!("{} = load volatile i64, i64* {}", val_reg, reg));
                     return val_reg;
                 }
 
@@ -589,7 +589,8 @@ impl CodeGen {
         }
 
         // Exception handling runtime functions
-        self.global_buffer.push_str("declare i32 @_setjmp(i8*)\n");
+        self.global_buffer
+            .push_str("declare i32 @_setjmp(i8*) returns_twice\n");
         self.global_buffer
             .push_str("declare void @tejx_push_handler(i8*)\n");
         self.global_buffer
@@ -703,7 +704,7 @@ impl CodeGen {
                 self.value_map.insert(p.clone(), reg_name.clone());
 
                 // CRITICAL: Store the incoming argument into the alloca
-                self.emit_line(&format!("store i64 %{}, i64* {}", p, reg_name));
+                self.emit_line(&format!("store volatile i64 %{}, i64* {}", p, reg_name));
             }
         }
 
@@ -797,7 +798,7 @@ impl CodeGen {
                     self.temp_counter += 1;
                     let handler_res = format!("%handler_res{}", self.temp_counter);
                     self.emit_line(&format!(
-                        "{} = call i32 @_setjmp(i8* {})",
+                        "{} = call i32 @_setjmp(i8* {}) returns_twice",
                         handler_res, jmpbuf_ptr
                     ));
                     // If setjmp returned 0, register the handler and continue
@@ -888,7 +889,7 @@ impl CodeGen {
 
                 // Store new value (reassignment drops are handled statically by BorrowChecker)
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", val, ptr));
+                self.emit_line(&format!("store volatile i64 {}, i64* {}", val, ptr));
             }
             MIRInstruction::BinaryOp {
                 dst,
@@ -1077,7 +1078,7 @@ impl CodeGen {
                         self.emit_line(&format!("{} = add i64 {}, {}", tmp, l, r));
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                    self.emit_line(&format!("store volatile i64 {}, i64* {}", tmp, ptr));
                 } else if is_numeric_op {
                     let l_is_raw = l_ty.is_numeric() && !l_ty.is_float();
                     let r_is_raw = r_ty.is_numeric() && !r_ty.is_float();
@@ -1289,7 +1290,7 @@ impl CodeGen {
                         }
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                    self.emit_line(&format!("store volatile i64 {}, i64* {}", tmp, ptr));
                 } else {
                     // Integer / DefaultFallback
                     let (is_cmp, llvm_op, pred) = match op {
@@ -1328,16 +1329,17 @@ impl CodeGen {
                         }
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                    self.emit_line(&format!("store volatile i64 {}, i64* {}", tmp, ptr));
                 }
             }
 
             MIRInstruction::Jump { target, .. } => {
-                let current_bb_idx = self.find_block_idx(func, inst);
-                if let Some(idx) = current_bb_idx {
-                    if func.blocks[idx].exception_handler.is_some() {
-                        self.emit_line("call void @tejx_pop_handler()");
-                    }
+                let has_handler = func
+                    .blocks
+                    .iter()
+                    .any(|b| b.name == _bb_name && b.exception_handler.is_some());
+                if has_handler {
+                    self.emit_line("call void @tejx_pop_handler()");
                 }
 
                 if *target < func.blocks.len() {
@@ -1358,11 +1360,12 @@ impl CodeGen {
                 false_target,
                 ..
             } => {
-                let current_bb_idx = self.find_block_idx(func, inst);
-                if let Some(idx) = current_bb_idx {
-                    if func.blocks[idx].exception_handler.is_some() {
-                        self.emit_line("call void @tejx_pop_handler()");
-                    }
+                let has_handler = func
+                    .blocks
+                    .iter()
+                    .any(|b| b.name == _bb_name && b.exception_handler.is_some());
+                if has_handler {
+                    self.emit_line("call void @tejx_pop_handler()");
                 }
 
                 let cond_val = self.resolve_value(condition);
@@ -1408,11 +1411,12 @@ impl CodeGen {
                 ));
             }
             MIRInstruction::Return { value, .. } => {
-                let current_bb_idx = self.find_block_idx(func, inst);
-                if let Some(idx) = current_bb_idx {
-                    if func.blocks[idx].exception_handler.is_some() {
-                        self.emit_line("call void @tejx_pop_handler()");
-                    }
+                let has_handler = func
+                    .blocks
+                    .iter()
+                    .any(|b| b.name == _bb_name && b.exception_handler.is_some());
+                if has_handler {
+                    self.emit_line("call void @tejx_pop_handler()");
                 }
 
                 let _ret_var_name = if let Some(MIRValue::Variable { name, .. }) = value {
@@ -1461,7 +1465,7 @@ impl CodeGen {
                     ));
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", result_tmp, ptr));
                     }
                     return;
                 }
@@ -1490,7 +1494,7 @@ impl CodeGen {
                             bits_tmp, result_tmp
                         ));
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", bits_tmp, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", bits_tmp, ptr));
                     }
                     return;
                 }
@@ -1513,7 +1517,7 @@ impl CodeGen {
 
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", result_tmp, ptr));
                     }
                     return;
                 }
@@ -1598,7 +1602,7 @@ impl CodeGen {
 
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 0, i64* {}", ptr));
+                        self.emit_line(&format!("store volatile i64 0, i64* {}", ptr));
                     }
                 } else if callee == "eprint" {
                     if !self.declared_functions.contains("eprint_raw") {
@@ -1642,7 +1646,7 @@ impl CodeGen {
 
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 0, i64* {}", ptr));
+                        self.emit_line(&format!("store volatile i64 0, i64* {}", ptr));
                     }
                 } else if callee.starts_with("std_math_") {
                     // Emit LLVM intrinsics directly for math functions
@@ -1840,7 +1844,10 @@ impl CodeGen {
 
                         if !dst.is_empty() {
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_i, ptr));
+                            self.emit_line(&format!(
+                                "store volatile i64 {}, i64* {}",
+                                result_i, ptr
+                            ));
                         }
                     } else {
                         // Fallback to runtime call for unsupported math functions (random, min, max)
@@ -1866,7 +1873,10 @@ impl CodeGen {
                         ));
                         if !dst.is_empty() {
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                            self.emit_line(&format!(
+                                "store volatile i64 {}, i64* {}",
+                                result_tmp, ptr
+                            ));
                         }
                     }
                 } else {
@@ -1968,7 +1978,10 @@ impl CodeGen {
                     } else if let Some(ptr) = self.value_map.get(callee) {
                         self.temp_counter += 1;
                         let func_val_tmp = format!("%func_val_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = load i64, i64* {}", func_val_tmp, ptr));
+                        self.emit_line(&format!(
+                            "{} = load volatile i64, i64* {}",
+                            func_val_tmp, ptr
+                        ));
                         self.temp_counter += 1;
                         let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
                         let ptr_args = vec!["i64"; args.len()].join(", ");
@@ -1990,7 +2003,10 @@ impl CodeGen {
                         ));
                         if !dst.is_empty() {
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                            self.emit_line(&format!(
+                                "store volatile i64 {}, i64* {}",
+                                result_tmp, ptr
+                            ));
                         }
                         return;
                     }
@@ -1999,7 +2015,7 @@ impl CodeGen {
                         if let Some(ptr) = self.value_map.get(&instance_var) {
                             self.temp_counter += 1;
                             let tmp = format!("%inst{}", self.temp_counter);
-                            self.emit_line(&format!("{} = load i64, i64* {}", tmp, ptr));
+                            self.emit_line(&format!("{} = load volatile i64, i64* {}", tmp, ptr));
                             arg_vals.insert(0, format!("i64 {}", tmp));
                         }
                     }
@@ -2087,7 +2103,7 @@ impl CodeGen {
                     }
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", result_tmp, ptr));
                     }
                 }
             }
@@ -2178,7 +2194,7 @@ impl CodeGen {
 
                 if !dst.is_empty() {
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                    self.emit_line(&format!("store volatile i64 {}, i64* {}", result_tmp, ptr));
                 }
             }
             MIRInstruction::ObjectLiteral { dst, entries, .. } => {
@@ -2254,7 +2270,7 @@ impl CodeGen {
                     ));
                 }
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", obj_tmp, ptr));
+                self.emit_line(&format!("store volatile i64 {}, i64* {}", obj_tmp, ptr));
             }
             MIRInstruction::ArrayLiteral {
                 dst, elements, ty, ..
@@ -2311,7 +2327,7 @@ impl CodeGen {
                     ));
 
                     // Store length at index 0
-                    self.emit_line(&format!("store i64 {}, i64* {}", size, cast_ptr));
+                    self.emit_line(&format!("store volatile i64 {}, i64* {}", size, cast_ptr));
                     // Store elem_size at index 1
                     self.temp_counter += 1;
                     let elem_size_ptr = format!("%elem_sz_ptr_{}", self.temp_counter);
@@ -2319,7 +2335,10 @@ impl CodeGen {
                         "{} = getelementptr inbounds i64, i64* {}, i64 1",
                         elem_size_ptr, cast_ptr
                     ));
-                    self.emit_line(&format!("store i64 {}, i64* {}", elem_size, elem_size_ptr));
+                    self.emit_line(&format!(
+                        "store volatile i64 {}, i64* {}",
+                        elem_size, elem_size_ptr
+                    ));
 
                     // arr_tmp will hold the integer value of the pointer (ID)
                     self.temp_counter += 1;
@@ -2484,7 +2503,10 @@ impl CodeGen {
                                 base_ptr64,
                                 2 + idx
                             ));
-                            self.emit_line(&format!("store i64 {}, i64* {}", v_val, elem_ptr));
+                            self.emit_line(&format!(
+                                "store volatile i64 {}, i64* {}",
+                                v_val, elem_ptr
+                            ));
                         }
                     } else if use_fixed {
                         if !self.declared_functions.contains("rt_array_set_fast") {
@@ -2516,7 +2538,7 @@ impl CodeGen {
                     idx += 1;
                 }
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", arr_tmp, ptr));
+                self.emit_line(&format!("store volatile i64 {}, i64* {}", arr_tmp, ptr));
             }
             MIRInstruction::LoadMember {
                 dst, obj, member, ..
@@ -2773,7 +2795,7 @@ impl CodeGen {
                             "{} = call i64 @rt_box_boolean(i64 {})",
                             boxed, res_tmp
                         ));
-                        self.emit_line(&format!("store i64 {}, i64* {}", boxed, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", boxed, ptr));
                     } else if dst_ty.is_float() {
                         self.temp_counter += 1;
                         let f_val = format!("%ba_f{}", self.temp_counter);
@@ -2781,10 +2803,10 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let f_bc = format!("%ba_fbc{}", self.temp_counter);
                         self.emit_line(&format!("{} = bitcast double {} to i64", f_bc, f_val));
-                        self.emit_line(&format!("store i64 {}, i64* {}", f_bc, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", f_bc, ptr));
                     } else {
                         // Int or Bool — store raw 0/1
-                        self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", res_tmp, ptr));
                     }
                 } else if obj.get_type().is_array() {
                     // --- GENERIC ARRAY OPTIMIZATION: INLINED CACHE CHECK ---
@@ -3288,7 +3310,7 @@ impl CodeGen {
                                  final_res, res8, get_byte, res64_raw, get_qword, prev_raw, prev_access, prev2_raw, prev2_access, slow_raw, slow_path));
                         }
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                        self.emit_line(&format!("store volatile i64 {}, i64* {}", final_res, ptr));
                     } else {
                         // Destination is Any, Float, or Object.
                         let elem_type = obj.get_type().get_array_element_type();
@@ -3334,7 +3356,10 @@ impl CodeGen {
                                 slow_path
                             ));
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                            self.emit_line(&format!(
+                                "store volatile i64 {}, i64* {}",
+                                final_res, ptr
+                            ));
                         } else {
                             let get_byte = format!("array_get_byte{}", label_id);
                             let (final_qword, final_byte, final_prev, final_prev2, final_slow) =
@@ -3421,7 +3446,10 @@ impl CodeGen {
                             self.emit_line(&format!("{} = phi i64 [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]", 
                                  final_res, final_byte, get_byte, final_qword, get_qword, final_prev, prev_access, final_prev2, prev2_access, final_slow, slow_path));
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                            self.emit_line(&format!(
+                                "store volatile i64 {}, i64* {}",
+                                final_res, ptr
+                            ));
                         }
                     }
                 } else {
@@ -3453,7 +3481,7 @@ impl CodeGen {
                         ));
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                    self.emit_line(&format!("store volatile i64 {}, i64* {}", res_tmp, ptr));
                 }
             }
             MIRInstruction::StoreIndex {
@@ -3991,7 +4019,7 @@ impl CodeGen {
                     self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
                 }
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                self.emit_line(&format!("store volatile i64 {}, i64* {}", tmp, ptr));
             }
             MIRInstruction::Free { value, .. } => {
                 let v = self.resolve_value(value);
@@ -4002,16 +4030,5 @@ impl CodeGen {
                 self.emit_line(&format!("call void @rt_free(i64 {})", v));
             }
         }
-    }
-
-    fn find_block_idx(&self, func: &MIRFunction, inst: &MIRInstruction) -> Option<usize> {
-        for (i, bb) in func.blocks.iter().enumerate() {
-            for bi in &bb.instructions {
-                if std::ptr::eq(bi, inst) {
-                    return Some(i);
-                }
-            }
-        }
-        None
     }
 }

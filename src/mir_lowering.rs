@@ -987,13 +987,19 @@ impl MIRLowering {
                     .contains(&class_name.as_str());
                     let constructor_name = if is_std_collection {
                         format!("rt_{}_constructor", class_name)
+                    } else if class_name == "Thread" {
+                        "Thread_new".to_string()
                     } else {
                         format!("f_{}_constructor", class_name)
                     };
-                    let mut constructor_args = vec![MIRValue::Variable {
-                        name: temp.clone(),
-                        ty: TejxType::Class(class_name.clone()),
-                    }];
+                    let mut constructor_args = if class_name == "Thread" {
+                        vec![]
+                    } else {
+                        vec![MIRValue::Variable {
+                            name: temp.clone(),
+                            ty: TejxType::Class(class_name.clone()),
+                        }]
+                    };
                     for arg in _args {
                         constructor_args.push(self.lower_expression(arg));
                     }
@@ -1315,13 +1321,7 @@ impl MIRLowering {
                             if let Some(arr_ty) = args.get(0).map(|a| a.get_type()) {
                                 if callee.starts_with("Array_") {}
                                 if arr_ty.is_array() {
-                                    if callee.starts_with("Array_") {
-                                        println!(
-                                            "*** OVERRIDING {} with element type {:?}",
-                                            callee,
-                                            arr_ty.get_array_element_type()
-                                        );
-                                    }
+                                    if callee.starts_with("Array_") {}
                                     if (callee == "Array_push"
                                         || callee == "Array_unshift"
                                         || callee == "Array_indexOf"
@@ -1373,9 +1373,9 @@ impl MIRLowering {
                     final_callee = "rt_cond_notify_all".to_string();
                 } else if callee == "f_Thread_join" {
                     final_callee = "Thread_join".to_string();
-                } else if callee == "f_Mutex_lock" {
+                } else if callee == "f_Mutex_acquire" {
                     final_callee = "m_lock".to_string();
-                } else if callee == "f_Mutex_unlock" {
+                } else if callee == "f_Mutex_release" {
                     final_callee = "m_unlock".to_string();
                 } else if callee == "f_Array_flat" || callee == "f_any___flat" {
                     final_callee = "Array_flat".to_string();
@@ -1524,6 +1524,7 @@ impl MIRLowering {
                     dst: temp.clone(),
                     obj,
                     index: idx,
+                    borrow: true,
                 });
 
                 let val = MIRValue::Variable {
@@ -1718,6 +1719,11 @@ impl MIRLowering {
                 }
                 last_val
             }
+            HIRExpression::NoneLiteral { .. } => MIRValue::Constant {
+                value: "0".to_string(),
+                ty: TejxType::Any,
+            },
+            HIRExpression::SomeExpr { value, .. } => self.lower_expression(value),
         }
     }
 }

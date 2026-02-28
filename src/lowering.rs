@@ -2021,13 +2021,6 @@ impl Lowering {
                 }
             }
             Expression::Identifier { name, .. } => {
-                if name == "None" {
-                    return HIRExpression::Literal {
-                        line: line,
-                        value: "0".to_string(),
-                        ty: TejxType::Any,
-                    };
-                }
                 let (resolved_name, ty) = self
                     .lookup(name)
                     .unwrap_or_else(|| (name.clone(), TejxType::Any));
@@ -2095,6 +2088,11 @@ impl Lowering {
                     ty: TejxType::Any,
                 }
             }
+            Expression::NoneLiteral { .. } => HIRExpression::NoneLiteral { line },
+            Expression::SomeExpr { value, .. } => HIRExpression::SomeExpr {
+                value: Box::new(self.lower_expression(value)),
+                line,
+            },
             Expression::BinaryExpr {
                 left, op, right, ..
             } => {

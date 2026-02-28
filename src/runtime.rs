@@ -21,6 +21,9 @@ pub mod runtime {
     pub use super::ACTIVE_ASYNC_OPS;
     pub use super::tejx_enqueue_task;
     pub use super::new_fast_map;
+    pub use super::BORROW_FLAG;
+    pub use super::HEAP_OFFSET;
+    pub use super::is_borrowed_id;
 }
 
 #[path = "stdlib/mod.rs"]
@@ -161,15 +164,15 @@ pub fn new_fast_map_cap(cap: usize) -> FastMap { SmallMap::with_capacity(cap) }
 use std::sync::atomic::{AtomicI64, Ordering};
 
 
-pub struct SingleThreadGuard<'a, T>(&'a mut T);
+pub struct SingleThreadGuard<'a, T>(std::sync::MutexGuard<'a, T>);
 impl<T> std::ops::Deref for SingleThreadGuard<'_, T> {
     type Target = T;
     #[inline(always)]
-    fn deref(&self) -> &T { self.0 }
+    fn deref(&self) -> &T { &*self.0 }
 }
 impl<T> std::ops::DerefMut for SingleThreadGuard<'_, T> {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut T { self.0 }
+    fn deref_mut(&mut self) -> &mut T { &mut *self.0 }
 }
 
 
@@ -215,7 +218,13 @@ pub enum TaggedValue {
     TCPStream(Arc<Mutex<std::net::TcpStream>>),
 }
 
-const HEAP_OFFSET: i64 = 200000000;
+pub const HEAP_OFFSET: i64 = 200000000;
+pub const BORROW_FLAG: i64 = 1i64 << 63;
+
+#[inline(always)]
+pub fn is_borrowed_id(val: i64) -> bool {
+    (val & BORROW_FLAG) != 0 || (val > 0x100000000 && val < 0x7FFFFFFFFFFF)
+}
 
 pub struct Heap {
     pub next_id: i64,
@@ -228,10 +237,11 @@ pub struct Heap {
 impl Heap {
     #[inline(always)]
     pub fn verify_alive(&self, id: i64) {
-        if id >= HEAP_OFFSET && id < 2000000000 {
-            let idx = (id - HEAP_OFFSET) as usize;
+        let stripped_id = id & !BORROW_FLAG;
+        if stripped_id >= HEAP_OFFSET && stripped_id < 2000000000 { // Assuming 2e9 is a safe upper bound for heap IDs
+            let idx = (stripped_id - HEAP_OFFSET) as usize;
             if idx >= self.objects.len() || self.objects[idx].is_none() {
-                eprintln!("RUNTIME_ERROR: Use-After-Free or Stale Pointer detected (id: {})", id);
+                // eprintln!("RUNTIME_ERROR: Use-After-Free or Stale Pointer detected (id: {})", id);
                 std::process::exit(1);
             }
         }
@@ -239,8 +249,9 @@ impl Heap {
 
     #[inline(always)]
     pub fn get(&self, id: i64) -> Option<&TaggedValue> {
-        let idx = (id - HEAP_OFFSET) as usize;
-        if id >= HEAP_OFFSET && idx < self.objects.len() {
+        let stripped_id = id & !BORROW_FLAG;
+        let idx = (stripped_id - HEAP_OFFSET) as usize;
+        if stripped_id >= HEAP_OFFSET && idx < self.objects.len() {
             self.objects[idx].as_ref()
         } else {
             None
@@ -249,8 +260,9 @@ impl Heap {
 
     #[inline(always)]
     pub fn get_mut(&mut self, id: i64) -> Option<&mut TaggedValue> {
-        let idx = (id - HEAP_OFFSET) as usize;
-        if id >= HEAP_OFFSET && idx < self.objects.len() {
+        let stripped_id = id & !BORROW_FLAG;
+        let idx = (stripped_id - HEAP_OFFSET) as usize;
+        if stripped_id >= HEAP_OFFSET && idx < self.objects.len() {
             self.objects[idx].as_mut()
         } else {
             None
@@ -259,8 +271,9 @@ impl Heap {
 
     #[inline(always)]
     pub fn insert(&mut self, id: i64, val: TaggedValue) {
-        let idx = (id - HEAP_OFFSET) as usize;
-        if id < HEAP_OFFSET { return; }
+        let stripped_id = id & !BORROW_FLAG;
+        let idx = (stripped_id - HEAP_OFFSET) as usize;
+        if stripped_id < HEAP_OFFSET { return; }
         if idx >= self.objects.len() {
             self.objects.resize(idx + 1, None);
         }
@@ -269,8 +282,9 @@ impl Heap {
 
     #[inline(always)]
     pub fn contains_key(&self, id: i64) -> bool {
-        let idx = (id - HEAP_OFFSET) as usize;
-        id >= HEAP_OFFSET && idx < self.objects.len() && self.objects[idx].is_some()
+        let stripped_id = id & !BORROW_FLAG;
+        let idx = (stripped_id - HEAP_OFFSET) as usize;
+        stripped_id >= HEAP_OFFSET && idx < self.objects.len() && self.objects[idx].is_some()
     }
 
     #[inline(always)]
@@ -293,27 +307,24 @@ impl Heap {
     /// borrow checker frees the original temporary.
     #[inline(always)]
     pub fn clone_if_heap(&mut self, val: i64) -> i64 {
-        if val < HEAP_OFFSET {
-            return val;
+        if is_borrowed_id(val) {
+            let id = val & !BORROW_FLAG;
+            if let Some(obj) = self.get(id) {
+                let cloned = obj.clone();
+                return self.alloc(cloned);
+            }
         }
-        if let Some(obj) = self.get(val) {
-            let cloned = obj.clone();
-            self.alloc(cloned)
-        } else {
-            val
-        }
+        val
     }
 }
 
-thread_local! {
-    pub static LOCAL_HEAP: std::cell::UnsafeCell<Heap> = std::cell::UnsafeCell::new(Heap {
-        next_id: HEAP_OFFSET, 
-        objects: Vec::with_capacity(100000),
-        strings: HashMap::new(),
-        free_list: Vec::new(),
-        freed_ids: StdHashSet::new(),
-    });
-}
+pub static GLOBAL_HEAP: LazyLock<Mutex<Heap>> = LazyLock::new(|| Mutex::new(Heap {
+    next_id: HEAP_OFFSET, 
+    objects: Vec::with_capacity(100000),
+    strings: HashMap::new(),
+    free_list: Vec::new(),
+    freed_ids: StdHashSet::new(),
+}));
 
 pub struct HeapProxy;
 pub static HEAP: HeapProxy = HeapProxy;
@@ -321,12 +332,10 @@ pub static HEAP: HeapProxy = HeapProxy;
 impl HeapProxy {
     #[inline(always)]
     pub fn lock(&self) -> Result<SingleThreadGuard<'static, Heap>, std::sync::PoisonError<std::sync::MutexGuard<'static, Heap>>> {
-        LOCAL_HEAP.with(|h| {
-            let ptr = h.get();
-            let ref_mut = unsafe { &mut *ptr };
-            let static_ref_mut = unsafe { std::mem::transmute::<&mut Heap, &'static mut Heap>(ref_mut) };
-            Ok(SingleThreadGuard(static_ref_mut)) // Return static lifetime safely scoped to thread execution
-        })
+        match GLOBAL_HEAP.lock() {
+            Ok(guard) => Ok(SingleThreadGuard(guard)),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -638,8 +647,9 @@ unsafe fn get_string_key(heap: &Heap, key_ptr: i64) -> String {
 pub unsafe extern "C" fn m_set(id: i64, key_ptr: i64, val: i64) -> i64 { unsafe {
     let mut heap = HEAP.lock().unwrap();
     
-    // Clone heap values before storing — the borrow checker may free the original
-    let stored_val = heap.clone_if_heap(val);
+    // Store value as-is (ownership transfer). We strip BORROW_FLAG just in case
+    // a borrow was somehow passed, but the compiler should prevent that.
+    let stored_val = val & !BORROW_FLAG;
     
     // Pre-calculate boxed index to avoid borrow checker conflict
     let boxed_idx = if let Some(TaggedValue::Number(n)) = heap.get(key_ptr) {
@@ -767,12 +777,8 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                 
                 if map.contains_key(&key) {
                      let raw = map.get(&key).cloned().unwrap_or(0);
-                     // Clone heap values so caller's Free doesn't destroy map's data
                      if raw >= HEAP_OFFSET {
-                         // Need to drop the immutable borrow before taking mutable
-                         drop(heap);
-                         let mut heap2 = HEAP.lock().unwrap();
-                         return heap2.clone_if_heap(raw);
+                         return raw | BORROW_FLAG;
                      }
                      return raw;
                 } else {
@@ -858,8 +864,7 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
 
 
 
-fn rt_box_string_raw(s: String) -> i64 {
-    let mut heap = HEAP.lock().unwrap();
+fn rt_box_string_raw_internal(heap: &mut Heap, s: String) -> i64 {
     if let Some(&id) = heap.strings.get(&s) {
         return id;
     }
@@ -868,6 +873,11 @@ fn rt_box_string_raw(s: String) -> i64 {
     heap.insert(id, TaggedValue::String(s.clone()));
     heap.strings.insert(s, id);
     id
+}
+
+pub fn rt_box_string_raw(s: String) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    rt_box_string_raw_internal(&mut heap, s)
 }
 
 // ... Array functions ...
@@ -879,14 +889,19 @@ pub extern "C" fn __callee___area() -> i64 { 100 }
 #[unsafe(no_mangle)]
 pub extern "C" fn __callee___describe() -> i64 { 0 }
 #[unsafe(no_mangle)]
-pub fn stringify_value(id: i64) -> String {
-    let heap = HEAP.lock().unwrap();
-    let res = if let Some(obj) = heap.get(id) {
+pub fn stringify_value_internal(heap: &Heap, id: i64) -> String {
+    let borrow = is_borrowed_id(id);
+    let stripped_id = if (id & BORROW_FLAG) != 0 { id & !BORROW_FLAG } else { id };
+    
+    println!("DEBUG: stringify_value_internal id={} stripped={} borrow={}", id, stripped_id, borrow);
+
+    if let Some(obj) = heap.get(stripped_id) {
         match obj {
             TaggedValue::ConsString(_, _, _) => {
                 let mut stack = vec![id];
                 let mut parts = Vec::new();
-                while let Some(curr) = stack.pop() {
+                while let Some(curr_raw) = stack.pop() {
+                    let curr = curr_raw & !BORROW_FLAG;
                     if curr > 0x100000000 && curr < 0xFFFFFFFFFFFF {
                         let p = curr as *const c_char;
                         if !p.is_null() {
@@ -906,11 +921,9 @@ pub fn stringify_value(id: i64) -> String {
                 parts.join("")
             }
             TaggedValue::Array(arr) => {
-                let ids = arr.clone();
-                drop(heap);
                 let mut parts = Vec::new();
-                for val_id in ids {
-                    parts.push(stringify_value(val_id));
+                for val_id in arr {
+                    parts.push(stringify_value_internal(heap, *val_id));
                 }
                 format!("[{}]", parts.join(", "))
             }
@@ -925,25 +938,19 @@ pub fn stringify_value(id: i64) -> String {
                 let name_id = map.get("name").cloned();
                 let msg_id = map.get("message").cloned();
                 
-                // If it's a generic map (not an Error/Object with name/message)
                 if name_id.is_none() && msg_id.is_none() {
-                    let keys: Vec<String> = map.keys().into_iter()
-                        .filter(|k| *k != "toString" && *k != "constructor")
-                        .collect();
-                    drop(heap);
                     let mut parts = Vec::new();
+                    let mut keys: Vec<String> = map.keys();
+                    keys.sort(); 
                     for k in keys {
-                        let v_id = {
-                             let h = HEAP.lock().unwrap();
-                             if let Some(TaggedValue::Map(m)) = h.get(id) { m.get(&k).cloned().unwrap_or(0) } else { 0 }
-                        };
-                        parts.push(format!("{}: {}", k, stringify_value(v_id)));
+                        if k == "toString" || k == "constructor" { continue; }
+                        let v_id = map.get(&k).cloned().unwrap_or(0);
+                        parts.push(format!("{}: {}", k, stringify_value_internal(heap, v_id)));
                     }
                     format!("{{ {} }}", parts.join(", "))
                 } else {
-                    drop(heap);
-                    let name = name_id.map(|id| stringify_value(id)).unwrap_or_else(|| "Object".to_string());
-                    let message = msg_id.map(|id| stringify_value(id));
+                    let name = name_id.map(|id| stringify_value_internal(heap, id)).unwrap_or_else(|| "Object".to_string());
+                    let message = msg_id.map(|id| stringify_value_internal(heap, id));
                     
                     if let Some(msg) = message {
                         if !msg.is_empty() { format!("{}: {}", name, msg) }
@@ -956,9 +963,7 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::Thread(_) => "[Thread]".to_string(),
             TaggedValue::Mutex(_) => "[Mutex]".to_string(),
             TaggedValue::Promise(p) => {
-                let p_clone = p.clone();
-                drop(heap); 
-                let (lock, _) = &*p_clone;
+                let (lock, _) = &**p;
                 let state = lock.lock().unwrap();
                 match &*state {
                     PromiseState::Pending => "[Promise <Pending>]".to_string(),
@@ -975,8 +980,8 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::Boolean(b) => if *b { "true".to_string() } else { "false".to_string() },
             TaggedValue::String(s) => s.clone(),
             TaggedValue::Set(set) => {
-                let vals: Vec<String> = set.iter().cloned().collect();
-                drop(heap);
+                let mut vals: Vec<String> = set.iter().cloned().collect();
+                vals.sort();
                 format!("Set {{ {} }}", vals.join(", "))
             }
             TaggedValue::Date(t) => format!("[Date: {}]", t),
@@ -989,39 +994,36 @@ pub fn stringify_value(id: i64) -> String {
             TaggedValue::TCPStream(_) => "[TCPStream]".to_string(),
         }
     } else {
-        drop(heap);
-        // Optimization: Values between -1 billion and 1 billion (including 0) are treated as direct integers.
-        // Wait, if id is 0, we want "null" for JS compatibility usually, but user says "0 should be 0".
-        // Actually, in TejX, we want to distinguish null (0) from integer 0.
-        // We ensure integer 0 is boxed.
-        if id == 0 { return "null".to_string(); }
+        let borrow = is_borrowed_id(id);
+        let stripped_id = if borrow { id & !BORROW_FLAG } else { id };
         
-        if id > -1_000_000_000 && id < 1_000_000_000 {
+        if stripped_id == 0 { return "null".to_string(); }
+        
+        // Small integer optimization
+        if !borrow && (id > -1_000_000_000 && id < 1_000_000_000) {
             return id.to_string();
         }
-
-        // Try treating it as a bitcasted double
+        
+        // Bitcasted double check: Use original id (don't strip for bitcast)
         let d = f64::from_bits(id as u64);
-        // Only treat as double if it's a "reasonable" value and NOT a small ID or common bit pattern
         if d.is_finite() && d.abs() > 1e-300 && d.abs() < 1e300 {
-             let res = if d.fract() == 0.0 { format!("{:.0}", d) }
-             else { format!("{}", d) };
-             return res;
+             return if d.fract() == 0.0 { format!("{:.0}", d) } else { format!("{}", d) };
         }
-
-        // Pointers are risky. On macOS, string literals from segments are typically in this range.
-        if id > 0x100000000 && id < 0x200000000000 { // let _k = unsafe { *(id as *const i64) }; // k is the boxed object ID if it was boxed_null() {
-             let p = id as *const c_char;
+        
+        if stripped_id > 0x100000000 && stripped_id < 0x7FFFFFFFFFFF {
+             let p = stripped_id as *const c_char;
              if !p.is_null() {
                  let c_str = unsafe { CStr::from_ptr(p) };
-                 if let Ok(s) = c_str.to_str() {
-                     return s.to_owned();
-                 }
+                 if let Ok(s) = c_str.to_str() { return s.to_owned(); }
              }
         }
-        id.to_string()
-    };
-    res
+        stripped_id.to_string()
+    }
+}
+
+pub fn stringify_value(id: i64) -> String {
+    let heap = HEAP.lock().unwrap();
+    stringify_value_internal(&heap, id)
 }
 
 #[unsafe(no_mangle)]
@@ -1048,13 +1050,9 @@ pub unsafe extern "C" fn f_Error_constructor(this: i64, message: i64) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_Object_toString(this: i64) -> i64 {
-    // stringify_value already handles everything including releasing the lock
-    let s = stringify_value(this);
-    
-    // Create a new boxed string from the result
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.alloc(TaggedValue::String(s));
-    id
+    let s = stringify_value_internal(&heap, this);
+    rt_box_string_raw_internal(&mut heap, s)
 }
 
 
@@ -1117,22 +1115,8 @@ pub extern "C" fn Array_clone(id: i64) -> i64 {
 pub extern "C" fn Array_push(id: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
     
-    // FIX: Clone String objects to ensure value semantics in collections.
-    // Otherwise, reused IDs (e.g. loop variables) causes all collection entries to point to the current value.
-    let val_to_push = if val >= HEAP_OFFSET {
-        let clone_opt = if let Some(obj) = heap.get(val) {
-            match obj {
-                TaggedValue::String(s) => Some(TaggedValue::String(s.clone())),
-                _ => None
-            }
-        } else { None };
-
-        if let Some(new_obj) = clone_opt {
-            let new_id = heap.alloc(new_obj);
-            new_id
-        } else {
-            val
-        }
+    let val_to_push = if is_borrowed_id(val) {
+        heap.clone_if_heap(val)
     } else {
         val
     };
@@ -1167,9 +1151,11 @@ pub extern "C" fn Array_push(id: i64, val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn Array_pop(id: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
+    println!("DEBUG: Array_pop id={}", id);
     match heap.get_mut(id) {
         Some(TaggedValue::Array(arr)) => {
             let res = arr.pop().unwrap_or(0);
+            println!("DEBUG: Array_pop success, new len={}", arr.len());
             unsafe {
                 LAST_ID = id;
                 LAST_PTR = arr.as_ptr() as *mut u8;
@@ -1202,7 +1188,9 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                     if LAST_ELEM_SIZE == 1 {
                         return *LAST_PTR.add(i) as i64;
                     } else {
-                        return *(LAST_PTR as *mut i64).add(i);
+                        let res = *(LAST_PTR as *mut i64).add(i);
+                        if res >= HEAP_OFFSET { return res | BORROW_FLAG; }
+                        return res;
                     }
                 } else {
                     let last_len = LAST_LEN;
@@ -1219,7 +1207,8 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                     let result = if PREV_ELEM_SIZE == 1 {
                         *PREV_PTR.add(i) as i64
                     } else {
-                        *(PREV_PTR as *mut i64).add(i)
+                        let res = *(PREV_PTR as *mut i64).add(i);
+                        if res >= HEAP_OFFSET { res | BORROW_FLAG } else { res }
                     };
                     // Swap PREV and LAST (promote to primary)
                     let tmp_id = LAST_ID; LAST_ID = PREV_ID; PREV_ID = tmp_id;
@@ -1238,7 +1227,8 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                     let result = if PREV2_ELEM_SIZE == 1 {
                         *PREV2_PTR.add(i) as i64
                     } else {
-                        *(PREV2_PTR as *mut i64).add(i)
+                        let res = *(PREV2_PTR as *mut i64).add(i);
+                        if res >= HEAP_OFFSET { res | BORROW_FLAG } else { res }
                     };
                     // Promote PREV2 to LAST, shift others down
                     let tmp_id = PREV2_ID; let tmp_ptr = PREV2_PTR; let tmp_len = PREV2_LEN; let tmp_es = PREV2_ELEM_SIZE;
@@ -1275,7 +1265,8 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                 return if elem_size == 1 {
                     *data_ptr.add(i) as i64
                 } else {
-                    *(data_ptr as *mut i64).add(i)
+                    let res = *(data_ptr as *mut i64).add(i);
+                    if res >= HEAP_OFFSET { res | BORROW_FLAG } else { res }
                 };
             } else {
                 eprintln!("Stack array index out of bounds: {} (length: {})", i, len);
@@ -1300,7 +1291,11 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                 LAST_LEN = arr.len();
                 LAST_ELEM_SIZE = 8;
             }
-            if i < arr.len() { return arr[i]; }
+            if i < arr.len() { 
+                let res = arr[i];
+                if res >= HEAP_OFFSET { return res | BORROW_FLAG; }
+                return res; 
+            }
             eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
             std::process::exit(1);
         }
@@ -1342,137 +1337,143 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_array_set_fast(id: i64, idx: i64, val: i64) -> i64 {
-    unsafe {
-        if LAST_ID == id {
-            if idx >= 0 && idx < 200000000 {
-                let i = idx as usize;
-                if i < LAST_LEN {
-                    if LAST_ELEM_SIZE == 1 {
-                        *LAST_PTR.add(i) = (val != 0) as u8;
+    // If it's a borrow, we MUST clone it to take ownership in the array.
+    // This requires a heap lock, so we bypass the fast-paths.
+    if !is_borrowed_id(val) {
+        unsafe {
+            if LAST_ID == id {
+                if idx >= 0 && idx < 200000000 {
+                    let i = idx as usize;
+                    if i < LAST_LEN {
+                        if LAST_ELEM_SIZE == 1 {
+                            *LAST_PTR.add(i) = (val != 0) as u8;
+                        } else {
+                            *(LAST_PTR as *mut i64).add(i) = val;
+                        }
                         return val;
-                    } else {
-                        *(LAST_PTR as *mut i64).add(i) = val;
+                    }
+                }
+            }
+            // Second cache slot check
+            if PREV_ID == id {
+                if idx >= 0 && idx < 200000000 {
+                    let i = idx as usize;
+                    if i < PREV_LEN {
+                        if PREV_ELEM_SIZE == 1 {
+                            *PREV_PTR.add(i) = (val != 0) as u8;
+                        } else {
+                            *(PREV_PTR as *mut i64).add(i) = val;
+                        }
+                        // Swap PREV and LAST (promote to primary)
+                        let tmp_id = LAST_ID; LAST_ID = PREV_ID; PREV_ID = tmp_id;
+                        let tmp_ptr = LAST_PTR; LAST_PTR = PREV_PTR; PREV_PTR = tmp_ptr;
+                        let tmp_len = LAST_LEN; LAST_LEN = PREV_LEN; PREV_LEN = tmp_len;
+                        let tmp_es = LAST_ELEM_SIZE; LAST_ELEM_SIZE = PREV_ELEM_SIZE; PREV_ELEM_SIZE = tmp_es;
                         return val;
                     }
                 }
             }
-        }
-        // Second cache slot check
-        if PREV_ID == id {
-            if idx >= 0 && idx < 200000000 {
-                let i = idx as usize;
-                if i < PREV_LEN {
-                    if PREV_ELEM_SIZE == 1 {
-                        *PREV_PTR.add(i) = (val != 0) as u8;
-                    } else {
-                        *(PREV_PTR as *mut i64).add(i) = val;
+            // Third cache slot check
+            if PREV2_ID == id {
+                if idx >= 0 && idx < 200000000 {
+                    let i = idx as usize;
+                    if i < PREV2_LEN {
+                        if PREV2_ELEM_SIZE == 1 {
+                            *PREV2_PTR.add(i) = (val != 0) as u8;
+                        } else {
+                            *(PREV2_PTR as *mut i64).add(i) = val;
+                        }
+                        // Promote PREV2 to LAST
+                        let tmp_id = PREV2_ID; let tmp_ptr = PREV2_PTR; let tmp_len = PREV2_LEN; let tmp_es = PREV2_ELEM_SIZE;
+                        PREV2_ID = PREV_ID; PREV2_PTR = PREV_PTR; PREV2_LEN = PREV_LEN; PREV2_ELEM_SIZE = PREV_ELEM_SIZE;
+                        PREV_ID = LAST_ID; PREV_PTR = LAST_PTR; PREV_LEN = LAST_LEN; PREV_ELEM_SIZE = LAST_ELEM_SIZE;
+                        LAST_ID = tmp_id; LAST_PTR = tmp_ptr; LAST_LEN = tmp_len; LAST_ELEM_SIZE = tmp_es;
+                        return val;
                     }
-                    // Swap PREV and LAST (promote to primary)
-                    let tmp_id = LAST_ID; LAST_ID = PREV_ID; PREV_ID = tmp_id;
-                    let tmp_ptr = LAST_PTR; LAST_PTR = PREV_PTR; PREV_PTR = tmp_ptr;
-                    let tmp_len = LAST_LEN; LAST_LEN = PREV_LEN; PREV_LEN = tmp_len;
-                    let tmp_es = LAST_ELEM_SIZE; LAST_ELEM_SIZE = PREV_ELEM_SIZE; PREV_ELEM_SIZE = tmp_es;
-                    return val;
                 }
             }
-        }
-        // Third cache slot check
-        if PREV2_ID == id {
-            if idx >= 0 && idx < 200000000 {
-                let i = idx as usize;
-                if i < PREV2_LEN {
-                    if PREV2_ELEM_SIZE == 1 {
-                        *PREV2_PTR.add(i) = (val != 0) as u8;
+
+            // --- STACK ALLOCATED ARRAY CHECK ---
+            if id > 0x100000000 { // Large MacOS/Linux user-space ptr boundary
+                let header_ptr = id as *const i64;
+                let len = *header_ptr as usize;
+                let elem_size = *header_ptr.add(1) as usize;
+                let data_ptr = (id as *const u8).add(16) as *mut u8;
+
+                // Cache it
+                PREV2_ID = PREV_ID; PREV2_PTR = PREV_PTR; PREV2_LEN = PREV_LEN; PREV2_ELEM_SIZE = PREV_ELEM_SIZE;
+                PREV_ID = LAST_ID; PREV_PTR = LAST_PTR; PREV_LEN = LAST_LEN; PREV_ELEM_SIZE = LAST_ELEM_SIZE;
+                LAST_ID = id; LAST_PTR = data_ptr; LAST_LEN = len; LAST_ELEM_SIZE = elem_size;
+
+                let i = if idx >= 0 && idx < 200000000 { idx as usize } else { 
+                    let heap = HEAP.lock().unwrap();
+                    rt_to_number_internal(&heap, idx) as usize 
+                };
+                
+                if i < len {
+                    if elem_size == 1 {
+                        *data_ptr.add(i) = (val != 0) as u8;
                     } else {
-                        *(PREV2_PTR as *mut i64).add(i) = val;
+                        *(data_ptr as *mut i64).add(i) = val;
                     }
-                    // Promote PREV2 to LAST
-                    let tmp_id = PREV2_ID; let tmp_ptr = PREV2_PTR; let tmp_len = PREV2_LEN; let tmp_es = PREV2_ELEM_SIZE;
-                    PREV2_ID = PREV_ID; PREV2_PTR = PREV_PTR; PREV2_LEN = PREV_LEN; PREV2_ELEM_SIZE = PREV_ELEM_SIZE;
-                    PREV_ID = LAST_ID; PREV_PTR = LAST_PTR; PREV_LEN = LAST_LEN; PREV_ELEM_SIZE = LAST_ELEM_SIZE;
-                    LAST_ID = tmp_id; LAST_PTR = tmp_ptr; LAST_LEN = tmp_len; LAST_ELEM_SIZE = tmp_es;
                     return val;
-                }
-            }
-        }
-
-        // --- STACK ALLOCATED ARRAY CHECK ---
-        if id > 0x100000000 { // Large MacOS/Linux user-space ptr boundary
-            // Cast id to i64* to read header
-            let header_ptr = id as *const i64;
-            let len = *header_ptr as usize;
-            let elem_size = *header_ptr.add(1) as usize;
-            let data_ptr = (id as *const u8).add(16) as *mut u8; // Bypass 16 byte header
-
-            // Cache it
-            PREV2_ID = PREV_ID; PREV2_PTR = PREV_PTR; PREV2_LEN = PREV_LEN; PREV2_ELEM_SIZE = PREV_ELEM_SIZE;
-            PREV_ID = LAST_ID; PREV_PTR = LAST_PTR; PREV_LEN = LAST_LEN; PREV_ELEM_SIZE = LAST_ELEM_SIZE;
-            LAST_ID = id; LAST_PTR = data_ptr; LAST_LEN = len; LAST_ELEM_SIZE = elem_size;
-
-            let i = if idx >= 0 && idx < 200000000 { idx as usize } else { 
-                let heap = HEAP.lock().unwrap();
-                rt_to_number_internal(&heap, idx) as usize 
-            };
-            
-            if i < len {
-                if elem_size == 1 {
-                    *data_ptr.add(i) = (val != 0) as u8;
                 } else {
-                    *(data_ptr as *mut i64).add(i) = val;
+                    eprintln!("Stack array index out of bounds: {} (length: {})", i, len);
+                    std::process::exit(1);
                 }
-                return val;
-            } else {
-                eprintln!("Stack array index out of bounds: {} (length: {})", i, len);
-                std::process::exit(1);
             }
         }
     }
 
     let mut heap = HEAP.lock().unwrap();
+    let stored_val = if is_borrowed_id(val) {
+        heap.clone_if_heap(val)
+    } else {
+        val
+    };
+
     let i = if idx >= 0 && idx < 200000000 { idx as usize } else { rt_to_number_internal(&heap, idx) as usize };
     match heap.get_mut(id) {
         Some(TaggedValue::Array(arr)) => {
             unsafe {
                 PREV2_ID = PREV_ID; PREV2_PTR = PREV_PTR; PREV2_LEN = PREV_LEN; PREV2_ELEM_SIZE = PREV_ELEM_SIZE;
-                PREV_ID = LAST_ID;
-                PREV_PTR = LAST_PTR;
-                PREV_LEN = LAST_LEN;
-                PREV_ELEM_SIZE = LAST_ELEM_SIZE;
+                PREV_ID = LAST_ID; PREV_PTR = LAST_PTR; PREV_LEN = LAST_LEN; PREV_ELEM_SIZE = LAST_ELEM_SIZE;
                 LAST_ID = id;
                 LAST_PTR = arr.as_ptr() as *mut u8;
                 LAST_LEN = arr.len();
                 LAST_ELEM_SIZE = 8;
             }
             if i < arr.len() {
-                arr[i] = val;
+                arr[i] = stored_val;
             } else if i < 200000000 {
                 arr.resize(i + 1, 0);
-                arr[i] = val;
+                arr[i] = stored_val;
                 unsafe { LAST_PTR = arr.as_ptr() as *mut u8; LAST_LEN = arr.len(); }
             }
+            return stored_val;
         }
         Some(TaggedValue::ByteArray(arr)) => {
             unsafe {
-                PREV_ID = LAST_ID;
-                PREV_PTR = LAST_PTR;
-                PREV_LEN = LAST_LEN;
-                PREV_ELEM_SIZE = LAST_ELEM_SIZE;
+                PREV_ID = LAST_ID; PREV_PTR = LAST_PTR; PREV_LEN = LAST_LEN; PREV_ELEM_SIZE = LAST_ELEM_SIZE;
                 LAST_ID = id;
                 LAST_PTR = arr.as_ptr() as *mut u8;
                 LAST_LEN = arr.len();
                 LAST_ELEM_SIZE = 1;
             }
+            let byte_val = (stored_val != 0) as u8;
             if i < arr.len() {
-                arr[i] = (val != 0) as u8;
+                arr[i] = byte_val;
             } else if i < 200000000 {
                 arr.resize(i + 1, 0);
-                arr[i] = (val != 0) as u8;
+                arr[i] = byte_val;
                 unsafe { LAST_PTR = arr.as_ptr() as *mut u8; LAST_LEN = arr.len(); }
             }
+            return if byte_val != 0 { 1 } else { 0 };
         }
         _ => {}
     }
-    val
+    heap.verify_alive(id);
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -1718,8 +1719,7 @@ pub extern "C" fn rt_div(a: i64, b: i64) -> i64 {
 
 
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rt_box_number(n: f64) -> i64 {
+pub fn rt_box_number_internal(heap: &mut Heap, n: f64) -> i64 {
     // Optimization: If n is a small integer (BUT NOT 0, as 0 is null), return it as literal ID
     if n.fract() == 0.0 && n > 0.0 && n < (HEAP_OFFSET as f64) {
         return n as i64;
@@ -1737,20 +1737,21 @@ pub extern "C" fn rt_box_number(n: f64) -> i64 {
         }
     }
 
-    let mut heap = HEAP.lock().unwrap();
-    let id = heap.alloc(TaggedValue::Number(n));
-    id
+    heap.alloc(TaggedValue::Number(n))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rt_box_int(n: i64) -> i64 {
+pub extern "C" fn rt_box_number(n: f64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    rt_box_number_internal(&mut heap, n)
+}
+
+pub fn rt_box_int_internal(heap: &mut Heap, n: i64) -> i64 {
     // Small positive integers (1..HEAP_OFFSET-1) are self-representing
     // We intentionally DO NOT represent 0 as a small integer because 0 is null/empty pointer
     if n > 0 && n < HEAP_OFFSET {
         return n;
     }
-    
-    let mut heap = HEAP.lock().unwrap();
     
     // If the value is already a valid heap ID (i.e. already boxed), return as-is
     // This prevents double-boxing when print codegen boxes a value that's
@@ -1759,30 +1760,42 @@ pub extern "C" fn rt_box_int(n: i64) -> i64 {
         return n;
     }
     
-    let id = heap.alloc(TaggedValue::Number(n as f64));
-    id
+    heap.alloc(TaggedValue::Number(n as f64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rt_box_int(n: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    rt_box_int_internal(&mut heap, n)
+}
+
+pub fn rt_box_boolean_internal(heap: &mut Heap, b: i64) -> i64 {
+    heap.alloc(TaggedValue::Boolean(b != 0))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_box_boolean(b: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
-    let id = heap.alloc(TaggedValue::Boolean(b != 0));
-    id
+    rt_box_boolean_internal(&mut heap, b)
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rt_box_string(s_ptr: i64) -> i64 {
-     let s = if s_ptr == 0 {
+pub fn rt_box_string_internal(heap: &mut Heap, s_ptr: i64) -> i64 {
+    let s = if s_ptr == 0 {
          "".to_string()
      } else {
          unsafe { CStr::from_ptr(s_ptr as *const c_char) }.to_string_lossy().into_owned()
      };
-    let mut heap = HEAP.lock().unwrap();
     
     // Do NOT intern strings - the borrow checker manages lifetimes and will Free
     // temporaries that share the same interned ID, causing use-after-free bugs
     // for other variables referencing the same string.
     heap.alloc(TaggedValue::String(s))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_box_string(s_ptr: i64) -> i64 {
+    let mut heap = HEAP.lock().unwrap();
+    rt_box_string_internal(&mut heap, s_ptr)
 }
 
 #[unsafe(no_mangle)]
@@ -1801,16 +1814,22 @@ pub unsafe extern "C" fn rt_to_number_v2(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub fn rt_to_number(id: i64) -> f64 {
+    let borrow = is_borrowed_id(id);
+    let stripped_id = if borrow { id & !BORROW_FLAG } else { id };
+    
     // Fast-path: skip mutex for non-heap values
     // Small integers: direct conversion
-    if id > -HEAP_OFFSET && id < HEAP_OFFSET {
-        return id as f64;
+    // If it wasn't a borrow, then 'id' is naturally stripped (or a negative number).
+    if stripped_id > -HEAP_OFFSET && stripped_id < HEAP_OFFSET {
+        return stripped_id as f64;
     }
+    
     // Bitcasted doubles: values outside the heap ID range
-    // Heap IDs are in range [HEAP_OFFSET, ~2B]. Bitcasted doubles are typically >0xFFFFFFFF or negative.
-    if id < 0 || id > 2_000_000_000 {
+    // If it's a borrow, we MUST treat it as a heap ID.
+    if !borrow && (id < 0 || id > 2_100_000_000) {
         return f64::from_bits(id as u64);
     }
+    
     // Only lock the heap for values that could be heap IDs
     let heap = HEAP.lock().unwrap();
     rt_to_number_internal(&heap, id)
@@ -1832,6 +1851,7 @@ pub fn rt_to_number_internal(heap: &Heap, id: i64) -> f64 {
             _ => std::f64::NAN
         }
     } else {
+        let id = id & !BORROW_FLAG;
         // Small integer optimization: values are treated as direct numbers
         if id > -HEAP_OFFSET && id < HEAP_OFFSET {
             return id as f64;
@@ -2335,7 +2355,7 @@ pub unsafe extern "C" fn rt_cond_notify_all(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_free(id: i64) {
-    if id < HEAP_OFFSET {
+    if id < HEAP_OFFSET || (id & BORROW_FLAG) != 0 {
         return;
     }
     
@@ -2531,14 +2551,21 @@ pub unsafe extern "C" fn rt_sleep(ms: i64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
     if a == b { return 1; }
+    let borrow_a = is_borrowed_id(a);
+    let borrow_b = is_borrowed_id(b);
+    let stripped_a = if borrow_a { a & !BORROW_FLAG } else { a };
+    let stripped_b = if borrow_b { b & !BORROW_FLAG } else { b };
+    if stripped_a == stripped_b { return 1; }
+    
     let mut heap = HEAP.lock().unwrap();
     
     // Check if either is a bitcasted double (Any type number)
-    let val_a = if a > -HEAP_OFFSET && a < HEAP_OFFSET { None } else if a > 0xFFFFFFFFFFFF || a < -HEAP_OFFSET { Some(f64::from_bits(a as u64)) } else { None };
-    let val_b = if b > -HEAP_OFFSET && b < HEAP_OFFSET { None } else if b > 0xFFFFFFFFFFFF || b < -HEAP_OFFSET { Some(f64::from_bits(b as u64)) } else { None };
+    // For bitcasted doubles, we must NOT be a borrow.
+    let val_a = if !borrow_a && (a > 0xFFFFFFFFFFFF || a < -HEAP_OFFSET) { Some(f64::from_bits(a as u64)) } else { None };
+    let val_b = if !borrow_b && (b > 0xFFFFFFFFFFFF || b < -HEAP_OFFSET) { Some(f64::from_bits(b as u64)) } else { None };
 
-    let mut obj_a = heap.get(a).cloned();
-    let mut obj_b = heap.get(b).cloned();
+    let mut obj_a = heap.get(stripped_a).cloned();
+    let mut obj_b = heap.get(stripped_b).cloned();
     
     // Flatten any ConsStrings before comparison
     if matches!(heap.get(a), Some(TaggedValue::ConsString(_,_,_))) {
@@ -2583,10 +2610,15 @@ pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
-    if a == b { return 1; }
+    let borrow_a = is_borrowed_id(a);
+    let borrow_b = is_borrowed_id(b);
+    let stripped_a = if borrow_a { a & !BORROW_FLAG } else { a };
+    let stripped_b = if borrow_b { b & !BORROW_FLAG } else { b };
+    if stripped_a == stripped_b { return 1; }
+    
     let mut heap = HEAP.lock().unwrap(); // Changed to mut heap
-    let mut obj_a = heap.get(a).cloned();
-    let mut obj_b = heap.get(b).cloned();
+    let mut obj_a = heap.get(stripped_a).cloned();
+    let mut obj_b = heap.get(stripped_b).cloned();
     
     if matches!(heap.get(a), Some(TaggedValue::ConsString(_,_,_))) {
         rt_flatten_string(&mut heap, a);
@@ -2605,7 +2637,6 @@ pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
     let l_f = rt_to_number(a);
     let r_f = rt_to_number(b);
     let res = if (l_f - r_f).abs() < 1e-9 { 1 } else { 0 };
-    eprintln!("rt_eq a={} b={} -> {}", a, b, res);
     res
 }
 
@@ -2751,11 +2782,17 @@ pub unsafe extern "C" fn Array_shift(id: i64) -> i64 {
     0
 }
 
-#[unsafe(no_mangle)] 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Array_unshift(id: i64, val: i64) -> i64 {
     let mut heap = HEAP.lock().unwrap();
+    let stored_val = if (val & BORROW_FLAG) != 0 {
+        heap.clone_if_heap(val)
+    } else {
+        val
+    };
+
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
-        arr.insert(0, val);
+        arr.insert(0, stored_val);
         let len = arr.len();
         unsafe {
             LAST_ID = id;
@@ -2952,6 +2989,16 @@ pub unsafe extern "C" fn Array_splice(id: i64, start: i64, delete_count: i64, ar
     let mut heap = HEAP.lock().unwrap();
     let mut removed_items = Vec::new();
     
+    let mut items_to_insert = Vec::new();
+    if arg3 != 0 { 
+        let v = if (arg3 & BORROW_FLAG) != 0 { heap.clone_if_heap(arg3) } else { arg3 };
+        items_to_insert.push(v); 
+    }
+    if arg4 != 0 { 
+        let v = if (arg4 & BORROW_FLAG) != 0 { heap.clone_if_heap(arg4) } else { arg4 };
+        items_to_insert.push(v); 
+    }
+
     if let Some(TaggedValue::Array(arr)) = heap.get_mut(id) {
         let len = arr.len() as i64;
         let actual_start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
@@ -2965,10 +3012,10 @@ pub unsafe extern "C" fn Array_splice(id: i64, start: i64, delete_count: i64, ar
         }
         
         if arg4 != 0 {
-             arr.insert(actual_start, arg4);
+             arr.insert(actual_start, arg4 & !BORROW_FLAG);
         }
         if arg3 != 0 {
-             arr.insert(actual_start, arg3);
+             arr.insert(actual_start, arg3 & !BORROW_FLAG);
         }
         
         unsafe {
@@ -3198,15 +3245,15 @@ pub unsafe extern "C" fn rt_string_includes(id: i64, sub_ptr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_string_indexOf(id: i64, sub_ptr: i64) -> i64 {
     if id == 0 { return rt_box_number(-1.0); }
-    let heap = HEAP.lock().unwrap();
+    let mut heap = HEAP.lock().unwrap();
     let sub = unsafe { get_string_key(&heap, sub_ptr) };
     if let Some(TaggedValue::String(s)) = heap.get(id) {
         match s.find(&sub) {
-            Some(pos) => return rt_box_number(pos as f64),
-            None => return rt_box_number(-1.0),
+            Some(pos) => return rt_box_number_internal(&mut heap, pos as f64),
+            None => return rt_box_number_internal(&mut heap, -1.0),
         }
     }
-    rt_box_number(-1.0)
+    rt_box_number_internal(&mut heap, -1.0)
 }
 
 #[unsafe(no_mangle)]
@@ -4466,14 +4513,17 @@ pub unsafe extern "C" fn this_toString() -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_len(id: i64) -> i64 {
     let heap = HEAP.lock().unwrap();
-    if let Some(val) = heap.get(id) {
+    let len = if let Some(val) = heap.get(id) {
         match val {
-            TaggedValue::String(s) => return rt_box_int(s.len() as i64),
-            TaggedValue::Array(arr) => return rt_box_int(arr.len() as i64),
-            _ => return rt_box_int(0),
+            TaggedValue::String(s) => s.len() as i64,
+            TaggedValue::Array(arr) => arr.len() as i64,
+            TaggedValue::ByteArray(arr) => arr.len() as i64,
+            _ => 0,
         }
-    }
-    rt_box_int(0)
+    } else {
+        0
+    };
+    len
 }
 
 #[unsafe(no_mangle)]
@@ -4543,10 +4593,8 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
                     let c_str = CStr::from_ptr(p);
                     if let Ok(s) = c_str.to_str() {
                          let raw = map.get(s).cloned().unwrap_or(0);
-                         // Clone heap values so caller's Free doesn't destroy map's data
                          if raw >= HEAP_OFFSET {
-                             let mut heap = HEAP.lock().unwrap();
-                             return heap.clone_if_heap(raw);
+                             return raw | BORROW_FLAG;
                          }
                          return raw;
                     }
@@ -4571,10 +4619,8 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
                          LAST_MAP_PTR = PREV_MAP_PTR;
                          PREV_MAP_ID = tmp_id;
                          PREV_MAP_PTR = tmp_ptr;
-                         // Clone heap values so caller's Free doesn't destroy map's data
                          if raw >= HEAP_OFFSET {
-                             let mut heap = HEAP.lock().unwrap();
-                             return heap.clone_if_heap(raw);
+                             return raw | BORROW_FLAG;
                          }
                          return raw;
                     }
@@ -4584,7 +4630,7 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
     }
 
     // 2. Slow Path (Update Cache)
-    let mut heap = HEAP.lock().unwrap();
+    let heap = HEAP.lock().unwrap();
     if let Some(obj) = heap.get(id) {
         if let TaggedValue::Map(map) = obj {
              unsafe {
@@ -4602,8 +4648,10 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
              };
              
              let raw = map.get(&key).cloned().unwrap_or(0);
-             // Clone heap values so caller's Free doesn't destroy map's data
-             return heap.clone_if_heap(raw);
+             if raw >= HEAP_OFFSET {
+                 return raw | BORROW_FLAG;
+             }
+             return raw;
         }
     }
     
@@ -4615,10 +4663,11 @@ pub unsafe extern "C" fn rt_map_get_fast(id: i64, key_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_map_set_fast(id: i64, key_ptr: i64, val: i64) -> i64 {
-    // Clone heap values upfront — the borrow checker may free the original
-    let stored_val = {
-        let mut heap = HEAP.lock().unwrap();
+    let mut heap = HEAP.lock().unwrap();
+    let stored_val = if is_borrowed_id(val) {
         heap.clone_if_heap(val)
+    } else {
+        val
     };
 
     // 1. Fast Path (LAST cache)
@@ -4671,7 +4720,7 @@ pub unsafe extern "C" fn rt_map_set_fast(id: i64, key_ptr: i64, val: i64) -> i64
     }
 
     // 2. Slow Path
-    let mut heap = HEAP.lock().unwrap();
+    // heap is already locked above at the beginning of the function
     
     let key = if key_ptr > 0x100000000 && key_ptr < 0xFFFFFFFFFFFF {
          let p = key_ptr as *const c_char;

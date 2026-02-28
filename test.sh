@@ -192,7 +192,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # --- Execution ---
-[ ! -f "$TEJXC_BIN" ] && ./build.sh
+./build.sh
 
 if [ ${#SPECIFIC_PATHS[@]} -gt 0 ]; then
     print_header "Selective Tests"

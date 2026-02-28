@@ -1930,6 +1930,18 @@ impl Parser {
         }
     }
 
+    fn parse_some_expression(&mut self) -> Expression {
+        let start = self.previous().clone();
+        self.consume(TokenType::OpenParen, "Expected '(' after 'Some'");
+        let value = self.parse_expression();
+        self.consume(TokenType::CloseParen, "Expected ')' after 'Some' value");
+        Expression::SomeExpr {
+            value: Box::new(value),
+            _line: start.line,
+            _col: start.column,
+        }
+    }
+
     fn parse_primary(&mut self) -> Expression {
         if self.match_token(TokenType::True) {
             return Expression::BooleanLiteral {
@@ -1956,7 +1968,16 @@ impl Parser {
             return self.parse_new_expression();
         }
 
-        // Literal null/none check?
+        if self.match_token(TokenType::None) {
+            return Expression::NoneLiteral {
+                _line: self.previous().line,
+                _col: self.previous().column,
+            };
+        }
+
+        if self.match_token(TokenType::Some) {
+            return self.parse_some_expression();
+        }
 
         let token = self.peek().clone();
         match token.token_type {

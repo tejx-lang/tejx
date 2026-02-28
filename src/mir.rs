@@ -89,6 +89,7 @@ pub enum MIRInstruction {
         dst: String,
         obj: MIRValue,
         index: MIRValue,
+        borrow: bool,
         line: usize,
     },
     StoreIndex {

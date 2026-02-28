@@ -91,6 +91,13 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
+    NoneLiteral {
+        line: usize,
+    },
+    SomeExpr {
+        value: Box<HIRExpression>,
+        line: usize,
+    },
 }
 
 impl HIRExpression {
@@ -111,6 +118,8 @@ impl HIRExpression {
             HIRExpression::ArrayLiteral { ty, .. } => ty.clone(),
             HIRExpression::If { ty, .. } => ty.clone(),
             HIRExpression::Sequence { ty, .. } => ty.clone(),
+            HIRExpression::NoneLiteral { .. } => TejxType::Any, // None is generic
+            HIRExpression::SomeExpr { value, .. } => value.get_type(), // Simplified
         }
     }
 
@@ -131,6 +140,8 @@ impl HIRExpression {
             HIRExpression::ArrayLiteral { line, .. } => *line,
             HIRExpression::If { line, .. } => *line,
             HIRExpression::Sequence { line, .. } => *line,
+            HIRExpression::NoneLiteral { line, .. } => *line,
+            HIRExpression::SomeExpr { line, .. } => *line,
         }
     }
 }

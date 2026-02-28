@@ -23,14 +23,14 @@ class ResourcePool {
         this.pool.push(new Resource(2));
     }
 
-    acquire(): Resource {
+    acquire(): Resource | None {
         if (this.pool.length > 0) {
             return this.pool.pop();
         }
         return None;
     }
 
-    release(r: Resource) {
+    release(r: Resource | None) {
         if (r != None) {
              print("Releasing Resource:", r.id);
              this.pool.push(r);

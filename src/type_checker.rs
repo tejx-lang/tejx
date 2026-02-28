@@ -90,6 +90,8 @@ impl TypeChecker {
                 Self::expr_contains_identifier(callee, name)
                     || args.iter().any(|a| Self::expr_contains_identifier(a, name))
             }
+            Expression::NoneLiteral { .. } => false,
+            Expression::SomeExpr { value, .. } => Self::expr_contains_identifier(value, name),
             _ => false,
         }
     }
@@ -1140,6 +1142,15 @@ impl TypeChecker {
         // Thread members
         let mut thread_members = HashMap::new();
         thread_members.insert(
+            "constructor".to_string(),
+            MemberInfo {
+                type_name: "function:void:function,any,any".to_string(),
+                is_static: false,
+                access: AccessLevel::Public,
+                is_readonly: true,
+            },
+        );
+        thread_members.insert(
             "join".to_string(),
             MemberInfo {
                 type_name: "function:int32".to_string(),
@@ -2129,7 +2140,6 @@ impl TypeChecker {
             || type_name == "float"
             || type_name == "char"
             || type_name == "None"
-            || type_name == "null"
         {
             return true;
         }
@@ -2672,10 +2682,34 @@ impl TypeChecker {
                 else_branch,
                 ..
             } => {
-                self.check_expression(condition)?;
-                self.check_statement(then_branch)?;
-                if let Some(else_stmt) = else_branch {
-                    self.check_statement(else_stmt)?;
+                let _ = self.check_expression(condition)?;
+
+                // Attempt type narrowing
+                if let Some((name, narrowed_type, other_type)) =
+                    self.get_narrowing_from_condition(condition)
+                {
+                    // Then branch narrowing
+                    self.enter_scope();
+                    if !narrowed_type.is_empty() {
+                        self.define(name.clone(), narrowed_type);
+                    }
+                    self.check_statement(then_branch)?;
+                    self.exit_scope();
+
+                    // Else branch narrowing
+                    if let Some(else_stmt) = else_branch {
+                        self.enter_scope();
+                        if !other_type.is_empty() {
+                            self.define(name.clone(), other_type);
+                        }
+                        self.check_statement(else_stmt)?;
+                        self.exit_scope();
+                    }
+                } else {
+                    self.check_statement(then_branch)?;
+                    if let Some(else_stmt) = else_branch {
+                        self.check_statement(else_stmt)?;
+                    }
                 }
                 Ok(())
             }
@@ -3689,6 +3723,68 @@ impl TypeChecker {
         }
     }
 
+    fn strip_none_from_union(&self, type_name: &str) -> String {
+        if !type_name.contains('|') {
+            return type_name.to_string();
+        }
+        let parts: Vec<&str> = type_name.split('|').map(|s| s.trim()).collect();
+        let filtered: Vec<&str> = parts
+            .into_iter()
+            .filter(|&p| p != "None" && p != "null")
+            .collect();
+        if filtered.len() == 1 {
+            filtered[0].to_string()
+        } else {
+            filtered.join(" | ")
+        }
+    }
+
+    fn get_narrowing_from_condition(
+        &self,
+        condition: &Expression,
+    ) -> Option<(String, String, String)> {
+        match condition {
+            Expression::BinaryExpr {
+                left, op, right, ..
+            } => {
+                let name;
+                let is_not_none;
+
+                match (left.as_ref(), right.as_ref()) {
+                    (Expression::Identifier { name: n, .. }, Expression::NoneLiteral { .. }) => {
+                        name = n.clone();
+                        is_not_none = *op == TokenType::BangEqual;
+                    }
+                    (Expression::NoneLiteral { .. }, Expression::Identifier { name: n, .. }) => {
+                        name = n.clone();
+                        is_not_none = *op == TokenType::BangEqual;
+                    }
+                    _ => return None,
+                }
+
+                if *op != TokenType::BangEqual && *op != TokenType::EqualEqual {
+                    return None;
+                }
+
+                if let Some(sym) = self.lookup(&name) {
+                    let original_type = sym.type_name.clone();
+                    if original_type.contains('|') {
+                        let non_none = self.strip_none_from_union(&original_type);
+                        if is_not_none {
+                            // then: non_none, else: None
+                            return Some((name, non_none, "None".to_string()));
+                        } else {
+                            // then: None, else: non_none
+                            return Some((name, "None".to_string(), non_none));
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn check_expression(&mut self, expr: &Expression) -> Result<String, ()> {
         match expr {
             Expression::NumberLiteral { value, .. } => {
@@ -3700,6 +3796,11 @@ impl TypeChecker {
             }
             Expression::StringLiteral { .. } => Ok("string".to_string()),
             Expression::BooleanLiteral { .. } => Ok("bool".to_string()),
+            Expression::NoneLiteral { .. } => Ok("None".to_string()),
+            Expression::SomeExpr { value, .. } => {
+                let inner = self.check_expression(value)?;
+                Ok(inner) // Transparent for now, or maybe wrap in Option<T>?
+            }
             Expression::UnaryExpr {
                 op,
                 right,

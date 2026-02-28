@@ -28,4 +28,5 @@ function main(): void {
   let consumerThread = new Thread(consumer, q, lock);
   producerThread.join();
   consumerThread.join();
+  print("Producer and consumer finished.");
 }

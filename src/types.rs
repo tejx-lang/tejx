@@ -120,10 +120,10 @@ impl TejxType {
 
         if name.contains('|') {
             // Simple union handling: T | None -> T (nullable)
-            // We split by |, verify if one parts match "None" or "null"
+            // We split by |, verify if one parts match "None"
             let parts: Vec<&str> = name.split('|').map(|s| s.trim()).collect();
             for part in parts {
-                if part != "None" && part != "null" {
+                if part != "None" {
                     return TejxType::from_name(part);
                 }
             }

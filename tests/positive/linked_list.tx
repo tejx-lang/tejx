@@ -4,7 +4,7 @@
 
 class Node {
     value: int32;
-    next: Node;
+    next: Node | None;
 
     constructor(val: int32) {
         this.value = val;
@@ -30,7 +30,7 @@ function main() {
     // Traversal
     print("Traversing (Destructive):");
     
-    let current = head;
+    let current: Node | None = head;
     // head is moved to current. head is now Moved.
 
     while (current != None) {
