@@ -891,10 +891,8 @@ pub extern "C" fn __callee___describe() -> i64 { 0 }
 #[unsafe(no_mangle)]
 pub fn stringify_value_internal(heap: &Heap, id: i64) -> String {
     let borrow = is_borrowed_id(id);
-    let stripped_id = if (id & BORROW_FLAG) != 0 { id & !BORROW_FLAG } else { id };
+    let stripped_id = if borrow { id & !BORROW_FLAG } else { id };
     
-    println!("DEBUG: stringify_value_internal id={} stripped={} borrow={}", id, stripped_id, borrow);
-
     if let Some(obj) = heap.get(stripped_id) {
         match obj {
             TaggedValue::ConsString(_, _, _) => {
@@ -1814,16 +1812,12 @@ pub unsafe extern "C" fn rt_to_number_v2(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub fn rt_to_number(id: i64) -> f64 {
-    let borrow = is_borrowed_id(id);
-    let stripped_id = if borrow { id & !BORROW_FLAG } else { id };
-    
-    // Fast-path: skip mutex for non-heap values
-    // Small integers: direct conversion
-    // If it wasn't a borrow, then 'id' is naturally stripped (or a negative number).
-    if stripped_id > -HEAP_OFFSET && stripped_id < HEAP_OFFSET {
-        return stripped_id as f64;
+    // Fast-path: small integers (including negative ones like -1)
+    if id > -HEAP_OFFSET && id < HEAP_OFFSET {
+        return id as f64;
     }
-    
+
+    let borrow = is_borrowed_id(id);
     // Bitcasted doubles: values outside the heap ID range
     // If it's a borrow, we MUST treat it as a heap ID.
     if !borrow && (id < 0 || id > 2_100_000_000) {
@@ -1851,12 +1845,16 @@ pub fn rt_to_number_internal(heap: &Heap, id: i64) -> f64 {
             _ => std::f64::NAN
         }
     } else {
-        let id = id & !BORROW_FLAG;
         // Small integer optimization: values are treated as direct numbers
         if id > -HEAP_OFFSET && id < HEAP_OFFSET {
             return id as f64;
         }
-        f64::from_bits(id as u64)
+        let stripped_id = id & !BORROW_FLAG;
+        // Re-check after stripping borrow flag
+        if stripped_id > -HEAP_OFFSET && stripped_id < HEAP_OFFSET {
+            return stripped_id as f64;
+        }
+        f64::from_bits(stripped_id as u64)
     }
 }
 
@@ -2758,9 +2756,14 @@ pub unsafe extern "C" fn Array_indexOf(id: i64, val: i64) -> i64 {
          let elements = arr.clone();
          drop(heap);
          for (i, &v) in elements.iter().enumerate() {
-             if unsafe { rt_strict_equal(v, val) } == 1 { return i as i64; }
+             let res = unsafe { rt_strict_equal(v, val) };
+             if res == 1 { 
+                 return i as i64; 
+             }
          }
-    } else { drop(heap); }
+    } else { 
+        drop(heap); 
+    }
     -1
 }
 
