@@ -43,6 +43,7 @@ fn main() {
     let mut _emit_llvm = true;
     let mut target_wasm = false;
     let mut compile_only = false;
+    let mut unsafe_arrays = false;
     let mut output_name = None;
 
     let mut i = 1;
@@ -59,6 +60,9 @@ fn main() {
             }
             "--disable-async" => {
                 async_enabled = false;
+            }
+            "--unsafe-arrays" => {
+                unsafe_arrays = true;
             }
             "--emit-mir" => {
                 emit_mir = true;
@@ -348,6 +352,7 @@ fn main() {
     }
 
     let mut codegen = CodeGen::new();
+    codegen.unsafe_arrays = unsafe_arrays;
     let llvm_code = codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars);
 
     let output_name = output_name.unwrap_or_else(|| {

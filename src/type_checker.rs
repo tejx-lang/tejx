@@ -1783,43 +1783,43 @@ impl TypeChecker {
                         );
                         self.define_with_params(
                             "abs".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "round".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "floor".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "ceil".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "pow".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
+                            "function:float64:float64,float64".to_string(),
+                            vec!["float64".to_string(), "float64".to_string()],
                         );
                         self.define_with_params(
                             "sqrt".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "sin".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "cos".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                     } else if source == "std:json" {
                         self.define_with_params(

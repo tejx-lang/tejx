@@ -1347,6 +1347,25 @@ impl MIRLowering {
                             }
                         }
 
+                        // Fix: prevent primitive boxing for math intrinsics
+                        if callee == "std_math_sin"
+                            || callee == "std_math_cos"
+                            || callee == "std_math_tan"
+                            || callee == "std_math_asin"
+                            || callee == "std_math_acos"
+                            || callee == "std_math_atan"
+                            || callee == "std_math_sqrt"
+                            || callee == "std_math_log"
+                            || callee == "std_math_exp"
+                            || callee == "std_math_round"
+                            || callee == "std_math_floor"
+                            || callee == "std_math_ceil"
+                            || callee == "std_math_abs"
+                            || callee == "std_math_pow"
+                        {
+                            target_ty = TejxType::Float64;
+                        }
+
                         self.auto_box(val, &target_ty)
                     })
                     .collect();

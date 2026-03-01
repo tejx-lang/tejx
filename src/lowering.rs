@@ -2888,7 +2888,7 @@ impl Lowering {
 
                             final_callee = self.stdlib.get_runtime_name(final_mod_name, func_name);
                             if mod_name == "math" {
-                                ty = TejxType::Any;
+                                ty = TejxType::Float64;
                             }
                             break;
                         }

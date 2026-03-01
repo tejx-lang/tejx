@@ -1,6 +1,5 @@
 use crate::runtime::{
-    __resolve_promise, ACTIVE_ASYNC_OPS, HEAP, Promise_new, TaggedValue, rt_box_number,
-    tejx_enqueue_task,
+    __resolve_promise, ACTIVE_ASYNC_OPS, HEAP, Promise_new, TaggedValue, tejx_enqueue_task,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -50,7 +49,8 @@ pub unsafe extern "C" fn std_time_now() -> i64 {
     let since_the_epoch = start
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
-    rt_box_number(since_the_epoch.as_millis() as f64)
+    let millis = since_the_epoch.as_millis() as f64;
+    millis.to_bits() as i64
 }
 
 // --- Async APIs ---
