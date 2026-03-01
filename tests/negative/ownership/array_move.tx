@@ -1,0 +1,13 @@
+// Negative test: using array after moving it to another variable
+// Expected: E0103 Use of moved variable
+// Note: With SOI, function args auto-borrow when variable is used later.
+//       This test uses assignment to move the array.
+
+class Holder { val: int32; }
+
+function main() {
+    let h = new Holder();
+    h.val = 42; 
+    let h2 = h;           // h moved via assignment
+    print(h.val);          // ERROR: h already moved
+}

@@ -76,6 +76,8 @@ impl Lexer {
         keywords.insert("interface".to_string(), TokenType::Interface);
         keywords.insert("to".to_string(), TokenType::To);
         keywords.insert("of".to_string(), TokenType::Of);
+        keywords.insert("ref".to_string(), TokenType::Ref);
+        keywords.insert("weak".to_string(), TokenType::Weak);
 
         Self {
             source: source.chars().collect(),
@@ -141,7 +143,7 @@ impl Lexer {
                         }
                     }
                     '/' => {
-                         if self.peek(1) == '=' {
+                        if self.peek(1) == '=' {
                             self.advance();
                             TokenType::SlashEquals
                         } else {
@@ -173,9 +175,9 @@ impl Lexer {
                         }
                     }
                     '!' => {
-                         if self.peek(1) == '=' {
+                        if self.peek(1) == '=' {
                             self.advance();
-                             if self.peek(1) == '=' {
+                            if self.peek(1) == '=' {
                                 self.advance();
                                 TokenType::BangEqualEqual
                             } else {
@@ -186,33 +188,33 @@ impl Lexer {
                         }
                     }
                     '<' => {
-                         if self.peek(1) == '=' {
-                             self.advance();
-                             TokenType::LessEqual
-                         } else if self.peek(1) == '<' {
-                             self.advance();
-                             if self.peek(1) == '=' {
-                                 self.advance();
-                                 TokenType::LessLessEquals
-                             } else {
-                                 TokenType::LessLess
-                             }
-                         } else {
-                             TokenType::Less
-                         }
+                        if self.peek(1) == '=' {
+                            self.advance();
+                            TokenType::LessEqual
+                        } else if self.peek(1) == '<' {
+                            self.advance();
+                            if self.peek(1) == '=' {
+                                self.advance();
+                                TokenType::LessLessEquals
+                            } else {
+                                TokenType::LessLess
+                            }
+                        } else {
+                            TokenType::Less
+                        }
                     }
                     '>' => {
                         if self.peek(1) == '=' {
                             self.advance();
                             TokenType::GreaterEqual
                         } else if self.peek(1) == '>' {
-                             self.advance();
-                             if self.peek(1) == '=' {
-                                 self.advance();
-                                 TokenType::GreaterGreaterEquals
-                             } else {
-                                 TokenType::GreaterGreater
-                             }
+                            self.advance();
+                            if self.peek(1) == '=' {
+                                self.advance();
+                                TokenType::GreaterGreaterEquals
+                            } else {
+                                TokenType::GreaterGreater
+                            }
                         } else {
                             TokenType::Greater
                         }
@@ -247,8 +249,8 @@ impl Lexer {
                             self.advance();
                             TokenType::QuestionDot
                         } else if self.peek(1) == '?' {
-                             self.advance();
-                             TokenType::QuestionQuestion
+                            self.advance();
+                            TokenType::QuestionQuestion
                         } else {
                             TokenType::Question
                         }
@@ -282,11 +284,11 @@ impl Lexer {
                         } else {
                             TokenType::Caret
                         }
-                    },
+                    }
                     '~' => TokenType::Tilde,
                     _ => TokenType::Unknown,
                 };
-                
+
                 let value = match token_type {
                     TokenType::PlusEquals => "+=".to_string(),
                     TokenType::PlusPlus => "++".to_string(),
@@ -323,12 +325,17 @@ impl Lexer {
             }
         }
 
-        tokens.push(Token::new(TokenType::EndOfFile, "".to_string(), self.line, self.column));
+        tokens.push(Token::new(
+            TokenType::EndOfFile,
+            "".to_string(),
+            self.line,
+            self.column,
+        ));
         tokens
     }
 
     fn peek(&self, offset: usize) -> char {
-         if self.position + offset >= self.source.len() {
+        if self.position + offset >= self.source.len() {
             '\0'
         } else {
             self.source[self.position + offset]
@@ -390,7 +397,11 @@ impl Lexer {
             text.push(self.advance());
         }
 
-        let token_type = self.keywords.get(&text).cloned().unwrap_or(TokenType::Identifier);
+        let token_type = self
+            .keywords
+            .get(&text)
+            .cloned()
+            .unwrap_or(TokenType::Identifier);
         Token::new(token_type, text, self.line, start_col)
     }
 
@@ -429,76 +440,76 @@ impl Lexer {
             } else if c == quote {
                 break;
             } else if c == '\n' {
-                 // Error: Unclosed string (newline in string not allowed without escaping usually)
-                 // But we can choose to allow it and just report error to continue lexing.
-                 self.errors.push(crate::diagnostics::Diagnostic::new(
+                // Error: Unclosed string (newline in string not allowed without escaping usually)
+                // But we can choose to allow it and just report error to continue lexing.
+                self.errors.push(crate::diagnostics::Diagnostic::new(
                     format!("Unclosed string literal starting with {}", quote),
                     start_line,
                     start_col,
-                    self.filename.clone()
-                 ));
-                 // Break to avoid gobbling the whole file into one string if possible? 
-                 // Actually, let's just break and treat the rest as new tokens.
-                 break;
+                    self.filename.clone(),
+                ));
+                // Break to avoid gobbling the whole file into one string if possible?
+                // Actually, let's just break and treat the rest as new tokens.
+                break;
             } else {
                 value.push(self.advance());
             }
         }
-        
+
         if self.is_at_end() || self.peek(0) != quote {
             self.errors.push(crate::diagnostics::Diagnostic::new(
                 format!("Unclosed string literal starting with {}", quote),
                 start_line,
                 start_col,
-                self.filename.clone()
+                self.filename.clone(),
             ));
         } else {
             self.advance(); // Skip closing quote
         }
-        
+
         Token::new(TokenType::String, value, start_line, start_col)
     }
 
     fn read_template_string(&mut self) -> Token {
-         let start_col = self.column;
-         self.advance(); // Skip `
-         let mut value = String::new();
-         // Basic template string support - skipping deep interpolation logic for now to get minimal working version
-         // matching C++ logic but simplified for first pass. 
-         // Actually, let's implement the brace counting if possible.
-         
-         let mut brace_depth = 0;
-         let mut in_interpolation = false;
+        let start_col = self.column;
+        self.advance(); // Skip `
+        let mut value = String::new();
+        // Basic template string support - skipping deep interpolation logic for now to get minimal working version
+        // matching C++ logic but simplified for first pass.
+        // Actually, let's implement the brace counting if possible.
 
-         while !self.is_at_end() {
-             if self.peek(0) == '`' && !in_interpolation {
-                 break;
-             }
-             
-             if self.peek(0) == '$' && self.peek(1) == '{' && !in_interpolation {
-                 in_interpolation = true;
-                 brace_depth = 1;
-                 value.push(self.advance()); // $
-                 value.push(self.advance()); // {
-             } else if in_interpolation {
-                 if self.peek(0) == '{' {
-                     brace_depth += 1;
-                 } else if self.peek(0) == '}' {
-                     brace_depth -= 1;
-                     if brace_depth == 0 {
-                         in_interpolation = false;
-                     }
-                 }
-                 value.push(self.advance());
-             } else {
-                 value.push(self.advance());
-             }
-         }
-         
-         if !self.is_at_end() {
-             self.advance();
-         }
-         
-         Token::new(TokenType::TemplateString, value, self.line, start_col)
+        let mut brace_depth = 0;
+        let mut in_interpolation = false;
+
+        while !self.is_at_end() {
+            if self.peek(0) == '`' && !in_interpolation {
+                break;
+            }
+
+            if self.peek(0) == '$' && self.peek(1) == '{' && !in_interpolation {
+                in_interpolation = true;
+                brace_depth = 1;
+                value.push(self.advance()); // $
+                value.push(self.advance()); // {
+            } else if in_interpolation {
+                if self.peek(0) == '{' {
+                    brace_depth += 1;
+                } else if self.peek(0) == '}' {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        in_interpolation = false;
+                    }
+                }
+                value.push(self.advance());
+            } else {
+                value.push(self.advance());
+            }
+        }
+
+        if !self.is_at_end() {
+            self.advance();
+        }
+
+        Token::new(TokenType::TemplateString, value, self.line, start_col)
     }
 }

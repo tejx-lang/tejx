@@ -1,7 +1,7 @@
 // Operator Tests
 // ==============
 
-import { assert_eq_int } from "../utils.tx";
+import { assert_eq_int, assert_ne_int } from "../utils.tx";
 
 function main() {
     print("--- Operator Tests ---");
@@ -10,27 +10,35 @@ function main() {
     let val = 10;
     val += 5; 
     assert_eq_int(15, val, "+=");
+    assert_ne_int(10, val, "+= not original");
     
     val -= 5;
     assert_eq_int(10, val, "-=");
+    assert_ne_int(15, val, "-= not previous");
     
     val *= 2; 
     assert_eq_int(20, val, "*=");
+    assert_ne_int(10, val, "*= not previous");
     
     val /= 2;
     assert_eq_int(10, val, "/=");
+    assert_ne_int(20, val, "/= not previous");
 
     // Increment/Decrement
     let x = 0;
     x++;
     assert_eq_int(1, x, "post-inc");
+    assert_ne_int(0, x, "post-inc not zero");
     ++x;
     assert_eq_int(2, x, "pre-inc");
+    assert_ne_int(1, x, "pre-inc not previous");
     
     x--;
     assert_eq_int(1, x, "post-dec");
+    assert_ne_int(2, x, "post-dec not previous");
     --x;
     assert_eq_int(0, x, "pre-dec");
+    assert_ne_int(1, x, "pre-dec not previous");
 
     print("Operator tests complete!");
 }

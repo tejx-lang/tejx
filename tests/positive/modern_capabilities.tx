@@ -40,12 +40,12 @@ class Stack {
         list.push(item);
     }
     
-    pop(): object {
+    pop(): object | None {
         let list = this.items;
         return list.pop();
     }
     
-    peek(): object {
+    peek(): object | None {
         if (this.items.length == 0) return None;
         return this.items[this.items.length - 1];
     }

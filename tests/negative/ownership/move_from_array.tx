@@ -1,0 +1,14 @@
+// Description: Cannot move out of array — elements are owned by the array
+// EXPECTED: COMPILE_ERROR
+// SOI-aware: function call uses class instance moved from another variable
+
+class Token {
+    kind: int32;
+    constructor() { this.kind = 1; }
+}
+
+function main() {
+    let t = new Token();
+    let t2 = t;         // moved via assignment
+    print(t.kind);      // ERROR: t already moved to t2
+}

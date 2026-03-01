@@ -1,10 +1,10 @@
+use crate::runtime::{ACTIVE_ASYNC_OPS, HEAP, PromiseState, TaggedValue, stringify_value};
 use std::collections::HashSet;
+use std::ffi::CString;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::ffi::CString;
-use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::Ordering;
-use crate::runtime::{HEAP, TaggedValue, stringify_value, PromiseState, ACTIVE_ASYNC_OPS};
+use std::sync::{Arc, Condvar, Mutex};
 
 pub fn exports() -> HashSet<String> {
     let mut s = HashSet::new();
@@ -102,18 +102,33 @@ fn std_net_http_request_sync(method: &str, url: &str, body: Option<&str>) -> i64
                 let mut heap = HEAP.lock().unwrap();
                 return heap.alloc(TaggedValue::String(s));
             } else {
-                 let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                    use std::io::Write;
-                    let _ = writeln!(f, "Sync Request Failed ({} {}). Status: {:?}. Stderr: {}", method, url, output.status, String::from_utf8_lossy(&output.stderr));
-                });
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/tejx_debug.log")
+                    .map(|mut f| {
+                        use std::io::Write;
+                        let _ = writeln!(
+                            f,
+                            "Sync Request Failed ({} {}). Status: {:?}. Stderr: {}",
+                            method,
+                            url,
+                            output.status,
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    });
             }
             0
         }
         Err(e) => {
-             let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                use std::io::Write;
-                let _ = writeln!(f, "Sync Request execution failed: {}", e);
-            });
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/tejx_debug.log")
+                .map(|mut f| {
+                    use std::io::Write;
+                    let _ = writeln!(f, "Sync Request execution failed: {}", e);
+                });
             0
         }
     }
@@ -123,33 +138,37 @@ fn std_net_http_request_sync(method: &str, url: &str, body: Option<&str>) -> i64
 fn std_net_http_request_async(method: String, url: String, body: Option<String>) -> i64 {
     use std::thread;
 
-    let promise: Arc<(Mutex<PromiseState>, Condvar)> = Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()));
+    let promise: Arc<(Mutex<PromiseState>, Condvar)> =
+        Arc::new((Mutex::new(PromiseState::Pending), Condvar::new()));
     let p_clone = Arc::clone(&promise);
-    
+
     let promise_id = {
         let mut heap = HEAP.lock().unwrap();
         heap.alloc(TaggedValue::Promise(promise))
     };
-    
+
     ACTIVE_ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
     thread::spawn(move || {
         let result = std_net_http_request_internal(&method, &url, body.as_deref());
         let lock: &Mutex<PromiseState> = &p_clone.0;
         let cvar: &Condvar = &p_clone.1;
         let mut state = lock.lock().unwrap();
-        if result != 0 {
-            *state = PromiseState::Resolved(result);
-        } else {
-            *state = PromiseState::Rejected(0);
+        match result {
+            Ok(s) => *state = PromiseState::ResolvedString(s),
+            Err(e) => *state = PromiseState::RejectedString(e),
         }
         cvar.notify_all();
         ACTIVE_ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
     });
-    
+
     promise_id
 }
 
-fn std_net_http_request_internal(method: &str, url: &str, body: Option<&str>) -> i64 {
+fn std_net_http_request_internal(
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+) -> Result<String, String> {
     use std::process::Command;
     let mut cmd = Command::new("/usr/bin/curl");
     cmd.arg("-s").arg("-X").arg(method).arg(url);
@@ -159,63 +178,154 @@ fn std_net_http_request_internal(method: &str, url: &str, body: Option<&str>) ->
     match cmd.output() {
         Ok(output) => {
             if output.status.success() {
-                let s = String::from_utf8_lossy(&output.stdout).to_string();
-                let mut heap = HEAP.lock().unwrap();
-                let id = heap.alloc(TaggedValue::String(s));
-                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                    use std::io::Write;
-                    let _ = writeln!(f, "Request successful. Allocated ID: {}", id);
-                });
-                return id;
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
             } else {
-                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                    use std::io::Write;
-                    let _ = writeln!(f, "Curl failed with status: {:?}. Stderr: {}", output.status, String::from_utf8_lossy(&output.stderr));
-                });
+                Err(String::from_utf8_lossy(&output.stderr).to_string())
             }
-            0
         }
-        Err(e) => {
-            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tejx_debug.log").map(|mut f| {
-                use std::io::Write;
-                let _ = writeln!(f, "Failed to execute /usr/bin/curl: {}", e);
-            });
-            0
-        }
+        Err(e) => Err(e.to_string()),
     }
 }
 
 // Exported Sync Methods
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_getSync(url_id: i64) -> i64 { std_net_http_request_sync("GET", &stringify_value(url_id), None) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_postSync(url_id: i64, body_id: i64) -> i64 { std_net_http_request_sync("POST", &stringify_value(url_id), Some(&stringify_value(body_id))) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_putSync(url_id: i64, body_id: i64) -> i64 { std_net_http_request_sync("PUT", &stringify_value(url_id), Some(&stringify_value(body_id))) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_deleteSync(url_id: i64) -> i64 { std_net_http_request_sync("DELETE", &stringify_value(url_id), None) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_patchSync(url_id: i64, body_id: i64) -> i64 { std_net_http_request_sync("PATCH", &stringify_value(url_id), Some(&stringify_value(body_id))) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_headSync(url_id: i64) -> i64 { std_net_http_request_sync("HEAD", &stringify_value(url_id), None) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_optionsSync(url_id: i64) -> i64 { std_net_http_request_sync("OPTIONS", &stringify_value(url_id), None) }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_getSync(url_id: i64) -> i64 {
+    std_net_http_request_sync("GET", &stringify_value(url_id), None)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_postSync(url_id: i64, body_id: i64) -> i64 {
+    std_net_http_request_sync(
+        "POST",
+        &stringify_value(url_id),
+        Some(&stringify_value(body_id)),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_putSync(url_id: i64, body_id: i64) -> i64 {
+    std_net_http_request_sync(
+        "PUT",
+        &stringify_value(url_id),
+        Some(&stringify_value(body_id)),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_deleteSync(url_id: i64) -> i64 {
+    std_net_http_request_sync("DELETE", &stringify_value(url_id), None)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_patchSync(url_id: i64, body_id: i64) -> i64 {
+    std_net_http_request_sync(
+        "PATCH",
+        &stringify_value(url_id),
+        Some(&stringify_value(body_id)),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_headSync(url_id: i64) -> i64 {
+    std_net_http_request_sync("HEAD", &stringify_value(url_id), None)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_optionsSync(url_id: i64) -> i64 {
+    std_net_http_request_sync("OPTIONS", &stringify_value(url_id), None)
+}
 
 // Exported Async Methods
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_get(url_id: i64) -> i64 { std_net_http_request_async("GET".to_string(), stringify_value(url_id), None) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_post(url_id: i64, body_id: i64) -> i64 { std_net_http_request_async("POST".to_string(), stringify_value(url_id), Some(stringify_value(body_id))) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_put(url_id: i64, body_id: i64) -> i64 { std_net_http_request_async("PUT".to_string(), stringify_value(url_id), Some(stringify_value(body_id))) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_delete(url_id: i64) -> i64 { std_net_http_request_async("DELETE".to_string(), stringify_value(url_id), None) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_patch(url_id: i64, body_id: i64) -> i64 { std_net_http_request_async("PATCH".to_string(), stringify_value(url_id), Some(stringify_value(body_id))) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_head(url_id: i64) -> i64 { std_net_http_request_async("HEAD".to_string(), stringify_value(url_id), None) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_http_options(url_id: i64) -> i64 { std_net_http_request_async("OPTIONS".to_string(), stringify_value(url_id), None) }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_get(url_id: i64) -> i64 {
+    std_net_http_request_async("GET".to_string(), stringify_value(url_id), None)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_post(url_id: i64, body_id: i64) -> i64 {
+    std_net_http_request_async(
+        "POST".to_string(),
+        stringify_value(url_id),
+        Some(stringify_value(body_id)),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_put(url_id: i64, body_id: i64) -> i64 {
+    std_net_http_request_async(
+        "PUT".to_string(),
+        stringify_value(url_id),
+        Some(stringify_value(body_id)),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_delete(url_id: i64) -> i64 {
+    std_net_http_request_async("DELETE".to_string(), stringify_value(url_id), None)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_patch(url_id: i64, body_id: i64) -> i64 {
+    std_net_http_request_async(
+        "PATCH".to_string(),
+        stringify_value(url_id),
+        Some(stringify_value(body_id)),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_head(url_id: i64) -> i64 {
+    std_net_http_request_async("HEAD".to_string(), stringify_value(url_id), None)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_http_options(url_id: i64) -> i64 {
+    std_net_http_request_async("OPTIONS".to_string(), stringify_value(url_id), None)
+}
 
 // HTTPS versions
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_getSync(url_id: i64) -> i64 { std_http_getSync(url_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_postSync(url_id: i64, body_id: i64) -> i64 { std_http_postSync(url_id, body_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_putSync(url_id: i64, body_id: i64) -> i64 { std_http_putSync(url_id, body_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_deleteSync(url_id: i64) -> i64 { std_http_deleteSync(url_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_patchSync(url_id: i64, body_id: i64) -> i64 { std_http_patchSync(url_id, body_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_headSync(url_id: i64) -> i64 { std_http_headSync(url_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_optionsSync(url_id: i64) -> i64 { std_http_optionsSync(url_id) }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_getSync(url_id: i64) -> i64 {
+    unsafe { std_http_getSync(url_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_postSync(url_id: i64, body_id: i64) -> i64 {
+    unsafe { std_http_postSync(url_id, body_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_putSync(url_id: i64, body_id: i64) -> i64 {
+    unsafe { std_http_putSync(url_id, body_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_deleteSync(url_id: i64) -> i64 {
+    unsafe { std_http_deleteSync(url_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_patchSync(url_id: i64, body_id: i64) -> i64 {
+    unsafe { std_http_patchSync(url_id, body_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_headSync(url_id: i64) -> i64 {
+    unsafe { std_http_headSync(url_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_optionsSync(url_id: i64) -> i64 {
+    unsafe { std_http_optionsSync(url_id) }
+}
 
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_get(url_id: i64) -> i64 { std_http_get(url_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_post(url_id: i64, body_id: i64) -> i64 { std_http_post(url_id, body_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_put(url_id: i64, body_id: i64) -> i64 { std_http_put(url_id, body_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_delete(url_id: i64) -> i64 { std_http_delete(url_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_patch(url_id: i64, body_id: i64) -> i64 { std_http_patch(url_id, body_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_head(url_id: i64) -> i64 { std_http_head(url_id) }
-#[unsafe(no_mangle)] pub unsafe extern "C" fn std_https_options(url_id: i64) -> i64 { std_http_options(url_id) }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_get(url_id: i64) -> i64 {
+    unsafe { std_http_get(url_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_post(url_id: i64, body_id: i64) -> i64 {
+    unsafe { std_http_post(url_id, body_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_put(url_id: i64, body_id: i64) -> i64 {
+    unsafe { std_http_put(url_id, body_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_delete(url_id: i64) -> i64 {
+    unsafe { std_http_delete(url_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_patch(url_id: i64, body_id: i64) -> i64 {
+    unsafe { std_http_patch(url_id, body_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_head(url_id: i64) -> i64 {
+    unsafe { std_http_head(url_id) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn std_https_options(url_id: i64) -> i64 {
+    unsafe { std_http_options(url_id) }
+}

@@ -1,7 +1,7 @@
 // Array Tests
 // ===========
 
-import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+import { assert_eq_int, assert_eq_string, assert_true, assert_ne_int } from "../utils.tx";
 
 function main() {
     print("--- Array Methods ---");
@@ -12,6 +12,7 @@ function main() {
         return acc + val;
     }, 0);
     assert_eq_int(15, sum, "reduce sum");
+    assert_ne_int(0, sum, "reduce not zero");
 
     // find
     let found = arr.find((val: int, idx: int) => {
@@ -24,6 +25,7 @@ function main() {
         return val == 4;
     });
     assert_eq_int(3, foundIdx, "findIndex(4)");
+    assert_ne_int(-1, foundIdx, "findIndex not -1");
 
     // reverse
     let revArr = [1, 2, 3];
@@ -43,6 +45,7 @@ function main() {
     // len() check from prelude
     let lenArr = [1, 2, 3, 4, 5];
     assert_eq_int(5, len(lenArr), "len(Array)");
+    assert_ne_int(0, len(lenArr), "len(Array) not zero");
 
     // Memory block check
     {
@@ -57,10 +60,12 @@ function main() {
     let arr2 = [1, 2, 3];
     arr2.push(4);
     assert_eq_int(4, len(arr2), "push length");
+    assert_ne_int(3, len(arr2), "push length not original");
     assert_eq_int(4, arr2[3], "push value");
 
     let popped = arr2.pop();
     assert_eq_int(4, popped, "pop value");
+    assert_ne_int(0, popped, "pop value not zero");
     assert_eq_int(3, len(arr2), "pop length");
 
     // Shift/Unshift
@@ -76,6 +81,7 @@ function main() {
     let arr3 = [4, 5];
     let merged = arr2.concat(arr3); // [1, 2, 3, 4, 5]
     assert_eq_int(5, len(merged), "concat length");
+    assert_ne_int(3, len(merged), "concat not original length");
     assert_eq_int(5, merged[4], "concat value");
 
     // IndexOf
@@ -96,6 +102,7 @@ function main() {
     // Filter
     let evens = nums.filter((x: int) => x % 2 == 0);
     assert_eq_int(1, len(evens), "filter length");
+    assert_ne_int(3, len(evens), "filter not full length");
     assert_eq_int(2, evens[0], "filter value");
 
     // ForEach
@@ -118,4 +125,5 @@ function main() {
         diagSum += matrix[i][i];
     }
     assert_eq_int(5, diagSum, "matrix diagonal sum");
+    assert_ne_int(0, diagSum, "matrix diag not zero");
 }

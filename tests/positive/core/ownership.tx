@@ -1,0 +1,285 @@
+// Ownership & Move Semantics Tests
+// =================================
+// Positive tests: all should compile and run correctly.
+// Tests ownership transfer, primitive copy, reinit after move,
+// return ownership, and conditional ownership.
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_int, assert_ne_string } from "../utils.tx";
+
+// --- Helper Classes ---
+
+class Resource {
+    id: int32;
+    constructor(id: int32) { this.id = id; }
+}
+
+class Wrapper {
+    label: string;
+    val: int32;
+    constructor(label: string, val: int32) {
+        this.label = label;
+        this.val = val;
+    }
+}
+
+// --- Test: Primitive Types are Copy ---
+
+function double_prim(x: int32): int32 { return x * 2; }
+
+function test_primitive_copy() {
+    print("--- Primitive Copy ---");
+    
+    let a = 10;
+    let b = a;        // Copy, not move
+    let c = double_prim(a); // a still alive
+    
+    assert_eq_int(10, a, "a after copy");
+    assert_eq_int(10, b, "b is copy of a");
+    assert_eq_int(20, c, "c = doubled a");
+    assert_ne_int(0, a, "a not zero after copy");
+
+    // Bool is copy
+    let flag = true;
+    let flag2 = flag;
+    assert_true(flag, "flag after copy");
+    assert_true(flag2, "flag2 is copy");
+
+    // Repeated copies
+    let x = 42;
+    let y = x;
+    let z = x;
+    let w = x;
+    assert_eq_int(42, x, "x after 3 copies");
+    assert_eq_int(42, y, "y copy");
+    assert_eq_int(42, z, "z copy");
+    assert_eq_int(42, w, "w copy");
+}
+
+// --- Test: Object Move and Use ---
+
+function consume_resource(r: Resource): int32 {
+    return r.id;
+}
+
+function test_object_move() {
+    print("--- Object Move ---");
+
+    let r1 = new Resource(100);
+    let id = consume_resource(r1);
+    // r1 is moved — cannot use it again
+    assert_eq_int(100, id, "Consumed resource id");
+    assert_ne_int(0, id, "Consumed id not zero");
+}
+
+// --- Test: Reinit After Move ---
+
+function test_reinit_after_move() {
+    print("--- Reinit After Move ---");
+
+    let r = new Resource(1);
+    let r2 = r;       // r is moved to r2
+    r = new Resource(2); // r is reinitialized
+    
+    assert_eq_int(2, r.id, "Reinit r is new");
+    assert_ne_int(1, r.id, "Reinit r not old");
+    assert_eq_int(1, r2.id, "r2 has original");
+}
+
+// --- Test: Return Ownership ---
+
+function create_resource(id: int32): Resource {
+    let r = new Resource(id);
+    return r; // Ownership goes to caller
+}
+
+function passthrough(r: Resource): Resource {
+    return r; // Transfer in, transfer out
+}
+
+function test_return_ownership() {
+    print("--- Return Ownership ---");
+
+    let r1 = create_resource(10);
+    assert_eq_int(10, r1.id, "Created resource");
+    assert_ne_int(0, r1.id, "Created not zero");
+
+    let r2 = create_resource(20);
+    let r3 = passthrough(r2); // r2 moved in, r3 gets ownership
+    assert_eq_int(20, r3.id, "Passthrough resource");
+
+    // Two-step instead of chained (avoids inline temp move issue)
+    let r4_tmp = create_resource(30);
+    let r4 = passthrough(r4_tmp);
+    assert_eq_int(30, r4.id, "Two-step passthrough");
+}
+
+// --- Test: Move in Conditional ---
+
+function test_conditional_move() {
+    print("--- Conditional Move ---");
+
+    let flag = true;
+    let result = 0;
+    
+    if (flag) {
+        let r = new Resource(42);
+        result = r.id;
+        // r moved/freed at end of block
+    } else {
+        let r = new Resource(0);
+        result = r.id;
+    }
+    assert_eq_int(42, result, "True branch resource");
+    assert_ne_int(0, result, "Not false branch");
+
+    flag = false;
+    if (flag) {
+        result = 999;
+    } else {
+        let r = new Resource(77);
+        result = r.id;
+    }
+    assert_eq_int(77, result, "False branch resource");
+    assert_ne_int(999, result, "Not true branch");
+}
+
+// --- Test: Object Fields After Method Call ---
+
+function test_field_access() {
+    print("--- Field Access ---");
+
+    let w = new Wrapper("test", 10);
+    assert_eq_string("test", w.label, "Wrapper label");
+    assert_eq_int(10, w.val, "Wrapper val");
+
+    // Mutate fields
+    w.val = 20;
+    assert_eq_int(20, w.val, "Mutated val");
+    assert_ne_int(10, w.val, "Val not old");
+
+    w.val = w.val + 5;
+    assert_eq_int(25, w.val, "Incremented val");
+}
+
+// --- Test: Object in Loop ---
+
+function test_loop_ownership() {
+    print("--- Loop Ownership ---");
+
+    // Each iteration creates a new object; old one is freed
+    let lastId = 0;
+    for (let i = 1; i <= 3; i++) {
+        let r = new Resource(i * 10);
+        assert_eq_int(i * 10, r.id, "Loop resource id");
+        assert_ne_int(0, r.id, "Loop resource not zero");
+        lastId = r.id; // Copy primitive out
+    }
+    assert_eq_int(30, lastId, "Last loop resource");
+
+    // Accumulate primitives from objects
+    let sum = 0;
+    for (let i = 0; i < 5; i++) {
+        let r = new Resource(i);
+        sum = sum + r.id;
+    }
+    assert_eq_int(10, sum, "Sum of loop resources");
+    assert_ne_int(0, sum, "Sum not zero");
+}
+
+// --- Test: Array Ownership ---
+
+function consume_arr_len(arr: int32[]): int32 {
+    return len(arr);
+}
+
+function test_array_ownership() {
+    print("--- Array Ownership ---");
+
+    let arr = [1, 2, 3, 4, 5];
+    let length = consume_arr_len(arr);
+    // arr is moved
+    assert_eq_int(5, length, "Array length");
+    assert_ne_int(0, length, "Length not zero");
+}
+
+// --- Test: Nested Scope Ownership ---
+
+function test_nested_scope() {
+    print("--- Nested Scope ---");
+
+    let outer = 0;
+    {
+        let r1 = new Resource(10);
+        outer = r1.id;
+        {
+            let r2 = new Resource(20);
+            outer = outer + r2.id;
+            {
+                let r3 = new Resource(30);
+                outer = outer + r3.id;
+            }
+            // r3 freed
+        }
+        // r2 freed
+    }
+    // r1 freed
+    assert_eq_int(60, outer, "Nested scope sum");
+    assert_ne_int(0, outer, "Nested sum not zero");
+}
+
+// --- Test: Multiple Objects Same Scope ---
+
+function test_multiple_objects() {
+    print("--- Multiple Objects ---");
+
+    let a = new Resource(1);
+    let b = new Resource(2);
+    let c = new Resource(3);
+    
+    assert_eq_int(1, a.id, "Multi obj a");
+    assert_eq_int(2, b.id, "Multi obj b");
+    assert_eq_int(3, c.id, "Multi obj c");
+    assert_ne_int(a.id, b.id, "a != b");
+    assert_ne_int(b.id, c.id, "b != c");
+    assert_ne_int(a.id, c.id, "a != c");
+
+    let total = a.id + b.id + c.id;
+    assert_eq_int(6, total, "Multi obj total");
+}
+
+// --- Test: Struct-like Object Ownership ---
+
+function test_struct_ownership() {
+    print("--- Struct Ownership ---");
+
+    let point = { x: 10, y: 20 };
+    assert_eq_int(10, point.x, "Point x");
+    assert_eq_int(20, point.y, "Point y");
+
+    // Modify field
+    point.x = 30;
+    assert_eq_int(30, point.x, "Point x modified");
+    assert_ne_int(10, point.x, "Point x not old");
+
+    // Struct with nested
+    let rect = { origin: { x: 0, y: 0 }, width: 100, height: 50 };
+    assert_eq_int(100, rect.width, "Rect width");
+    assert_eq_int(50, rect.height, "Rect height");
+    assert_ne_int(0, rect.width, "Width not zero");
+}
+
+function main() {
+    print("=== OWNERSHIP TESTS START ===");
+    test_primitive_copy();
+    test_object_move();
+    test_reinit_after_move();
+    test_return_ownership();
+    test_conditional_move();
+    test_field_access();
+    test_loop_ownership();
+    test_array_ownership();
+    test_nested_scope();
+    test_multiple_objects();
+    test_struct_ownership();
+    print("=== OWNERSHIP TESTS COMPLETE ===");
+}

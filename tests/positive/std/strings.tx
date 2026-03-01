@@ -1,7 +1,7 @@
 // String Tests
 // ============
 
-import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_string, assert_ne_int } from "../utils.tx";
 
 function main() {
     print("--- String Methods ---");
@@ -15,12 +15,14 @@ function main() {
 
     let trimmed = strVal.trim();
     assert_eq_string("Hello, TejX!", trimmed, "Trimmed");
+    assert_ne_string("  Hello, TejX!  ", trimmed, "Trimmed not original");
 
     let lower = trimmed.toLowerCase();
     assert_eq_string("hello, tejx!", lower, "Lower");
 
     let upper = trimmed.toUpperCase();
     assert_eq_string("HELLO, TEJX!", upper, "Upper");
+    assert_ne_string("hello, tejx!", upper, "Upper not lower");
 
     assert_true(trimmed.startsWith("Hello"), "startsWith('Hello')");
     assert_false(trimmed.startsWith("X"), "startsWith('X')");
@@ -30,8 +32,10 @@ function main() {
 
     let replaced = trimmed.replace("TejX", "World");
     assert_eq_string("Hello, World!", replaced, "Replaced");
+    assert_ne_string("Hello, TejX!", replaced, "Replaced not original");
 
     // len() from prelude
     let s2 = "Hello";
     assert_eq_int(5, len(s2), "len(String)");
+    assert_ne_int(0, len(s2), "len(String) not zero");
 }

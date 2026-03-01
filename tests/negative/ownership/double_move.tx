@@ -1,0 +1,14 @@
+// Negative test: double move via assignment should fail
+// Expected: E0103 Use of moved variable
+// SOI: function args auto-borrow if used later, but assignment always moves.
+
+class Box { value: int; }
+
+function take(b: Box) { print(b.value); }
+
+function main() {
+    let a = new Box();
+    let b = a;    // a is moved via assignment
+    take(b);      // b is moved (last use)
+    take(a);      // ERROR: a was already moved to b
+}

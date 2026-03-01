@@ -1,0 +1,22 @@
+// Scenario 3: The "Last Use" Function Call (Implicit Move)
+// Description: When a function call is the last use of a variable, ownership is moved in.
+//              A subsequent function call with the same var should fail because 'u' was already moved.
+// EXPECTED: COMPILE_ERROR
+
+class User {
+    name: string;
+    constructor(n: string) { this.name = n; }
+}
+
+function deactivate(user: User) {
+    print("Deactivating", user.name);
+}
+
+function main() {
+    let u = new User("Charlie");
+    let v = u;           // 'u' moved to 'v' (assignment move)
+    deactivate(v);       // 'v' is the last use → MOVE (ownership taken)
+
+    // ERROR: 'u' was moved to 'v'
+    print(u.name);
+}

@@ -1,7 +1,7 @@
 // Function Tests
 // ==============
 
-import { assert_eq_int, assert_true } from "../utils.tx";
+import { assert_eq_int, assert_true, assert_ne_int } from "../utils.tx";
 
 function sumVariadic(...nums: int32[]): int32 {
     let total = 0;
@@ -16,7 +16,9 @@ function main() {
 
     // Rest Arguments
     assert_eq_int(6, sumVariadic(1, 2, 3), "Rest args sum(1, 2, 3)");
+    assert_ne_int(0, sumVariadic(1, 2, 3), "Rest args sum(1,2,3) not zero");
     assert_eq_int(30, sumVariadic(10, 20), "Rest args sum(10, 20)");
+    assert_ne_int(10, sumVariadic(10, 20), "Rest args sum(10,20) not partial");
     assert_eq_int(0, sumVariadic(), "Rest args sum()");
 
     print("Function tests complete!");

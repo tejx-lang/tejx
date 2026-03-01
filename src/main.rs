@@ -1,37 +1,37 @@
-#![allow(unsafe_op_in_unsafe_fn)]
-mod token;
-mod lexer;
-mod parser;
+#![warn(unsafe_op_in_unsafe_fn)]
 mod ast;
-mod types;
-mod hir;
-mod lowering;
-pub mod runtime;
-mod type_checker;
-mod mir;
-mod mir_lowering;
 mod borrow_checker;
 mod codegen;
+mod diagnostics;
+mod hir;
+mod lexer;
+mod linker;
+mod lowering;
+mod mir;
+mod mir_lowering;
+mod parser;
+pub mod runtime;
+mod token;
+mod type_checker;
+mod types;
 #[path = "../wasm/src/wasm_codegen.rs"]
 mod wasm_codegen;
-mod linker;
-mod diagnostics;
 
 use std::env;
 use std::fs;
-use std::process;
 use std::path::Path;
+use std::process;
 
+use borrow_checker::BorrowChecker;
+use codegen::CodeGen;
 use lexer::Lexer;
-use parser::Parser;
-use type_checker::TypeChecker;
+use linker::Linker;
 use lowering::Lowering;
 use mir::{MIRInstruction, MIRValue};
 use mir_lowering::MIRLowering;
-use borrow_checker::BorrowChecker;
-use codegen::CodeGen;
+use parser::Parser;
+use type_checker::TypeChecker;
 use wasm_codegen::WasmCodeGen;
-use linker::Linker;
 
 const RUNTIME_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libruntime.a"));
 
@@ -40,9 +40,10 @@ fn main() {
     let mut input_files = Vec::new();
     let mut async_enabled = true;
     let mut emit_mir = false;
-    let mut emit_llvm = false;
+    let mut _emit_llvm = true;
     let mut target_wasm = false;
     let mut compile_only = false;
+    let mut unsafe_arrays = false;
     let mut output_name = None;
 
     let mut i = 1;
@@ -60,11 +61,14 @@ fn main() {
             "--disable-async" => {
                 async_enabled = false;
             }
+            "--unsafe-arrays" => {
+                unsafe_arrays = true;
+            }
             "--emit-mir" => {
                 emit_mir = true;
             }
             "--emit-llvm" => {
-                emit_llvm = true;
+                _emit_llvm = true;
             }
             "-c" | "--compile" => {
                 compile_only = true;
@@ -80,7 +84,7 @@ fn main() {
             }
             "--target" => {
                 if i + 1 < args.len() {
-                    if args[i+1] == "wasm" {
+                    if args[i + 1] == "wasm" {
                         target_wasm = true;
                     }
                     i += 1;
@@ -116,10 +120,8 @@ fn main() {
         process::exit(1);
     });
 
-
     let mut lexer = Lexer::new(&contents, &filename);
     let tokens = lexer.tokenize();
-
 
     if !lexer.errors.is_empty() {
         eprintln!("Lexing failed with errors:");
@@ -129,11 +131,9 @@ fn main() {
         process::exit(1);
     }
 
-
     let mut parser = Parser::new(tokens, &filename);
     parser.async_enabled = async_enabled;
     let program = parser.parse_program();
-
 
     if parser.has_errors() {
         eprintln!("Parsing failed with errors:");
@@ -142,7 +142,6 @@ fn main() {
         }
         process::exit(1);
     }
-
 
     let mut lowering = Lowering::new();
     lowering.async_enabled = async_enabled;
@@ -156,8 +155,15 @@ fn main() {
         processed_files.insert(p.clone());
         import_stack.push(p);
     }
-    let merged_statements = lowering.resolve_imports(program.statements.clone(), base_path, &mut processed_files, &mut import_stack);
-    let merged_program = ast::Program { statements: merged_statements };
+    let merged_statements = lowering.resolve_imports(
+        program.statements.clone(),
+        base_path,
+        &mut processed_files,
+        &mut import_stack,
+    );
+    let merged_program = ast::Program {
+        statements: merged_statements,
+    };
 
     // Check for lowering errors (import validation happens in resolve_imports)
     {
@@ -200,13 +206,21 @@ fn main() {
         mir_functions.push(mir_func);
     }
 
+    if emit_mir {
+        for mir_func in &mir_functions {
+            eprintln!("--- BEFORE BORROW CHECKER ---");
+            eprintln!("{:?}", mir_func);
+        }
+    }
+
     let mut borrow_checker = BorrowChecker::new();
     for mir_func in &mut mir_functions {
         let (drops, reassignment_drops, dead_frees) = borrow_checker.check(mir_func, &filename);
 
-        // Remove dead Free instructions 
+        // Remove dead Free instructions
         {
-            let mut by_block: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+            let mut by_block: std::collections::HashMap<usize, Vec<usize>> =
+                std::collections::HashMap::new();
             for (block_idx, inst_idx) in dead_frees {
                 by_block.entry(block_idx).or_default().push(inst_idx);
             }
@@ -225,23 +239,36 @@ fn main() {
         // Process in reverse order within each block to maintain correct instruction indices.
         // Group by block_idx first, then sort by inst_idx descending within each block.
         {
-            let mut by_block: std::collections::HashMap<usize, Vec<(usize, String)>> = std::collections::HashMap::new();
+            let mut by_block: std::collections::HashMap<usize, Vec<(usize, String)>> =
+                std::collections::HashMap::new();
             for (block_idx, inst_idx, var_name) in reassignment_drops {
-                by_block.entry(block_idx).or_default().push((inst_idx, var_name));
+                by_block
+                    .entry(block_idx)
+                    .or_default()
+                    .push((inst_idx, var_name));
             }
             for (block_idx, mut items) in by_block {
                 // Sort descending by inst_idx so insertions don't shift later indices
                 items.sort_by(|a, b| b.0.cmp(&a.0));
+                items.dedup();
                 let bb = &mut mir_func.blocks[block_idx];
                 for (inst_idx, var_name) in items {
                     if let Some(ty) = mir_func.variables.get(&var_name) {
                         let line = if inst_idx < bb.instructions.len() {
                             bb.instructions[inst_idx].get_line()
-                        } else { 0 };
-                        bb.instructions.insert(inst_idx, MIRInstruction::Free {
-                            value: MIRValue::Variable { name: var_name, ty: ty.clone() },
-                            line,
-                        });
+                        } else {
+                            0
+                        };
+                        bb.instructions.insert(
+                            inst_idx,
+                            MIRInstruction::Free {
+                                value: MIRValue::Variable {
+                                    name: var_name,
+                                    ty: ty.clone(),
+                                },
+                                line,
+                            },
+                        );
                     }
                 }
             }
@@ -253,10 +280,10 @@ fn main() {
             let mut insert_idx = bb.instructions.len();
             if insert_idx > 0 {
                 match bb.instructions[insert_idx - 1] {
-                    MIRInstruction::Return { .. } 
-                    | MIRInstruction::Jump { .. } 
-                    | MIRInstruction::Branch { .. } 
-                    | MIRInstruction::Throw { .. } 
+                    MIRInstruction::Return { .. }
+                    | MIRInstruction::Jump { .. }
+                    | MIRInstruction::Branch { .. }
+                    | MIRInstruction::Throw { .. }
                     | MIRInstruction::TrySetup { .. } => {
                         insert_idx -= 1;
                     }
@@ -265,11 +292,21 @@ fn main() {
             }
             for var_name in var_names {
                 if let Some(ty) = mir_func.variables.get(&var_name) {
-                    let line = if insert_idx > 0 { bb.instructions[insert_idx - 1].get_line() } else { 0 };
-                    bb.instructions.insert(insert_idx, MIRInstruction::Free {
-                        value: MIRValue::Variable { name: var_name, ty: ty.clone() },
-                        line,
-                    });
+                    let line = if insert_idx > 0 {
+                        bb.instructions[insert_idx - 1].get_line()
+                    } else {
+                        0
+                    };
+                    bb.instructions.insert(
+                        insert_idx,
+                        MIRInstruction::Free {
+                            value: MIRValue::Variable {
+                                name: var_name,
+                                ty: ty.clone(),
+                            },
+                            line,
+                        },
+                    );
                     insert_idx += 1;
                 }
             }
@@ -278,6 +315,7 @@ fn main() {
 
     if emit_mir {
         for mir_func in &mir_functions {
+            eprintln!("--- AFTER BORROW CHECKER ---");
             eprintln!("{:?}", mir_func);
         }
     }
@@ -292,7 +330,7 @@ fn main() {
     if target_wasm {
         let mut wasm_codegen = WasmCodeGen::new();
         let wat = wasm_codegen.generate_wat(&mir_functions);
-        
+
         let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|err| {
             eprintln!("WAT to WASM conversion failed: {}", err);
             process::exit(1);
@@ -314,11 +352,8 @@ fn main() {
     }
 
     let mut codegen = CodeGen::new();
+    codegen.unsafe_arrays = unsafe_arrays;
     let llvm_code = codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars);
-
-    if emit_llvm {
-        eprintln!("{}", llvm_code);
-    }
 
     let output_name = output_name.unwrap_or_else(|| {
         if let Some(pos) = filename.rfind('.') {
@@ -337,7 +372,7 @@ fn main() {
     let pid = process::id();
     let temp_dir = env::temp_dir();
     let runtime_lib_path = temp_dir.join(format!("libruntime_{}.a", pid));
-    
+
     if let Err(e) = fs::write(&runtime_lib_path, RUNTIME_LIB) {
         eprintln!("Error writing embedded runtime to temp file: {}", e);
         let _ = fs::remove_file(&temp_ll_file);
@@ -367,7 +402,7 @@ fn main() {
                 let _ = fs::remove_file(&temp_ll_file);
             }
             let _ = fs::remove_file(&runtime_lib_path);
-        },
+        }
         Err(e) => {
             eprintln!("Error: {}", e);
             let _ = fs::remove_file(&runtime_lib_path);
@@ -399,5 +434,5 @@ fn print_help() {
 }
 
 fn print_version() {
-    println!("tejxc version 0.1.0");
+    println!("tejxc version 0.2.0");
 }

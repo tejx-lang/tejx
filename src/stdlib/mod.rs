@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-pub mod math;
-pub mod fs;
-pub mod system;
-pub mod time;
-pub mod json;
-pub mod prelude;
 pub mod collections;
-pub mod thread;
+pub mod fs;
+pub mod json;
+pub mod math;
 pub mod net;
+pub mod prelude;
+pub mod system;
+pub mod thread;
+pub mod time;
 
 pub struct StdLib {
     modules: HashMap<String, HashSet<String>>,
@@ -18,29 +18,50 @@ pub struct StdLib {
 impl StdLib {
     pub fn new() -> Self {
         let mut modules = HashMap::new();
-        
+
         modules.insert("math".to_string(), math::exports());
         modules.insert("fs".to_string(), fs::exports());
         modules.insert("system".to_string(), system::exports());
         modules.insert("time".to_string(), time::exports());
-        modules.insert("json".to_string(), HashSet::from(["stringify".to_string(), "parse".to_string()]));
+        modules.insert(
+            "json".to_string(),
+            HashSet::from(["stringify".to_string(), "parse".to_string()]),
+        );
         modules.insert("collections".to_string(), collections::exports());
         modules.insert("thread".to_string(), thread::exports());
         modules.insert("net".to_string(), net::exports());
         modules.insert("http".to_string(), net::http_exports());
         modules.insert("https".to_string(), net::https_exports());
 
-        
         // Add all methods to collections
         if let Some(funcs) = modules.get_mut("collections") {
             let extra = [
-                "push", "pop", "peek", "enqueue", "dequeue", "insert", "extractMin",
-                "insertMax", "extractMax", "isEmpty", "size", "put", "at", "has",
-                "delete", "add", "clear", "contains", "find", "addPath"
+                "push",
+                "pop",
+                "peek",
+                "enqueue",
+                "dequeue",
+                "insert",
+                "extractMin",
+                "insertMax",
+                "extractMax",
+                "isEmpty",
+                "size",
+                "put",
+                "at",
+                "has",
+                "delete",
+                "add",
+                "clear",
+                "contains",
+                "find",
+                "addPath",
             ];
-            for f in extra { funcs.insert(f.to_string()); }
+            for f in extra {
+                funcs.insert(f.to_string());
+            }
         }
-        
+
         Self {
             modules,
             prelude: prelude::exports(),
@@ -79,7 +100,7 @@ impl StdLib {
 
         // Check explicit std_mod_func names
         if name.starts_with("std_") {
-            // minimal validation? 
+            // minimal validation?
             // Better: iterate modules
             for (mod_name, funcs) in &self.modules {
                 let prefix = format!("std_{}_", mod_name);
@@ -93,8 +114,8 @@ impl StdLib {
         }
 
         // Check specialized runtime names (legacy support or internal)
-        // like "Math_pow" -> mapped to std:math:pow? 
-        // No, we are moving to std:math:pow -> std_math_pow. 
+        // like "Math_pow" -> mapped to std:math:pow?
+        // No, we are moving to std:math:pow -> std_math_pow.
         // But we have legacy "Math_pow" in runtime.rs?
         // We should probably update runtime.rs too eventually, but for now `lowering` handles the mapping.
         // Wait, `lowering` currently checks `is_runtime_func` against a hardcoded list that includes "Math_pow".

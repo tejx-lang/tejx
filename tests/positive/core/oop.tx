@@ -1,6 +1,6 @@
 // OOP Tests (Consolidated)
 // ========================
-import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_int, assert_ne_string } from "../utils.tx";
 
 // --- Interfaces & Classes ---
 
@@ -126,8 +126,11 @@ function test_oop() {
     print("--- OOP Features ---");
     let r = new Robot(101, "T-800");
     assert_eq_string("T-800", r.identify(), "Robot identify");
+    assert_ne_string("", r.identify(), "Robot identify not empty");
     assert_eq_string("Hello Human", r.greet("Human"), "Robot extension greet");
+    assert_ne_string("Hello Human", r.greet("Bot"), "Robot greet different input");
     assert_eq_string("Operational", r.status(), "Robot extension status");
+    assert_ne_string("", r.status(), "Robot status not empty");
 
     // Memory block
     {
@@ -141,6 +144,8 @@ function test_oop() {
     let acc = new BankAccount("Alice", 100);
     acc.deposit(50);
     assert_eq_int(150, acc.getBalance(), "Encapsulation deposit");
+    assert_ne_int(100, acc.getBalance(), "Balance not original");
+    assert_ne_int(0, acc.getBalance(), "Balance not zero");
 
     // Getter/Setter
     let p2 = new Person("Alice", 30);
@@ -152,11 +157,13 @@ function test_oop() {
     // Inheritance & Abstract
     let d = new Dog("Buddy");
     assert_eq_string("bark", d.speak(), "Override method");
+    assert_ne_string("noise", d.speak(), "Override not base");
     assert_true(d instanceof Dog, "instanceof Dog");
     assert_true(d instanceof Animal, "instanceof Animal");
 
     let c = new Circle(2);
     assert_eq_int(12, c.area(), "Abstract impl area"); // 3 * 2 * 2
+    assert_ne_int(0, c.area(), "Abstract area not zero");
 }
 
 // --- Features Objects ---
@@ -170,7 +177,9 @@ function test_objects() {
         address: { city: "Metropolis", zip: 12345 }
     };
     assert_eq_string("TejX", user.name, "Object property");
+    assert_ne_string("", user.name, "Object name not empty");
     assert_eq_string("Metropolis", user.address.city, "Nested object property");
+    assert_ne_string("", user.address.city, "Nested city not empty");
 
     // Bracket notation
     assert_eq_string("TejX", "" + user["name"], "Bracket notation");
@@ -217,7 +226,9 @@ function test_super() {
     print("--- Super Calls ---");
     let d = new DerivedSC();
     assert_eq_string("Hello Alice from Base (and Derived)", d.greet("Alice"), "Super greet");
+    assert_ne_string("Hello Alice from Base", d.greet("Alice"), "Super greet not base only");
     assert_eq_int(21, d.calc(10), "Super calc"); // 10*2 + 1
+    assert_ne_int(20, d.calc(10), "Super calc not base only");
 }
 
 function main() {
