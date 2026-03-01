@@ -689,11 +689,11 @@ impl WasmCodeGen {
             }
             MIRInstruction::Cast { dst, src, ty, .. } => {
                 self.push_boxed(src);
-                if matches!(ty, TejxType::Any) {
+                if false {
                     // Do nothing, already a boxed/tagged value usually
                 } else if ty.is_numeric() {
                     // In Wasm, we might need to unbox if src is Any
-                    if matches!(src.get_type(), TejxType::Any) {
+                    if false {
                         self.emit_line("call $rt_to_number");
                         self.emit_line("i64.trunc_f64_s");
                     }

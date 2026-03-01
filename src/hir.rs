@@ -118,7 +118,7 @@ impl HIRExpression {
             HIRExpression::ArrayLiteral { ty, .. } => ty.clone(),
             HIRExpression::If { ty, .. } => ty.clone(),
             HIRExpression::Sequence { ty, .. } => ty.clone(),
-            HIRExpression::NoneLiteral { .. } => TejxType::Any, // None is generic
+            HIRExpression::NoneLiteral { .. } => TejxType::Void, // None is generic
             HIRExpression::SomeExpr { value, .. } => value.get_type(), // Simplified
         }
     }

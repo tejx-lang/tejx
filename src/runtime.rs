@@ -813,8 +813,7 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                         let res = arr[i];
                         return res;
                     } else {
-                        eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
-                        std::process::exit(1);
+                        return 0; // Return None for out of bounds
                     }
                 }
 
@@ -838,8 +837,7 @@ pub unsafe extern "C" fn m_get(id: i64, key_ptr: i64) -> i64 {
                     if i < arr.len() {
                         return (arr.get(i).cloned().unwrap_or(0) != 0) as i64;
                     } else {
-                        eprintln!("Array index out of bounds: {} (length: {})", i, arr.len());
-                        std::process::exit(1);
+                        return 0; // Return None for out of bounds
                     }
                 }
 
@@ -1071,7 +1069,7 @@ pub fn stringify_value_internal(heap: &Heap, id: i64) -> String {
         let borrow = is_borrowed_id(id);
         let stripped_id = if borrow { id & !BORROW_FLAG } else { id };
         
-        if stripped_id == 0 { return "0".to_string(); }
+        if stripped_id == 0 { return "None".to_string(); }
         
         // Small integer optimization
         if !borrow && (id > -1_000_000_000 && id < 1_000_000_000) {
@@ -1407,8 +1405,7 @@ pub extern "C" fn rt_array_get_fast(id: i64, idx: i64) -> i64 {
                     if res >= HEAP_OFFSET && res < 2100000000 { res | BORROW_FLAG } else { res }
                 };
             } else {
-                eprintln!("Stack array index out of bounds: {} (length: {})", i, len);
-                std::process::exit(1);
+                return 0;
             }
         }
     }
@@ -1556,8 +1553,7 @@ pub extern "C" fn rt_array_set_fast(id: i64, idx: i64, val: i64) -> i64 {
                     }
                     return val;
                 } else {
-                    eprintln!("Stack array index out of bounds: {} (length: {})", i, len);
-                    std::process::exit(1);
+                    return 0;
                 }
             }
         }
@@ -3334,18 +3330,18 @@ pub unsafe extern "C" fn m_size(id: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_has(id: i64, key_or_val: i64) -> i64 {
-    if id == 0 { return 0; }
+    if id == 0 { return rt_box_boolean(0); }
     let str_key = stringify_value(key_or_val);
     let heap = HEAP.lock().unwrap();
     match heap.get(id) {
         Some(TaggedValue::Map(map)) => {
             let key = unsafe { get_string_key(&heap, key_or_val) };
-            if map.contains_key(&key) { 1 } else { 0 }
+            if map.contains_key(&key) { rt_box_boolean(1) } else { rt_box_boolean(0) }
         }
         Some(TaggedValue::Set(set)) => {
-            if set.contains(&str_key) { 1 } else { 0 }
+            if set.contains(&str_key) { rt_box_boolean(1) } else { rt_box_boolean(0) }
         }
-        _ => 0
+        _ => rt_box_boolean(0)
     }
 }
 
@@ -4810,12 +4806,23 @@ pub unsafe extern "C" fn this_toString() -> i64 {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_len(id: i64) -> i64 {
+    if id > 0x100000000 && id < 0xFFFFFFFFFFFF {
+        let p = id as *const std::ffi::c_char;
+        if !p.is_null() {
+            let c_str = unsafe { std::ffi::CStr::from_ptr(p) };
+            return c_str.to_bytes().len() as i64;
+        }
+        return 0;
+    }
+
     let heap = HEAP.lock().unwrap();
     let len = if let Some(val) = heap.get(id) {
         match val {
             TaggedValue::String(s) => s.len() as i64,
             TaggedValue::Array(arr) => arr.len() as i64,
             TaggedValue::ByteArray(arr) => arr.len() as i64,
+            TaggedValue::Map(m) => m.len() as i64,
+            TaggedValue::Set(s) => s.len() as i64,
             _ => 0,
         }
     } else {

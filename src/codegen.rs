@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 pub struct CodeGen {
     buffer: String,
     global_buffer: String,
-    value_map: HashMap<String, String>, // MIR var name → LLVM alloca ptr name
+    value_map: HashMap<String, String>,
+    ptr_types: HashMap<String, String>, // MIR var name → LLVM alloca ptr name
     temp_counter: usize,
     label_counter: usize,
     declared_functions: HashSet<String>,
@@ -27,11 +28,60 @@ pub struct CodeGen {
 }
 
 impl CodeGen {
+    fn get_llvm_type(ty: &TejxType) -> &str {
+        match ty {
+            TejxType::Bool => "i8",
+            // TejxType::Int8 => "i8", // TejX doesn't have explicit Int8 type
+            TejxType::Int16 => "i16",
+            TejxType::Int32 => "i32",
+            _ => "i64",
+        }
+    }
+
+    fn store_ptr(&mut self, ptr: &str, src_val: &str) {
+        let llvm_ty = self.ptr_types.get(ptr).map(|s| s.as_str()).unwrap_or("i64");
+        let mut final_src = src_val.to_string();
+        if llvm_ty != "i64" {
+            self.temp_counter += 1;
+            let trunc_reg = format!("%trunc_{}", self.temp_counter);
+            self.buffer.push_str(&format!(
+                "  {} = trunc i64 {} to {}\n",
+                trunc_reg, final_src, llvm_ty
+            ));
+            final_src = trunc_reg;
+        }
+        self.buffer.push_str(&format!(
+            "  store {} {}, {}* {}\n",
+            llvm_ty, final_src, llvm_ty, ptr
+        ));
+    }
+
+    fn load_ptr(&mut self, ptr: &str, dest_reg: &str) {
+        let llvm_ty = self.ptr_types.get(ptr).map(|s| s.as_str()).unwrap_or("i64");
+        if llvm_ty != "i64" {
+            self.temp_counter += 1;
+            let val_reg = format!("%ld_{}", self.temp_counter);
+            self.buffer.push_str(&format!(
+                "  {} = load {}, {}* {}\n",
+                val_reg, llvm_ty, llvm_ty, ptr
+            ));
+            // Extend back to i64
+            self.buffer.push_str(&format!(
+                "  {} = sext {} {} to i64\n",
+                dest_reg, llvm_ty, val_reg
+            ));
+        } else {
+            self.buffer
+                .push_str(&format!("  {} = load i64, i64* {}\n", dest_reg, ptr));
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
             global_buffer: String::new(),
             value_map: HashMap::new(),
+            ptr_types: HashMap::new(),
             temp_counter: 0,
             label_counter: 0,
             declared_functions: HashSet::new(),
@@ -210,7 +260,7 @@ impl CodeGen {
                 float_val, normal_val
             ));
             return float_val;
-        } else if matches!(ty, TejxType::Any) {
+        } else if false {
             if !self.declared_functions.contains("rt_to_number_v2") {
                 self.global_buffer
                     .push_str("declare i64 @rt_to_number_v2(i64) readonly\n");
@@ -325,7 +375,7 @@ impl CodeGen {
                 let is_integer_type = ty.is_numeric() && !ty.is_float();
                 let is_float_type = ty.is_float();
                 let is_bool_type = matches!(ty, TejxType::Bool);
-                let is_any_type = matches!(ty, TejxType::Any);
+                let is_any_type = false;
 
                 if is_bool_type {
                     if value == "true" || value == "1" {
@@ -345,6 +395,18 @@ impl CodeGen {
                         // Variables of type Any/Number ALWAYS store bitcasted doubles
                         return format!("{}", d.to_bits());
                     }
+                    return "0".to_string();
+                }
+
+                if let TejxType::Class(name) = ty {
+                    if name == "any" && value == "0" {
+                        return "0".to_string();
+                    }
+                }
+                if matches!(ty, TejxType::Void) && value == "0" {
+                    return "0".to_string();
+                }
+                if matches!(ty, TejxType::Void) && value == "0" {
                     return "0".to_string();
                 }
 
@@ -489,7 +551,7 @@ impl CodeGen {
                     // Intercept and load from alloca
                     self.temp_counter += 1;
                     let val_reg = format!("%val_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", val_reg, reg));
+                    self.load_ptr(&reg, &val_reg);
                     return val_reg;
                 }
 
@@ -719,6 +781,7 @@ impl CodeGen {
 
     fn gen_function_v2(&mut self, func: &MIRFunction) {
         self.value_map.clear();
+        self.ptr_types.clear();
         self.stack_arrays.clear();
         self.heap_array_ptrs.clear();
         self.float_ssa_vars.clear();
@@ -796,11 +859,14 @@ impl CodeGen {
             } // Skip alloca for captured params
             if !self.value_map.contains_key(p) {
                 let reg_name = format!("%{}_ptr", p);
-                self.emit_line(&format!("{} = alloca i64", reg_name));
+                let ty = func.variables.get(p).unwrap_or(&TejxType::Void);
+                let llvm_ty = Self::get_llvm_type(ty);
+                self.emit_line(&format!("{} = alloca {}", reg_name, llvm_ty));
+                self.ptr_types.insert(reg_name.clone(), llvm_ty.to_string());
                 self.value_map.insert(p.clone(), reg_name.clone());
 
                 // CRITICAL: Store the incoming argument into the alloca
-                self.emit_line(&format!("store i64 %{}, i64* {}", p, reg_name));
+                self.store_ptr(&reg_name, &format!("%{}", p));
             }
         }
 
@@ -812,7 +878,10 @@ impl CodeGen {
             } // Skip alloca for captured locals
             if !self.value_map.contains_key(name) {
                 let reg_name = format!("%{}_ptr", name);
-                self.emit_line(&format!("{} = alloca i64", reg_name));
+                let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
+                let llvm_ty = Self::get_llvm_type(ty);
+                self.emit_line(&format!("{} = alloca {}", reg_name, llvm_ty));
+                self.ptr_types.insert(reg_name.clone(), llvm_ty.to_string());
                 self.value_map.insert(name.clone(), reg_name);
             }
         }
@@ -985,7 +1054,7 @@ impl CodeGen {
 
                 // Store new value (reassignment drops are handled statically by BorrowChecker)
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", val, ptr));
+                self.store_ptr(&ptr, &val);
 
                 // Propagate array data pointer tracking across variable copies
                 if let MIRValue::Variable { name: src_name, .. } = src {
@@ -1022,7 +1091,7 @@ impl CodeGen {
                 let is_string_op =
                     matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String);
                 let is_float_op = l_ty.is_float() || r_ty.is_float();
-                let is_any_op = matches!(l_ty, TejxType::Any) || matches!(r_ty, TejxType::Any);
+                let is_any_op = false || false;
 
                 let is_numeric_op = !is_string_op
                     && (is_float_op
@@ -1091,7 +1160,7 @@ impl CodeGen {
                                 boxed, l
                             ));
                             boxed
-                        } else if matches!(l_ty, TejxType::Any) {
+                        } else if false {
                             // Box Any-typed values with rt_box_int to prevent raw 0 → null
                             if !self.declared_functions.contains("rt_box_int") {
                                 self.global_buffer
@@ -1156,7 +1225,7 @@ impl CodeGen {
                                 boxed, r
                             ));
                             boxed
-                        } else if matches!(r_ty, TejxType::Any) {
+                        } else if false {
                             if !self.declared_functions.contains("rt_box_int") {
                                 self.global_buffer
                                     .push_str("declare i64 @rt_box_int(i64)\n");
@@ -1205,7 +1274,7 @@ impl CodeGen {
                         self.emit_line(&format!("{} = add i64 {}, {}", tmp, l, r));
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                    self.store_ptr(&ptr, &tmp);
                 } else if is_numeric_op {
                     let l_is_raw = l_ty.is_numeric() && !l_ty.is_float();
                     let r_is_raw = r_ty.is_numeric() && !r_ty.is_float();
@@ -1349,7 +1418,7 @@ impl CodeGen {
                             self.float_ssa_vars.insert(dst.clone(), res_f.clone());
 
                             // Does the destination expect a raw integer or a bitcasted double?
-                            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                             if dst_ty.is_numeric() && !dst_ty.is_float() {
                                 self.emit_line(&format!(
                                     "{} = fptosi double {} to i64",
@@ -1364,7 +1433,7 @@ impl CodeGen {
                         }
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                    self.store_ptr(&ptr, &tmp);
                 } else {
                     // Integer / DefaultFallback
                     let (is_cmp, llvm_op, pred) = match op {
@@ -1391,8 +1460,7 @@ impl CodeGen {
                         let res_i = format!("%res_i{}", self.temp_counter);
                         self.emit_line(&format!("{} = {} i64 {}, {}", res_i, llvm_op, l, r));
 
-                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
-                        if matches!(dst_ty, TejxType::Any) {
+                        if false {
                             // Inline: convert int result to bitcasted double representation
                             self.temp_counter += 1;
                             let res_f = format!("%res_f{}", self.temp_counter);
@@ -1403,7 +1471,7 @@ impl CodeGen {
                         }
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                    self.store_ptr(&ptr, &tmp);
                 }
             }
 
@@ -1443,12 +1511,8 @@ impl CodeGen {
                 }
 
                 let cond_val = self.resolve_value(condition);
-                let ty = match condition {
-                    MIRValue::Constant { ty, .. } => ty,
-                    MIRValue::Variable { ty, .. } => ty,
-                };
 
-                let cond = if matches!(ty, TejxType::Any) {
+                let cond = if false {
                     if !self.declared_functions.contains("rt_to_boolean") {
                         self.global_buffer
                             .push_str("declare i64 @rt_to_boolean(i64)\n");
@@ -1527,7 +1591,7 @@ impl CodeGen {
                     if !dst.is_empty() {
                         self.float_ssa_vars.insert(dst.clone(), float_val);
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        self.store_ptr(&ptr, &result_tmp);
                     }
                     return;
                 }
@@ -1544,7 +1608,7 @@ impl CodeGen {
                             bits_tmp, float_val
                         ));
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", bits_tmp, ptr));
+                        self.store_ptr(&ptr, &bits_tmp);
                     }
                     return;
                 }
@@ -1567,7 +1631,7 @@ impl CodeGen {
 
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        self.store_ptr(&ptr, &result_tmp);
                     }
                     return;
                 }
@@ -1762,7 +1826,7 @@ impl CodeGen {
 
                         if !dst.is_empty() {
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_i, ptr));
+                            self.store_ptr(&ptr, &result_i);
                         }
                     } else {
                         // Fallback to runtime call for unsupported math functions (random, min, max)
@@ -1788,7 +1852,7 @@ impl CodeGen {
                         ));
                         if !dst.is_empty() {
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                            self.store_ptr(&ptr, &result_tmp);
                         }
                     }
                 } else {
@@ -1888,9 +1952,10 @@ impl CodeGen {
                             }
                         }
                     } else if let Some(ptr) = self.value_map.get(callee) {
+                        let ptr_clone = ptr.clone();
                         self.temp_counter += 1;
                         let func_val_tmp = format!("%func_val_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = load i64, i64* {}", func_val_tmp, ptr));
+                        self.load_ptr(&ptr_clone, &func_val_tmp);
                         self.temp_counter += 1;
                         let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
                         let ptr_args = vec!["i64"; args.len()].join(", ");
@@ -1912,16 +1977,17 @@ impl CodeGen {
                         ));
                         if !dst.is_empty() {
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                            self.store_ptr(&ptr, &result_tmp);
                         }
                         return;
                     }
 
                     if is_instance_call {
                         if let Some(ptr) = self.value_map.get(&instance_var) {
+                            let ptr_clone = ptr.clone();
                             self.temp_counter += 1;
                             let tmp = format!("%inst{}", self.temp_counter);
-                            self.emit_line(&format!("{} = load i64, i64* {}", tmp, ptr));
+                            self.load_ptr(&ptr_clone, &tmp);
                             arg_vals.insert(0, format!("i64 {}", tmp));
                         }
                     }
@@ -2040,7 +2106,7 @@ impl CodeGen {
                     }
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                        self.store_ptr(&ptr, &result_tmp);
                     }
 
                     // --- ARRAY CONSTRUCTOR: Cache data pointer for direct access ---
@@ -2185,7 +2251,7 @@ impl CodeGen {
 
                 if !dst.is_empty() {
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", result_tmp, ptr));
+                    self.store_ptr(&ptr, &result_tmp);
                 }
             }
             MIRInstruction::ObjectLiteral { dst, entries, .. } => {
@@ -2345,7 +2411,7 @@ impl CodeGen {
                     }
                 }
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", obj_tmp, ptr));
+                self.store_ptr(&ptr, &obj_tmp);
             }
             MIRInstruction::ArrayLiteral {
                 dst, elements, ty, ..
@@ -2364,22 +2430,22 @@ impl CodeGen {
                 let is_escaped = self.does_escape(func, dst);
                 let can_stack_alloc = !is_escaped && size > 0 && use_fixed;
 
-                let mut arr_elem_ty = TejxType::Any;
+                let mut arr_elem_ty = TejxType::Void;
                 if let Some(t) = &ty {
                     arr_elem_ty = t.get_array_element_type();
                 }
-                let needs_boxing =
-                    !use_fixed && matches!(arr_elem_ty, TejxType::Any | TejxType::Class(_));
+                let needs_boxing = !use_fixed && matches!(arr_elem_ty, TejxType::Class(_));
 
                 if can_stack_alloc {
                     // Create stack allocation in the entry block
                     // Header: { length: i64, elem_size: i64 }
                     // Followed by elements: [size x i64]
                     let elem_size = if let Some(TejxType::FixedArray(inner, _)) = &ty {
-                        if matches!(**inner, TejxType::Bool) {
-                            1
-                        } else {
-                            8
+                        match **inner {
+                            TejxType::Bool => 1,
+                            TejxType::Int16 => 2,
+                            TejxType::Int32 | TejxType::Float32 => 4,
+                            _ => 8,
                         }
                     } else {
                         8
@@ -2402,7 +2468,8 @@ impl CodeGen {
                     ));
 
                     // Store length at index 0
-                    self.emit_line(&format!("store i64 {}, i64* {}", size, cast_ptr));
+                    let size_str = format!("{}", size);
+                    self.store_ptr(&cast_ptr, &size_str);
                     // Store elem_size at index 1
                     self.temp_counter += 1;
                     let elem_size_ptr = format!("%elem_sz_ptr_{}", self.temp_counter);
@@ -2410,7 +2477,8 @@ impl CodeGen {
                         "{} = getelementptr inbounds i64, i64* {}, i64 1",
                         elem_size_ptr, cast_ptr
                     ));
-                    self.emit_line(&format!("store i64 {}, i64* {}", elem_size, elem_size_ptr));
+                    let elem_size_str = format!("{}", elem_size);
+                    self.store_ptr(&elem_size_ptr, &elem_size_str);
 
                     // arr_tmp will hold the integer value of the pointer (ID)
                     self.temp_counter += 1;
@@ -2428,10 +2496,11 @@ impl CodeGen {
                             self.declared_functions.insert("a_new_fixed".to_string());
                         }
                         let elem_size = if let Some(TejxType::FixedArray(inner, _)) = &ty {
-                            if matches!(**inner, TejxType::Bool) {
-                                1
-                            } else {
-                                8
+                            match **inner {
+                                TejxType::Bool => 1,
+                                TejxType::Int16 => 2,
+                                TejxType::Int32 | TejxType::Float32 => 4,
+                                _ => 8,
                             }
                         } else {
                             8
@@ -2523,10 +2592,11 @@ impl CodeGen {
                         // Data part starts at byte offset 16 (or i64 offset 2)
                         // Note: elem_size will be 1 or 8. If 1, we write i8, if 8, we write i64.
                         let elem_size = if let Some(TejxType::FixedArray(inner, _)) = &ty {
-                            if matches!(**inner, TejxType::Bool) {
-                                1
-                            } else {
-                                8
+                            match **inner {
+                                TejxType::Bool => 1,
+                                TejxType::Int16 => 2,
+                                TejxType::Int32 | TejxType::Float32 => 4,
+                                _ => 8,
                             }
                         } else {
                             8
@@ -2561,6 +2631,46 @@ impl CodeGen {
                                 v_byte, v_val
                             ));
                             self.emit_line(&format!("store i8 {}, i8* {}", v_byte, elem_ptr));
+                        } else if elem_size == 2 {
+                            self.temp_counter += 1;
+                            let base_ptr16 = format!("%base_ptr16_{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = inttoptr i64 {} to i16*",
+                                base_ptr16, arr_tmp
+                            ));
+                            self.temp_counter += 1;
+                            let elem_ptr = format!("%elem_ptr_{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = getelementptr inbounds i16, i16* {}, i64 {}",
+                                elem_ptr,
+                                base_ptr16,
+                                8 + idx // 16 bytes header / 2 bytes per elem
+                            ));
+
+                            self.temp_counter += 1;
+                            let v_short = format!("%short_val_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = trunc i64 {} to i16", v_short, v_val));
+                            self.emit_line(&format!("store i16 {}, i16* {}", v_short, elem_ptr));
+                        } else if elem_size == 4 {
+                            self.temp_counter += 1;
+                            let base_ptr32 = format!("%base_ptr32_{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = inttoptr i64 {} to i32*",
+                                base_ptr32, arr_tmp
+                            ));
+                            self.temp_counter += 1;
+                            let elem_ptr = format!("%elem_ptr_{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = getelementptr inbounds i32, i32* {}, i64 {}",
+                                elem_ptr,
+                                base_ptr32,
+                                4 + idx // 16 bytes header / 4 bytes per elem
+                            ));
+
+                            self.temp_counter += 1;
+                            let v_int = format!("%int_val_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = trunc i64 {} to i32", v_int, v_val));
+                            self.emit_line(&format!("store i32 {}, i32* {}", v_int, elem_ptr));
                         } else {
                             self.temp_counter += 1;
                             let base_ptr64 = format!("%base_ptr64_{}", self.temp_counter);
@@ -2576,7 +2686,7 @@ impl CodeGen {
                                 base_ptr64,
                                 2 + idx
                             ));
-                            self.emit_line(&format!("store i64 {}, i64* {}", v_val, elem_ptr));
+                            self.store_ptr(&elem_ptr, &v_val);
                         }
                     } else if use_fixed {
                         if !self.declared_functions.contains("rt_array_set_fast") {
@@ -2609,7 +2719,7 @@ impl CodeGen {
                     idx += 1;
                 }
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", arr_tmp, ptr));
+                self.store_ptr(&ptr, &arr_tmp);
 
                 // Track stack-allocated arrays for direct access in LoadIndex/StoreIndex
                 if can_stack_alloc {
@@ -2643,7 +2753,7 @@ impl CodeGen {
                     );
                     self.alloca_buffer
                         .push_str(&format!("  {} = alloca i64, align 8\n", alloca_name));
-                    self.emit_line(&format!("store i64 {}, i64* {}", data_ptr_val, alloca_name));
+                    self.store_ptr(&alloca_name, &data_ptr_val);
 
                     // Determine element size
                     let elem_size: i64 = if matches!(arr_elem_ty, TejxType::Bool) {
@@ -2677,7 +2787,7 @@ impl CodeGen {
                     res_tmp, obj_val, k_val
                 ));
 
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                 let final_res = if dst_ty.is_numeric() && !dst_ty.is_float() {
                     // Expecting Int32/Int64: Unbox Any -> Double -> Int
                     if !self.declared_functions.contains("rt_to_number") {
@@ -2732,7 +2842,7 @@ impl CodeGen {
                 };
 
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                self.store_ptr(&ptr, &final_res);
             }
             MIRInstruction::StoreMember {
                 obj, member, src, ..
@@ -2820,7 +2930,12 @@ impl CodeGen {
                     // Stack arrays: base ptr IS the i64 value, data starts at offset 16 bytes
                     // Layout: [i64 length][i64 elem_size][data...]
                     let elem_type = obj.get_type().get_array_element_type();
-                    let is_byte_elem = matches!(elem_type, TejxType::Bool);
+                    let elem_size = match elem_type {
+                        TejxType::Bool => 1,
+                        TejxType::Int16 => 2,
+                        TejxType::Int32 | TejxType::Float32 => 4,
+                        _ => 8,
+                    };
 
                     let label_id = self.temp_counter;
                     self.temp_counter += 1;
@@ -2834,7 +2949,7 @@ impl CodeGen {
                     self.emit_line(&format!("{} = inttoptr i64 {} to i64*", base_ptr, obj_val));
                     self.temp_counter += 1;
                     let len_val = format!("%sa_len_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", len_val, base_ptr));
+                    self.load_ptr(&base_ptr, &len_val);
 
                     if self.unsafe_arrays {
                         // Unsafe mode: no bounds check, jump directly to fast path
@@ -2865,7 +2980,7 @@ impl CodeGen {
                         data_ptr, base_i8
                     ));
 
-                    if is_byte_elem {
+                    if elem_size == 1 {
                         // Byte element: i8 GEP
                         self.temp_counter += 1;
                         let elem_ptr = format!("%sa_elem_{}", self.temp_counter);
@@ -2877,6 +2992,40 @@ impl CodeGen {
                         let byte_val = format!("%sa_byte_{}", self.temp_counter);
                         self.emit_line(&format!("{} = load i8, i8* {}", byte_val, elem_ptr));
                         self.emit_line(&format!("{} = zext i8 {} to i64", res_tmp, byte_val));
+                    } else if elem_size == 2 {
+                        self.temp_counter += 1;
+                        let typed_ptr = format!("%sa_typed_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = bitcast i8* {} to i16*",
+                            typed_ptr, data_ptr
+                        ));
+                        self.temp_counter += 1;
+                        let elem_ptr = format!("%sa_elem_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = getelementptr inbounds i16, i16* {}, i64 {}",
+                            elem_ptr, typed_ptr, idx_val
+                        ));
+                        self.temp_counter += 1;
+                        let short_val = format!("%sa_short_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = load i16, i16* {}", short_val, elem_ptr));
+                        self.emit_line(&format!("{} = sext i16 {} to i64", res_tmp, short_val));
+                    } else if elem_size == 4 {
+                        self.temp_counter += 1;
+                        let typed_ptr = format!("%sa_typed_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = bitcast i8* {} to i32*",
+                            typed_ptr, data_ptr
+                        ));
+                        self.temp_counter += 1;
+                        let elem_ptr = format!("%sa_elem_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = getelementptr inbounds i32, i32* {}, i64 {}",
+                            elem_ptr, typed_ptr, idx_val
+                        ));
+                        self.temp_counter += 1;
+                        let int_val = format!("%sa_int_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = load i32, i32* {}", int_val, elem_ptr));
+                        self.emit_line(&format!("{} = sext i32 {} to i64", res_tmp, int_val));
                     } else {
                         // i64 element: cast to i64* and GEP
                         self.temp_counter += 1;
@@ -2891,7 +3040,7 @@ impl CodeGen {
                             "{} = getelementptr inbounds i64, i64* {}, i64 {}",
                             elem_ptr, typed_ptr, idx_val
                         ));
-                        self.emit_line(&format!("{} = load i64, i64* {}", res_tmp, elem_ptr));
+                        self.load_ptr(&elem_ptr, &res_tmp);
                     }
 
                     // Fast path result — branch to done
@@ -2923,16 +3072,16 @@ impl CodeGen {
                             final_res, res_tmp, sa_fast, slow_res, sa_slow
                         ));
                         // Store final result
-                        let _dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                        let _dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                        self.store_ptr(&ptr, &final_res);
                     } else {
                         // If unsafe, slow path shouldn't be reached, so just unreachable
                         self.emit_line("unreachable");
                         self.emit_line(&format!("{}:", sa_done));
-                        let _dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                        let _dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                        self.store_ptr(&ptr, &res_tmp);
                     }
 
                     return;
@@ -2944,7 +3093,7 @@ impl CodeGen {
                     // Load data pointer from alloca
                     self.temp_counter += 1;
                     let dp_raw = format!("%ha_dp_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", dp_raw, data_ptr_alloca));
+                    self.load_ptr(&data_ptr_alloca, &dp_raw);
                     self.temp_counter += 1;
                     let dp_ptr = format!("%ha_ptr_{}", self.temp_counter);
                     self.emit_line(&format!("{} = inttoptr i64 {} to i8*", dp_ptr, dp_raw));
@@ -2972,15 +3121,15 @@ impl CodeGen {
                             "{} = getelementptr inbounds i64, i64* {}, i64 {}",
                             elem_ptr, typed_ptr, idx_val
                         ));
-                        self.emit_line(&format!("{} = load i64, i64* {}", res_tmp, elem_ptr));
+                        self.load_ptr(&elem_ptr, &res_tmp);
                     }
 
                     // Store result
-                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                     let ptr = self.resolve_ptr(dst);
 
                     if dst_ty.is_float() && elem_size != 1 {
-                        self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                        self.store_ptr(&ptr, &res_tmp);
                     } else if dst_ty.is_float() && elem_size == 1 {
                         self.temp_counter += 1;
                         let f_val = format!("%ha_f_{}", self.temp_counter);
@@ -2988,9 +3137,9 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let f_bc = format!("%ha_fbc_{}", self.temp_counter);
                         self.emit_line(&format!("{} = bitcast double {} to i64", f_bc, f_val));
-                        self.emit_line(&format!("store i64 {}, i64* {}", f_bc, ptr));
+                        self.store_ptr(&ptr, &f_bc);
                     } else {
-                        self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                        self.store_ptr(&ptr, &res_tmp);
                     }
 
                     return;
@@ -3086,9 +3235,9 @@ impl CodeGen {
 
                     // --- Store based on destination type ---
                     let ptr = self.resolve_ptr(dst);
-                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
 
-                    if matches!(dst_ty, TejxType::Any) {
+                    if false {
                         if !self.declared_functions.contains("rt_box_boolean") {
                             self.global_buffer
                                 .push_str("declare i64 @rt_box_boolean(i64)\n");
@@ -3100,7 +3249,7 @@ impl CodeGen {
                             "{} = call i64 @rt_box_boolean(i64 {})",
                             boxed, res_tmp
                         ));
-                        self.emit_line(&format!("store i64 {}, i64* {}", boxed, ptr));
+                        self.store_ptr(&ptr, &boxed);
                     } else if dst_ty.is_float() {
                         self.temp_counter += 1;
                         let f_val = format!("%ba_f{}", self.temp_counter);
@@ -3108,10 +3257,10 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let f_bc = format!("%ba_fbc{}", self.temp_counter);
                         self.emit_line(&format!("{} = bitcast double {} to i64", f_bc, f_val));
-                        self.emit_line(&format!("store i64 {}, i64* {}", f_bc, ptr));
+                        self.store_ptr(&ptr, &f_bc);
                     } else {
                         // Int or Bool — store raw 0/1
-                        self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                        self.store_ptr(&ptr, &res_tmp);
                     }
                 } else if obj.get_type().is_array() {
                     // --- GENERIC ARRAY OPTIMIZATION: INLINED CACHE CHECK ---
@@ -3201,7 +3350,7 @@ impl CodeGen {
                         || elem_type.is_float()
                         || matches!(
                             elem_type,
-                            TejxType::Any | TejxType::String | TejxType::Bool | TejxType::Char
+                            TejxType::String | TejxType::Bool | TejxType::Char
                         );
 
                     let get_qword = format!("array_get_qword{}", label_id);
@@ -3275,7 +3424,7 @@ impl CodeGen {
                     ));
                     self.temp_counter += 1;
                     let res64 = format!("%res64_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", res64, gep64));
+                    self.load_ptr(&gep64, &res64);
 
                     self.temp_counter += 1;
                     let elem_type = obj.get_type().get_array_element_type();
@@ -3371,7 +3520,7 @@ impl CodeGen {
                     ));
                     self.temp_counter += 1;
                     let prev_val = format!("%prev_val_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", prev_val, prev_gep));
+                    self.load_ptr(&prev_gep, &prev_val);
 
                     let mut prev_raw = prev_val.clone(); // Default for int types
                     let prev_f_bc;
@@ -3468,7 +3617,7 @@ impl CodeGen {
                         ));
                         self.temp_counter += 1;
                         prev2_val = format!("%prev2_val{}", self.temp_counter);
-                        self.emit_line(&format!("{} = load i64, i64* {}", prev2_val, prev2_gep));
+                        self.load_ptr(&prev2_gep, &prev2_val);
                     } else {
                         let prev2_val_raw;
                         self.temp_counter += 1;
@@ -3588,7 +3737,7 @@ impl CodeGen {
 
                     self.emit_line(&format!("{}:", done_path));
 
-                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Any);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
 
                     // Raw integer or Boolean destination
                     if (dst_ty.is_numeric() && !dst_ty.is_float())
@@ -3615,7 +3764,7 @@ impl CodeGen {
                                  final_res, res8, get_byte, res64_raw, get_qword, prev_raw, prev_access, prev2_raw, prev2_access, slow_raw, slow_path));
                         }
                         let ptr = self.resolve_ptr(dst);
-                        self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                        self.store_ptr(&ptr, &final_res);
                     } else {
                         // Destination is Any, Float, or Object.
                         let elem_type = obj.get_type().get_array_element_type();
@@ -3661,12 +3810,12 @@ impl CodeGen {
                                 slow_path
                             ));
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                            self.store_ptr(&ptr, &final_res);
                         } else {
                             let get_byte = format!("array_get_byte{}", label_id);
                             let (final_qword, final_byte, final_prev, final_prev2, final_slow) =
                                 if is_numeric_elem {
-                                    if is_byte_array && matches!(dst_ty, TejxType::Any) {
+                                    if is_byte_array && false {
                                         self.temp_counter += 1;
                                         let slow_boxed =
                                             format!("%slow_boxed{}", self.temp_counter);
@@ -3748,7 +3897,7 @@ impl CodeGen {
                             self.emit_line(&format!("{} = phi i64 [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]", 
                                  final_res, final_byte, get_byte, final_qword, get_qword, final_prev, prev_access, final_prev2, prev2_access, final_slow, slow_path));
                             let ptr = self.resolve_ptr(dst);
-                            self.emit_line(&format!("store i64 {}, i64* {}", final_res, ptr));
+                            self.store_ptr(&ptr, &final_res);
                         }
                     }
                 } else {
@@ -3780,7 +3929,7 @@ impl CodeGen {
                         ));
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.emit_line(&format!("store i64 {}, i64* {}", res_tmp, ptr));
+                    self.store_ptr(&ptr, &res_tmp);
                 }
             }
             MIRInstruction::StoreIndex {
@@ -3801,7 +3950,12 @@ impl CodeGen {
 
                 if is_stack_array {
                     let elem_type = obj.get_type().get_array_element_type();
-                    let is_byte_elem = matches!(elem_type, TejxType::Bool);
+                    let elem_size = match elem_type {
+                        TejxType::Bool => 1,
+                        TejxType::Int16 => 2,
+                        TejxType::Int32 | TejxType::Float32 => 4,
+                        _ => 8,
+                    };
 
                     let label_id = self.temp_counter;
                     self.temp_counter += 1;
@@ -3815,7 +3969,7 @@ impl CodeGen {
                     self.emit_line(&format!("{} = inttoptr i64 {} to i64*", base_ptr, obj_val));
                     self.temp_counter += 1;
                     let len_val = format!("%ss_len_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", len_val, base_ptr));
+                    self.load_ptr(&base_ptr, &len_val);
 
                     if self.unsafe_arrays {
                         // Unsafe mode: no bounds check, jump directly to fast path
@@ -3846,7 +4000,7 @@ impl CodeGen {
                         data_ptr, base_i8
                     ));
 
-                    if is_byte_elem {
+                    if elem_size == 1 {
                         self.temp_counter += 1;
                         let elem_ptr = format!("%ss_elem_{}", self.temp_counter);
                         self.emit_line(&format!(
@@ -3857,6 +4011,40 @@ impl CodeGen {
                         let v_byte = format!("%ss_byte_{}", self.temp_counter);
                         self.emit_line(&format!("{} = trunc i64 {} to i8", v_byte, v_val));
                         self.emit_line(&format!("store i8 {}, i8* {}", v_byte, elem_ptr));
+                    } else if elem_size == 2 {
+                        self.temp_counter += 1;
+                        let typed_ptr = format!("%ss_typed_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = bitcast i8* {} to i16*",
+                            typed_ptr, data_ptr
+                        ));
+                        self.temp_counter += 1;
+                        let elem_ptr = format!("%ss_elem_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = getelementptr inbounds i16, i16* {}, i64 {}",
+                            elem_ptr, typed_ptr, idx_val
+                        ));
+                        self.temp_counter += 1;
+                        let v_short = format!("%ss_short_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = trunc i64 {} to i16", v_short, v_val));
+                        self.emit_line(&format!("store i16 {}, i16* {}", v_short, elem_ptr));
+                    } else if elem_size == 4 {
+                        self.temp_counter += 1;
+                        let typed_ptr = format!("%ss_typed_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = bitcast i8* {} to i32*",
+                            typed_ptr, data_ptr
+                        ));
+                        self.temp_counter += 1;
+                        let elem_ptr = format!("%ss_elem_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = getelementptr inbounds i32, i32* {}, i64 {}",
+                            elem_ptr, typed_ptr, idx_val
+                        ));
+                        self.temp_counter += 1;
+                        let v_int = format!("%ss_int_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = trunc i64 {} to i32", v_int, v_val));
+                        self.emit_line(&format!("store i32 {}, i32* {}", v_int, elem_ptr));
                     } else {
                         self.temp_counter += 1;
                         let typed_ptr = format!("%ss_typed_{}", self.temp_counter);
@@ -3870,7 +4058,7 @@ impl CodeGen {
                             "{} = getelementptr inbounds i64, i64* {}, i64 {}",
                             elem_ptr, typed_ptr, idx_val
                         ));
-                        self.emit_line(&format!("store i64 {}, i64* {}", v_val, elem_ptr));
+                        self.store_ptr(&elem_ptr, &v_val);
                     }
                     self.emit_line(&format!("br label %{}", ss_done));
 
@@ -3906,7 +4094,7 @@ impl CodeGen {
                 if let Some((data_ptr_alloca, elem_size)) = heap_info {
                     self.temp_counter += 1;
                     let dp_raw = format!("%hs_dp_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* {}", dp_raw, data_ptr_alloca));
+                    self.load_ptr(&data_ptr_alloca, &dp_raw);
                     self.temp_counter += 1;
                     let dp_ptr = format!("%hs_ptr_{}", self.temp_counter);
                     self.emit_line(&format!("{} = inttoptr i64 {} to i8*", dp_ptr, dp_raw));
@@ -3922,6 +4110,34 @@ impl CodeGen {
                         let v_byte = format!("%hs_byte_{}", self.temp_counter);
                         self.emit_line(&format!("{} = trunc i64 {} to i8", v_byte, v_val));
                         self.emit_line(&format!("store i8 {}, i8* {}", v_byte, elem_ptr));
+                    } else if elem_size == 2 {
+                        self.temp_counter += 1;
+                        let typed_ptr = format!("%hs_typed_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = bitcast i8* {} to i16*", typed_ptr, dp_ptr));
+                        self.temp_counter += 1;
+                        let elem_ptr = format!("%hs_elem_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = getelementptr inbounds i16, i16* {}, i64 {}",
+                            elem_ptr, typed_ptr, idx_val
+                        ));
+                        self.temp_counter += 1;
+                        let v_short = format!("%hs_short_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = trunc i64 {} to i16", v_short, v_val));
+                        self.emit_line(&format!("store i16 {}, i16* {}", v_short, elem_ptr));
+                    } else if elem_size == 4 {
+                        self.temp_counter += 1;
+                        let typed_ptr = format!("%hs_typed_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = bitcast i8* {} to i32*", typed_ptr, dp_ptr));
+                        self.temp_counter += 1;
+                        let elem_ptr = format!("%hs_elem_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = getelementptr inbounds i32, i32* {}, i64 {}",
+                            elem_ptr, typed_ptr, idx_val
+                        ));
+                        self.temp_counter += 1;
+                        let v_int = format!("%hs_int_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = trunc i64 {} to i32", v_int, v_val));
+                        self.emit_line(&format!("store i32 {}, i32* {}", v_int, elem_ptr));
                     } else {
                         self.temp_counter += 1;
                         let typed_ptr = format!("%hs_typed_{}", self.temp_counter);
@@ -3932,7 +4148,7 @@ impl CodeGen {
                             "{} = getelementptr inbounds i64, i64* {}, i64 {}",
                             elem_ptr, typed_ptr, idx_val
                         ));
-                        self.emit_line(&format!("store i64 {}, i64* {}", v_val, elem_ptr));
+                        self.store_ptr(&elem_ptr, &v_val);
                     }
                     return;
                 }
@@ -4015,7 +4231,7 @@ impl CodeGen {
                             "{} = call i8 @rt_i64_to_i8(i64 {})",
                             v_byte, v_val
                         ));
-                    } else if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
+                    } else if src_ty.is_float() || false {
                         self.temp_counter += 1;
                         let v_f = format!("%ba_s_vf{}", self.temp_counter);
                         self.emit_line(&format!("{} = bitcast i64 {} to double", v_f, v_val));
@@ -4146,7 +4362,7 @@ impl CodeGen {
                         || elem_type_set.is_float()
                         || matches!(
                             elem_type_set,
-                            TejxType::Any | TejxType::String | TejxType::Bool | TejxType::Char
+                            TejxType::String | TejxType::Bool | TejxType::Char
                         );
 
                     if is_known_qword_set {
@@ -4193,7 +4409,7 @@ impl CodeGen {
                                 v_i, v_val
                             ));
                             v_i
-                        } else if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
+                        } else if src_ty.is_float() || false {
                             self.temp_counter += 1;
                             let v_f = format!("%v_f{}", self.temp_counter);
                             self.emit_line(&format!("{} = bitcast i64 {} to double", v_f, v_val));
@@ -4228,7 +4444,7 @@ impl CodeGen {
                         "{} = getelementptr i64, i64* {}, i64 {}",
                         gep64, ptr64, idx_norm
                     ));
-                    self.emit_line(&format!("store i64 {}, i64* {}", v_val, gep64));
+                    self.store_ptr(&gep64, &v_val);
                     self.emit_line(&format!("br label %{}", done_path));
 
                     // --- PREV cache check for StoreIndex ---
@@ -4281,7 +4497,7 @@ impl CodeGen {
                         "{} = getelementptr i64, i64* {}, i64 {}",
                         prev_gep_s, prev_ptr64_s, idx_norm
                     ));
-                    self.emit_line(&format!("store i64 {}, i64* {}", v_val, prev_gep_s));
+                    self.store_ptr(&prev_gep_s, &v_val);
                     self.emit_line(&format!("br label %{}", done_path));
 
                     // --- PREV2 cache check for StoreIndex ---
@@ -4333,7 +4549,7 @@ impl CodeGen {
                         "{} = getelementptr i64, i64* {}, i64 {}",
                         prev2_gep_s, prev2_ptr64_s, idx_norm
                     ));
-                    self.emit_line(&format!("store i64 {}, i64* {}", v_val, prev2_gep_s));
+                    self.store_ptr(&prev2_gep_s, &v_val);
                     self.emit_line(&format!("br label %{}", done_path));
 
                     self.emit_line(&format!("{}:", slow_path));
@@ -4473,7 +4689,7 @@ impl CodeGen {
                     self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
                 }
                 let ptr = self.resolve_ptr(dst);
-                self.emit_line(&format!("store i64 {}, i64* {}", tmp, ptr));
+                self.store_ptr(&ptr, &tmp);
             }
             MIRInstruction::Free { value, .. } => {
                 let v = self.resolve_value(value);

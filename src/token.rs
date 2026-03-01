@@ -50,7 +50,6 @@ pub enum TokenType {
     TypeString,
     TypeBoolean,
     TypeVoid,
-    TypeAny,
     TypeInt,
     TypeInt16,
     TypeInt64,

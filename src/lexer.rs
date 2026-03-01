@@ -33,7 +33,6 @@ impl Lexer {
         keywords.insert("string".to_string(), TokenType::TypeString);
         keywords.insert("bool".to_string(), TokenType::TypeBoolean);
         keywords.insert("void".to_string(), TokenType::TypeVoid);
-        keywords.insert("any".to_string(), TokenType::TypeAny);
         keywords.insert("int".to_string(), TokenType::TypeInt);
         keywords.insert("int16".to_string(), TokenType::TypeInt16);
         keywords.insert("int64".to_string(), TokenType::TypeInt64);

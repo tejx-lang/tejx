@@ -238,7 +238,6 @@ impl Parser {
             | TokenType::Extends
             | TokenType::Some
             | TokenType::None
-            | TokenType::TypeAny
             | TokenType::TypeVoid
             | TokenType::TypeInt
             | TokenType::TypeFloat
@@ -296,8 +295,11 @@ impl Parser {
             }
             self.consume(TokenType::CloseBrace, "Expected '}'");
             return BindingNode::ObjectBinding { entries };
-        } else if self.match_token(TokenType::Identifier) {
-            let name = self.previous().value.clone(); // consumed by match_token
+        } else if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
+            let name = self
+                .consume_identifier("Expected binding pattern")
+                .value
+                .clone();
             return BindingNode::Identifier(name);
         } else {
             let t = self.peek().clone();
@@ -307,6 +309,8 @@ impl Parser {
                 t.column,
                 self.filename.clone(),
             ));
+            // Advance to prevent infinite loops if we get stuck on an invalid pattern
+            self.advance();
             return BindingNode::Identifier("__error__".to_string());
         }
     }
@@ -1065,7 +1069,23 @@ impl Parser {
                 }
             }
             self.consume(TokenType::CloseBrace, "Expected '}'");
-            return format!("{{ {} }}", members.join("; "));
+            let mut base_ty = format!("{{ {} }}", members.join("; "));
+            while self.match_token(TokenType::OpenBracket) {
+                if self.match_token(TokenType::CloseBracket) {
+                    base_ty.push_str("[]");
+                } else {
+                    // Possible fixed array size `[10]`
+                    if self.check(TokenType::Number) {
+                        let num = self
+                            .consume(TokenType::Number, "Expected array size")
+                            .value
+                            .clone();
+                        self.consume(TokenType::CloseBracket, "Expected ']'");
+                        base_ty.push_str(&format!("[{}]", num));
+                    }
+                }
+            }
+            return base_ty;
         }
 
         // Array Type: number[]
@@ -1094,9 +1114,7 @@ impl Parser {
             let inner_type = self.parse_base_type();
             base_type = format!("weak {}", inner_type);
         } else {
-            if self.match_token(TokenType::TypeAny) {
-                base_type = "any".to_string();
-            } else if self.match_token(TokenType::TypeVoid) {
+            if self.match_token(TokenType::TypeVoid) {
                 base_type = "void".to_string();
             } else if self.match_token(TokenType::TypeInt) {
                 base_type = "int".to_string();
@@ -1127,7 +1145,7 @@ impl Parser {
                     self.filename.clone(),
                 ));
                 self.advance();
-                return "any".to_string();
+                return "{unknown}".to_string();
             }
         }
 

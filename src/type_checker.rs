@@ -157,29 +157,53 @@ impl TypeChecker {
 
     pub fn new() -> Self {
         let mut globals = HashMap::new();
-        let builtin_func = |params_count: usize, variadic: bool| Symbol {
-            type_name: "function".to_string(),
+        let builtin_func = |ret_ty: &str, params: &[&str], variadic: bool| Symbol {
+            type_name: format!("function:{}", ret_ty),
             is_const: true,
-            params: vec!["any".to_string(); params_count],
+            params: params.iter().map(|s| s.to_string()).collect(),
             is_variadic: variadic,
             aliased_type: None,
             is_moved: false,
         };
-        globals.insert("assert".to_string(), builtin_func(1, true));
-        globals.insert("len".to_string(), builtin_func(1, false));
-        globals.insert("print".to_string(), builtin_func(0, true)); // Variadic handled in CallExpr
-        globals.insert("println".to_string(), builtin_func(0, true));
-        globals.insert("eprint".to_string(), builtin_func(1, false));
-        globals.insert("random".to_string(), builtin_func(0, false));
-        globals.insert("now".to_string(), builtin_func(0, false));
-        globals.insert("delay".to_string(), builtin_func(1, true));
-        globals.insert("rt_sleep".to_string(), builtin_func(1, false));
-        globals.insert("parseInt".to_string(), builtin_func(1, false));
-        globals.insert("parseFloat".to_string(), builtin_func(1, false));
-        globals.insert("abs".to_string(), builtin_func(1, false));
-        globals.insert("min".to_string(), builtin_func(2, false));
-        globals.insert("max".to_string(), builtin_func(2, false));
-        globals.insert("parse".to_string(), builtin_func(1, false));
+        globals.insert(
+            "assert".to_string(),
+            builtin_func("void", &["bool", "string[]"], true),
+        );
+        globals.insert("len".to_string(), builtin_func("int32", &["any"], false));
+        globals.insert("print".to_string(), builtin_func("void", &[], true)); // Variadic handled in CallExpr
+        globals.insert("println".to_string(), builtin_func("void", &[], true));
+        globals.insert("eprint".to_string(), builtin_func("void", &["any"], true));
+        globals.insert("random".to_string(), builtin_func("float64", &[], false));
+        globals.insert("now".to_string(), builtin_func("int", &[], false));
+        globals.insert("delay".to_string(), builtin_func("void", &["int"], false));
+        globals.insert(
+            "rt_sleep".to_string(),
+            builtin_func("void", &["int"], false),
+        );
+        globals.insert(
+            "parseInt".to_string(),
+            builtin_func("int", &["string"], false),
+        );
+        globals.insert(
+            "parseFloat".to_string(),
+            builtin_func("float64", &["string"], false),
+        );
+        globals.insert(
+            "abs".to_string(),
+            builtin_func("float64", &["float64"], false),
+        );
+        globals.insert(
+            "min".to_string(),
+            builtin_func("float64", &["float64", "float64"], false),
+        );
+        globals.insert(
+            "max".to_string(),
+            builtin_func("float64", &["float64", "float64"], false),
+        );
+        globals.insert(
+            "parse".to_string(),
+            builtin_func("{unknown}", &["string"], false),
+        );
 
         let mut class_members = HashMap::new();
         let mut class_hierarchy = HashMap::new();
@@ -688,7 +712,7 @@ impl TypeChecker {
         map_members.insert(
             "has".to_string(),
             MemberInfo {
-                type_name: "function:bool:$0".to_string(),
+                type_name: "function:boolean:$0".to_string(),
                 is_static: false,
                 access: AccessLevel::Public,
                 is_readonly: true,
@@ -697,7 +721,7 @@ impl TypeChecker {
         map_members.insert(
             "delete".to_string(),
             MemberInfo {
-                type_name: "function:bool:$0".to_string(),
+                type_name: "function:boolean:$0".to_string(),
                 is_static: false,
                 access: AccessLevel::Public,
                 is_readonly: true,
@@ -755,7 +779,7 @@ impl TypeChecker {
         set_members.insert(
             "has".to_string(),
             MemberInfo {
-                type_name: "function:bool:$0".to_string(),
+                type_name: "function:boolean:$0".to_string(),
                 is_static: false,
                 access: AccessLevel::Public,
                 is_readonly: true,
@@ -764,7 +788,7 @@ impl TypeChecker {
         set_members.insert(
             "delete".to_string(),
             MemberInfo {
-                type_name: "function:bool:$0".to_string(),
+                type_name: "function:boolean:$0".to_string(),
                 is_static: false,
                 access: AccessLevel::Public,
                 is_readonly: true,
@@ -1773,13 +1797,13 @@ impl TypeChecker {
                     if source == "std:math" {
                         self.define_with_params(
                             "min".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
+                            "function:float64:float64,float64".to_string(),
+                            vec!["float64".to_string(), "float64".to_string()],
                         );
                         self.define_with_params(
                             "max".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
+                            "function:float64:float64,float64".to_string(),
+                            vec!["float64".to_string(), "float64".to_string()],
                         );
                         self.define_with_params(
                             "abs".to_string(),
@@ -1821,6 +1845,17 @@ impl TypeChecker {
                             "function:float64:float64".to_string(),
                             vec!["float64".to_string()],
                         );
+                    } else if source == "std:time" {
+                        self.define_with_params(
+                            "now".to_string(),
+                            "function:float64".to_string(),
+                            vec![],
+                        );
+                        self.define_with_params(
+                            "sleep".to_string(),
+                            "function:void:int".to_string(),
+                            vec!["int".to_string()],
+                        );
                     } else if source == "std:json" {
                         self.define_with_params(
                             "parse".to_string(),
@@ -1856,7 +1891,7 @@ impl TypeChecker {
                     } else if source == "std:time" {
                         self.define_with_params(
                             "now".to_string(),
-                            "float64".to_string(),
+                            "function:float64:".to_string(),
                             Vec::new(),
                         );
                         self.define_with_params(
@@ -1978,33 +2013,64 @@ impl TypeChecker {
         let mut final_type = type_name.clone();
         let mut is_variadic = false;
 
+        let split_params = |params_str: &str| -> Vec<String> {
+            let mut params = Vec::new();
+            let mut current = String::new();
+            let mut depth_brace = 0;
+            let mut depth_angle = 0;
+
+            for ch in params_str.chars() {
+                match ch {
+                    '{' => depth_brace += 1,
+                    '}' => depth_brace -= 1,
+                    '<' => depth_angle += 1,
+                    '>' => depth_angle -= 1,
+                    ',' if depth_brace == 0 && depth_angle == 0 => {
+                        params.push(current.trim().to_string());
+                        current.clear();
+                        continue;
+                    }
+                    _ => {}
+                }
+                current.push(ch);
+            }
+            if !current.trim().is_empty() {
+                params.push(current.trim().to_string());
+            }
+            params
+        };
+
         if type_name.starts_with("function:") {
-            let parts: Vec<&str> = type_name.split(':').collect();
+            let parts: Vec<&str> = type_name.splitn(3, ':').collect();
             if parts.len() >= 3 {
                 // function:ret_ty:p1,p2,p3
                 final_type = format!("function:{}", parts[1]);
-                for p in parts[2].split(',') {
+                let params = split_params(parts[2]);
+                for mut p in params {
                     if p.ends_with("...") {
                         is_variadic = true;
-                        final_params.push(p[..p.len() - 3].to_string());
-                    } else if !p.is_empty() {
-                        final_params.push(p.to_string());
+                        p = p[..p.len() - 3].to_string();
+                    }
+                    if !p.is_empty() {
+                        final_params.push(p);
                     }
                 }
             }
         } else if type_name.contains("=>") {
             // (p1: t1, p2: t2) => ret
             if let Some(start) = type_name.find('(') {
-                if let Some(end) = type_name.find(')') {
+                if let Some(end) = type_name.rfind(')') {
                     let params_str = &type_name[start + 1..end];
-                    for p in params_str.split(',') {
-                        let p = p.trim();
-                        if !p.is_empty() {
-                            if let Some(colon) = p.find(':') {
-                                final_params.push(p[colon + 1..].trim().to_string());
-                            } else {
-                                final_params.push("any".to_string());
-                            }
+                    let params = split_params(params_str);
+                    for p in params {
+                        if p.ends_with("...") {
+                            is_variadic = true;
+                        }
+                        let p = p.trim_end_matches("...").trim();
+                        if let Some(colon) = p.find(':') {
+                            final_params.push(p[colon + 1..].trim().to_string());
+                        } else if !p.is_empty() {
+                            final_params.push("any".to_string());
                         }
                     }
                     if let Some(arrow) = type_name.find("=>") {
@@ -2122,8 +2188,8 @@ impl TypeChecker {
     }
 
     fn is_assignable(&self, target: &str, value: &str) -> bool {
-        if target == "any" || value == "any" {
-            return true;
+        if target == "{unknown}" || value == "{unknown}" {
+            return true; // prevent cascading errors
         }
         self.are_types_compatible(target, value)
     }
@@ -2294,6 +2360,41 @@ impl TypeChecker {
         false
     }
 
+    fn get_common_ancestor(&self, t1: &str, t2: &str) -> String {
+        if t1 == t2 {
+            return t1.to_string();
+        }
+        if t1 == "{unknown}" {
+            return t2.to_string();
+        }
+        if t2 == "{unknown}" {
+            return t1.to_string();
+        }
+        if t1 == "any" || t2 == "any" {
+            return "any".to_string();
+        }
+
+        let mut t1_ancestors = std::collections::HashSet::new();
+        let mut curr = t1.to_string();
+        t1_ancestors.insert(curr.clone());
+        while let Some(parent) = self.class_hierarchy.get(&curr) {
+            t1_ancestors.insert(parent.clone());
+            curr = parent.clone();
+        }
+
+        curr = t2.to_string();
+        if t1_ancestors.contains(&curr) {
+            return curr;
+        }
+        while let Some(parent) = self.class_hierarchy.get(&curr) {
+            if t1_ancestors.contains(parent) {
+                return parent.clone();
+            }
+            curr = parent.clone();
+        }
+        "{unknown}".to_string()
+    }
+
     fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
         let e_is_ref = expected.starts_with("ref ");
         let a_is_ref = actual.starts_with("ref ");
@@ -2391,17 +2492,32 @@ impl TypeChecker {
             return true;
         }
 
-        if expected == "any"
+        if expected == "{unknown}"
+            || actual == "{unknown}"
+            || expected == "any"
             || actual == "any"
             || expected == ""
             || actual == ""
             || actual == "any:"
             || expected == "any:"
             || actual == "object"
+            || expected == "any[]"
+            || actual == "any[]"
         {
             return true;
         }
         if expected == actual {
+            return true;
+        }
+
+        // Object normalization
+        let e_norm_obj = expected.replace(" ", "").replace(";", ",");
+        let a_norm_obj = actual.replace(" ", "").replace(";", ",");
+        if e_norm_obj == a_norm_obj && !e_norm_obj.is_empty() {
+            return true;
+        }
+
+        if expected == "object" && (actual.starts_with('{') || actual.starts_with("Map<")) {
             return true;
         }
 
@@ -2443,11 +2559,21 @@ impl TypeChecker {
             return true;
         }
 
-        // Inheritance check
-        if let Some(parent) = self.class_hierarchy.get(actual) {
-            if self.are_types_compatible(expected, parent) {
+        if expected == "object" && actual.starts_with('{') {
+            return true;
+        }
+
+        if expected.ends_with("[]") && actual.ends_with("[]") {
+            let e_elem = &expected[..expected.len() - 2];
+            let a_elem = &actual[..actual.len() - 2];
+            if self.are_types_compatible(e_elem, a_elem) {
                 return true;
             }
+        }
+
+        // Inheritance check
+        if let Some(parent) = self.class_hierarchy.get(actual) {
+            return self.are_types_compatible(expected, parent);
         }
 
         // Interface check
@@ -2559,7 +2685,135 @@ impl TypeChecker {
             return true;
         }
 
+        // Structural Object Type check
+        if expected.starts_with("{")
+            && expected.ends_with("}")
+            && actual.starts_with("{")
+            && actual.ends_with("}")
+        {
+            let e_props = self.parse_struct_props(expected);
+            let a_props = self.parse_struct_props(actual);
+
+            if e_props.len() != a_props.len() {
+                return false;
+            }
+            for (k, expected_k_ty) in &e_props {
+                if let Some(actual_k_ty) = a_props.get(k) {
+                    if !self.are_types_compatible(expected_k_ty, actual_k_ty) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         false
+    }
+
+    fn parse_struct_props(&self, s: &str) -> HashMap<String, String> {
+        let mut props = HashMap::new();
+        let s = s.trim();
+        if !s.starts_with('{') || !s.ends_with('}') {
+            return props;
+        }
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return props;
+        }
+
+        let mut brace_level = 0;
+        let mut bracket_level = 0;
+        let mut angle_level = 0;
+        let mut current_key = String::new();
+        let mut current_val = String::new();
+        let mut parsing_key = true;
+
+        for c in inner.chars() {
+            match c {
+                '{' => {
+                    brace_level += 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '}' => {
+                    brace_level -= 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '[' => {
+                    bracket_level += 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                ']' => {
+                    bracket_level -= 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '<' => {
+                    angle_level += 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '>' => {
+                    angle_level -= 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                ':' if brace_level == 0
+                    && bracket_level == 0
+                    && angle_level == 0
+                    && parsing_key =>
+                {
+                    parsing_key = false;
+                }
+                ',' | ';' if brace_level == 0 && bracket_level == 0 && angle_level == 0 => {
+                    if !current_key.trim().is_empty() {
+                        props.insert(
+                            current_key.trim().to_string(),
+                            current_val.trim().to_string(),
+                        );
+                    }
+                    current_key.clear();
+                    current_val.clear();
+                    parsing_key = true;
+                }
+                _ => {
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+            }
+        }
+        if !current_key.trim().is_empty() {
+            props.insert(
+                current_key.trim().to_string(),
+                current_val.trim().to_string(),
+            );
+        }
+        props
     }
 
     fn check_statement(&mut self, stmt: &Statement) -> Result<(), ()> {
@@ -3047,43 +3301,43 @@ impl TypeChecker {
                     if source == "std:math" {
                         self.define_with_params(
                             "min".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
+                            "function:float64:float64,float64".to_string(),
+                            vec!["float64".to_string(), "float64".to_string()],
                         );
                         self.define_with_params(
                             "max".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
+                            "function:float64:float64,float64".to_string(),
+                            vec!["float64".to_string(), "float64".to_string()],
                         );
                         self.define_with_params(
                             "abs".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "round".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "floor".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "ceil".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "pow".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
+                            "function:float64:float64,float64".to_string(),
+                            vec!["float64".to_string(), "float64".to_string()],
                         );
                         self.define_with_params(
                             "sqrt".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
+                            "function:float64:float64".to_string(),
+                            vec!["float64".to_string()],
                         );
                         self.define_with_params(
                             "sin".to_string(),
@@ -3130,7 +3384,7 @@ impl TypeChecker {
                     } else if source == "std:time" {
                         self.define_with_params(
                             "now".to_string(),
-                            "float64".to_string(),
+                            "function:float64:".to_string(),
                             Vec::new(),
                         );
                         self.define_with_params(
@@ -3582,14 +3836,17 @@ impl TypeChecker {
         } else if let Some(open) = obj_type.find('<') {
             if let Some(close) = obj_type.rfind('>') {
                 let inner = &obj_type[open + 1..close];
-                // Split inner by comma, respecting nested generics
+                // Split inner by comma, respecting nested generics and object literals
                 let mut start = 0;
                 let mut depth = 0;
+                let mut depth_brace = 0;
                 for (i, c) in inner.char_indices() {
                     match c {
                         '<' => depth += 1,
                         '>' => depth -= 1,
-                        ',' if depth == 0 => {
+                        '{' => depth_brace += 1,
+                        '}' => depth_brace -= 1,
+                        ',' if depth == 0 && depth_brace == 0 => {
                             parts.push(inner[start..i].trim());
                             start = i + 1;
                         }
@@ -3971,8 +4228,14 @@ impl TypeChecker {
                         op,
                         TokenType::Minus | TokenType::Star | TokenType::Slash | TokenType::Plus
                     ) {
+                        if left_type == "float64" || right_type == "float64" {
+                            return Ok("float64".to_string());
+                        }
                         if is_float(&left_type) || is_float(&right_type) {
                             return Ok("float32".to_string());
+                        }
+                        if left_type == "int64" || right_type == "int64" {
+                            return Ok("int64".to_string());
                         }
                         return Ok("int32".to_string());
                     }
@@ -4270,27 +4533,19 @@ impl TypeChecker {
                 let mut is_variadic = false;
 
                 if callee_type.starts_with("function:") {
-                    let parts: Vec<&str> = callee_type.split(':').collect();
+                    let (parsed_ret, parsed_params, parsed_variadic) =
+                        self.parse_signature(callee_type.clone());
+                    // The returned final_type from parse_signature is "function:ret", so we strip it.
+                    let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
                     if parts.len() >= 2 {
-                        return_type = parts[1].to_string();
-                        if parts.len() >= 3 {
-                            let p_str = parts[2];
-                            if p_str.ends_with("...") {
-                                is_variadic = true;
-                            }
-                            s_params = p_str
-                                .split(',')
-                                .filter(|s| !s.is_empty())
-                                .map(|s| {
-                                    if s.ends_with("...") {
-                                        s[..s.len() - 3].to_string()
-                                    } else {
-                                        s.to_string()
-                                    }
-                                })
-                                .collect();
+                        let mut ret = parts[1].to_string();
+                        if ret.ends_with(':') {
+                            ret.pop();
                         }
+                        return_type = ret;
                     }
+                    s_params = parsed_params;
+                    is_variadic = parsed_variadic;
                 }
                 // Always try lookup to fill s_params if not yet populated from type string
                 if s_params.is_empty() {
@@ -4298,7 +4553,11 @@ impl TypeChecker {
                         if return_type == "any" && s.type_name.starts_with("function:") {
                             let parts: Vec<&str> = s.type_name.split(':').collect();
                             if parts.len() >= 2 {
-                                return_type = parts[1].to_string();
+                                let mut ret = parts[1].to_string();
+                                if ret.ends_with(':') {
+                                    ret.pop();
+                                }
+                                return_type = ret;
                             }
                         }
                         s_params = s.params.clone();
@@ -4330,7 +4589,23 @@ impl TypeChecker {
                         "any".to_string()
                     };
 
-                    if target_type != "any" && !self.are_types_compatible(&target_type, &arg_type) {
+                    if callee_str == "len" && arg_type != "any" {
+                        let is_valid = arg_type.ends_with("]") || arg_type == "string";
+                        if !is_valid {
+                            self.report_error_detailed(
+                                format!(
+                                    "Argument type mismatch for 'len': expected array or string, got '{}'",
+                                    arg_type
+                                ),
+                                *_line,
+                                *_col,
+                                "E0108",
+                                Some("Pass an array or string to 'len'"),
+                            );
+                        }
+                    } else if target_type != "any"
+                        && !self.are_types_compatible(&target_type, &arg_type)
+                    {
                         self.report_error_detailed(
                             format!(
                                 "Argument type mismatch for '{}': expected '{}', got '{}'",
@@ -4396,7 +4671,21 @@ impl TypeChecker {
 
                 Ok(return_type)
             }
-            Expression::ObjectLiteralExpr { .. } => Ok("any".to_string()),
+            Expression::ObjectLiteralExpr { entries, .. } => {
+                let mut type_str = String::from("{");
+                for (i, (key, val_expr)) in entries.iter().enumerate() {
+                    let mut val_ty = self.check_expression(val_expr)?;
+                    if val_ty.starts_with("ref ") {
+                        val_ty = val_ty[4..].to_string();
+                    }
+                    type_str.push_str(&format!("{}: {}", key, val_ty));
+                    if i < entries.len() - 1 {
+                        type_str.push_str(", ");
+                    }
+                }
+                type_str.push('}');
+                Ok(type_str)
+            }
             Expression::ArrayLiteral { elements, ty, .. } => {
                 if !elements.is_empty() {
                     let mut first_type = self.check_expression(&elements[0])?;
@@ -4408,8 +4697,20 @@ impl TypeChecker {
                         if elem_ty.starts_with("ref ") {
                             elem_ty = elem_ty[4..].to_string();
                         }
-                        if elem_ty != first_type && first_type != "any" {
-                            first_type = "any".to_string();
+                        if elem_ty != first_type && first_type != "{unknown}" {
+                            let common = self.get_common_ancestor(&first_type, &elem_ty);
+                            if common == "{unknown}" {
+                                self.report_error_detailed(
+                                    format!("Array elements must have consistent types. Expected '{}' but found '{}'", first_type, elem_ty),
+                                    elements[i].get_line(),
+                                    0,
+                                    "E0091",
+                                    Some("Ensure all elements in the array literal match the type of the first element or share a common ancestor"),
+                                );
+                                first_type = "{unknown}".to_string();
+                            } else {
+                                first_type = common;
+                            }
                         }
                     }
                     let inferred = format!("{}[{}]", first_type, elements.len());
@@ -4477,6 +4778,18 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
+                if class_name == "Map" || class_name == "Set" {
+                    self.report_error_detailed(
+                        format!("{} requires explicit type arguments", class_name),
+                        *_line,
+                        *_col,
+                        "E0101",
+                        Some(&format!(
+                            "Use {}<K, V> or equivalent to strictly type this collection",
+                            class_name
+                        )),
+                    );
+                }
                 if !self.is_valid_type(class_name) {
                     self.report_error_detailed(
                         format!("Unknown class '{}'", class_name),

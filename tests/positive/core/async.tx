@@ -78,8 +78,7 @@ async function test_features(): Promise<void> {
     // let start = Date.now(); // Date.now not available in pure core yet without std:time or Date binding? Assuming Date works as per previous file.
     let results = await Promise.all([
          compute(10),
-         compute(20),
-         "Instant"
+         compute(20)
     ]);
     assert_eq_int(3, results.length, "Promise.all length");
     // assert_eq_int(20, results[0], "Promise.all[0]"); // Type check might fail if array is mixed?
@@ -131,10 +130,9 @@ async function testLoopSequence() {
 async function testPromiseAllMixed() {
     print("--- Promise.all Mixed ---");
     let p1 = level1(10); // 11
-    let val = 20;
     let p2 = level1(30); // 31
     
-    let results = await Promise.all([p1, val, p2]);
+    let results = await Promise.all([p1, p2]);
     // assert_eq_int(11, results[0], "Mixed[0]");
     // assert_eq_int(20, results[1], "Mixed[1]");
     // assert_eq_int(31, results[2], "Mixed[2]");

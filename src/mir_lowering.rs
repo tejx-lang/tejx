@@ -188,7 +188,7 @@ impl MIRLowering {
 
     fn auto_box(&mut self, val: MIRValue, target_ty: &TejxType) -> MIRValue {
         let src_ty = val.get_type();
-        let target_is_any = matches!(target_ty, TejxType::Any);
+        let target_is_any = false;
         let target_is_string = matches!(target_ty, TejxType::String);
 
         if target_is_any || target_is_string {
@@ -222,7 +222,7 @@ impl MIRLowering {
 
         // Unboxing logic: target is primitive, src is Any
         let is_complex = matches!(target_ty, TejxType::Class(_) | TejxType::FixedArray(_, _));
-        if !is_complex && matches!(src_ty, TejxType::Any) {
+        if !is_complex && false {
             let unbox_func = match target_ty {
                 t if t.is_numeric() => Some("rt_to_number"),
                 TejxType::Bool => Some("rt_is_truthy"),
@@ -591,7 +591,7 @@ impl MIRLowering {
 
                 // Variables to track unwinding state across finally block
                 let is_unwinding_var = self.new_temp(TejxType::Bool);
-                let saved_ex_var = self.new_temp(TejxType::Any);
+                let saved_ex_var = self.new_temp(TejxType::Class("any".to_string()));
 
                 let finally_handler_idx = if finally_block.is_some() {
                     Some(self.new_block("finally_unwind"))
@@ -668,7 +668,7 @@ impl MIRLowering {
                 self.current_block = catch_block_idx;
                 if let Some(var) = catch_var {
                     // Extract exception into variable
-                    let temp = self.new_temp(TejxType::Any);
+                    let temp = self.new_temp(TejxType::Class("any".to_string()));
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: temp.clone(),
@@ -680,7 +680,7 @@ impl MIRLowering {
                         dst: var.clone(),
                         src: MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         },
                     });
                 }
@@ -730,7 +730,7 @@ impl MIRLowering {
                     });
 
                     // Save exception
-                    let temp = self.new_temp(TejxType::Any);
+                    let temp = self.new_temp(TejxType::Class("any".to_string()));
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: temp.clone(),
@@ -742,7 +742,7 @@ impl MIRLowering {
                         dst: saved_ex_var.clone(),
                         src: MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         },
                     });
 
@@ -780,7 +780,7 @@ impl MIRLowering {
                             line: 0,
                             value: MIRValue::Variable {
                                 name: saved_ex_var,
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             },
                         });
                     }
@@ -822,7 +822,7 @@ impl MIRLowering {
                     } else {
                         MIRValue::Constant {
                             value: "0".to_string(),
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         }
                     };
                     let arg2 = if _args.len() > 2 {
@@ -830,7 +830,7 @@ impl MIRLowering {
                     } else {
                         MIRValue::Constant {
                             value: "0".to_string(),
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         }
                     };
 
@@ -934,7 +934,7 @@ impl MIRLowering {
                     }];
                     if !_args.is_empty() {
                         let arg_val = self.lower_expression(&_args[0]);
-                        constructor_args.push(self.auto_box(arg_val, &TejxType::Any));
+                        constructor_args.push(self.auto_box(arg_val, &TejxType::Void));
                     } else {
                         constructor_args.push(MIRValue::Constant {
                             value: "0".to_string(),
@@ -1313,7 +1313,7 @@ impl MIRLowering {
                         let mut target_ty = maybe_sig
                             .as_ref()
                             .and_then(|sig| sig.get(i))
-                            .unwrap_or(&TejxType::Any)
+                            .unwrap_or(&TejxType::Void)
                             .clone();
 
                         // Fix: prevent primitive boxing for typed arrays by overriding target type
@@ -1448,7 +1448,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Any);
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1457,7 +1457,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 };
                             }
                         }
@@ -1522,7 +1522,7 @@ impl MIRLowering {
                 let idx = self.lower_expression(index);
 
                 let obj_ty = obj.get_type();
-                let is_any_source = matches!(obj_ty, TejxType::Any)
+                let is_any_source = false
                     || (if let TejxType::Class(name) = &obj_ty {
                         name == "any[]" || name == "Array"
                     } else {
@@ -1532,7 +1532,7 @@ impl MIRLowering {
                 // If source is Any/any[], the value loaded is a TaggedValue (Any).
                 // We must load it as Any first, then unbox if necessary.
                 let load_ty = if is_any_source {
-                    TejxType::Any
+                    TejxType::Class("any".to_string())
                 } else {
                     ty.clone()
                 };
@@ -1551,7 +1551,7 @@ impl MIRLowering {
                     ty: load_ty,
                 };
 
-                if is_any_source && ty != &TejxType::Any {
+                if is_any_source && ty != &TejxType::Void {
                     self.auto_box(val, ty)
                 } else {
                     val
@@ -1562,7 +1562,7 @@ impl MIRLowering {
             } => {
                 let obj = self.lower_expression(target);
                 // Runtime m_get returns a TaggedValue (Any), so we must load it as Any first.
-                let temp = self.new_temp(TejxType::Any);
+                let temp = self.new_temp(TejxType::Class("any".to_string()));
                 self.emit(MIRInstruction::LoadMember {
                     line: 0,
                     dst: temp.clone(),
@@ -1572,7 +1572,7 @@ impl MIRLowering {
                 });
                 let val = MIRValue::Variable {
                     name: temp,
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 };
                 // Convert/Unbox to the expected HIR type (e.g. Int32 for length)
                 self.auto_box(val, ty)
@@ -1596,7 +1596,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Any);
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1605,7 +1605,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 };
                             }
                         }
@@ -1647,7 +1647,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Any);
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1656,7 +1656,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 };
                             }
                         }
@@ -1740,7 +1740,7 @@ impl MIRLowering {
             }
             HIRExpression::NoneLiteral { .. } => MIRValue::Constant {
                 value: "0".to_string(),
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             },
             HIRExpression::SomeExpr { value, .. } => self.lower_expression(value),
         }

@@ -442,7 +442,7 @@ impl Lowering {
                     line: 0,
                     callee: "f_main".to_string(),
                     args: vec![],
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 },
             });
         }
@@ -473,43 +473,87 @@ impl Lowering {
         // Add built-in runtime signatures for proper auto-boxing in MIR
         signatures.insert(
             "trimmed_concat".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "trimmed_indexOf".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "trimmed_includes".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "trimmed_slice".to_string(),
-            vec![TejxType::Any, TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
-        signatures.insert("trimmed_trimStart".to_string(), vec![TejxType::Any]);
-        signatures.insert("trimmed_trimEnd".to_string(), vec![TejxType::Any]);
-        signatures.insert("Array_sort".to_string(), vec![TejxType::Any]);
-        signatures.insert("Array_flat".to_string(), vec![TejxType::Any, TejxType::Any]);
+        signatures.insert(
+            "trimmed_trimStart".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
+        signatures.insert(
+            "trimmed_trimEnd".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
+        signatures.insert(
+            "Array_sort".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
+        signatures.insert(
+            "Array_flat".to_string(),
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
+        );
         signatures.insert(
             "Array_includes".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "Array_concat".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "__resolve_promise".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "__reject_promise".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "Thread_new".to_string(),
-            vec![TejxType::Any, TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "rt_move_member".to_string(),
@@ -522,23 +566,48 @@ impl Lowering {
         signatures.insert("tejx_inc_async_ops".to_string(), vec![]);
         signatures.insert("tejx_dec_async_ops".to_string(), vec![]);
         signatures.insert("tejx_run_event_loop".to_string(), vec![]);
-        signatures.insert("tejx_Promise_clone".to_string(), vec![TejxType::Any]);
-        signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
-        signatures.insert("Promise_new".to_string(), vec![TejxType::Any]);
-        signatures.insert("rt_sleep".to_string(), vec![TejxType::Any]);
+        signatures.insert(
+            "tejx_Promise_clone".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
+        signatures.insert(
+            "Promise_new".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
+        signatures.insert(
+            "Promise_new".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
+        signatures.insert(
+            "rt_sleep".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
         signatures.insert(
             "Array_reduce".to_string(),
-            vec![TejxType::Any, TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "__optional_chain".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
         signatures.insert(
             "rt_object_merge".to_string(),
-            vec![TejxType::Any, TejxType::Any],
+            vec![
+                TejxType::Class("any".to_string()),
+                TejxType::Class("any".to_string()),
+            ],
         );
-        signatures.insert("rt_len".to_string(), vec![TejxType::Any]);
+        signatures.insert(
+            "rt_len".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
 
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
@@ -624,7 +693,7 @@ impl Lowering {
             line: line,
             name: format!("f_{}", func.name),
             params: mangled_params,
-            _return_type: TejxType::Any,
+            _return_type: TejxType::Class("any".to_string()),
             body: Box::new(wrapper_body),
         });
     }
@@ -655,7 +724,7 @@ impl Lowering {
 
         self.enter_scope();
         let args_id_name = "args_id".to_string();
-        self.define(args_id_name.clone(), TejxType::Any);
+        self.define(args_id_name.clone(), TejxType::Class("any".to_string()));
 
         let mut worker_body_stmts = Vec::new();
 
@@ -672,15 +741,16 @@ impl Lowering {
                 value: "0".to_string(),
                 ty: TejxType::Int32,
             }),
-            ty: TejxType::Any,
+            ty: TejxType::Class("any".to_string()),
         };
         let promise_id_raw = "promise_id_local".to_string();
-        let promise_id_var = self.define(promise_id_raw.clone(), TejxType::Any);
+        let promise_id_var =
+            self.define(promise_id_raw.clone(), TejxType::Class("any".to_string()));
         worker_body_stmts.push(HIRStatement::VarDecl {
             line: line,
             name: promise_id_var.clone(),
             initializer: Some(promise_id_expr),
-            ty: TejxType::Any,
+            ty: TejxType::Class("any".to_string()),
             _is_const: true,
         });
         *self.current_async_promise_id.borrow_mut() = Some(promise_id_var.clone());
@@ -738,12 +808,12 @@ impl Lowering {
                             HIRExpression::Variable {
                                 line: line,
                                 name: promise_id_var.clone(),
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             },
                             HIRExpression::Literal {
                                 line: line,
                                 value: "0".to_string(),
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             },
                         ],
                         ty: TejxType::Void,
@@ -773,12 +843,12 @@ impl Lowering {
                             HIRExpression::Variable {
                                 line: line,
                                 name: promise_id_var.clone(),
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             },
                             HIRExpression::Variable {
                                 line: line,
                                 name: "err".to_string(),
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             },
                         ],
                         ty: TejxType::Void,
@@ -838,9 +908,9 @@ impl Lowering {
                     value: "0".to_string(),
                     ty: TejxType::Int32,
                 }],
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             }),
-            ty: TejxType::Any,
+            ty: TejxType::Class("any".to_string()),
             _is_const: false, // Can be const if not reassigned, but for simplicity, let's keep it mutable
         });
 
@@ -855,11 +925,11 @@ impl Lowering {
                 args: vec![HIRExpression::Variable {
                     line: line,
                     name: p_var.clone(),
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 }],
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             }),
-            ty: TejxType::Any,
+            ty: TejxType::Class("any".to_string()),
             _is_const: false,
         });
 
@@ -867,7 +937,7 @@ impl Lowering {
         let mut args_elems = vec![HIRExpression::Variable {
             line: line,
             name: p_clone_var.clone(),
-            ty: TejxType::Any,
+            ty: TejxType::Class("any".to_string()),
         }];
         for (pname, pty) in params {
             let (mangled, _) = self.lookup(pname).unwrap_or((pname.clone(), pty.clone()));
@@ -932,7 +1002,7 @@ impl Lowering {
             value: Some(HIRExpression::Variable {
                 line: line,
                 name: p_var,
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             }),
         });
 
@@ -1052,7 +1122,7 @@ impl Lowering {
                                             ty: f_ty.clone(),
                                         }),
                                         value: Box::new(hir_init),
-                                        ty: TejxType::Any,
+                                        ty: TejxType::Class("any".to_string()),
                                     },
                                 },
                             );
@@ -1085,7 +1155,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: mangled_func,
-                                                ty: TejxType::Any,
+                                                ty: TejxType::Class("any".to_string()),
                                             },
                                         ],
                                         ty: TejxType::Void,
@@ -1121,7 +1191,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: mangled_func,
-                                                ty: TejxType::Any,
+                                                ty: TejxType::Class("any".to_string()),
                                             },
                                         ],
                                         ty: TejxType::Void,
@@ -1157,7 +1227,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: mangled_func,
-                                                ty: TejxType::Any,
+                                                ty: TejxType::Class("any".to_string()),
                                             },
                                         ],
                                         ty: TejxType::Void,
@@ -1294,7 +1364,7 @@ impl Lowering {
                     line: line,
                     name: mangled_name,
                     params: mangled_params,
-                    _return_type: TejxType::Any,
+                    _return_type: TejxType::Class("any".to_string()),
                     body: Box::new(wrapper_body),
                 });
             } else {
@@ -1406,7 +1476,7 @@ impl Lowering {
                             ty: f_ty.clone(),
                         }),
                         value: Box::new(hir_init),
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     },
                 });
             }
@@ -1495,7 +1565,9 @@ impl Lowering {
             } => {
                 let init = initializer.as_ref().map(|e| self.lower_expression(e));
                 let ty = if type_annotation.is_empty() {
-                    init.as_ref().map(|e| e.get_type()).unwrap_or(TejxType::Any)
+                    init.as_ref()
+                        .map(|e| e.get_type())
+                        .unwrap_or(TejxType::Class("any".to_string()))
                 } else {
                     TejxType::from_name(type_annotation)
                 };
@@ -1605,7 +1677,7 @@ impl Lowering {
                         line: line,
                         name: arr_name.clone(),
                         initializer: Some(iter_expr),
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                         _is_const: true,
                     });
 
@@ -1619,7 +1691,7 @@ impl Lowering {
                             target: Box::new(HIRExpression::Variable {
                                 line: line,
                                 name: arr_name.clone(),
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             }),
                             member: "length".to_string(),
                             ty: TejxType::Int32,
@@ -1669,23 +1741,23 @@ impl Lowering {
                         target: Box::new(HIRExpression::Variable {
                             line: line,
                             name: arr_name,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         }),
                         index: Box::new(HIRExpression::Variable {
                             line: line,
                             name: idx_name.clone(),
                             ty: TejxType::Int32,
                         }),
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     };
                     body_stmts.push(HIRStatement::VarDecl {
                         line: line,
                         name: var_name.clone(),
                         initializer: Some(val_expr),
-                        ty: TejxType::Any, // Inferred?
+                        ty: TejxType::Class("any".to_string()), // Inferred?
                         _is_const: false,
                     });
-                    self.define(var_name.clone(), TejxType::Any);
+                    self.define(var_name.clone(), TejxType::Class("any".to_string()));
 
                     // User Body
                     if let Some(user_body) = self.lower_statement(body) {
@@ -1775,12 +1847,12 @@ impl Lowering {
                                 HIRExpression::Variable {
                                     line: line,
                                     name: p_id.clone(),
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 },
                                 val.clone().unwrap_or(HIRExpression::Literal {
                                     line: line,
                                     value: "0".to_string(),
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 }),
                             ],
                             ty: TejxType::Void,
@@ -1954,7 +2026,7 @@ impl Lowering {
 
                 let base_obj = HIRExpression::ObjectLiteral {
                     entries: hir_entries,
-                    ty: TejxType::Any, // Map
+                    ty: TejxType::Class("any".to_string()), // Map
                     line,
                 };
 
@@ -1968,7 +2040,7 @@ impl Lowering {
                         expr = HIRExpression::Call {
                             callee: "rt_object_merge".to_string(),
                             args: vec![expr, spread_val],
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                             line,
                         };
                     }
@@ -2003,7 +2075,7 @@ impl Lowering {
             Expression::ThisExpr { .. } => {
                 let (name, ty) = self
                     .lookup("this")
-                    .unwrap_or_else(|| ("this".to_string(), TejxType::Any));
+                    .unwrap_or_else(|| ("this".to_string(), TejxType::Class("any".to_string())));
                 HIRExpression::Variable {
                     line: line,
                     name,
@@ -2013,7 +2085,7 @@ impl Lowering {
             Expression::SuperExpr { .. } => {
                 let (name, ty) = self
                     .lookup("super")
-                    .unwrap_or_else(|| ("super".to_string(), TejxType::Any));
+                    .unwrap_or_else(|| ("super".to_string(), TejxType::Class("any".to_string())));
                 HIRExpression::Variable {
                     line: line,
                     name,
@@ -2023,7 +2095,7 @@ impl Lowering {
             Expression::Identifier { name, .. } => {
                 let (resolved_name, ty) = self
                     .lookup(name)
-                    .unwrap_or_else(|| (name.clone(), TejxType::Any));
+                    .unwrap_or_else(|| (name.clone(), TejxType::Class("any".to_string())));
                 let f_name = format!("f_{}", name);
                 let final_name = if (self.user_functions.borrow().contains_key(name)
                     || self.user_functions.borrow().contains_key(&f_name))
@@ -2054,7 +2126,7 @@ impl Lowering {
                     op: TokenType::PipePipe,
                     left: Box::new(left_hir),
                     right: Box::new(right_hir),
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 }
             }
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
@@ -2078,14 +2150,14 @@ impl Lowering {
                         line: line,
                         target: Box::new(target_hir),
                         index: Box::new(index_hir),
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     }),
                     else_branch: Box::new(HIRExpression::Literal {
                         line: line,
                         value: "0".to_string(),
                         ty: TejxType::Int32,
                     }),
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 }
             }
             Expression::NoneLiteral { .. } => HIRExpression::NoneLiteral { line },
@@ -2347,7 +2419,7 @@ impl Lowering {
                                 ty: ty,
                             }),
                             args: hir_args,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         };
                     }
                 }
@@ -2369,11 +2441,11 @@ impl Lowering {
                             let this_ty = if let Some(cls) = self.current_class.borrow().as_ref() {
                                 TejxType::Class(cls.clone())
                             } else {
-                                TejxType::Any
+                                TejxType::Class("any".to_string())
                             };
-                            let (mangled_this, _) = self
-                                .lookup("this")
-                                .unwrap_or_else(|| ("this".to_string(), TejxType::Any));
+                            let (mangled_this, _) = self.lookup("this").unwrap_or_else(|| {
+                                ("this".to_string(), TejxType::Class("any".to_string()))
+                            });
                             hir_args.insert(
                                 0,
                                 HIRExpression::Variable {
@@ -2387,7 +2459,7 @@ impl Lowering {
                                 line: line,
                                 callee: method_name,
                                 args: hir_args,
-                                ty: TejxType::Any, // Inferred?
+                                ty: TejxType::Class("any".to_string()), // Inferred?
                             };
                         } else {
                             // Error: super used but no parent?
@@ -2457,7 +2529,7 @@ impl Lowering {
                                 .borrow()
                                 .get(&method_name)
                                 .cloned()
-                                .unwrap_or(TejxType::Any);
+                                .unwrap_or(TejxType::Class("any".to_string()));
 
                             let mut hir_args: Vec<HIRExpression> =
                                 args.iter().map(|a| self.lower_expression(a)).collect();
@@ -2488,17 +2560,17 @@ impl Lowering {
                     .replace(":", "_");
                 let mut final_callee = normalized.clone();
                 let mut final_args = hir_args.clone();
-                let mut ty = TejxType::Any;
+                let mut ty = TejxType::Class("any".to_string());
 
                 if callee_str == "typeof" {
                     let r_expr = hir_args[0].clone();
                     let r_ty = r_expr.get_type();
-                    if matches!(r_ty, TejxType::Any) {
+                    if false {
                         return HIRExpression::Call {
                             line: line,
                             callee: "rt_typeof".to_string(),
                             args: vec![r_expr],
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         };
                     } else {
                         let type_name = match &r_ty {
@@ -2511,7 +2583,17 @@ impl Lowering {
                             TejxType::Bool => "boolean",
                             TejxType::String => "string",
                             TejxType::Char => "char",
-                            TejxType::Class(c) => c,
+                            TejxType::Class(c) => {
+                                if c.starts_with('{')
+                                    || c == "any"
+                                    || c.starts_with("Map")
+                                    || c.starts_with("Set")
+                                {
+                                    "object"
+                                } else {
+                                    c
+                                }
+                            }
                             _ => "object",
                         };
                         return HIRExpression::Literal {
@@ -2541,13 +2623,13 @@ impl Lowering {
                 if callee_str == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {
                         final_callee = format!("f_{}_constructor", parent);
-                        let (mangled_this, _) = self
-                            .lookup("this")
-                            .unwrap_or_else(|| ("this".to_string(), TejxType::Any));
+                        let (mangled_this, _) = self.lookup("this").unwrap_or_else(|| {
+                            ("this".to_string(), TejxType::Class("any".to_string()))
+                        });
                         final_args = vec![HIRExpression::Variable {
                             line: line,
                             name: mangled_this,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         }];
                         final_args.extend(hir_args.clone());
                     }
@@ -2556,13 +2638,13 @@ impl Lowering {
                     if let Expression::SuperExpr { .. } = object.as_ref() {
                         if let Some(parent) = &*self.parent_class.borrow() {
                             final_callee = format!("f_{}_{}", parent, member);
-                            let (mangled_this, _) = self
-                                .lookup("this")
-                                .unwrap_or_else(|| ("this".to_string(), TejxType::Any));
+                            let (mangled_this, _) = self.lookup("this").unwrap_or_else(|| {
+                                ("this".to_string(), TejxType::Class("any".to_string()))
+                            });
                             final_args = vec![HIRExpression::Variable {
                                 line: line,
                                 name: mangled_this,
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             }];
                             final_args.extend(hir_args.clone());
                         }
@@ -2588,7 +2670,7 @@ impl Lowering {
                                 .borrow()
                                 .get(&static_callee)
                                 .cloned()
-                                .unwrap_or(TejxType::Any);
+                                .unwrap_or(TejxType::Class("any".to_string()));
                             final_callee = static_callee;
                             ty = ret;
                             // Static method calls don't pass 'this'
@@ -2889,6 +2971,10 @@ impl Lowering {
                             final_callee = self.stdlib.get_runtime_name(final_mod_name, func_name);
                             if mod_name == "math" {
                                 ty = TejxType::Float64;
+                            } else if mod_name == "time" && func_name == "now" {
+                                ty = TejxType::Float64;
+                            } else if mod_name == "time" && func_name == "sleep" {
+                                ty = TejxType::Void;
                             }
                             break;
                         }
@@ -2915,7 +3001,7 @@ impl Lowering {
                                     final_args = vec![HIRExpression::Variable {
                                         line: line,
                                         name: "this".to_string(),
-                                        ty: TejxType::Any,
+                                        ty: TejxType::Class("any".to_string()),
                                     }];
                                     final_args.extend(hir_args.clone());
                                 }
@@ -3031,7 +3117,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: "this".to_string(),
-                                                ty: TejxType::Any,
+                                                ty: TejxType::Class("any".to_string()),
                                             }
                                         } else if obj_path.contains('.') {
                                             // ... existing complex path logic ...
@@ -3042,7 +3128,7 @@ impl Lowering {
                                                 HIRExpression::Variable {
                                                     line: line,
                                                     name: "this".to_string(),
-                                                    ty: TejxType::Any,
+                                                    ty: TejxType::Class("any".to_string()),
                                                 }
                                             } else if sub_parts[0] == "(string)" {
                                                 // This is a literal that was mangled by to_callee_name
@@ -3057,14 +3143,14 @@ impl Lowering {
                                                     HIRExpression::Variable {
                                                         line: line,
                                                         name: "this".to_string(),
-                                                        ty: TejxType::Any,
+                                                        ty: TejxType::Class("any".to_string()),
                                                     }
                                                 }
                                             } else {
                                                 let base_ty = self
                                                     .lookup(sub_parts[0])
                                                     .map(|(_, t)| t)
-                                                    .unwrap_or(TejxType::Any);
+                                                    .unwrap_or(TejxType::Class("any".to_string()));
                                                 HIRExpression::Variable {
                                                     line: line,
                                                     name: sub_parts[0].to_string(),
@@ -3073,7 +3159,8 @@ impl Lowering {
                                             };
                                             // ... rest of loop ...
                                             for idx in 1..sub_parts.len() {
-                                                let mut next_ty = TejxType::Any;
+                                                let mut next_ty =
+                                                    TejxType::Class("any".to_string());
                                                 if let TejxType::Class(class_name) =
                                                     current.get_type()
                                                 {
@@ -3105,7 +3192,7 @@ impl Lowering {
                                                 let ty = self
                                                     .lookup(&obj_path)
                                                     .map(|(_, t)| t)
-                                                    .unwrap_or(TejxType::Any);
+                                                    .unwrap_or(TejxType::Class("any".to_string()));
                                                 HIRExpression::Variable {
                                                     line: line,
                                                     name: obj_path.clone(),
@@ -3118,17 +3205,23 @@ impl Lowering {
                                         "push" | "unshift" | "fill" => {
                                             (format!("Array_{}", method_name), TejxType::Int32)
                                         }
-                                        "pop" | "shift" => {
-                                            (format!("Array_{}", method_name), TejxType::Any)
-                                        }
-                                        "join" => ("__join".to_string(), TejxType::Any),
-                                        "lock" | "unlock" => {
-                                            (format!("m_{}", method_name), TejxType::Any)
-                                        }
+                                        "pop" | "shift" => (
+                                            format!("Array_{}", method_name),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "join" => (
+                                            "__join".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "lock" | "unlock" => (
+                                            format!("m_{}", method_name),
+                                            TejxType::Class("any".to_string()),
+                                        ),
                                         "map" | "filter" | "reduce" | "find" | "findIndex"
-                                        | "reverse" | "splice" | "sort" | "flat" => {
-                                            (format!("Array_{}", method_name), TejxType::Any)
-                                        }
+                                        | "reverse" | "splice" | "sort" | "flat" => (
+                                            format!("Array_{}", method_name),
+                                            TejxType::Class("any".to_string()),
+                                        ),
                                         "concat" | "slice" | "indexOf" | "includes" => {
                                             let base_ty =
                                                 class_name_opt.as_deref().unwrap_or("any");
@@ -3136,37 +3229,64 @@ impl Lowering {
                                                 || base_ty.ends_with("[]")
                                                 || base_ty.contains("any[]");
                                             if base_is_array {
-                                                (format!("Array_{}", method_name), TejxType::Any)
+                                                (
+                                                    format!("Array_{}", method_name),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             } else {
-                                                (format!("trimmed_{}", method_name), TejxType::Any)
+                                                (
+                                                    format!("trimmed_{}", method_name),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             }
                                         }
                                         "forEach" => {
                                             (format!("Array_{}", method_name), TejxType::Void)
                                         }
-                                        "set" | "put" => ("rt_Map_put".to_string(), TejxType::Any), // Map.put
-                                        "get" => ("rt_Map_get".to_string(), TejxType::Any),
-                                        "has" => ("rt_Collection_has".to_string(), TejxType::Any),
-                                        "delete" | "del" => {
-                                            ("rt_Collection_delete".to_string(), TejxType::Any)
-                                        }
-                                        "size" => {
-                                            ("rt_collections_size".to_string(), TejxType::Any)
-                                        }
-                                        "clear" => {
-                                            ("rt_Collection_clear".to_string(), TejxType::Any)
-                                        }
+                                        "set" | "put" => (
+                                            "rt_Map_put".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ), // Map.put
+                                        "get" => (
+                                            "rt_Map_get".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "has" => (
+                                            "rt_Collection_has".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "delete" | "del" => (
+                                            "rt_Collection_delete".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "size" => (
+                                            "rt_collections_size".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "clear" => (
+                                            "rt_Collection_clear".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
                                         "add" => {
                                             if class_name_opt.as_deref() == Some("Atomic") {
                                                 ("rt_atomic_add".to_string(), TejxType::Int32)
                                             } else if let Some(cn) = class_name_opt.as_deref() {
                                                 if cn == "Set" {
-                                                    ("rt_Collection_add".to_string(), TejxType::Any)
+                                                    (
+                                                        "rt_Collection_add".to_string(),
+                                                        TejxType::Class("any".to_string()),
+                                                    )
                                                 } else {
-                                                    (format!("f_{}_add", cn), TejxType::Any)
+                                                    (
+                                                        format!("f_{}_add", cn),
+                                                        TejxType::Class("any".to_string()),
+                                                    )
                                                 }
                                             } else {
-                                                ("rt_Collection_add".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_add".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             }
                                         }
                                         "sub" if class_name_opt.as_deref() == Some("Atomic") => {
@@ -3206,16 +3326,30 @@ impl Lowering {
                                         {
                                             ("rt_cond_notify_all".to_string(), TejxType::Int32)
                                         }
-                                        "trim" => ("rt_string_trim".to_string(), TejxType::Any),
-                                        "padStart" => {
-                                            ("trimmed_padStart".to_string(), TejxType::Any)
-                                        }
-                                        "padEnd" => ("trimmed_padEnd".to_string(), TejxType::Any),
-                                        "repeat" => ("trimmed_repeat".to_string(), TejxType::Any),
-                                        "trimStart" => {
-                                            ("trimmed_trimStart".to_string(), TejxType::Any)
-                                        }
-                                        "trimEnd" => ("trimmed_trimEnd".to_string(), TejxType::Any),
+                                        "trim" => (
+                                            "rt_string_trim".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "padStart" => (
+                                            "trimmed_padStart".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "padEnd" => (
+                                            "trimmed_padEnd".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "repeat" => (
+                                            "trimmed_repeat".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "trimStart" => (
+                                            "trimmed_trimStart".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "trimEnd" => (
+                                            "trimmed_trimEnd".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
                                         "keys" => {
                                             let is_static_obj =
                                                 if let HIRExpression::Variable { name, .. } =
@@ -3226,9 +3360,15 @@ impl Lowering {
                                                     false
                                                 };
                                             if is_static_obj {
-                                                ("rt_Collection_keys".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_keys".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             } else {
-                                                ("rt_Collection_keys".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_keys".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             }
                                         }
                                         "values" => {
@@ -3241,9 +3381,15 @@ impl Lowering {
                                                     false
                                                 };
                                             if is_static_obj {
-                                                ("rt_Collection_values".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_values".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             } else {
-                                                ("rt_Collection_values".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_values".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             }
                                         }
                                         "entries" => {
@@ -3256,31 +3402,41 @@ impl Lowering {
                                                     false
                                                 };
                                             if is_static_obj {
-                                                ("rt_Collection_entries".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_entries".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             } else {
-                                                ("rt_Collection_entries".to_string(), TejxType::Any)
+                                                (
+                                                    "rt_Collection_entries".to_string(),
+                                                    TejxType::Class("any".to_string()),
+                                                )
                                             }
                                         }
-                                        "toLowerCase" => {
-                                            ("rt_string_to_lower".to_string(), TejxType::Any)
-                                        }
-                                        "toUpperCase" => {
-                                            ("rt_string_to_upper".to_string(), TejxType::Any)
-                                        }
+                                        "toLowerCase" => (
+                                            "rt_string_to_lower".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        "toUpperCase" => (
+                                            "rt_string_to_upper".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
                                         "startsWith" => {
                                             ("rt_string_starts_with".to_string(), TejxType::Bool)
                                         }
                                         "endsWith" => {
                                             ("rt_string_ends_with".to_string(), TejxType::Bool)
                                         }
-                                        "replace" => {
-                                            ("rt_string_replace".to_string(), TejxType::Any)
-                                        }
+                                        "replace" => (
+                                            "rt_string_replace".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
                                         "getTime" => ("d_getTime".to_string(), TejxType::Int32),
-                                        "toISOString" => {
-                                            ("d_toISOString".to_string(), TejxType::Any)
-                                        }
-                                        _ => ("".to_string(), TejxType::Any),
+                                        "toISOString" => (
+                                            "d_toISOString".to_string(),
+                                            TejxType::Class("any".to_string()),
+                                        ),
+                                        _ => ("".to_string(), TejxType::Class("any".to_string())),
                                     };
 
                                     if !runtime_callee.is_empty() {
@@ -3305,10 +3461,10 @@ impl Lowering {
                                                 line: line,
                                                 target: Box::new(obj_expr),
                                                 member: method_name.clone(),
-                                                ty: TejxType::Any,
+                                                ty: TejxType::Class("any".to_string()),
                                             }),
                                             args: i_args,
-                                            ty: TejxType::Any,
+                                            ty: TejxType::Class("any".to_string()),
                                         };
                                     }
                                 }
@@ -3331,7 +3487,7 @@ impl Lowering {
                         new_var_args.push(HIRExpression::ArrayLiteral {
                             line: line,
                             elements: rest.to_vec(),
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         });
                         final_args = new_var_args;
                     }
@@ -3375,7 +3531,7 @@ impl Lowering {
                                 line: line,
                                 callee: format!("f_{}_get_{}", class_name, member),
                                 args: vec![self.lower_expression(object)],
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             };
                         }
                     }
@@ -3409,7 +3565,7 @@ impl Lowering {
                     HIRExpression::Variable {
                         line: line,
                         name: f_combined,
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     }
                 } else {
                     HIRExpression::MemberAccess {
@@ -3419,7 +3575,7 @@ impl Lowering {
                         ty: if member == "length" {
                             TejxType::Int32
                         } else {
-                            TejxType::Any
+                            TejxType::Class("any".to_string())
                         },
                     }
                 }
@@ -3521,7 +3677,7 @@ impl Lowering {
                         (
                             p.name.clone(),
                             if p.type_name.is_empty() {
-                                TejxType::Any
+                                TejxType::Class("any".to_string())
                             } else {
                                 TejxType::from_name(&p.type_name)
                             },
@@ -3540,9 +3696,9 @@ impl Lowering {
                     mangled_params.push((
                         self.define(
                             format!("__dummy_pad_{}", mangled_params.len()),
-                            TejxType::Any,
+                            TejxType::Class("any".to_string()),
                         ),
-                        TejxType::Any,
+                        TejxType::Class("any".to_string()),
                     ));
                 }
 
@@ -3550,8 +3706,8 @@ impl Lowering {
                 mangled_params.insert(
                     0,
                     (
-                        self.define("__env".to_string(), TejxType::Any),
-                        TejxType::Any,
+                        self.define("__env".to_string(), TejxType::Class("any".to_string())),
+                        TejxType::Class("any".to_string()),
                     ),
                 );
 
@@ -3568,27 +3724,27 @@ impl Lowering {
                         line: line,
                         name: lambda_name.clone(),
                         params: mangled_params,
-                        _return_type: TejxType::Any,
+                        _return_type: TejxType::Class("any".to_string()),
                         body: Box::new(hir_body),
                     });
 
                 HIRExpression::Literal {
                     line: line,
                     value: lambda_name,
-                    ty: TejxType::Any, // Actually function type
+                    ty: TejxType::Class("any".to_string()), // Actually function type
                 }
             }
             Expression::AwaitExpr { expr, .. } => HIRExpression::Await {
                 line: line,
                 expr: Box::new(self.lower_expression(expr)),
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             },
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
                 HIRExpression::OptionalChain {
                     line: line,
                     target: Box::new(self.lower_expression(object)),
                     operation: format!(".{}", member),
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 }
             }
             Expression::NewExpr {
@@ -3611,7 +3767,7 @@ impl Lowering {
                         new_var_args.push(HIRExpression::ArrayLiteral {
                             line: line,
                             elements: rest.to_vec(),
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         });
                         hir_args = new_var_args;
                     }
@@ -3640,7 +3796,7 @@ impl Lowering {
                     line: line,
                     target: Box::new(callee_expr),
                     operation: "()".to_string(), // In HIR/MIR, OptionalChain "()" means call
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 }
             }
             Expression::TernaryExpr {
@@ -3657,14 +3813,14 @@ impl Lowering {
                     condition: Box::new(cond),
                     then_branch: Box::new(t_branch),
                     else_branch: Box::new(f_branch),
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 }
             }
 
             _ => HIRExpression::Literal {
                 line: line,
                 value: "0".to_string(),
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             },
         }
     }
@@ -3720,9 +3876,9 @@ impl Lowering {
                             value: i.to_string(),
                             ty: TejxType::Int32,
                         }),
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     };
-                    self.lower_binding_pattern(el, Some(el_init), &TejxType::Any, is_const, stmts);
+                    self.lower_binding_pattern(el, Some(el_init), &TejxType::Void, is_const, stmts);
                 }
 
                 if let Some(r) = rest {
@@ -3743,12 +3899,12 @@ impl Lowering {
                                 ty: TejxType::Int32,
                             },
                         ],
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     };
                     self.lower_binding_pattern(
                         r,
                         Some(slice_init),
-                        &TejxType::Any,
+                        &TejxType::Void,
                         is_const,
                         stmts,
                     );
@@ -3775,12 +3931,12 @@ impl Lowering {
                             ty: ty.clone(),
                         }),
                         member: key.clone(),
-                        ty: TejxType::Any,
+                        ty: TejxType::Class("any".to_string()),
                     };
                     self.lower_binding_pattern(
                         target,
                         Some(el_init),
-                        &TejxType::Any,
+                        &TejxType::Void,
                         is_const,
                         stmts,
                     );
@@ -3822,21 +3978,23 @@ impl Lowering {
             matches!(t, TejxType::Float16 | TejxType::Float32 | TejxType::Float64)
         };
 
+        if lt == TejxType::Float64 || rt == TejxType::Float64 {
+            return TejxType::Float64;
+        }
         if is_float(&lt) || is_float(&rt) {
             return TejxType::Float32; // Default promotion
         }
 
-        if matches!(
-            lt,
-            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
-        ) || matches!(
-            rt,
-            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
-        ) {
+        if lt == TejxType::Int64 || rt == TejxType::Int64 {
+            return TejxType::Int64;
+        }
+        if matches!(lt, TejxType::Int16 | TejxType::Int32 | TejxType::Int128)
+            || matches!(rt, TejxType::Int16 | TejxType::Int32 | TejxType::Int128)
+        {
             return TejxType::Int32; // Default promotion
         }
 
-        TejxType::Any
+        TejxType::Class("any".to_string())
     }
 
     pub fn resolve_imports(
@@ -3923,6 +4081,12 @@ impl Lowering {
                         imports.insert("https".to_string(), ImportMode::All);
                     }
 
+                    if mod_name == "time" {
+                        self.user_functions
+                            .borrow_mut()
+                            .insert("std_time_now".to_string(), TejxType::Float64);
+                    }
+
                     if mod_name == "collections" {
                         let mut class_methods = self.class_methods.borrow_mut();
                         let mut user_functions = self.user_functions.borrow_mut();
@@ -3965,7 +4129,14 @@ impl Lowering {
                             );
                             for m in methods {
                                 let mangled = format!("{}_{}", cls, m);
-                                user_functions.insert(mangled, TejxType::Any);
+                                let ty = if *m == *"has" || *m == *"isEmpty" || *m == *"contains" {
+                                    TejxType::Bool
+                                } else if *m == *"size" {
+                                    TejxType::Int32
+                                } else {
+                                    TejxType::Class("any".to_string())
+                                };
+                                user_functions.insert(mangled, ty);
                             }
                             // Also register constructor
                             user_functions.insert(format!("{}_constructor", cls), TejxType::Void);

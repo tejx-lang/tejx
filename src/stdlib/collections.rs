@@ -337,7 +337,11 @@ pub extern "C" fn rt_Map_has(this: i64, val: i64) -> i64 {
         }
     };
 
-    if result { 1 } else { 0 }
+    if result {
+        crate::runtime::rt_box_boolean(1)
+    } else {
+        crate::runtime::rt_box_boolean(0)
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_Map_keys(this: i64) -> i64 {
@@ -418,7 +422,11 @@ pub extern "C" fn rt_Set_has(this: i64, val: i64) -> i64 {
             false
         }
     };
-    if result { 1 } else { 0 }
+    if result {
+        crate::runtime::rt_box_boolean(1)
+    } else {
+        crate::runtime::rt_box_boolean(0)
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_Set_delete(this: i64, val: i64) -> i64 {
@@ -502,7 +510,11 @@ pub extern "C" fn rt_OrderedMap_has(this: i64, val: i64) -> i64 {
             false
         }
     };
-    if result { 1 } else { 0 }
+    if result {
+        crate::runtime::rt_box_boolean(1)
+    } else {
+        crate::runtime::rt_box_boolean(0)
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_OrderedMap_size(this: i64) -> i64 {
@@ -541,7 +553,11 @@ pub extern "C" fn rt_OrderedSet_has(this: i64, val: i64) -> i64 {
             false
         }
     };
-    if result { 1 } else { 0 }
+    if result {
+        crate::runtime::rt_box_boolean(1)
+    } else {
+        crate::runtime::rt_box_boolean(0)
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rt_OrderedSet_size(this: i64) -> i64 {
@@ -692,18 +708,43 @@ pub extern "C" fn rt_Collection_has(id: i64, key: i64) -> i64 {
     let k_str = stringify_value(key);
     let heap = HEAP.lock().unwrap();
     if let Some(TaggedValue::Map(m)) = heap.get(id) {
-        return if m.contains_key(&k_str) { 1 } else { 0 };
+        return if m.contains_key(&k_str) {
+            drop(heap);
+            crate::runtime::rt_box_boolean(1)
+        } else {
+            drop(heap);
+            crate::runtime::rt_box_boolean(0)
+        };
     }
     if let Some(TaggedValue::Set(s)) = heap.get(id) {
-        return if s.contains(&k_str) { 1 } else { 0 };
+        return if s.contains(&k_str) {
+            drop(heap);
+            crate::runtime::rt_box_boolean(1)
+        } else {
+            drop(heap);
+            crate::runtime::rt_box_boolean(0)
+        };
     }
     if let Some(TaggedValue::OrderedMap(_, m)) = heap.get(id) {
-        return if m.contains_key(&k_str) { 1 } else { 0 };
+        return if m.contains_key(&k_str) {
+            drop(heap);
+            crate::runtime::rt_box_boolean(1)
+        } else {
+            drop(heap);
+            crate::runtime::rt_box_boolean(0)
+        };
     }
     if let Some(TaggedValue::OrderedSet(_, s)) = heap.get(id) {
-        return if s.contains(&key) { 1 } else { 0 };
+        return if s.contains(&key) {
+            drop(heap);
+            crate::runtime::rt_box_boolean(1)
+        } else {
+            drop(heap);
+            crate::runtime::rt_box_boolean(0)
+        };
     }
-    0
+    drop(heap);
+    crate::runtime::rt_box_boolean(0)
 }
 
 #[unsafe(no_mangle)]
@@ -847,7 +888,11 @@ pub extern "C" fn rt_BloomFilter_contains(this: i64, val: i64) -> i64 {
             false
         }
     };
-    if result { 1 } else { 0 }
+    if result {
+        crate::runtime::rt_box_boolean(1)
+    } else {
+        crate::runtime::rt_box_boolean(0)
+    }
 }
 
 // --- Trie ---
@@ -973,5 +1018,9 @@ pub extern "C" fn rt_collections_isEmpty(this: i64) -> i64 {
             _ => true,
         }
     };
-    if empty { 1 } else { 0 }
+    if empty {
+        crate::runtime::rt_box_boolean(1)
+    } else {
+        crate::runtime::rt_box_boolean(0)
+    }
 }
