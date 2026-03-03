@@ -1,0 +1,97 @@
+extern function rt_Mutex_constructor(_this: Mutex): void;
+extern function rt_Mutex_acquire(_this: Mutex): void;
+extern function rt_Mutex_release(_this: Mutex): void;
+extern function rt_SharedQueue_constructor<T>(_this: SharedQueue<T>): void;
+extern function rt_SharedQueue_enqueue<T>(_this: SharedQueue<T>, val: T): void;
+extern function rt_SharedQueue_dequeue<T>(_this: SharedQueue<T>): T;
+extern function rt_SharedQueue_size<T>(_this: SharedQueue<T>): int;
+extern function rt_Atomic_add(_this: Atomic, val: int): int;
+extern function rt_Atomic_sub(_this: Atomic, val: int): int;
+extern function rt_Atomic_load(_this: Atomic): int;
+extern function rt_Atomic_store(_this: Atomic, val: int): void;
+extern function rt_Atomic_exchange(_this: Atomic, val: int): int;
+extern function rt_Atomic_compareExchange(_this: Atomic, expected: int, desired: int): int;
+
+extern function rt_Condition_constructor(_this: ConditionVariable): void;
+extern function rt_Condition_wait(_this: ConditionVariable, mutex: Mutex): void;
+extern function rt_Condition_notify(_this: ConditionVariable): void;
+extern function rt_Condition_notifyAll(_this: ConditionVariable): void;
+
+extern function rt_Thread_constructor<T>(_this: Thread<T>, cb: (arg: T) => void, arg: T): void;
+extern function rt_Thread_start<T>(_this: Thread<T>): void;
+extern function rt_Thread_join<T>(_this: Thread<T>): void;
+
+export class Thread<T> {
+    constructor(cb: (arg: T) => void, arg: T) {
+        rt_Thread_constructor(this, cb, arg);
+    }
+
+    start(): void {
+        rt_Thread_start(this);
+    }
+
+    join(): void {
+        rt_Thread_join(this);
+    }
+}
+
+export class Atomic {
+    private value: int;
+    constructor(val: int) {
+        this.value = val;
+    }
+
+    add(val: int): int { return rt_Atomic_add(this, val); }
+    sub(val: int): int { return rt_Atomic_sub(this, val); }
+    load(): int { return rt_Atomic_load(this); }
+    store(val: int): void { rt_Atomic_store(this, val); }
+    exchange(val: int): int { return rt_Atomic_exchange(this, val); }
+    compareExchange(expected: int, desired: int): int { 
+        return rt_Atomic_compareExchange(this, expected, desired); 
+    }
+}
+
+export class Condition {
+    constructor() {
+        rt_Condition_constructor(this);
+    }
+    wait(mutex: Mutex): void { rt_Condition_wait(this, mutex); }
+    notify(): void { rt_Condition_notify(this); }
+    notifyAll(): void { rt_Condition_notifyAll(this); }
+}
+
+export class Mutex {
+    constructor() {
+        rt_Mutex_constructor(this);
+    }
+
+    lock(): void {
+        rt_Mutex_acquire(this);
+    }
+
+    unlock(): void {
+        rt_Mutex_release(this);
+    }
+}
+
+export class SharedQueue<T> {
+    constructor() {
+        rt_SharedQueue_constructor(this);
+    }
+
+    enqueue(val: T): void {
+        rt_SharedQueue_enqueue(this, val);
+    }
+
+    dequeue(): T {
+        return rt_SharedQueue_dequeue(this);
+    }
+
+    size(): int {
+        return rt_SharedQueue_size(this);
+    }
+
+    isEmpty(): bool {
+        return rt_SharedQueue_size(this) == 0;
+    }
+}

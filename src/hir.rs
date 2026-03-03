@@ -174,6 +174,7 @@ pub enum HIRStatement {
         params: Vec<(String, TejxType)>,
         _return_type: TejxType,
         body: Box<HIRStatement>, // Should be a Block
+        is_extern: bool,
         line: usize,
     },
     Return {

@@ -52,8 +52,19 @@ impl Parser {
     fn parse_declaration(&mut self) -> Option<Statement> {
         let current_token = self.peek();
         match current_token.token_type {
+            TokenType::Hash => {
+                self.advance(); // consume #
+                if self.match_token(TokenType::OpenBracket) {
+                    while !self.check(TokenType::CloseBracket) && !self.is_at_end() {
+                        self.advance();
+                    }
+                    self.match_token(TokenType::CloseBracket);
+                    return self.parse_declaration();
+                }
+                None
+            }
             TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
-            TokenType::Function => Some(self.parse_function_declaration(false)),
+            TokenType::Function => Some(self.parse_function_declaration(false, false)),
             TokenType::Async => {
                 if !self.async_enabled {
                     let t = self.peek();
@@ -66,7 +77,7 @@ impl Parser {
                 }
                 if self.check_next(TokenType::Function) {
                     self.advance(); // consume async
-                    Some(self.parse_function_declaration(true))
+                    Some(self.parse_function_declaration(true, false))
                 } else {
                     // Could be async arrow func or just expression statement?
                     Some(self.parse_statement())
@@ -89,13 +100,14 @@ impl Parser {
             TokenType::Export => {
                 let export_token = self.advance().clone(); // consume export
                 let is_default = self.match_token(TokenType::Default);
+                let is_extern = self.match_token(TokenType::Extern);
 
                 let decl = match self.peek().token_type {
                     TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
-                    TokenType::Function => Some(self.parse_function_declaration(false)),
+                    TokenType::Function => Some(self.parse_function_declaration(false, is_extern)),
                     TokenType::Async => {
                         self.advance(); // consume async
-                        Some(self.parse_function_declaration(true))
+                        Some(self.parse_function_declaration(true, is_extern))
                     }
                     TokenType::Class => Some(self.parse_class_declaration(false)),
                     TokenType::Abstract => {
@@ -106,6 +118,7 @@ impl Parser {
                     TokenType::Extension => Some(self.parse_extension_declaration()),
                     TokenType::Enum => Some(self.parse_enum_declaration()),
                     TokenType::TypeAlias => Some(self.parse_type_alias_declaration()),
+                    TokenType::Namespace => Some(self.parse_namespace_declaration()),
                     _ => None,
                 };
 
@@ -119,6 +132,11 @@ impl Parser {
                 } else {
                     None
                 }
+            }
+            TokenType::Namespace => Some(self.parse_namespace_declaration()),
+            TokenType::Extern => {
+                self.advance(); // consume extern
+                Some(self.parse_function_declaration(false, true))
             }
             TokenType::Import => Some(self.parse_import_statement()),
             _ => Some(self.parse_statement()),
@@ -238,6 +256,8 @@ impl Parser {
             | TokenType::Extends
             | TokenType::Some
             | TokenType::None
+            | TokenType::Namespace
+            | TokenType::As
             | TokenType::TypeVoid
             | TokenType::TypeInt
             | TokenType::TypeFloat
@@ -315,7 +335,7 @@ impl Parser {
         }
     }
 
-    fn parse_function_declaration(&mut self, is_async: bool) -> Statement {
+    fn parse_function_declaration(&mut self, is_async: bool, is_extern: bool) -> Statement {
         let start = self
             .consume(TokenType::Function, "Expected 'function'")
             .clone();
@@ -323,6 +343,22 @@ impl Parser {
             .consume_identifier("Expected function name")
             .value
             .clone();
+
+        // Support generic functions: function foo<T>(val: T): T
+        let mut generic_params = Vec::new();
+        if self.match_token(TokenType::Less) {
+            loop {
+                let param = self
+                    .consume(TokenType::Identifier, "Expected type parameter")
+                    .value
+                    .clone();
+                generic_params.push(param);
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+            self.consume(TokenType::Greater, "Expected '>'");
+        }
 
         self.consume(TokenType::OpenParen, "Expected '('");
         let mut params = Vec::new();
@@ -361,17 +397,28 @@ impl Parser {
             return_type = self.parse_type_annotation();
         }
 
-        let body_stmt = self.parse_block();
-        // Check if body_stmt is BlockStmt and extract
-        // Or just wrap it? FunctionDeclaration expects Box<Statement> which is fine if it's a block.
-        // Actually definition says Box<Statement> (comment says BlockStmt).
+        let body = if is_extern {
+            self.consume(
+                TokenType::Semicolon,
+                "Expected ';' after extern function declaration.",
+            );
+            Statement::BlockStmt {
+                statements: vec![],
+                _line: start.line,
+                _col: start.column,
+            }
+        } else {
+            self.parse_block()
+        };
 
         Statement::FunctionDeclaration(FunctionDeclaration {
             name,
             params,
             return_type,
-            body: Box::new(body_stmt),
+            body: Box::new(body),
             _is_async: is_async,
+            is_extern,
+            generic_params,
             _line: start.line,
             _col: start.column,
         })
@@ -493,6 +540,8 @@ impl Parser {
                     return_type: "void".to_string(),
                     body: Box::new(body),
                     _is_async: false,
+                    is_extern: false,
+                    generic_params: vec![],
                     _line: start.line,
                     _col: start.column,
                 });
@@ -554,6 +603,40 @@ impl Parser {
                 .value
                 .clone();
 
+            // Parse optional generic type parameters for methods: method<T, U>(...)
+            let mut method_generic_params = Vec::new();
+            if self.check(TokenType::Less) {
+                // Look ahead to disambiguate generics from comparison
+                let mut is_generic = false;
+                let saved = self.current;
+                self.advance(); // skip <
+                if self.check(TokenType::Identifier) {
+                    let after_ident = self.current + 1;
+                    if after_ident < self.tokens.len() {
+                        let next_tt = self.tokens[after_ident].token_type.clone();
+                        if next_tt == TokenType::Comma || next_tt == TokenType::Greater {
+                            is_generic = true;
+                        }
+                    }
+                }
+                self.current = saved; // restore
+
+                if is_generic {
+                    self.advance(); // consume <
+                    loop {
+                        let param = self
+                            .consume(TokenType::Identifier, "Expected type parameter")
+                            .value
+                            .clone();
+                        method_generic_params.push(param);
+                        if !self.match_token(TokenType::Comma) {
+                            break;
+                        }
+                    }
+                    self.consume(TokenType::Greater, "Expected '>'");
+                }
+            }
+
             if self.check(TokenType::OpenParen) {
                 // Method
                 self.consume(TokenType::OpenParen, "Expected '('");
@@ -603,6 +686,8 @@ impl Parser {
                         return_type,
                         body,
                         _is_async: is_async,
+                        is_extern: false,
+                        generic_params: method_generic_params,
                         _line: 0,
                         _col: 0,
                     },
@@ -656,6 +741,8 @@ impl Parser {
                     _col: start.column,
                 }),
                 _is_async: false,
+                is_extern: false,
+                generic_params: vec![],
                 _line: start.line,
                 _col: start.column,
             });
@@ -754,6 +841,8 @@ impl Parser {
                 return_type,
                 body: Box::new(body),
                 _is_async: false,
+                is_extern: false,
+                generic_params: vec![],
                 _line: 0,
                 _col: 0,
             });
@@ -1104,7 +1193,22 @@ impl Parser {
                         break;
                     }
                 }
-                self.consume(TokenType::Greater, "Expected '>'");
+                // Handle >> as two > tokens for nested generics (e.g. Array<Promise<T>>)
+                if self.check(TokenType::Greater) {
+                    self.advance();
+                } else if self.check(TokenType::GreaterGreater) {
+                    // Split >> into two >: consume it but inject a single > back
+                    let tok = self.peek().clone();
+                    self.tokens[self.current] = crate::token::Token {
+                        token_type: TokenType::Greater,
+                        value: ">".to_string(),
+                        line: tok.line,
+                        column: tok.column + 1,
+                    };
+                    // Don't advance — the replacement > is now current for the outer generic
+                } else {
+                    self.consume(TokenType::Greater, "Expected '>'");
+                }
                 base_type.push('>');
             }
         } else if self.match_token(TokenType::Ref) {
@@ -1905,6 +2009,14 @@ impl Parser {
                     _line: 0,
                     _col: 0,
                 };
+            } else if self.match_token(TokenType::As) {
+                let target_type = self.parse_type_annotation();
+                expr = Expression::CastExpr {
+                    expr: Box::new(expr),
+                    target_type,
+                    _line: start_token.line,
+                    _col: start_token.column,
+                };
             } else {
                 break;
             }
@@ -2157,7 +2269,7 @@ impl Parser {
         let body = if self.check(TokenType::OpenBrace) {
             self.parse_block()
         } else {
-            let expr = self.parse_expression();
+            let expr = self.parse_assignment();
             let ret = Statement::ReturnStmt {
                 value: Some(Box::new(expr)),
                 _line: start_line,
@@ -2508,6 +2620,116 @@ impl Parser {
             value: "".to_string(),
             _line: token.line,
             _col: token.column,
+        })
+    }
+    fn parse_namespace_declaration(&mut self) -> Statement {
+        let start = self.advance().clone(); // consume namespace
+        let name = self
+            .consume_identifier("Expected namespace name")
+            .value
+            .clone();
+        self.consume(TokenType::OpenBrace, "Expected '{' before namespace body.");
+
+        let mut methods = Vec::new();
+        let mut members = Vec::new();
+
+        while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+            let _is_export = self.match_token(TokenType::Export);
+            let is_async = self.match_token(TokenType::Async);
+
+            if self.check(TokenType::Function) {
+                let func_decl = match self.parse_function_declaration(is_async, false) {
+                    Statement::FunctionDeclaration(f) => f,
+                    _ => unreachable!(),
+                };
+                methods.push(ClassMethod {
+                    func: func_decl,
+                    _access: AccessModifier::Public,
+                    is_static: true,
+                    _is_abstract: false,
+                });
+            } else if self.check(TokenType::Let) || self.check(TokenType::Const) {
+                let var_decl = self.parse_var_declaration();
+                match var_decl {
+                    Statement::VarDeclaration {
+                        pattern,
+                        type_annotation,
+                        initializer,
+                        is_const: _,
+                        line: _,
+                        _col,
+                    } => {
+                        let name = match pattern {
+                            BindingNode::Identifier(n) => n,
+                            _ => "__anon__".to_string(),
+                        };
+                        members.push(ClassMember {
+                            _name: name,
+                            _type_name: type_annotation,
+                            _access: AccessModifier::Public,
+                            _is_static: true,
+                            _initializer: initializer,
+                        });
+                    }
+                    Statement::BlockStmt { statements, .. } => {
+                        for s in statements {
+                            if let Statement::VarDeclaration {
+                                pattern,
+                                type_annotation,
+                                initializer,
+                                ..
+                            } = s
+                            {
+                                let name = match pattern {
+                                    BindingNode::Identifier(n) => n,
+                                    _ => "__anon__".to_string(),
+                                };
+                                members.push(ClassMember {
+                                    _name: name,
+                                    _type_name: type_annotation,
+                                    _access: AccessModifier::Public,
+                                    _is_static: true,
+                                    _initializer: initializer,
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                self.advance();
+            }
+        }
+
+        self.consume(TokenType::CloseBrace, "Expected '}' after namespace body.");
+
+        Statement::ClassDeclaration(ClassDeclaration {
+            name,
+            _parent_name: "".to_string(),
+            generic_params: vec![],
+            _is_abstract: false,
+            _implemented_protocols: vec![],
+            _members: members,
+            methods,
+            _getters: vec![],
+            _setters: vec![],
+            _constructor: Some(FunctionDeclaration {
+                name: "constructor".to_string(),
+                params: vec![],
+                return_type: "void".to_string(),
+                body: Box::new(Statement::BlockStmt {
+                    statements: vec![],
+                    _line: start.line,
+                    _col: start.column,
+                }),
+                _is_async: false,
+                is_extern: false,
+                generic_params: vec![],
+                _line: start.line,
+                _col: start.column,
+            }),
+            _line: start.line,
+            _col: start.column,
         })
     }
 }

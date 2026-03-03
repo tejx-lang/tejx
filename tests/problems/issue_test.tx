@@ -1,0 +1,34 @@
+// 1. Array of objects type
+type Point = { x: int, y: int }[];
+let pts: Point = [{x: 1, y: 2}];
+
+// 2. Exact object typing vs structural typing
+type SinglePoint = { x: int, y: int };
+// Should fail:
+let a: SinglePoint = { x: 1, z: 2 };
+
+// 3. Array push type mismatch
+let b: SinglePoint[] = [];
+b.push({x: 2, y: 4});
+
+// 4. Heterogenous array literal
+let c: int[] = [4, 5.5, "int"];
+
+// 5. Array literal type inference
+let d = [4];
+
+// 6. Object spread and Array spread
+let obj = { x: 1 };
+let obj2 = { ...obj };
+
+let arr1 = [4, 5];
+let arr2 = [...arr1];
+arr2[0] = 3;
+print("Success!", arr1, arr2);
+
+// 7. Int16 overflow
+let large_val: int16 = 26734234234;
+
+function main() {
+    print("Test finished.");
+}

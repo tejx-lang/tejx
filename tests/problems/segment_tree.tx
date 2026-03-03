@@ -14,7 +14,7 @@ function update(node: SegNode | None, start: int, end: int, idx: int, val: int):
      if (start == end) return new SegNode(val, None, None);
      let mid = (start + end) / 2;
      // Create a new node if it doesn't exist
-     let newNode: any = new SegNode(0, None, None); 
+     let newNode = new SegNode(0, None, None); 
      // Proceed to update it
      node = newNode; 
   }

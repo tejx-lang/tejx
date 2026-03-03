@@ -1,7 +1,7 @@
 import { Set } from "std:collections";
 
 function getUniqueItems(input: int[]): int[] {
-  let seen: Set = new Set();
+  let seen: Set<int> = new Set<int>();
   let result: int[] = [];
 
   for (let i = 0; i < input.length; i++) {

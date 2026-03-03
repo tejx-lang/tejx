@@ -1,7 +1,6 @@
 // Network Tests
 // =============
 import std:net;
-import std:http;
 import { assert_eq_int, assert_true } from "../utils.tx";
 
 async function test_http_sync() {

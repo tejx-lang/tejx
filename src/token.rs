@@ -1,7 +1,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenType {
+    As,
     // Keywords
     Function,
+    Extern,
     Return,
     Let,
     Const,
@@ -11,6 +13,7 @@ pub enum TokenType {
     For,
     Break,
     Continue,
+    Namespace,
     Class,
     New,
     This,
@@ -127,6 +130,7 @@ pub enum TokenType {
     // OOP
     EndOfFile,
     Unknown,
+    Hash, // #
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,32 @@
+extern function sin(x: float): float;
+extern function cos(x: float): float;
+extern function sqrt(x: float): float;
+extern function floor(x: float): float;
+extern function ceil(x: float): float;
+extern function round(x: float): float;
+extern function pow(base: float, exp: float): float;
+extern function rt_math_random(): float;
+
+export function abs(x: float): float {
+    if (x < 0) return -x;
+    return x;
+}
+
+export function min(a: float, b: float): float {
+    if (a < b) return a;
+    return b;
+}
+
+export function max(a: float, b: float): float {
+    if (a > b) return a;
+    return b;
+}
+
+export function sin(x: float): float { return sin(x); }
+export function cos(x: float): float { return cos(x); }
+export function sqrt(x: float): float { return sqrt(x); }
+export function floor(x: float): float { return floor(x); }
+export function ceil(x: float): float { return ceil(x); }
+export function round(x: float): float { return round(x); }
+export function pow(base: float, exp: float): float { return pow(base, exp); }
+export function random(): float { return rt_math_random(); }

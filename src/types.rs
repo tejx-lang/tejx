@@ -97,6 +97,7 @@ impl TejxType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         match self {
             TejxType::Int16 | TejxType::Float16 => 2,

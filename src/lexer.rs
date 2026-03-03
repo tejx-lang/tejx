@@ -15,6 +15,8 @@ impl Lexer {
     pub fn new(source: &str, filename: &str) -> Self {
         let mut keywords = HashMap::new();
         keywords.insert("function".to_string(), TokenType::Function);
+        keywords.insert("extern".to_string(), TokenType::Extern);
+        keywords.insert("as".to_string(), TokenType::As);
         keywords.insert("let".to_string(), TokenType::Let);
         keywords.insert("const".to_string(), TokenType::Const);
         keywords.insert("return".to_string(), TokenType::Return);
@@ -24,6 +26,7 @@ impl Lexer {
         keywords.insert("for".to_string(), TokenType::For);
         keywords.insert("break".to_string(), TokenType::Break);
         keywords.insert("continue".to_string(), TokenType::Continue);
+        keywords.insert("namespace".to_string(), TokenType::Namespace);
         keywords.insert("switch".to_string(), TokenType::Switch);
         keywords.insert("case".to_string(), TokenType::Case);
         keywords.insert("default".to_string(), TokenType::Default);
@@ -285,6 +288,7 @@ impl Lexer {
                         }
                     }
                     '~' => TokenType::Tilde,
+                    '#' => TokenType::Hash,
                     _ => TokenType::Unknown,
                 };
 

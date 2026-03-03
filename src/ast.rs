@@ -278,6 +278,12 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    CastExpr {
+        expr: Box<Expression>,
+        target_type: String,
+        _line: usize,
+        _col: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +293,8 @@ pub struct FunctionDeclaration {
     pub return_type: String,
     pub body: Box<Statement>, // BlockStmt
     pub _is_async: bool,
+    pub is_extern: bool,
+    pub generic_params: Vec<String>,
     pub _line: usize,
     pub _col: usize,
 }
@@ -422,13 +430,14 @@ impl Expression {
                     format!("{}.{}", base, member)
                 }
             }
-            Expression::StringLiteral { .. } => "(string)".to_string(),
+            Expression::StringLiteral { .. } => "String".to_string(),
             Expression::NumberLiteral { .. } => "(number)".to_string(),
             Expression::BooleanLiteral { .. } => "(bool)".to_string(),
-            Expression::ArrayLiteral { .. } => "(array)".to_string(),
+            Expression::ArrayLiteral { .. } => "Array".to_string(),
             Expression::ObjectLiteralExpr { .. } => "(object)".to_string(),
             Expression::NoneLiteral { .. } => "None".to_string(),
             Expression::SomeExpr { .. } => "Some".to_string(),
+            Expression::CastExpr { expr, .. } => expr.to_callee_name(),
             _ => "".to_string(),
         }
     }
@@ -461,6 +470,7 @@ impl Expression {
             Expression::SequenceExpr { _line, .. } => *_line,
             Expression::NoneLiteral { _line, .. } => *_line,
             Expression::SomeExpr { _line, .. } => *_line,
+            Expression::CastExpr { _line, .. } => *_line,
         }
     }
 }
