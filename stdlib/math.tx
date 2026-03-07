@@ -1,15 +1,15 @@
-extern function sin(x: float): float;
-extern function cos(x: float): float;
-extern function sqrt(x: float): float;
-extern function floor(x: float): float;
-extern function ceil(x: float): float;
-extern function round(x: float): float;
-extern function pow(base: float, exp: float): float;
+extern function std_math_sin(x: float): float;
+extern function std_math_cos(x: float): float;
+extern function std_math_sqrt(x: float): float;
+extern function std_math_floor(x: float): float;
+extern function std_math_ceil(x: float): float;
+extern function std_math_round(x: float): float;
+extern function std_math_pow(base: float, exp: float): float;
+extern function std_math_abs(x: float): float;
 extern function rt_math_random(): float;
 
 export function abs(x: float): float {
-    if (x < 0) return -x;
-    return x;
+    return std_math_abs(x);
 }
 
 export function min(a: float, b: float): float {
@@ -22,11 +22,11 @@ export function max(a: float, b: float): float {
     return b;
 }
 
-export function sin(x: float): float { return sin(x); }
-export function cos(x: float): float { return cos(x); }
-export function sqrt(x: float): float { return sqrt(x); }
-export function floor(x: float): float { return floor(x); }
-export function ceil(x: float): float { return ceil(x); }
-export function round(x: float): float { return round(x); }
-export function pow(base: float, exp: float): float { return pow(base, exp); }
+export function sin(x: float): float { return std_math_sin(x); }
+export function cos(x: float): float { return std_math_cos(x); }
+export function sqrt(x: float): float { return std_math_sqrt(x); }
+export function floor(x: float): float { return std_math_floor(x); }
+export function ceil(x: float): float { return std_math_ceil(x); }
+export function round(x: float): float { return std_math_round(x); }
+export function pow(base: float, exp: float): float { return std_math_pow(base, exp); }
 export function random(): float { return rt_math_random(); }

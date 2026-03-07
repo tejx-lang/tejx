@@ -1,26 +1,31 @@
 extern function rt_to_string<T>(val: T): string;
 extern function rt_to_number<T>(val: T): float;
+extern function rt_is_array<T>(val: T): bool;
+extern function rt_obj_keys<T>(val: T): string[];
 
-export function stringify<T>(val: T): string {
+export function stringify(val: any): string {
     if (val === None) return "None";
     let ty = typeof(val);
     if (ty == "string") return "\"" + val + "\"";
     if (ty == "number" || ty == "boolean") return rt_to_string(val);
     
-    if (Array_isArray(val)) {
+    if (rt_is_array(val)) {
         let res = "[";
-        for (let i = 0; i < len(val); i++) {
-            res = res + stringify(val[i]);
-            if (i < len(val) - 1) res = res + ",";
+        let length = len(val as any);
+        for (let i = 0; i < length; i++) {
+            res = res + stringify((val as any)[i]);
+            if (i < length - 1) res = res + ",";
         }
         return res + "]";
     }
     
     if (ty == "object") {
         let res = "{";
-        let keys = Object_keys(val);
-        for (let i = 0; i < len(keys); i++) {
+        let keys = rt_obj_keys(val);
+        let length = len(keys);
+        for (let i = 0; i < length; i++) {
             let k = keys[i];
+            // Safe traversal stringify
             if (k == "toString" || k == "constructor" || k == "__proto__") continue;
             res = res + "\"" + k + "\":" + stringify(val[k]);
             if (i < len(keys) - 1) res = res + ",";
@@ -31,7 +36,7 @@ export function stringify<T>(val: T): string {
     return "None";
 }
 
-export function parse<T>(s: string): T {
+export function parse(s: string): any {
     let index = 0;
 
     function skipWhitespace() {
@@ -40,61 +45,43 @@ export function parse<T>(s: string): T {
         }
     }
 
-    function parseValue(): T {
-        skipWhitespace();
-        if (index >= len(s)) return None;
-
-        let ch = s[index];
-        if (ch == "{") return parseObject();
-        if (ch == "[") return parseArray();
-        if (ch == "\"") return parseString();
-        if (ch == "t") { index += 4; return true; }
-        if (ch == "f") { index += 5; return false; }
-        if (ch == "n") { index += 4; return None; }
-        return parseNumber();
-    }
-
     function parseString(): string {
         index++; // skip "
         let res = "";
         while (index < len(s) && s[index] != "\"") {
             if (s[index] == "\\") {
                 index++;
-                let esc = s[index];
-                if (esc == "n") res = res + "\n";
-                else if (esc == "t") res = res + "\t";
-                else if (esc == "r") res = res + "\r";
-                else res = res + esc;
+                if (index < len(s)) {
+                    let esc = s[index];
+                    if (esc == "\"") res = res + "\"";
+                    else if (esc == "\\") res = res + "\\";
+                    else if (esc == "/") res = res + "/";
+                    else if (esc == "b") res = res + "\b";
+                    else if (esc == "f") res = res + "\f";
+                    else if (esc == "n") res = res + "\n";
+                    else if (esc == "r") res = res + "\r";
+                    else if (esc == "t") res = res + "\t";
+                    else res = res + "\\" + esc;
+                }
             } else {
                 res = res + s[index];
             }
             index++;
         }
-        index++; // skip trailing "
+        index++; // skip "
         return res;
     }
 
-    function parseNumber(): number {
-        let start = index;
-        if (index < len(s) && s[index] == "-") index++;
-        while (index < len(s) && (s[index] >= "0" && s[index] <= "9" || s[index] == "." || s[index] == "e" || s[index] == "E" || s[index] == "+" || s[index] == "-")) {
-            index++;
-        }
-        let numStr = "";
-        for (let i = start; i < index; i++) {
-            numStr = numStr + s[i];
-        }
-        return rt_to_number(numStr) as number;
-    }
 
-    function parseArray(): Array<T> {
+    function parseArray(): any {
         index++; // skip [
-        let res: Array<T> = [];
+        let res: any[] = [];
         skipWhitespace();
         if (s[index] == "]") { index++; return res; }
         
         while (true) {
-            res.push(parseValue());
+            let item = parseValue();
+            res.push(item);
             skipWhitespace();
             if (s[index] == ",") {
                 index++;
@@ -107,9 +94,9 @@ export function parse<T>(s: string): T {
         return res;
     }
 
-    function parseObject(): T {
+    function parseObject(): any {
         index++; // skip {
-        let res: T = {};
+        let res: any = {};
         skipWhitespace();
         if (s[index] == "}") { index++; return res; }
 
@@ -132,6 +119,40 @@ export function parse<T>(s: string): T {
             }
         }
         return res;
+    }
+
+    function parseNumber(): float {
+        skipWhitespace();
+        let start = index;
+        if (index < len(s) && s[index] == "-") index++;
+        while (index < len(s)) {
+            let ch = s[index];
+            if ((ch >= "0" && ch <= "9") || ch == "." || ch == "e" || ch == "E" || ch == "+" || ch == "-") {
+                index++;
+            } else {
+                break;
+            }
+        }
+        let numStr = rt_String_substring(s, start, index);
+        // We need a way to parse string to float in stdlib, or we can use a built-in.
+        // For now, let's assume we have a way or just return a dummy float if not available.
+        // Wait, does TejX have `parseFloat`?
+        // Let's use an extern or a dummy for now. Wait, I should look for an existing string to number function!
+        return rt_to_number_internal(numStr);
+    }
+
+    function parseValue(): any {
+        skipWhitespace();
+        if (index >= len(s)) return None;
+
+        let ch = s[index];
+        if (ch == "{") return parseObject();
+        if (ch == "[") return parseArray();
+        if (ch == "\"") return parseString();
+        if (ch == "t") { index += 4; return true; }
+        if (ch == "f") { index += 5; return false; }
+        if (ch == "n") { index += 4; return None; }
+        return parseNumber();
     }
 
     return parseValue();

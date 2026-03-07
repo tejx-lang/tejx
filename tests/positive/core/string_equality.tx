@@ -1,0 +1,68 @@
+// String Equality Test
+// Tests that == compares string CONTENT, not pointer addresses
+
+function main() {
+    // Same literal
+    let a = "hello";
+    let b = "hello";
+    if (a == b) {
+        print("✅ PASS: same literal equality");
+    } else {
+        print("❌ FAIL: same literal should be equal");
+    }
+
+    // Different strings
+    let c = "hello";
+    let d = "world";
+    if (c == d) {
+        print("❌ FAIL: different strings should not be equal");
+    } else {
+        print("✅ PASS: different strings are not equal");
+    }
+
+    // Concatenated string vs literal
+    let e = "hel" + "lo";
+    let f = "hello";
+    if (e == f) {
+        print("✅ PASS: concatenated string equals literal");
+    } else {
+        print("❌ FAIL: concatenated 'hel'+'lo' should equal 'hello'");
+    }
+
+    // != operator
+    let g = "foo";
+    let h = "bar";
+    if (g != h) {
+        print("✅ PASS: != works for different strings");
+    } else {
+        print("❌ FAIL: != should return true for different strings");
+    }
+
+    // Empty strings
+    let empty1 = "";
+    let empty2 = "";
+    if (empty1 == empty2) {
+        print("✅ PASS: empty strings are equal");
+    } else {
+        print("❌ FAIL: empty strings should be equal");
+    }
+
+    // String with None comparison
+    let maybeStr: string | None = "test";
+    if (maybeStr != None) {
+        print("✅ PASS: string != None");
+    } else {
+        print("❌ FAIL: non-None string should not equal None");
+    }
+
+       // String with None comparison
+    let maybeStr2: string | None = None;
+    if (maybeStr2 == None) {
+        print("✅ PASS: string == None");
+    } else {
+        print("❌ FAIL: string should be equal to None");
+    }
+
+
+    print("String equality tests complete!");
+}

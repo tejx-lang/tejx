@@ -4,7 +4,7 @@ extern function rt_fs_append_sync(path: string, content: string): int;
 extern function rt_fs_exists(path: string): int;
 extern function rt_fs_unlink_sync(path: string): int;
 extern function rt_fs_mkdir_sync(path: string): int;
-extern function rt_fs_readdir_sync(path: string): Array<string>;
+extern function rt_fs_readdir_sync(path: string): string[];
 
 export namespace fs {
     export function existsSync(path: string): bool {

@@ -16,4 +16,11 @@ function main() {
     let d3 = d2; // moved
     d3.value = 10;
     print(d3.value);
+    
+    // Test reinitialization after move
+    let d4 = new Data();
+    let d5 = d4; // d4 moved
+    d4 = new Data(); // d4 reinitialized
+    d4.value = 100;
+    print(d4.value); // Should be 100
 }

@@ -12,10 +12,10 @@ extern function rt_Atomic_store(_this: Atomic, val: int): void;
 extern function rt_Atomic_exchange(_this: Atomic, val: int): int;
 extern function rt_Atomic_compareExchange(_this: Atomic, expected: int, desired: int): int;
 
-extern function rt_Condition_constructor(_this: ConditionVariable): void;
-extern function rt_Condition_wait(_this: ConditionVariable, mutex: Mutex): void;
-extern function rt_Condition_notify(_this: ConditionVariable): void;
-extern function rt_Condition_notifyAll(_this: ConditionVariable): void;
+extern function rt_Condition_constructor(_this: Condition): void;
+extern function rt_Condition_wait(_this: Condition, mutex: Mutex): void;
+extern function rt_Condition_notify(_this: Condition): void;
+extern function rt_Condition_notifyAll(_this: Condition): void;
 
 extern function rt_Thread_constructor<T>(_this: Thread<T>, cb: (arg: T) => void, arg: T): void;
 extern function rt_Thread_start<T>(_this: Thread<T>): void;

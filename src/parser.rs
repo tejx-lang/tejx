@@ -1178,7 +1178,7 @@ impl Parser {
         }
 
         // Array Type: number[]
-        let mut base_type;
+        let mut base_type = String::new();
         if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
             base_type = self.consume_identifier("Expected type name").value.clone();
 
@@ -1217,7 +1217,9 @@ impl Parser {
         } else if self.match_token(TokenType::Weak) {
             let inner_type = self.parse_base_type();
             base_type = format!("weak {}", inner_type);
-        } else {
+        }
+
+        if base_type.is_empty() {
             if self.match_token(TokenType::TypeVoid) {
                 base_type = "void".to_string();
             } else if self.match_token(TokenType::TypeInt) {
@@ -1266,6 +1268,13 @@ impl Parser {
                 base_type.push_str("[]");
             }
         }
+
+        // Parse intersection types (A & B & C)
+        while self.match_token(TokenType::Ampersand) {
+            let next_type = self.parse_base_type();
+            base_type = format!("{} & {}", base_type, next_type);
+        }
+
         base_type
     }
 
@@ -1305,6 +1314,16 @@ impl Parser {
             self.consume(TokenType::Semicolon, "Expected ';'");
             return Statement::ThrowStmt {
                 _expression: Box::new(expr),
+                _line: start.line,
+                _col: start.column,
+            };
+        }
+        if self.check(TokenType::Del) {
+            let start = self.consume(TokenType::Del, "Expected 'del'").clone();
+            let expr = self.parse_expression();
+            self.consume(TokenType::Semicolon, "Expected ';'");
+            return Statement::DelStmt {
+                target: Box::new(expr),
                 _line: start.line,
                 _col: start.column,
             };

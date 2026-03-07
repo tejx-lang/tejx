@@ -33,7 +33,7 @@ function test_loop_allocation_stress() {
 
 function test_array_stress() {
     print("--- Array Capacity Stress ---");
-    let arr = [];
+    let arr:Node[] = [];
     for (let i = 0; i < 1000; i++) {
         arr.push(new Node(i, "Dynamic"));
     }

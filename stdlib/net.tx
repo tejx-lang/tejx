@@ -24,11 +24,23 @@ export class TcpStream {
     }
 }
 
-export function connect(addr: string): TcpStream | None {
-    let id = rt_net_connect(addr);
-    if (id == -1) return None;
-    return new TcpStream(id);
+export namespace net {
+    export function connect(addr: string): TcpStream | None {
+        let id = rt_net_connect(addr);
+        if (id == -1) return None;
+        return new TcpStream(id);
+    }
+
+    export function close(stream: TcpStream | int): void {
+        if (stream instanceof TcpStream) {
+            stream.close();
+        } else {
+            let id: int = stream as int;
+            rt_net_close(id);
+        }
+    }
 }
+
 
 // --- HTTP / HTTPS ---
 

@@ -277,19 +277,6 @@ impl WasmCodeGen {
                     self.add_string_if_const(val);
                 }
             }
-            MIRInstruction::ObjectLiteral { entries, .. } => {
-                for (name, val) in entries {
-                    if !self.string_constants.contains(name) {
-                        self.string_constants.push(name.clone());
-                    }
-                    self.add_string_if_const(val);
-                }
-            }
-            MIRInstruction::ArrayLiteral { elements, .. } => {
-                for el in elements {
-                    self.add_string_if_const(el);
-                }
-            }
             MIRInstruction::LoadMember { member, obj, .. } => {
                 if !self.string_constants.contains(member) {
                     self.string_constants.push(member.clone());
@@ -318,9 +305,7 @@ impl WasmCodeGen {
                     self.add_string_if_const(arg);
                 }
             }
-            MIRInstruction::Cast { src, .. } => self.add_string_if_const(src),
             MIRInstruction::Throw { value, .. } => self.add_string_if_const(value),
-            MIRInstruction::Free { value, .. } => self.add_string_if_const(value),
             _ => {}
         }
     }
@@ -360,22 +345,6 @@ impl WasmCodeGen {
                 }
                 self.add_global_if_var(src, globals);
             }
-            MIRInstruction::ObjectLiteral { dst, entries, .. } => {
-                if dst.starts_with("g_") {
-                    globals.insert(dst.clone());
-                }
-                for (_, val) in entries {
-                    self.add_global_if_var(val, globals);
-                }
-            }
-            MIRInstruction::ArrayLiteral { dst, elements, .. } => {
-                if dst.starts_with("g_") {
-                    globals.insert(dst.clone());
-                }
-                for el in elements {
-                    self.add_global_if_var(el, globals);
-                }
-            }
             MIRInstruction::LoadMember { dst, obj, .. } => {
                 if dst.starts_with("g_") {
                     globals.insert(dst.clone());
@@ -409,7 +378,6 @@ impl WasmCodeGen {
                 self.add_global_if_var(src, globals);
             }
             MIRInstruction::Throw { value, .. } => self.add_global_if_var(value, globals),
-            MIRInstruction::Free { value, .. } => self.add_global_if_var(value, globals),
             _ => {}
         }
     }
@@ -808,27 +776,6 @@ impl WasmCodeGen {
                 self.emit_set("state");
                 self.emit_line("end");
             }
-            MIRInstruction::ObjectLiteral { dst, entries, .. } => {
-                self.emit_line("call $m_new");
-                self.emit_set(dst);
-                for (name, val) in entries {
-                    self.emit_get(dst);
-                    self.push_string_const_ptr(name);
-                    self.push_boxed(val);
-                    self.emit_line("call $m_set");
-                    self.emit_line("drop");
-                }
-            }
-            MIRInstruction::ArrayLiteral { dst, elements, .. } => {
-                self.emit_line("call $a_new");
-                self.emit_set(dst);
-                for val in elements {
-                    self.emit_get(dst);
-                    self.push_boxed(val);
-                    self.emit_line("call $Array_push");
-                    self.emit_line("drop");
-                }
-            }
             MIRInstruction::LoadMember {
                 dst, obj, member, ..
             } => {
@@ -881,10 +828,6 @@ impl WasmCodeGen {
                     }
                 }
                 self.emit_set(dst);
-            }
-            MIRInstruction::Free { value, .. } => {
-                self.push_boxed(value);
-                self.emit_line("call $rt_free");
             }
             _ => {
                 self.emit_line(&format!(";; Unsupported instruction: {:?}", inst));

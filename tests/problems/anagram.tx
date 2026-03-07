@@ -1,4 +1,5 @@
 import { Map } from "std:collections";
+import { assert_eq_int } from "../positive/utils.tx";
 
 function getFrequencyKey(word: string): string {
   let chars = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"];
@@ -6,6 +7,7 @@ function getFrequencyKey(word: string): string {
   
   for (let i = 0; i < word.length; i++) {
     let c = word[i];
+    print("word[", i, "] = ", c);
     for (let j = 0; j < 26; j++) {
       if (c == chars[j]) {
         counts[j] = counts[j] + 1;
@@ -37,7 +39,7 @@ function groupAnagrams(words: string[]): void {
 
   // Print grouped anagrams using keys()
   let keys = groups.keys();
-  print("Number of groups: Expected: 3, Actual: ", keys.length);
+  assert_eq_int(3, keys.length, "Number of groups");
   
   for (let i = 0; i < keys.length; i++) {
     let key = keys[i];

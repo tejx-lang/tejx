@@ -1,6 +1,5 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 mod ast;
-mod borrow_checker;
 mod codegen;
 mod diagnostics;
 mod hir;
@@ -22,12 +21,10 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
-use borrow_checker::BorrowChecker;
 use codegen::CodeGen;
 use lexer::Lexer;
 use linker::Linker;
 use lowering::Lowering;
-use mir::{MIRInstruction, MIRValue};
 use mir_lowering::MIRLowering;
 use parser::Parser;
 use type_checker::TypeChecker;
@@ -40,7 +37,7 @@ fn main() {
     let mut input_files = Vec::new();
     let mut async_enabled = true;
     let mut emit_mir = false;
-    let mut _emit_llvm = true;
+    let mut emit_llvm = false;
     let mut target_wasm = false;
     let mut compile_only = false;
     let mut unsafe_arrays = false;
@@ -68,7 +65,7 @@ fn main() {
                 emit_mir = true;
             }
             "--emit-llvm" => {
-                _emit_llvm = true;
+                emit_llvm = true;
             }
             "-c" | "--compile" => {
                 compile_only = true;
@@ -194,6 +191,8 @@ fn main() {
         process::exit(1);
     }
 
+    lowering.lambda_inferred_types = type_checker.lambda_inferred_types;
+
     let lowering_result = lowering.lower(&merged_program, base_path);
 
     // Check for lowering errors (import validation, etc.)
@@ -209,7 +208,10 @@ fn main() {
 
     let mut mir_functions = Vec::new();
     for hir_func in &lowering_result.functions {
-        let mut mir_lowering = MIRLowering::new(lowering_result.signatures.clone());
+        let mut mir_lowering = MIRLowering::new(
+            lowering_result.signatures.clone(),
+            lowering_result.class_fields.clone(),
+        );
         let mir_func = mir_lowering.lower(hir_func);
         mir_functions.push(mir_func);
     }
@@ -221,118 +223,11 @@ fn main() {
         }
     }
 
-    let mut borrow_checker = BorrowChecker::new();
-    for mir_func in &mut mir_functions {
-        let (drops, reassignment_drops, dead_frees) = borrow_checker.check(mir_func, &filename);
-
-        // Remove dead Free instructions
-        {
-            let mut by_block: std::collections::HashMap<usize, Vec<usize>> =
-                std::collections::HashMap::new();
-            for (block_idx, inst_idx) in dead_frees {
-                by_block.entry(block_idx).or_default().push(inst_idx);
-            }
-            for (block_idx, mut inst_indices) in by_block {
-                inst_indices.sort_by(|a, b| b.cmp(a)); // Descending order
-                let bb = &mut mir_func.blocks[block_idx];
-                for inst_idx in inst_indices {
-                    if inst_idx < bb.instructions.len() {
-                        bb.instructions.remove(inst_idx);
-                    }
-                }
-            }
-        }
-
-        // Inject reassignment drops: Free the old value before it's overwritten.
-        // Process in reverse order within each block to maintain correct instruction indices.
-        // Group by block_idx first, then sort by inst_idx descending within each block.
-        {
-            let mut by_block: std::collections::HashMap<usize, Vec<(usize, String)>> =
-                std::collections::HashMap::new();
-            for (block_idx, inst_idx, var_name) in reassignment_drops {
-                by_block
-                    .entry(block_idx)
-                    .or_default()
-                    .push((inst_idx, var_name));
-            }
-            for (block_idx, mut items) in by_block {
-                // Sort descending by inst_idx so insertions don't shift later indices
-                items.sort_by(|a, b| b.0.cmp(&a.0));
-                items.dedup();
-                let bb = &mut mir_func.blocks[block_idx];
-                for (inst_idx, var_name) in items {
-                    if let Some(ty) = mir_func.variables.get(&var_name) {
-                        let line = if inst_idx < bb.instructions.len() {
-                            bb.instructions[inst_idx].get_line()
-                        } else {
-                            0
-                        };
-                        bb.instructions.insert(
-                            inst_idx,
-                            MIRInstruction::Free {
-                                value: MIRValue::Variable {
-                                    name: var_name,
-                                    ty: ty.clone(),
-                                },
-                                line,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-
-        // Inject leaf-block drops (existing logic): Free live variables before Return/Throw
-        for (block_idx, var_names) in drops {
-            let bb = &mut mir_func.blocks[block_idx];
-            let mut insert_idx = bb.instructions.len();
-            if insert_idx > 0 {
-                match bb.instructions[insert_idx - 1] {
-                    MIRInstruction::Return { .. }
-                    | MIRInstruction::Jump { .. }
-                    | MIRInstruction::Branch { .. }
-                    | MIRInstruction::Throw { .. }
-                    | MIRInstruction::TrySetup { .. } => {
-                        insert_idx -= 1;
-                    }
-                    _ => {}
-                }
-            }
-            for var_name in var_names {
-                if let Some(ty) = mir_func.variables.get(&var_name) {
-                    let line = if insert_idx > 0 {
-                        bb.instructions[insert_idx - 1].get_line()
-                    } else {
-                        0
-                    };
-                    bb.instructions.insert(
-                        insert_idx,
-                        MIRInstruction::Free {
-                            value: MIRValue::Variable {
-                                name: var_name,
-                                ty: ty.clone(),
-                            },
-                            line,
-                        },
-                    );
-                    insert_idx += 1;
-                }
-            }
-        }
-    }
-
     if emit_mir {
         for mir_func in &mir_functions {
-            eprintln!("--- AFTER BORROW CHECKER ---");
+            eprintln!("--- MIR ---");
             eprintln!("{:?}", mir_func);
         }
-    }
-
-    if !borrow_checker.errors.is_empty() {
-        for diag in &borrow_checker.errors {
-            diag.report(&contents);
-        }
-        process::exit(1);
     }
 
     if target_wasm {
@@ -361,7 +256,13 @@ fn main() {
 
     let mut codegen = CodeGen::new();
     codegen.unsafe_arrays = unsafe_arrays;
+    codegen.class_fields = lowering_result.class_fields;
+    codegen.class_methods = lowering_result.class_methods;
     let llvm_code = codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars);
+
+    if emit_llvm {
+        eprintln!("{}", llvm_code);
+    }
 
     let output_name = output_name.unwrap_or_else(|| {
         if let Some(pos) = filename.rfind('.') {

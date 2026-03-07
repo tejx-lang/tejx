@@ -1,3 +1,4 @@
+extern function rt_to_string<T>(val: T): string;
 extern function rt_time_now(): float;
 extern function rt_time_now_ms(): int;
 extern function rt_sleep(ms: int): void;
@@ -45,5 +46,27 @@ export function clearTimeout(id: int): void {
 // Cancel a setInterval timer by ID
 export function clearInterval(id: int): void {
     rt_clearInterval(id);
+}
+
+// --- Date class (JS-like API backed by runtime time functions) ---
+export class Date {
+    private timestamp: int;
+
+    constructor() {
+        this.timestamp = rt_time_now_ms();
+    }
+
+    static now(): int {
+        return rt_time_now_ms();
+    }
+
+    getTime(): int {
+        return this.timestamp;
+    }
+
+    toISOString(): string {
+        // Return a basic string representation with the timestamp
+        return "Date(" + rt_to_string(this.timestamp) + ")";
+    }
 }
 

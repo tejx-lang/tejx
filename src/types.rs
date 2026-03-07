@@ -17,6 +17,8 @@ pub enum TejxType {
     Char, // 4-byte
     Class(String),
     FixedArray(Box<TejxType>, usize),
+    DynamicArray(Box<TejxType>),
+    Slice(Box<TejxType>),
     Void,
     Ref(Box<TejxType>),  // Non-owning borrow
     Weak(Box<TejxType>), // Non-owning cycle-breaker
@@ -42,7 +44,9 @@ impl TejxType {
             | TejxType::Ref(_)
             | TejxType::Weak(_) => false,
             // Re-enabling drops. Strict checking in borrow checker will prevent double-frees.
-            TejxType::String | TejxType::Class(_) | TejxType::FixedArray(_, _) => true,
+            TejxType::String | TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) => true,
+            TejxType::Slice(_) => false, // Slice is a non-owning fat pointer
+            TejxType::Class(name) => name != "void",
         }
     }
 
@@ -70,18 +74,26 @@ impl TejxType {
 
     pub fn is_array(&self) -> bool {
         match self {
-            TejxType::FixedArray(_, _) => true,
-            TejxType::Class(name) => {
-                name == "Array" || name.starts_with("Array<") || name.ends_with("[]")
-            }
+            TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) | TejxType::Slice(_) => true,
+            TejxType::Class(name) => name.ends_with("[]") && !name.starts_with("Array<"),
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_array(),
+            _ => false,
+        }
+    }
+
+    pub fn is_slice(&self) -> bool {
+        match self {
+            TejxType::Slice(_) => true,
+            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_slice(),
             _ => false,
         }
     }
 
     pub fn get_array_element_type(&self) -> TejxType {
         match self {
-            TejxType::FixedArray(inner, _) => (**inner).clone(),
+            TejxType::FixedArray(inner, _)
+            | TejxType::DynamicArray(inner)
+            | TejxType::Slice(inner) => (**inner).clone(),
             TejxType::Class(name) if name.starts_with("Array<") => {
                 // Simplified extraction: Array<T>
                 let inner = &name[6..name.len() - 1];
@@ -89,15 +101,26 @@ impl TejxType {
             }
             TejxType::Class(name) if name.ends_with("[]") => {
                 let inner = &name[0..name.len() - 2];
-                TejxType::from_name(inner)
+                // Manually map built-in types inside array brackets
+                match inner {
+                    "string" => TejxType::String,
+                    "int" => TejxType::Int32,
+                    "float" => TejxType::Float64,
+                    "bool" | "boolean" => TejxType::Bool,
+                    "any" => TejxType::Class("any".to_string()),
+                    _ => TejxType::from_name(inner),
+                }
             }
             TejxType::Class(name) if name == "ByteArray" => TejxType::Bool,
+            TejxType::Class(name) if name == "Array" || name == "any" => {
+                TejxType::Class("any".to_string())
+            }
+            TejxType::String => TejxType::String,
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.get_array_element_type(), // Delegate to underlying type
             _ => TejxType::Void,
         }
     }
 
-    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         match self {
             TejxType::Int16 | TejxType::Float16 => 2,
@@ -106,7 +129,12 @@ impl TejxType {
             TejxType::Int128 => 16,
             TejxType::Bool => 1,
             TejxType::Char => 4,
-            TejxType::String | TejxType::Class(_) | TejxType::Ref(_) | TejxType::Weak(_) => 8, // Pointers/Boxed/Borrows
+            TejxType::String
+            | TejxType::Class(_)
+            | TejxType::Ref(_)
+            | TejxType::Weak(_)
+            | TejxType::DynamicArray(_) => 8, // Pointers/Boxed/Borrows
+            TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Void => 0,
         }
@@ -138,12 +166,20 @@ impl TejxType {
             if let Some(open) = name.find('[') {
                 let base = &name[..open];
                 let size_str = &name[open + 1..name.len() - 1];
+                if size_str.is_empty() {
+                    return TejxType::DynamicArray(Box::new(TejxType::from_name(base)));
+                }
                 if let Ok(size) = size_str.parse::<usize>() {
                     return TejxType::FixedArray(Box::new(TejxType::from_name(base)), size);
                 }
                 // Fallback to dynamic array? or Class?
                 return TejxType::Class(name.to_string());
             }
+        }
+
+        if name.starts_with("slice<") && name.ends_with(">") {
+            let inner = &name[6..name.len() - 1];
+            return TejxType::Slice(Box::new(TejxType::from_name(inner)));
         }
 
         match name {
@@ -159,6 +195,28 @@ impl TejxType {
             "boolean" | "bool" => TejxType::Bool,
             "" => TejxType::Void,
             other => TejxType::Class(other.to_string()),
+        }
+    }
+
+    pub fn to_name(&self) -> String {
+        match self {
+            TejxType::Int16 => "int16".to_string(),
+            TejxType::Int32 => "int".to_string(),
+            TejxType::Int64 => "int64".to_string(),
+            TejxType::Int128 => "int128".to_string(),
+            TejxType::Float16 => "float16".to_string(),
+            TejxType::Float32 => "float".to_string(),
+            TejxType::Float64 => "float64".to_string(),
+            TejxType::Bool => "boolean".to_string(),
+            TejxType::String => "string".to_string(),
+            TejxType::Char => "char".to_string(),
+            TejxType::Class(name) => name.clone(),
+            TejxType::FixedArray(inner, size) => format!("{}[{}]", inner.to_name(), size),
+            TejxType::DynamicArray(inner) => format!("{}[]", inner.to_name()),
+            TejxType::Slice(inner) => format!("slice<{}>", inner.to_name()),
+            TejxType::Void => "void".to_string(),
+            TejxType::Ref(inner) => format!("ref {}", inner.to_name()),
+            TejxType::Weak(inner) => format!("weak {}", inner.to_name()),
         }
     }
 }

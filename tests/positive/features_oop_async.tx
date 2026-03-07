@@ -1,3 +1,5 @@
+import { assert_eq_int } from "./utils.tx";
+
 class AsyncCalc {
     value: int;
 
@@ -24,12 +26,12 @@ async function main() {
     let p1 = calc.doWork(5);
     let v1 = await p1;
     print("calc.doWork(5) result: " + v1);
-    assert(v1 == 15);
+    assert_eq_int(v1, 15, "Async method 'this' access");
 
     let p2 = calc.slowAdd(100, 200);
     let v2 = await p2;
     print("calc.slowAdd(100, 200) result: " + v2);
-    assert(v2 == 300);
+    assert_eq_int(v2, 300, "Async method arguments");
     
     print("Async OOP test complete");
 }

@@ -79,15 +79,17 @@ extern function rt_Map_set<K, V>(_this: Map<K, V>, key: K, val: V): void;
 extern function rt_Map_get<K, V>(_this: Map<K, V>, key: K): V;
 extern function rt_Map_has<K, V>(_this: Map<K, V>, key: K): bool;
 extern function rt_Map_delete<K, V>(_this: Map<K, V>, key: K): bool;
-extern function rt_Map_keys<K, V>(_this: Map<K, V>): Array<K>;
-extern function rt_Map_values<K, V>(_this: Map<K, V>): Array<V>;
+extern function rt_Map_keys<K, V>(_this: Map<K, V>): K[];
+extern function rt_Map_values<K, V>(_this: Map<K, V>): V[];
 extern function rt_Map_clear<K, V>(_this: Map<K, V>): void;
+extern function rt_Map_size<K, V>(_this: Map<K, V>): int;
 
 extern function rt_Set_constructor<T>(_this: Set<T>): void;
 extern function rt_Set_add<T>(_this: Set<T>, val: T): void;
 extern function rt_Set_has<T>(_this: Set<T>, val: T): bool;
 extern function rt_Set_delete<T>(_this: Set<T>, val: T): bool;
-extern function rt_Set_values<T>(_this: Set<T>): Array<T>;
+extern function rt_Set_values<T>(_this: Set<T>): T[];
+extern function rt_Set_size<T>(_this: Set<T>): int;
 
 export class Map<K, V> {
     constructor() {
@@ -100,6 +102,15 @@ export class Map<K, V> {
 
     get(key: K): V {
         return rt_Map_get(this, key);
+    }
+
+    // Aliases for backward compatibility
+    put(key: K, val: V): void {
+        rt_Map_set(this, key, val);
+    }
+
+    at(key: K): V {
+        return this.get(key);
     }
 
     has(key: K): bool {
@@ -119,11 +130,11 @@ export class Map<K, V> {
     }
 
     size(): int {
-        return len(this);
+        return rt_Map_size(this);
     }
 
     isEmpty(): bool {
-        return len(this) == 0;
+        return rt_Map_size(this) == 0;
     }
 
     clear(): void {
@@ -153,11 +164,11 @@ export class Set<T> {
     }
 
     size(): int {
-        return len(this);
+        return rt_Set_size(this);
     }
 
     isEmpty(): bool {
-        return len(this) == 0;
+        return rt_Set_size(this) == 0;
     }
 }
 
@@ -186,11 +197,19 @@ export class MinHeap<T> {
 
     private bubbleUp(index: int): void {
         while (index > 0) {
+            print("bubbleUp idx: " + ("" + index));
             let parent = (index - 1) / 2;
-            if (this.items[index] < this.items[parent]) {
+            print("parent idx: " + ("" + parent));
+            let v_idx = this.items[index];
+            let v_parent = this.items[parent];
+            print("v_idx: " + ("" + v_idx) + ", v_parent: " + ("" + v_parent));
+            if (v_idx < v_parent) {
+                print("swapping...");
                 let temp = this.items[index];
                 this.items[index] = this.items[parent];
+                print("assigned parent to index");
                 this.items[parent] = temp;
+                print("assigned temp to parent");
                 index = parent;
             } else {
                 break;
@@ -234,6 +253,12 @@ export class MaxHeap<T> {
     }
 
     insert(val: T): void {
+        this.items.push(val);
+        this.bubbleUp(len(this.items) - 1);
+    }
+
+    // Alias for test compatibility
+    insertMax(val: T): void {
         this.items.push(val);
         this.bubbleUp(len(this.items) - 1);
     }
@@ -293,4 +318,259 @@ export class MaxHeap<T> {
 export class PriorityQueue<T> extends MinHeap {
     enqueue(val: T): void { this.insert(val); }
     dequeue(): T { return this.extractMin(); }
+}
+
+// --- OrderedMap: Map that preserves insertion order ---
+export class OrderedMap<K, V> {
+    private _keys: K[];
+    private _vals: V[];
+
+    constructor() {
+        this._keys = [];
+        this._vals = [];
+    }
+
+    put(key: K, val: V): void {
+        for (let i = 0; i < len(this._keys); i++) {
+            if (this._keys[i] == key) {
+                this._vals[i] = val;
+                return;
+            }
+        }
+        this._keys.push(key);
+        this._vals.push(val);
+    }
+
+    set(key: K, val: V): void {
+        this.put(key, val);
+    }
+
+    at(key: K): V {
+        for (let i = 0; i < len(this._keys); i++) {
+            if (this._keys[i] == key) {
+                return this._vals[i];
+            }
+        }
+        return None;
+    }
+
+    get(key: K): V {
+        return this.at(key);
+    }
+
+    has(key: K): bool {
+        for (let i = 0; i < len(this._keys); i++) {
+            if (this._keys[i] == key) return true;
+        }
+        return false;
+    }
+
+    delete(key: K): bool {
+        for (let i = 0; i < len(this._keys); i++) {
+            if (this._keys[i] == key) {
+                // Shift remaining elements
+                let newKeys: K[] = [];
+                let newVals: V[] = [];
+                for (let j = 0; j < len(this._keys); j++) {
+                    if (j != i) {
+                        newKeys.push(this._keys[j]);
+                        newVals.push(this._vals[j]);
+                    }
+                }
+                this._keys = newKeys;
+                this._vals = newVals;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    keys(): K[] {
+        return this._keys;
+    }
+
+    values(): V[] {
+        return this._vals;
+    }
+
+    size(): int {
+        return len(this._keys);
+    }
+
+    isEmpty(): bool {
+        return len(this._keys) == 0;
+    }
+
+    clear(): void {
+        this._keys = [];
+        this._vals = [];
+    }
+}
+
+// --- OrderedSet: Set that preserves insertion order ---
+export class OrderedSet<T> {
+    private _items: T[];
+
+    constructor() {
+        this._items = [];
+    }
+
+    add(val: T): void {
+        for (let i = 0; i < len(this._items); i++) {
+            if (this._items[i] == val) return;
+        }
+        this._items.push(val);
+    }
+
+    has(val: T): bool {
+        for (let i = 0; i < len(this._items); i++) {
+            if (this._items[i] == val) return true;
+        }
+        return false;
+    }
+
+    delete(val: T): bool {
+        let newItems: T[] = [];
+        let found = false;
+        for (let i = 0; i < len(this._items); i++) {
+            if (this._items[i] == val) {
+                found = true;
+            } else {
+                newItems.push(this._items[i]);
+            }
+        }
+        this._items = newItems;
+        return found;
+    }
+
+    values(): T[] {
+        return this._items;
+    }
+
+    size(): int {
+        return len(this._items);
+    }
+
+    isEmpty(): bool {
+        return len(this._items) == 0;
+    }
+
+    clear(): void {
+        this._items = [];
+    }
+}
+
+// --- BloomFilter: Probabilistic membership test ---
+export class BloomFilter {
+    private bits: int[];
+    private numHashes: int;
+    private bitSize: int;
+
+    constructor(size: int, numHashes: int) {
+        this.bitSize = size;
+        this.numHashes = numHashes;
+        this.bits = [];
+        for (let i = 0; i < size; i++) {
+            this.bits.push(0);
+        }
+    }
+
+    private hash1(val: string): int {
+        let h = 0;
+        for (let i = 0; i < len(val); i++) {
+            h = h * 31 + i + 1;
+        }
+        if (h < 0) h = 0 - h;
+        return h % this.bitSize;
+    }
+
+    private hash2(val: string): int {
+        let h = 0;
+        for (let i = 0; i < len(val); i++) {
+            h = h * 37 + i + 7;
+        }
+        if (h < 0) h = 0 - h;
+        return h % this.bitSize;
+    }
+
+    add(val: string): void {
+        let h1 = this.hash1(val);
+        let h2 = this.hash2(val);
+        for (let i = 0; i < this.numHashes; i++) {
+            let idx = (h1 + i * h2) % this.bitSize;
+            if (idx < 0) idx = 0 - idx;
+            this.bits[idx] = 1;
+        }
+    }
+
+    contains(val: string): bool {
+        let h1 = this.hash1(val);
+        let h2 = this.hash2(val);
+        for (let i = 0; i < this.numHashes; i++) {
+            let idx = (h1 + i * h2) % this.bitSize;
+            if (idx < 0) idx = 0 - idx;
+            if (this.bits[idx] == 0) return false;
+        }
+        return true;
+    }
+}
+
+// --- Trie: Prefix tree for string key lookup ---
+// Uses a flat array-based approach for TejX compatibility
+export class Trie {
+    private trieKeys: string[];
+    private trieVals: int[];
+
+    constructor() {
+        this.trieKeys = [];
+        this.trieVals = [];
+    }
+
+    addPath(key: string, val: int): void {
+        for (let i = 0; i < len(this.trieKeys); i++) {
+            if (this.trieKeys[i] == key) {
+                this.trieVals[i] = val;
+                return;
+            }
+        }
+        this.trieKeys.push(key);
+        this.trieVals.push(val);
+    }
+
+    find(key: string): int {
+        for (let i = 0; i < len(this.trieKeys); i++) {
+            if (this.trieKeys[i] == key) {
+                return this.trieVals[i];
+            }
+        }
+        return 0;
+    }
+
+    has(key: string): bool {
+        for (let i = 0; i < len(this.trieKeys); i++) {
+            if (this.trieKeys[i] == key) return true;
+        }
+        return false;
+    }
+
+    remove(key: string): bool {
+        let newKeys: string[] = [];
+        let newVals: int[] = [];
+        let found = false;
+        for (let i = 0; i < len(this.trieKeys); i++) {
+            if (this.trieKeys[i] == key) {
+                found = true;
+            } else {
+                newKeys.push(this.trieKeys[i]);
+                newVals.push(this.trieVals[i]);
+            }
+        }
+        this.trieKeys = newKeys;
+        this.trieVals = newVals;
+        return found;
+    }
+
+    size(): int {
+        return len(this.trieKeys);
+    }
 }

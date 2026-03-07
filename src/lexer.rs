@@ -80,6 +80,7 @@ impl Lexer {
         keywords.insert("of".to_string(), TokenType::Of);
         keywords.insert("ref".to_string(), TokenType::Ref);
         keywords.insert("weak".to_string(), TokenType::Weak);
+        keywords.insert("del".to_string(), TokenType::Del);
 
         Self {
             source: source.chars().collect(),

@@ -1,9 +1,9 @@
 // Stress Tests
 // ============
-import std:time;
-import { assert_eq_int, assert_true } from "../utils.tx";
+import { now } from "std:time";
+import { assert_eq_int, assert_eq_string, assert_true, assert_ne_int } from "../utils.tx";
 
-function ackermann(m: int32, n: int32): int32 {
+function ackermann(m: int, n: int): int {
     if (m == 0) return n + 1;
     else if (n == 0) return ackermann(m - 1, 1);
     else return ackermann(m - 1, ackermann(m, n - 1));
@@ -50,11 +50,11 @@ function main() {
     // Loop Performance
     let sum = 0;
     let limit = 10000; // reduced test size for CI speed
-    let start = time.now();
+    let start = now();
     for (let i = 1; i <= limit; i++) {
         sum = sum + i;
     }
-    print("Loop time: ", time.now() - start, "ms");
+    print("Loop time: ", now() - start, "ms");
     assert_true(sum > 0, "Loop sum positive");
 
     print("=== STRESS TESTS COMPLETE ===");

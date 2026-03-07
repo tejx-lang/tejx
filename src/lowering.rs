@@ -15,6 +15,7 @@ pub struct Lowering {
     extern_functions: RefCell<HashSet<String>>,
     variadic_functions: RefCell<HashMap<String, usize>>,
     lambda_functions: RefCell<Vec<HIRStatement>>,
+    nested_functions: RefCell<Vec<HIRStatement>>,
     scopes: RefCell<Vec<(HashMap<String, (String, TejxType)>, usize)>>, // (name -> (mangled_name, type), lambda_depth)
     lambda_depth: RefCell<usize>,
     next_scope_id: RefCell<usize>,
@@ -26,12 +27,15 @@ pub struct Lowering {
     class_getters: RefCell<HashMap<String, HashSet<String>>>,
     class_setters: RefCell<HashMap<String, HashSet<String>>>,
     class_parents: RefCell<HashMap<String, String>>,
+    class_generic_params: RefCell<HashMap<String, Vec<String>>>,
     pub async_enabled: bool,
     current_async_promise_id: RefCell<Option<String>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
     pub filename: RefCell<String>,
     pub captured_vars: RefCell<HashSet<String>>,
     pub stdlib_path: RefCell<std::path::PathBuf>,
+    pub lambda_inferred_types: HashMap<(usize, usize), Vec<String>>,
+    current_return_type: RefCell<Option<TejxType>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -40,6 +44,8 @@ pub struct LoweringResult {
     pub functions: Vec<HIRStatement>, // Each should be HIRStatement::Function
     pub signatures: HashMap<String, Vec<TejxType>>,
     pub captured_vars: HashSet<String>,
+    pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
+    pub class_methods: HashMap<String, Vec<String>>,
 }
 
 impl Lowering {
@@ -51,6 +57,7 @@ impl Lowering {
             extern_functions: RefCell::new(HashSet::new()),
             variadic_functions: RefCell::new(HashMap::new()),
             lambda_functions: RefCell::new(Vec::new()),
+            nested_functions: RefCell::new(Vec::new()),
             scopes: RefCell::new(vec![(HashMap::new(), 0)]), // Global scope at lambda_depth=0
             lambda_depth: RefCell::new(0),
             next_scope_id: RefCell::new(1), // Global is 0
@@ -62,12 +69,15 @@ impl Lowering {
             class_getters: RefCell::new(HashMap::new()),
             class_setters: RefCell::new(HashMap::new()),
             class_parents: RefCell::new(HashMap::new()),
+            class_generic_params: RefCell::new(HashMap::new()),
             async_enabled: false,
             current_async_promise_id: RefCell::new(None),
             diagnostics: RefCell::new(Vec::new()),
             filename: RefCell::new(String::new()),
             captured_vars: RefCell::new(HashSet::new()),
             stdlib_path: RefCell::new(std::path::PathBuf::from("stdlib")),
+            lambda_inferred_types: HashMap::new(),
+            current_return_type: RefCell::new(None),
         }
     }
 
@@ -284,6 +294,9 @@ impl Lowering {
         let mut lambdas = self.lambda_functions.borrow_mut();
         functions.append(&mut lambdas);
 
+        let mut nested = self.nested_functions.borrow_mut();
+        functions.append(&mut nested);
+
         // Add a "tejx_main" wrapper for non-function top-level statements
         // Check for user-defined main function (lowered as "f_main")
         // Identify main function
@@ -396,6 +409,10 @@ impl Lowering {
             "rt_len".to_string(),
             vec![TejxType::Class("any".to_string())],
         );
+        signatures.insert(
+            "rt_typeof".to_string(),
+            vec![TejxType::Class("any".to_string())],
+        );
 
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
@@ -404,10 +421,21 @@ impl Lowering {
             }
         }
 
+        let mut class_fields = HashMap::new();
+        for (class_name, fields) in self.class_instance_fields.borrow().iter() {
+            let mut field_names = Vec::new();
+            for (name, ty, _) in fields {
+                field_names.push((name.clone(), ty.clone()));
+            }
+            class_fields.insert(class_name.clone(), field_names);
+        }
+
         LoweringResult {
             functions,
             signatures,
             captured_vars: self.captured_vars.borrow().clone(),
+            class_fields,
+            class_methods: self.class_methods.borrow().clone(),
         }
     }
 
@@ -449,6 +477,91 @@ impl Lowering {
         }
     }
 
+    /// Substitute generic type parameters in a return type based on the
+    /// concrete object type. E.g., if Map<K,V>.get() returns TejxType::Class("V"),
+    /// and object type is TejxType::Class("Map<string, string[]>"), this
+    /// resolves to TejxType::Class("string[]").
+    fn substitute_class_generics(&self, ret_ty: &TejxType, obj_type: &TejxType) -> TejxType {
+        let type_name = match ret_ty {
+            TejxType::Class(name) => name.clone(),
+            _ => return ret_ty.clone(), // Non-class types don't need substitution
+        };
+
+        // Extract the base class name and concrete type args from the object type
+        let obj_full = match obj_type {
+            TejxType::Class(name) => name.clone(),
+            _ => return ret_ty.clone(),
+        };
+
+        // Find base class name from object type (e.g. "Map" from "Map<string, string[]>")
+        let base_class = obj_full
+            .split('<')
+            .next()
+            .unwrap_or(&obj_full)
+            .trim()
+            .to_string();
+
+        // Get the generic params for this class (e.g. Map -> [K, V])
+        let generic_params = self.class_generic_params.borrow();
+        let params = match generic_params.get(&base_class) {
+            Some(p) => p.clone(),
+            None => return ret_ty.clone(), // Not a generic class
+        };
+        drop(generic_params); // Release borrow
+
+        // Extract concrete type args from object type (e.g. "string, string[]" from "Map<string, string[]>")
+        let concrete_args = if let Some(open) = obj_full.find('<') {
+            if let Some(close) = obj_full.rfind('>') {
+                let inner = &obj_full[open + 1..close];
+                // Split by comma, respecting nested generics
+                let mut args = Vec::new();
+                let mut start = 0;
+                let mut depth = 0;
+                for (i, c) in inner.char_indices() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        ',' if depth == 0 => {
+                            args.push(inner[start..i].trim().to_string());
+                            start = i + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                args.push(inner[start..].trim().to_string());
+                args
+            } else {
+                return ret_ty.clone();
+            }
+        } else if obj_full.ends_with("[]") {
+            // Array type: T[] -> element type
+            vec![obj_full[..obj_full.len() - 2].to_string()]
+        } else {
+            return ret_ty.clone();
+        };
+
+        // Build substitution map: K -> "string", V -> "string[]"
+        let mut result = type_name.clone();
+        for (i, param) in params.iter().enumerate() {
+            if i < concrete_args.len() && result == *param {
+                // Direct match: the entire return type IS this generic param
+                return TejxType::from_name(&concrete_args[i]);
+            }
+        }
+        // Also try replacing within complex type strings (e.g. "Array<V>" -> "Array<string[]>")
+        for (i, param) in params.iter().enumerate() {
+            if i < concrete_args.len() {
+                result = result.replace(param, &concrete_args[i]);
+            }
+        }
+
+        if result != type_name {
+            TejxType::from_name(&result)
+        } else {
+            ret_ty.clone()
+        }
+    }
+
     fn register_class(&self, class_decl: &ClassDeclaration) {
         if let Some(cons) = &class_decl._constructor {
             let mangled = format!("f_{}_constructor", class_decl.name);
@@ -481,6 +594,12 @@ impl Lowering {
         self.class_methods
             .borrow_mut()
             .insert(class_decl.name.clone(), methods);
+        // Store generic params for the class (e.g. Map -> [K, V])
+        if !class_decl.generic_params.is_empty() {
+            self.class_generic_params
+                .borrow_mut()
+                .insert(class_decl.name.clone(), class_decl.generic_params.clone());
+        }
 
         let mut i_fields = Vec::new();
         let mut s_fields = Vec::new();
@@ -630,13 +749,22 @@ impl Lowering {
 
     // This function generates the worker function and the body of the wrapper function for an async function.
     // It returns (worker_function_HIR, dummy_state_struct_HIR, wrapper_body_HIR_block).
-    fn lower_async_function_impl(
+    pub fn lower_async_function_impl(
         &self,
         name: &str,
-        params: &Vec<(String, TejxType)>,
-        _return_type_str: &str,
+        params: &[(String, TejxType)],
+        return_type_decl: &str,
         body: &Statement,
     ) -> (HIRStatement, HIRStatement, HIRStatement) {
+        let original_return = TejxType::from_name(return_type_decl);
+        let actual_return_type = match &original_return {
+            TejxType::Class(name) if name.starts_with("Promise<") && name.ends_with('>') => {
+                let inner = &name[8..name.len() - 1];
+                TejxType::from_name(inner)
+            }
+            _ => original_return.clone(),
+        };
+        *self.current_return_type.borrow_mut() = Some(actual_return_type);
         let line = body.get_line();
         let worker_name = format!("f_{}_worker", name);
 
@@ -1145,31 +1273,34 @@ impl Lowering {
 
                     // Inject class metadata for instanceof support
                     // Set __class__ = "ClassName" on this
-                    statements.push(HIRStatement::ExpressionStmt {
-                        line: line,
-                        expr: HIRExpression::Call {
+                    statements.insert(
+                        0,
+                        HIRStatement::ExpressionStmt {
                             line: line,
-                            callee: "m_set".to_string(),
-                            args: vec![
-                                HIRExpression::Variable {
-                                    line: line,
-                                    name: mangled_this.clone(),
-                                    ty: TejxType::Class(class_decl.name.clone()),
-                                },
-                                HIRExpression::Literal {
-                                    line: line,
-                                    value: "__class__".to_string(),
-                                    ty: TejxType::String,
-                                },
-                                HIRExpression::Literal {
-                                    line: line,
-                                    value: class_decl.name.clone(),
-                                    ty: TejxType::String,
-                                },
-                            ],
-                            ty: TejxType::Void,
+                            expr: HIRExpression::Call {
+                                line: line,
+                                callee: "m_set".to_string(),
+                                args: vec![
+                                    HIRExpression::Variable {
+                                        line: line,
+                                        name: mangled_this.clone(),
+                                        ty: TejxType::Class(class_decl.name.clone()),
+                                    },
+                                    HIRExpression::Literal {
+                                        line: line,
+                                        value: "__class__".to_string(),
+                                        ty: TejxType::String,
+                                    },
+                                    HIRExpression::Literal {
+                                        line: line,
+                                        value: class_decl.name.clone(),
+                                        ty: TejxType::String,
+                                    },
+                                ],
+                                ty: TejxType::Void,
+                            },
                         },
-                    });
+                    );
 
                     // Set __parents__ = "Parent1,Parent2,..." for inheritance chain
                     if !class_decl._parent_name.is_empty() {
@@ -1193,31 +1324,34 @@ impl Lowering {
                         }
                         drop(class_parents_borrow);
                         let parents_str = parents.join(",");
-                        statements.push(HIRStatement::ExpressionStmt {
-                            line: line,
-                            expr: HIRExpression::Call {
+                        statements.insert(
+                            0,
+                            HIRStatement::ExpressionStmt {
                                 line: line,
-                                callee: "m_set".to_string(),
-                                args: vec![
-                                    HIRExpression::Variable {
-                                        line: line,
-                                        name: mangled_this,
-                                        ty: TejxType::Class(class_decl.name.clone()),
-                                    },
-                                    HIRExpression::Literal {
-                                        line: line,
-                                        value: "__parents__".to_string(),
-                                        ty: TejxType::String,
-                                    },
-                                    HIRExpression::Literal {
-                                        line: line,
-                                        value: parents_str,
-                                        ty: TejxType::String,
-                                    },
-                                ],
-                                ty: TejxType::Void,
+                                expr: HIRExpression::Call {
+                                    line: line,
+                                    callee: "m_set".to_string(),
+                                    args: vec![
+                                        HIRExpression::Variable {
+                                            line: line,
+                                            name: mangled_this,
+                                            ty: TejxType::Class(class_decl.name.clone()),
+                                        },
+                                        HIRExpression::Literal {
+                                            line: line,
+                                            value: "__parents__".to_string(),
+                                            ty: TejxType::String,
+                                        },
+                                        HIRExpression::Literal {
+                                            line: line,
+                                            value: parents_str,
+                                            ty: TejxType::String,
+                                        },
+                                    ],
+                                    ty: TejxType::Void,
+                                },
                             },
-                        });
+                        );
                     }
                 }
             }
@@ -1455,6 +1589,30 @@ impl Lowering {
         match stmt {
             Statement::BlockStmt { statements, .. } => {
                 self.enter_scope();
+
+                // Pre-pass: Hoist function declarations within the block
+                for s in statements {
+                    if let Statement::FunctionDeclaration(func) = s {
+                        let name = if func.is_extern {
+                            func.name.clone()
+                        } else {
+                            format!("f_{}", func.name)
+                        };
+                        if let Some((scope, _)) = self.scopes.borrow_mut().last_mut() {
+                            scope.insert(
+                                func.name.clone(),
+                                (name.clone(), TejxType::Class("any".to_string())),
+                            );
+                        }
+                        self.user_functions
+                            .borrow_mut()
+                            .insert(name.clone(), TejxType::from_name(&func.return_type));
+                        self.user_function_args
+                            .borrow_mut()
+                            .insert(name, func.params.len());
+                    }
+                }
+
                 let mut hir_stmts = Vec::new();
                 for s in statements {
                     if let Some(h) = self.lower_statement(s) {
@@ -1783,6 +1941,37 @@ impl Lowering {
                         (val.clone(), val.clone())
                     };
 
+                    let resolved_expr =
+                        if let Some(target_ty) = self.current_return_type.borrow().as_ref() {
+                            if val.is_some()
+                                && *target_ty != TejxType::Class("any".to_string())
+                                && *target_ty != TejxType::Void
+                            {
+                                let mut counter = self.lambda_counter.borrow_mut();
+                                let id = *counter;
+                                *counter += 1;
+                                drop(counter);
+                                let temp_name = format!("__async_unbox_{}", id);
+                                let decl = HIRStatement::VarDecl {
+                                    name: temp_name.clone(),
+                                    initializer: eval_val.clone(),
+                                    ty: target_ty.clone(),
+                                    _is_const: true,
+                                    line,
+                                };
+                                stmts.push(decl);
+                                Some(HIRExpression::Variable {
+                                    name: temp_name,
+                                    ty: target_ty.clone(),
+                                    line,
+                                })
+                            } else {
+                                eval_val.clone()
+                            }
+                        } else {
+                            eval_val.clone()
+                        };
+
                     stmts.push(HIRStatement::ExpressionStmt {
                         line: line,
                         expr: HIRExpression::Call {
@@ -1794,7 +1983,7 @@ impl Lowering {
                                     name: p_id.clone(),
                                     ty: TejxType::Class("any".to_string()),
                                 },
-                                eval_val.unwrap_or(HIRExpression::Literal {
+                                resolved_expr.unwrap_or(HIRExpression::Literal {
                                     line: line,
                                     value: "0".to_string(),
                                     ty: TejxType::Class("any".to_string()),
@@ -1929,12 +2118,28 @@ impl Lowering {
 
                 Some(HIRStatement::Function {
                     line: line,
-                    name,
-                    params,
-                    _return_type: return_type,
-                    body: Box::new(body),
+                    name: name.clone(),
+                    params: params.clone(),
+                    _return_type: return_type.clone(),
+                    body: Box::new(body.clone()),
                     is_extern: func.is_extern,
-                })
+                });
+
+                self.nested_functions
+                    .borrow_mut()
+                    .push(HIRStatement::Function {
+                        line: line,
+                        name,
+                        params,
+                        _return_type: return_type,
+                        body: Box::new(body),
+                        is_extern: func.is_extern,
+                    });
+
+                // Since it's extracted to global, we don't return an inline closure,
+                // but if someone expects an inline block we return empty block, but really
+                // it shouldn't be executed inline! Function declarations are hoisted anyway.
+                None
             }
             Statement::ExportDecl {
                 declaration,
@@ -2003,8 +2208,14 @@ impl Lowering {
             Expression::NumberLiteral {
                 value, _is_float, ..
             } => {
-                let (val_str, ty) = if *_is_float || value.fract() != 0.0 {
-                    (value.to_string(), TejxType::Float32)
+                let (val_str, ty) = if *_is_float {
+                    let mut s = value.to_string();
+                    if !s.contains('.') && !s.contains('e') {
+                        s.push_str(".0");
+                    }
+                    (s, TejxType::Float64)
+                } else if value.fract() != 0.0 {
+                    (value.to_string(), TejxType::Float64)
                 } else {
                     (format!("{:.0}", value), TejxType::Int32)
                 };
@@ -2370,8 +2581,28 @@ impl Lowering {
                     .replace("::", "_")
                     .replace(":", "_");
                 let mut final_callee = normalized.clone();
+                let mut hir_args = hir_args;
                 if callee_str == "typeof" {
                     final_callee = "rt_typeof".to_string();
+                    if let Some(arg) = hir_args.get_mut(0) {
+                        let arg_ty = arg.get_type();
+                        if arg_ty.is_numeric() || matches!(arg_ty, TejxType::Bool | TejxType::Char)
+                        {
+                            let old_arg = arg.clone();
+                            *arg = HIRExpression::Call {
+                                line: line,
+                                callee: if arg_ty.is_float() {
+                                    "rt_box_number".to_string()
+                                } else if matches!(arg_ty, TejxType::Bool) {
+                                    "rt_box_boolean".to_string()
+                                } else {
+                                    "rt_box_int".to_string()
+                                },
+                                args: vec![old_arg],
+                                ty: TejxType::Class("any".to_string()),
+                            };
+                        }
+                    }
                 }
                 let mut final_args = hir_args.clone();
                 let mut ty = TejxType::Class("any".to_string());
@@ -2392,9 +2623,12 @@ impl Lowering {
                                     name: mangled,
                                     ty: var_ty,
                                 }),
-                                args: hir_args,
+                                args: hir_args.clone(),
                                 ty: TejxType::Class("any".to_string()),
                             };
+                        } else {
+                            // It's a valid direct call to a user function, so use the mangled name!
+                            final_callee = mangled;
                         }
                     }
                 }
@@ -2412,6 +2646,7 @@ impl Lowering {
                             ty: TejxType::Class("any".to_string()),
                         }];
                         final_args.extend(hir_args);
+                        ty = TejxType::Void;
                     }
                 } else if let Expression::MemberAccessExpr { object, member, .. } = callee.as_ref()
                 {
@@ -2426,7 +2661,11 @@ impl Lowering {
                                 name: mangled_this,
                                 ty: TejxType::Class("any".to_string()),
                             }];
-                            final_args.extend(hir_args);
+                            final_args.extend(final_args.clone()); // Still wrong.
+
+                            if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee) {
+                                ty = ret_ty.clone();
+                            }
                         }
                     } else {
                         let mut resolved = false;
@@ -2450,42 +2689,141 @@ impl Lowering {
                         if !resolved {
                             // Priority 3: Instance/Runtime Methods (General Resolution)
                             let obj_hir = self.lower_expression(object);
-                            let mut type_name = match obj_hir.get_type() {
-                                TejxType::Class(c) => c.clone(),
-                                TejxType::String => "String".to_string(),
-                                t if t.is_array() => "Array".to_string(),
-                                _ => format!("{:?}", obj_hir.get_type()),
-                            };
+                            let obj_ty = obj_hir.get_type();
 
-                            // Standardize built-in class names
-                            if type_name == "any[]"
-                                || type_name.starts_with("Array<")
-                                || type_name.ends_with("[]")
-                                || (type_name.contains("[") && type_name.ends_with("]"))
-                            // fixed-size array
+                            if obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice()
                             {
-                                type_name = "Array".to_string();
-                            }
+                                // UFCS for built-in types: arr.push(v) -> rt_array_push(arr, v) or f_push(arr, v)
+                                let rt_name = match member.as_str() {
+                                    "push" => Some("rt_array_push"),
+                                    "pop" => Some("rt_array_pop"),
+                                    "shift" => Some("rt_array_shift"),
+                                    "unshift" => Some("rt_array_unshift"),
+                                    "includes" => {
+                                        if obj_ty == TejxType::String {
+                                            Some("rt_String_includes")
+                                        } else {
+                                            Some("f_includes") // Use generic prelude version
+                                        }
+                                    }
+                                    "startsWith" => {
+                                        if obj_ty == TejxType::String {
+                                            Some("rt_String_startsWith")
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    "endsWith" => {
+                                        if obj_ty == TejxType::String {
+                                            Some("rt_String_endsWith")
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    "indexOf" => {
+                                        if obj_ty == TejxType::String {
+                                            Some("rt_String_indexOf")
+                                        } else {
+                                            Some("rt_array_indexOf")
+                                        }
+                                    }
+                                    "concat" => Some("rt_array_concat"),
+                                    "join" => Some("rt_array_join"),
+                                    "slice" => Some("rt_array_slice"),
+                                    "reverse" => Some("rt_array_reverse"),
+                                    "fill" => Some("rt_array_fill"),
+                                    "sort" => Some("rt_array_sort"),
+                                    // String specific
+                                    "toUpperCase" => Some("rt_String_toUpperCase"),
+                                    "toLowerCase" => Some("rt_String_toLowerCase"),
+                                    "trim" => Some("rt_String_trim"),
+                                    "trimStart" => Some("rt_String_trimStart"),
+                                    "trimEnd" => Some("rt_String_trimEnd"),
+                                    "substring" => Some("rt_String_substring"),
+                                    "split" => Some("rt_String_split"),
+                                    "repeat" => Some("rt_String_repeat"),
+                                    "replace" => Some("rt_String_replace"),
+                                    _ => None,
+                                };
 
-                            let type_name = type_name
-                                .split('<')
-                                .next()
-                                .unwrap_or(&type_name)
-                                .trim()
-                                .to_string();
-                            let method_key = format!("f_{}_{}", type_name, member);
+                                final_callee = if let Some(n) = rt_name {
+                                    n.to_string()
+                                } else {
+                                    format!("f_{}", member)
+                                };
 
-                            if self.user_functions.borrow().contains_key(&method_key)
-                                || self.extern_functions.borrow().contains(&method_key)
-                            {
-                                final_callee = method_key;
+                                // Resolve return type for the UFCS call
+                                if let Some(ret_ty) =
+                                    self.user_functions.borrow().get(&final_callee)
+                                {
+                                    ty = self.substitute_class_generics(ret_ty, &obj_ty);
+                                }
+
+                                let mut n_args = vec![obj_hir];
+                                n_args.extend(hir_args.clone());
+                                final_args = n_args;
+                                resolved = true;
                             } else {
-                                // Fallback to dynamic or best-effort mangling
-                                final_callee = method_key;
+                                let mut type_name = match obj_ty {
+                                    TejxType::Class(ref c) => c.clone(),
+                                    _ => format!("{:?}", obj_ty),
+                                };
+
+                                let type_name = type_name
+                                    .split('<')
+                                    .next()
+                                    .unwrap_or(&type_name)
+                                    .trim()
+                                    .to_string();
+                                let method_key = format!("f_{}_{}", type_name, member);
+
+                                if let Some(ret_ty) = self.user_functions.borrow().get(&method_key)
+                                {
+                                    final_callee = method_key.clone();
+                                    // Substitute generic type params from the concrete object type
+                                    ty =
+                                        self.substitute_class_generics(ret_ty, &obj_hir.get_type());
+                                } else if self.extern_functions.borrow().contains(&method_key) {
+                                    final_callee = method_key;
+                                } else {
+                                    // Walk class hierarchy to find inherited methods
+                                    let mut found = false;
+                                    let mut parent_class =
+                                        { self.class_parents.borrow().get(&type_name).cloned() };
+                                    while let Some(ref parent) = parent_class {
+                                        let parent_method_key = format!("f_{}_{}", parent, member);
+                                        if let Some(ret_ty) =
+                                            self.user_functions.borrow().get(&parent_method_key)
+                                        {
+                                            final_callee = parent_method_key;
+                                            ty = self.substitute_class_generics(
+                                                ret_ty,
+                                                &obj_hir.get_type(),
+                                            );
+                                            found = true;
+                                            break;
+                                        } else if self
+                                            .extern_functions
+                                            .borrow()
+                                            .contains(&parent_method_key)
+                                        {
+                                            final_callee = parent_method_key;
+                                            found = true;
+                                            break;
+                                        }
+                                        parent_class =
+                                            self.class_parents.borrow().get(parent).cloned();
+                                    }
+                                    if !found {
+                                        // Fallback to dynamic or best-effort mangling
+                                        final_callee = method_key;
+                                    }
+                                }
+                                let mut n_args = vec![obj_hir];
+                                n_args.extend(hir_args.clone());
+                                final_args = n_args;
+                                resolved = true;
                             }
-                            let mut n_args = vec![obj_hir];
-                            n_args.extend(hir_args.clone());
-                            final_args = n_args;
                         }
                     }
                 } else if let Some(ret_ty) = self.user_functions.borrow().get(&normalized) {
@@ -2539,6 +2877,13 @@ impl Lowering {
                             final_args.push(HIRExpression::NoneLiteral { line });
                         }
                     }
+                }
+
+                if final_callee.contains("Element_constructor") {
+                    println!(
+                        "DEBUG lower_expr CallExpr: callee_str={}, final_callee={}, ty={:?}",
+                        callee_str, final_callee, ty
+                    );
                 }
 
                 HIRExpression::Call {
@@ -2638,7 +2983,27 @@ impl Lowering {
             }
             Expression::ArrayAccessExpr { target, index, .. } => {
                 let lowered_target = self.lower_expression(target);
-                let ty = lowered_target.get_type().get_array_element_type();
+                let target_ty = lowered_target.get_type();
+
+                // If it's an Array<T> class instance, desugar to arr.data[i]
+                if let TejxType::Class(name) = &target_ty {
+                    if name.starts_with("Array<") || name == "Array" {
+                        let elem_ty = target_ty.get_array_element_type();
+                        return HIRExpression::IndexAccess {
+                            line: line,
+                            target: Box::new(HIRExpression::MemberAccess {
+                                line: line,
+                                target: Box::new(lowered_target),
+                                member: "data".to_string(),
+                                ty: TejxType::Class(format!("{}[]", elem_ty.to_name())),
+                            }),
+                            index: Box::new(self.lower_expression(index)),
+                            ty: elem_ty,
+                        };
+                    }
+                }
+
+                let ty = target_ty.get_array_element_type();
                 HIRExpression::IndexAccess {
                     line: line,
                     target: Box::new(lowered_target),
@@ -2694,7 +3059,7 @@ impl Lowering {
                     for next_chunk in chunks.into_iter().skip(1) {
                         expr = HIRExpression::Call {
                             line: line,
-                            callee: "Array_concat".to_string(),
+                            callee: "rt_array_concat".to_string(),
                             args: vec![expr, next_chunk],
                             ty: TejxType::Class("any[]".to_string()),
                         };
@@ -2717,7 +3082,12 @@ impl Lowering {
                     line,
                 }
             }
-            Expression::LambdaExpr { params, body, .. } => {
+            Expression::LambdaExpr {
+                params,
+                body,
+                _line,
+                _col,
+            } => {
                 let id = {
                     let mut counter = self.lambda_counter.borrow_mut();
                     let val = *counter;
@@ -2726,13 +3096,24 @@ impl Lowering {
                 };
                 let lambda_name = format!("lambda_{}", id);
 
-                // Enforce Any type for lambda parameters to handle boxed values from indirect calls
+                // Use inferred types from TypeChecker if available
+                let inferred = self.lambda_inferred_types.get(&(*_line, *_col));
+
                 let hir_params: Vec<(String, TejxType)> = params
                     .iter()
-                    .map(|p| {
+                    .enumerate()
+                    .map(|(i, p)| {
                         (
                             p.name.clone(),
-                            if p.type_name.is_empty() {
+                            if let Some(inf) = inferred {
+                                if i < inf.len() {
+                                    TejxType::from_name(&inf[i])
+                                } else if p.type_name.is_empty() {
+                                    TejxType::Class("any".to_string())
+                                } else {
+                                    TejxType::from_name(&p.type_name)
+                                }
+                            } else if p.type_name.is_empty() {
                                 TejxType::Class("any".to_string())
                             } else {
                                 TejxType::from_name(&p.type_name)
@@ -2832,14 +3213,9 @@ impl Lowering {
 
                 HIRExpression::NewExpr {
                     line: line,
-                    class_name: normalized_class, // Keep full name for type info? Or normalized?
-                    // Actually, HIR NewExpr's class_name is used in mir_lowering to pick constructor.
-                    // But we might need the full name for type inference elsewhere.
-                    // Let's use normalized_class for the string used in matching.
-                    // WAIT! HIR NewExpr's class_name is used in MIRLowering::lower_expression (line 533-548).
-                    // If I change it to normalized_class, MIRLowering will see "Stack".
-                    // That's exactly what it needs!
+                    class_name: normalized_class,
                     _args: hir_args,
+                    ty: TejxType::from_name(class_name),
                 }
             }
             Expression::OptionalCallExpr {

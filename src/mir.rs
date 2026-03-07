@@ -58,25 +58,10 @@ pub enum MIRInstruction {
         args: Vec<MIRValue>,
         line: usize,
     },
-    ObjectLiteral {
-        dst: String,
-        entries: Vec<(String, MIRValue)>,
-        #[allow(dead_code)]
-        ty: Option<TejxType>,
-        line: usize,
-    },
-    ArrayLiteral {
-        dst: String,
-        elements: Vec<MIRValue>,
-        ty: Option<TejxType>,
-        line: usize,
-    },
     LoadMember {
         dst: String,
         obj: MIRValue,
         member: String,
-        #[allow(dead_code)]
-        borrow: bool,
         line: usize,
     },
     StoreMember {
@@ -89,7 +74,6 @@ pub enum MIRInstruction {
         dst: String,
         obj: MIRValue,
         index: MIRValue,
-        borrow: bool,
         line: usize,
     },
     StoreIndex {
@@ -106,10 +90,6 @@ pub enum MIRInstruction {
         dst: String,
         src: MIRValue,
         ty: TejxType,
-        line: usize,
-    },
-    Free {
-        value: MIRValue,
         line: usize,
     },
     TrySetup {
@@ -132,15 +112,12 @@ impl MIRInstruction {
             MIRInstruction::Return { line, .. } => *line,
             MIRInstruction::Call { line, .. } => *line,
             MIRInstruction::IndirectCall { line, .. } => *line,
-            MIRInstruction::ObjectLiteral { line, .. } => *line,
-            MIRInstruction::ArrayLiteral { line, .. } => *line,
             MIRInstruction::LoadMember { line, .. } => *line,
             MIRInstruction::StoreMember { line, .. } => *line,
             MIRInstruction::LoadIndex { line, .. } => *line,
             MIRInstruction::StoreIndex { line, .. } => *line,
             MIRInstruction::Throw { line, .. } => *line,
             MIRInstruction::Cast { line, .. } => *line,
-            MIRInstruction::Free { line, .. } => *line,
             MIRInstruction::TrySetup { line, .. } => *line,
             MIRInstruction::PopHandler { line, .. } => *line,
         }
@@ -155,15 +132,12 @@ impl MIRInstruction {
             MIRInstruction::Return { line, .. } => *line = new_line,
             MIRInstruction::Call { line, .. } => *line = new_line,
             MIRInstruction::IndirectCall { line, .. } => *line = new_line,
-            MIRInstruction::ObjectLiteral { line, .. } => *line = new_line,
-            MIRInstruction::ArrayLiteral { line, .. } => *line = new_line,
             MIRInstruction::LoadMember { line, .. } => *line = new_line,
             MIRInstruction::StoreMember { line, .. } => *line = new_line,
             MIRInstruction::LoadIndex { line, .. } => *line = new_line,
             MIRInstruction::StoreIndex { line, .. } => *line = new_line,
             MIRInstruction::Throw { line, .. } => *line = new_line,
             MIRInstruction::Cast { line, .. } => *line = new_line,
-            MIRInstruction::Free { line, .. } => *line = new_line,
             MIRInstruction::TrySetup { line, .. } => *line = new_line,
             MIRInstruction::PopHandler { line, .. } => *line = new_line,
         }

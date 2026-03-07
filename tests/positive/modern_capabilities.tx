@@ -34,19 +34,19 @@ class Button extends Element {
 // ----------------------------------------
 
 class Stack {
-    items: object[] = [];
+    items: int32[] = [];
     
-    push(item: object): void {
+    push(item: int32): void {
         let list = this.items;
         list.push(item);
     }
     
-    pop(): object | None {
+    pop(): int32 | None {
         let list = this.items;
         return list.pop();
     }
     
-    peek(): object | None {
+    peek(): int32 | None {
         if (this.items.length == 0) return None;
         return this.items[this.items.length - 1];
     }
@@ -146,7 +146,7 @@ function main() {
 
     print("\n--- Data Structures: Generic-like Stack ---");
 
-    let stack = new Stack();
+    let stack = new Stack<int>();
     stack.push(10);
     stack.push(20);
     stack.push(30);

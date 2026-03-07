@@ -99,6 +99,11 @@ pub enum Statement {
         _line: usize,
         _col: usize,
     },
+    DelStmt {
+        target: Box<Expression>,
+        _line: usize,
+        _col: usize,
+    },
     ThrowStmt {
         _expression: Box<Expression>,
         _line: usize,
@@ -481,6 +486,7 @@ impl Statement {
             Statement::VarDeclaration { line, .. } => *line,
             Statement::FunctionDeclaration(f) => f._line,
             Statement::ClassDeclaration(c) => c._line,
+            Statement::ExtensionDeclaration(e) => e._line,
             Statement::EnumDeclaration(e) => e._line,
             Statement::TypeAliasDeclaration { _line, .. } => *_line,
             Statement::InterfaceDeclaration { _line, .. } => *_line,
@@ -495,10 +501,10 @@ impl Statement {
             Statement::SwitchStmt { _line, .. } => *_line,
             Statement::ExpressionStmt { _line, .. } => *_line,
             Statement::TryStmt { _line, .. } => *_line,
+            Statement::DelStmt { _line, .. } => *_line,
             Statement::ThrowStmt { _line, .. } => *_line,
             Statement::ImportDecl { _line, .. } => *_line,
             Statement::ExportDecl { _line, .. } => *_line,
-            Statement::ExtensionDeclaration(_) => 0, // Todo
         }
     }
 
@@ -507,6 +513,7 @@ impl Statement {
             Statement::VarDeclaration { _col, .. } => *_col,
             Statement::FunctionDeclaration(f) => f._col,
             Statement::ClassDeclaration(c) => c._col,
+            Statement::ExtensionDeclaration(e) => e._col,
             Statement::EnumDeclaration(e) => e._col,
             Statement::TypeAliasDeclaration { _col, .. } => *_col,
             Statement::InterfaceDeclaration { _col, .. } => *_col,
@@ -521,10 +528,10 @@ impl Statement {
             Statement::SwitchStmt { _col, .. } => *_col,
             Statement::ExpressionStmt { _col, .. } => *_col,
             Statement::TryStmt { _col, .. } => *_col,
+            Statement::DelStmt { _col, .. } => *_col,
             Statement::ThrowStmt { _col, .. } => *_col,
             Statement::ImportDecl { _col, .. } => *_col,
             Statement::ExportDecl { _col, .. } => *_col,
-            Statement::ExtensionDeclaration(_) => 0, // Todo
         }
     }
 }

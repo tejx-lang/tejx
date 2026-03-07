@@ -122,6 +122,32 @@ class Circle extends Shape {
     }
 }
 
+// --- Deep Inheritance (from modern_capabilities.tx) ---
+
+class Node {
+    id: int32;
+    constructor(id: int32) { this.id = id; }
+    describe(): string { return "Node(" + this.id + ")"; }
+}
+
+class Element extends Node {
+    tagName: string;
+    constructor(id: int32, tagName: string) {
+        super(id);
+        this.tagName = tagName;
+    }
+    describe(): string { return "Element(" + this.tagName + ") -> " + super.describe(); }
+}
+
+class Button extends Element {
+    label: string;
+    constructor(id: int32, label: string) {
+        super(id, "button");
+        this.label = label;
+    }
+    describe(): string { return "Button['" + this.label + "'] -> " + super.describe(); }
+}
+
 function test_oop() {
     print("--- OOP Features ---");
     let r = new Robot(101, "T-800");
@@ -231,11 +257,27 @@ function test_super() {
     assert_ne_int(20, d.calc(10), "Super calc not base only");
 }
 
+function test_deep_inheritance() {
+    print("--- Deep Inheritance ---");
+    let btn = new Button(1, "Submit");
+    assert_eq_string("Button['Submit'] -> Element(button) -> Node(1)", btn.describe(), "Deep inheritance describe");
+
+    // Polymorphism
+    let node: Node = new Node(1);
+    let elem: Node = new Element(2, "div");
+    let btn2: Node = new Button(3, "OK");
+
+    assert_eq_string("Node(1)", node.describe(), "Polymorphism Node");
+    assert_eq_string("Element(div) -> Node(2)", elem.describe(), "Polymorphism Element");
+    assert_eq_string("Button['OK'] -> Element(button) -> Node(3)", btn2.describe(), "Polymorphism Button");
+}
+
 function main() {
     print("=== OOP TESTS START ===");
     test_oop();
     test_objects();
     test_structs();
     test_super();
+    test_deep_inheritance();
     print("=== OOP TESTS COMPLETE ===");
 }

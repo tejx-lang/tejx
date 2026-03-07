@@ -2,7 +2,7 @@ import { Stack, Queue, PriorityQueue } from "std:collections";
 
 function main() {
     print("--- Testing Stack ---");
-    let s = new Stack();
+    let s = new Stack<int>();
     print("isEmpty (new): ", s.isEmpty());
     s.push(10);
     s.push(20);
@@ -14,7 +14,7 @@ function main() {
     print("size (1): ", s.size());
 
     print("\n--- Testing Queue ---");
-    let q = new Queue();
+    let q = new Queue<int>();
     q.enqueue(100);
     q.enqueue(200);
     print("dequeue (100): ", q.dequeue());
@@ -22,7 +22,7 @@ function main() {
     print("isEmpty (true): ", q.isEmpty());
 
     print("\n--- Testing PriorityQueue ---");
-    let pq = new PriorityQueue();
+    let pq = new PriorityQueue<int>();
     pq.insert(30);
     pq.insert(10);
     pq.insert(20);

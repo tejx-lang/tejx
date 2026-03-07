@@ -45,6 +45,7 @@ pub enum TokenType {
     Option, // Option types
     Get,
     Set,
+    Del,
     Interface,
     TypeAlias, // Property accessors
     Ref,       // Borrow references

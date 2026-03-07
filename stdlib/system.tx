@@ -1,6 +1,6 @@
 extern function rt_exit(code: int): void;
 extern function rt_getenv(key: string): string;
-extern function rt_args(): Array<string>;
+extern function rt_args(): string[];
 
 export function exit(code: int): void {
     rt_exit(code);
@@ -15,5 +15,5 @@ export function args(): string[] {
 }
 
 // Aliases
-export const argv = args;
-export const getEnv = env;
+export function argv(): string[] { return args(); }
+export function getEnv(key: string): string { return env(key); }

@@ -26,10 +26,14 @@ pub struct MIRLowering {
     current_line: usize,
     scopes: Vec<HashMap<String, String>>, // Stack of scopes: original_name -> unique_mir_name
     var_counter: usize,
+    class_fields: HashMap<String, Vec<(String, TejxType)>>,
 }
 
 impl MIRLowering {
-    pub fn new(signatures: HashMap<String, Vec<TejxType>>) -> Self {
+    pub fn new(
+        signatures: HashMap<String, Vec<TejxType>>,
+        class_fields: HashMap<String, Vec<(String, TejxType)>>,
+    ) -> Self {
         Self {
             current_function: MIRFunction::new("".to_string()),
             current_block: 0,
@@ -43,6 +47,7 @@ impl MIRLowering {
             current_line: 0,
             scopes: vec![HashMap::new()], // Global/Function scope
             var_counter: 0,
+            class_fields,
         }
     }
 
@@ -199,48 +204,25 @@ impl MIRLowering {
     fn auto_box(&mut self, val: MIRValue, target_ty: &TejxType) -> MIRValue {
         let src_ty = val.get_type();
         let target_is_any = matches!(target_ty, TejxType::Class(c) if c == "any");
-        let target_is_string = matches!(target_ty, TejxType::String);
 
-        if target_is_any || target_is_string {
-            let box_func = match src_ty {
-                t if t.is_float() && target_is_any => Some("rt_box_number_v2"),
-                t if t.is_numeric() && target_is_any => Some("rt_box_int"),
-                TejxType::Bool if target_is_any => Some("rt_box_boolean"),
-                TejxType::String
-                    if (target_is_any || target_is_string)
-                        && matches!(val, MIRValue::Constant { .. }) =>
-                {
-                    Some("rt_box_string")
-                }
-                _ => None,
-            };
-
-            if let Some(func) = box_func {
-                let temp = self.new_temp(target_ty.clone());
-                self.emit(MIRInstruction::Call {
-                    line: 0,
-                    dst: temp.clone(),
-                    callee: func.to_string(),
-                    args: vec![val],
-                });
-                return MIRValue::Variable {
-                    name: temp,
-                    ty: target_ty.clone(),
-                };
-            }
+        if target_is_any {
+            // Boxing removal: We no longer box primitives into Any.
+            // They stay unboxed and are distinguished by HEAP_OFFSET.
+            return val;
         }
 
         // Unboxing logic: target is primitive, src is Any
         let is_complex = matches!(target_ty, TejxType::Class(_) | TejxType::FixedArray(_, _));
-        if !is_complex && false {
+        let src_is_any = matches!(src_ty, TejxType::Class(c) if c == "any");
+        if !is_complex && src_is_any {
             let unbox_func = match target_ty {
                 t if t.is_numeric() => Some("rt_to_number"),
-                TejxType::Bool => Some("rt_is_truthy"),
+                TejxType::Bool => Some("rt_to_boolean"),
                 _ => None,
             };
 
             if let Some(func) = unbox_func {
-                let res_ty = if func == "rt_is_truthy" {
+                let res_ty = if func == "rt_to_boolean" {
                     TejxType::Bool
                 } else {
                     TejxType::Float64
@@ -257,7 +239,6 @@ impl MIRLowering {
                     ty: res_ty.clone(),
                 };
 
-                // If target is not the function's return type, we might need a cast
                 if target_ty.is_numeric() && *target_ty != res_ty {
                     let cast_temp = self.new_temp(target_ty.clone());
                     self.emit(MIRInstruction::Cast {
@@ -272,6 +253,19 @@ impl MIRLowering {
                     };
                 }
                 return final_val;
+            } else if target_ty == &TejxType::String {
+                // String target from Any source
+                let cast_temp = self.new_temp(target_ty.clone());
+                self.emit(MIRInstruction::Cast {
+                    line: 0,
+                    dst: cast_temp.clone(),
+                    src: val.clone(),
+                    ty: target_ty.clone(),
+                });
+                return MIRValue::Variable {
+                    name: cast_temp,
+                    ty: target_ty.clone(),
+                };
             }
         }
 
@@ -289,6 +283,26 @@ impl MIRLowering {
                 name: cast_temp,
                 ty: target_ty.clone(),
             };
+        }
+
+        // Slice Coercion: T[] -> Slice<T>, T[N] -> Slice<T>
+        if let TejxType::Slice(inner_target) = target_ty {
+            if src_ty.is_array() {
+                // Lowering a fat pointer {ptr, len}
+                // We'll need a MIR instruction for this or a special call
+                // For now, let's use a dummy temporary and we'll refine the instruction set if needed
+                let slice_temp = self.new_temp(target_ty.clone());
+                self.emit(MIRInstruction::Call {
+                    line: 0,
+                    dst: slice_temp.clone(),
+                    callee: "rt_to_slice".to_string(), // Runtime helper to build fat pointer
+                    args: vec![val.clone()],
+                });
+                return MIRValue::Variable {
+                    name: slice_temp,
+                    ty: target_ty.clone(),
+                };
+            }
         }
 
         val
@@ -808,6 +822,31 @@ impl MIRLowering {
         }
     }
 
+    fn get_type_size(&self, ty: &TejxType) -> usize {
+        match ty {
+            TejxType::Class(name) => {
+                let lookup_name = if name.contains('<') {
+                    name.split('<').next().unwrap()
+                } else {
+                    name
+                };
+                // Anonymous record types (starts with {) are value types in arrays
+                if lookup_name.starts_with('{') {
+                    if let Some(fields) = self.class_fields.get(lookup_name) {
+                        let mut size = 0;
+                        for (_, fty) in fields {
+                            size += fty.size();
+                        }
+                        return size;
+                    }
+                }
+                // Named classes are pointers (8 bytes) in arrays
+                8
+            }
+            _ => ty.size(),
+        }
+    }
+
     fn lower_expression(&mut self, expr: &HIRExpression) -> MIRValue {
         self.current_line = expr.get_line();
         match expr {
@@ -823,38 +862,99 @@ impl MIRLowering {
                 }
             }
             HIRExpression::NewExpr {
-                class_name, _args, ..
+                class_name,
+                _args,
+                ty,
+                ..
             } => {
-                // Default: create a generic object (Map)
-                let temp = self.new_temp(TejxType::Class(class_name.clone()));
-                self.emit(MIRInstruction::Call {
-                    line: 0,
-                    callee: RT_MAP_NEW.to_string(),
-                    args: vec![],
-                    dst: temp.clone(),
-                });
+                let is_raw_array = class_name.ends_with("[]") || class_name.contains("[");
+                let is_array_wrapper = class_name.starts_with("Array<") || class_name == "Array";
+                let is_any_array = is_raw_array || is_array_wrapper;
 
-                // Initialize with constructor: f_ClassName_constructor(this, args...)
-                let constructor_name = format!("f_{}_constructor", class_name);
-                let mut constructor_args = vec![MIRValue::Variable {
-                    name: temp.clone(),
-                    ty: TejxType::Class(class_name.clone()),
+                // Create fixed-layout object if it's a class (unless it's a raw array which is just a header)
+                let temp = self.new_temp(if is_raw_array {
+                    ty.clone()
+                } else {
+                    TejxType::Class(class_name.clone())
+                });
+                if !is_raw_array {
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        callee: RT_CLASS_NEW.to_string(),
+                        args: vec![MIRValue::Constant {
+                            value: format!("\"{}\"", class_name),
+                            ty: TejxType::String,
+                        }],
+                        dst: temp.clone(),
+                    });
+                }
+
+                let constructor_name = if is_raw_array {
+                    "rt_Array_constructor_v2".to_string()
+                } else {
+                    format!("f_{}_constructor", class_name)
+                };
+
+                let mut constructor_args = vec![if is_raw_array {
+                    MIRValue::Constant {
+                        value: "0".to_string(),
+                        ty: TejxType::Int64,
+                    }
+                } else {
+                    MIRValue::Variable {
+                        name: temp.clone(),
+                        ty: TejxType::Class(class_name.clone()),
+                    }
                 }];
                 for arg in _args {
                     constructor_args.push(self.lower_expression(arg));
                 }
 
-                let void_temp = self.new_temp(TejxType::Void);
+                if is_any_array {
+                    if _args.is_empty() {
+                        // Push default 0 for sizeOrArr
+                        constructor_args.push(MIRValue::Constant {
+                            value: "0".to_string(),
+                            ty: TejxType::Int64,
+                        });
+                    }
+                    let elem_ty = ty.get_array_element_type();
+                    let elem_size = self.get_type_size(&elem_ty);
+                    constructor_args.push(MIRValue::Constant {
+                        value: elem_size.to_string(),
+                        ty: TejxType::Int64,
+                    });
+
+                    if is_raw_array {
+                        // Pass flags
+                        let flags = if matches!(ty, TejxType::FixedArray(_, _)) {
+                            1
+                        } else {
+                            0
+                        };
+                        constructor_args.push(MIRValue::Constant {
+                            value: flags.to_string(),
+                            ty: TejxType::Int64,
+                        });
+                    }
+                }
+
+                let call_dst = if is_raw_array {
+                    temp.clone()
+                } else {
+                    self.new_temp(TejxType::Void)
+                };
+
                 self.emit(MIRInstruction::Call {
                     line: 0,
                     callee: constructor_name,
                     args: constructor_args,
-                    dst: void_temp,
+                    dst: call_dst,
                 });
 
                 MIRValue::Variable {
                     name: temp,
-                    ty: TejxType::Class(class_name.clone()),
+                    ty: ty.clone(),
                 }
             }
             HIRExpression::BinaryExpr {
@@ -1127,7 +1227,22 @@ impl MIRLowering {
                         ..
                     } => {
                         let obj_val = self.lower_expression(obj_expr);
-                        let idx_val = self.lower_expression(idx_expr);
+                        let mut idx_val = self.lower_expression(idx_expr);
+
+                        if idx_val.get_type().is_float() {
+                            let temp_idx = self.new_temp(TejxType::Int32);
+                            self.emit(MIRInstruction::Cast {
+                                line: 0,
+                                dst: temp_idx.clone(),
+                                src: idx_val,
+                                ty: TejxType::Int32,
+                            });
+                            idx_val = MIRValue::Variable {
+                                name: temp_idx,
+                                ty: TejxType::Int32,
+                            };
+                        }
+
                         val = self.auto_box(val, ty);
                         self.emit(MIRInstruction::StoreIndex {
                             line: 0,
@@ -1153,6 +1268,13 @@ impl MIRLowering {
                         final_callee = format!("{}.{}", resolved_base, method);
                     }
                 }
+
+                // Check if this is a UFCS/runtime array mutation that might reallocate
+                let is_ufcs = final_callee.starts_with("rt_array_push")
+                    || final_callee.starts_with("rt_array_unshift")
+                    || final_callee.starts_with("rt_array_splice")
+                    || final_callee.contains(".push")
+                    || final_callee.contains(".unshift");
 
                 let maybe_sig = self.signatures.get(&final_callee).cloned();
                 let mir_args: Vec<MIRValue> = args
@@ -1219,17 +1341,52 @@ impl MIRLowering {
                     })
                     .collect();
 
-                let temp = self.new_temp(ty.clone());
+                if final_callee.contains("Element_constructor") {
+                    println!("DEBUG mir: new_temp for {} with ty {:?}", final_callee, ty);
+                }
+                let mut raw_temp = self.new_temp(ty.clone());
+                // For strings coming back from Map/Set intrinsics, they might be raw ptrs,
+                // and the user expects them as boxed strings if the variable is typed 'string'.
+                // If it's a known runtime method that returns raw generic i64 representing a string ptr
+                if (final_callee == "rt_Map_get"
+                    || final_callee == "rt_array_pop"
+                    || final_callee == "rt_array_shift")
+                    && ty == &TejxType::String
+                {
+                    raw_temp = self.new_temp(TejxType::Int64);
+                }
+
                 self.emit(MIRInstruction::Call {
                     line: 0,
-                    dst: temp.clone(),
-                    callee: final_callee,
+                    dst: raw_temp.clone(),
+                    callee: final_callee.clone(),
                     args: mir_args,
                 });
-                MIRValue::Variable {
-                    name: temp,
-                    ty: ty.clone(),
+
+                // REALLOCATION FIX: If this was a UFCS call like push/pop,
+                // and the first argument was an identifier (variable),
+                // we MUST update that variable with the return value because it might have reallocated.
+                if is_ufcs && !args.is_empty() {
+                    if let HIRExpression::Variable { name, ty, .. } = &args[0] {
+                        let res_ty = ty.clone();
+                        let unique_name = self.resolve_variable(name);
+                        self.emit(MIRInstruction::Move {
+                            line: 0,
+                            dst: unique_name,
+                            src: MIRValue::Variable {
+                                name: raw_temp.clone(),
+                                ty: res_ty,
+                            },
+                        });
+                    }
                 }
+
+                let result_val = MIRValue::Variable {
+                    name: raw_temp.clone(),
+                    ty: ty.clone(),
+                };
+
+                result_val
             }
             HIRExpression::IndirectCall {
                 callee, args, ty, ..
@@ -1248,9 +1405,6 @@ impl MIRLowering {
                                 t if t.is_float() => Some("rt_box_number"),
                                 t if t.is_numeric() => Some("rt_box_int"),
                                 TejxType::Bool => Some("rt_box_boolean"),
-                                TejxType::String if matches!(val, MIRValue::Constant { .. }) => {
-                                    Some("rt_box_string")
-                                }
                                 _ => None,
                             };
                             if let Some(f) = box_func {
@@ -1325,31 +1479,40 @@ impl MIRLowering {
                 target, index, ty, ..
             } => {
                 let obj = self.lower_expression(target);
-                let idx = self.lower_expression(index);
+                let mut idx = self.lower_expression(index);
+
+                if idx.get_type().is_float() {
+                    let temp_idx = self.new_temp(TejxType::Int32);
+                    self.emit(MIRInstruction::Cast {
+                        line: 0,
+                        dst: temp_idx.clone(),
+                        src: idx,
+                        ty: TejxType::Int32,
+                    });
+                    idx = MIRValue::Variable {
+                        name: temp_idx,
+                        ty: TejxType::Int32,
+                    };
+                }
 
                 let obj_ty = obj.get_type();
-                let is_any_source = obj_ty.is_array()
-                    || (if let TejxType::Class(name) = &obj_ty {
-                        name.starts_with("Array<") || name.ends_with("[]")
-                    } else {
-                        false
-                    });
+                let elem_ty = obj_ty.get_array_element_type();
 
-                // If source is Any/any[], the value loaded is a TaggedValue (Any).
-                // We must load it as Any first, then unbox if necessary.
-                let load_ty = if is_any_source {
+                // Only load as 'any' if the array actually stores tagged values.
+                // Otherwise use the actual element type (int, float, etc.)
+                let load_ty = if matches!(elem_ty, TejxType::Class(ref n) if n == "any" || n == "object")
+                {
                     TejxType::Class("any".to_string())
                 } else {
-                    ty.clone()
+                    elem_ty.clone()
                 };
 
                 let temp = self.new_temp(load_ty.clone());
                 self.emit(MIRInstruction::LoadIndex {
                     line: 0,
                     dst: temp.clone(),
-                    obj,
-                    index: idx,
-                    borrow: true,
+                    obj: obj.clone(),
+                    index: idx.clone(),
                 });
 
                 let val = MIRValue::Variable {
@@ -1357,127 +1520,219 @@ impl MIRLowering {
                     ty: load_ty,
                 };
 
-                if is_any_source && ty != &TejxType::Void {
-                    self.auto_box(val, ty)
-                } else {
-                    val
-                }
+                // Auto-unbox only if we actually loaded a tagged value but the target expects a primitive
+                self.auto_box(val, ty)
             }
             HIRExpression::MemberAccess {
                 target, member, ty, ..
             } => {
                 let obj = self.lower_expression(target);
-                // Runtime m_get returns a TaggedValue (Any), so we must load it as Any first.
-                let temp = self.new_temp(TejxType::Class("any".to_string()));
+                let obj_ty = obj.get_type();
+
+                // Special handling for 'length' on arrays, strings, and slices
+                if member == "length" {
+                    if matches!(obj_ty, TejxType::String) || obj_ty.is_array() || obj_ty.is_slice()
+                    {
+                        let temp = self.new_temp(TejxType::Int32);
+                        self.emit(MIRInstruction::Call {
+                            line: 0,
+                            dst: temp.clone(),
+                            callee: "rt_len".to_string(),
+                            args: vec![obj],
+                        });
+                        return MIRValue::Variable {
+                            name: temp,
+                            ty: TejxType::Int32,
+                        };
+                    }
+                }
+
+                let temp = self.new_temp(ty.clone());
                 self.emit(MIRInstruction::LoadMember {
                     line: 0,
                     dst: temp.clone(),
                     obj,
                     member: member.clone(),
-                    borrow: false,
-                });
-                let val = MIRValue::Variable {
-                    name: temp,
-                    ty: TejxType::Class("any".to_string()),
-                };
-                // Convert/Unbox to the expected HIR type (e.g. Int32 for length)
-                self.auto_box(val, ty)
-            }
-            HIRExpression::ObjectLiteral { entries, ty, .. } => {
-                let mir_entries = entries
-                    .iter()
-                    .map(|(k, v)| {
-                        let mut val = self.lower_expression(v);
-                        let is_primitive = val.get_type().is_numeric()
-                            || matches!(val.get_type(), TejxType::Bool | TejxType::String);
-                        if is_primitive {
-                            let src_ty = val.get_type();
-                            let box_func = match src_ty {
-                                t if t.is_float() => Some("rt_box_number"),
-                                t if t.is_numeric() => Some("rt_box_int"),
-                                TejxType::Bool => Some("rt_box_boolean"),
-                                TejxType::String if matches!(val, MIRValue::Constant { .. }) => {
-                                    Some("rt_box_string")
-                                }
-                                _ => None,
-                            };
-                            if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Class("any".to_string()));
-                                self.emit(MIRInstruction::Call {
-                                    line: 0,
-                                    dst: temp.clone(),
-                                    callee: f.to_string(),
-                                    args: vec![val],
-                                });
-                                val = MIRValue::Variable {
-                                    name: temp,
-                                    ty: TejxType::Class("any".to_string()),
-                                };
-                            }
-                        }
-                        (k.clone(), val)
-                    })
-                    .collect();
-                let temp = self.new_temp(ty.clone());
-                self.emit(MIRInstruction::ObjectLiteral {
-                    line: 0,
-                    dst: temp.clone(),
-                    entries: mir_entries,
-                    ty: Some(ty.clone()),
                 });
                 MIRValue::Variable {
                     name: temp,
                     ty: ty.clone(),
                 }
             }
-            HIRExpression::ArrayLiteral { elements, ty, .. } => {
-                let is_numeric_array = ty.get_array_element_type().is_numeric();
-                let mir_elements = elements
-                    .iter()
-                    .map(|e| {
-                        let mut val = self.lower_expression(e);
-                        // Only box if the array itself is NOT typed as numeric (i.e. it's Any[] or Object[])
-                        // If it IS numeric (int[]), we want raw values.
-                        let should_box = !is_numeric_array
-                            && (val.get_type().is_numeric()
-                                || matches!(val.get_type(), TejxType::Bool | TejxType::String));
-                        if should_box {
-                            let src_ty = val.get_type();
-                            let box_func = match src_ty {
-                                t if t.is_float() => Some("rt_box_number"),
-                                t if t.is_numeric() => Some("rt_box_int"),
-                                TejxType::Bool => Some("rt_box_boolean"),
-                                TejxType::String if matches!(val, MIRValue::Constant { .. }) => {
-                                    Some("rt_box_string")
-                                }
-                                _ => None,
-                            };
-                            if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Class("any".to_string()));
-                                self.emit(MIRInstruction::Call {
-                                    line: 0,
-                                    dst: temp.clone(),
-                                    callee: f.to_string(),
-                                    args: vec![val],
-                                });
-                                val = MIRValue::Variable {
-                                    name: temp,
-                                    ty: TejxType::Class("any".to_string()),
-                                };
-                            }
-                        }
-                        val
-                    })
-                    .collect();
-                let temp = self.new_temp(ty.clone());
-                self.emit(MIRInstruction::ArrayLiteral {
+            HIRExpression::ObjectLiteral { entries, ty, .. } => {
+                // Default: create a generic object (Map)
+                let map_temp = self.new_temp(ty.clone());
+                self.emit(MIRInstruction::Call {
                     line: 0,
-                    dst: temp.clone(),
-                    elements: mir_elements,
-                    ty: Some(ty.clone()),
+                    callee: RT_MAP_NEW.to_string(),
+                    args: vec![],
+                    dst: map_temp.clone(),
                 });
+
+                for (k, v) in entries {
+                    let mut val = self.lower_expression(v);
+                    let is_primitive = val.get_type().is_numeric()
+                        || matches!(val.get_type(), TejxType::Bool | TejxType::String);
+                    if is_primitive {
+                        let src_ty = val.get_type();
+                        let box_func = match src_ty {
+                            t if t.is_float() => Some("rt_box_number"),
+                            t if t.is_numeric() => Some("rt_box_int"),
+                            TejxType::Bool => Some("rt_box_boolean"),
+                            _ => None,
+                        };
+                        if let Some(f) = box_func {
+                            let temp = self.new_temp(TejxType::Class("any".to_string()));
+                            self.emit(MIRInstruction::Call {
+                                line: 0,
+                                dst: temp.clone(),
+                                callee: f.to_string(),
+                                args: vec![val],
+                            });
+                            val = MIRValue::Variable {
+                                name: temp,
+                                ty: TejxType::Class("any".to_string()),
+                            };
+                        }
+                    }
+
+                    // For the key, we need to box the string literal
+                    let key_boxed = self.new_temp(TejxType::String);
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        dst: key_boxed.clone(),
+                        callee: RT_BOX_STRING.to_string(),
+                        args: vec![MIRValue::Constant {
+                            value: k.clone(),
+                            ty: TejxType::String,
+                        }],
+                    });
+
+                    let void_temp = self.new_temp(TejxType::Void);
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        callee: RT_MAP_SET.to_string(),
+                        args: vec![
+                            MIRValue::Variable {
+                                name: map_temp.clone(),
+                                ty: ty.clone(),
+                            },
+                            MIRValue::Variable {
+                                name: key_boxed,
+                                ty: TejxType::String,
+                            },
+                            val,
+                        ],
+                        dst: void_temp,
+                    });
+                }
+
                 MIRValue::Variable {
-                    name: temp,
+                    name: map_temp,
+                    ty: ty.clone(),
+                }
+            }
+            HIRExpression::ArrayLiteral {
+                elements,
+                ty,
+                line: expr_line,
+            } => {
+                let arr_temp = self.new_temp(ty.clone());
+                let array_obj = MIRValue::Constant {
+                    value: "0".to_string(),
+                    ty: TejxType::Int64,
+                };
+
+                // Call constructor: rt_Array_constructor_v2(this, sizeOrArr, elem_size, flags)
+                let inner_type = ty.get_array_element_type();
+                let elem_size_bytes = self.get_type_size(&inner_type);
+
+                let args = vec![
+                    array_obj,
+                    MIRValue::Constant {
+                        value: "0".to_string(), // Accurate initial size
+                        ty: TejxType::Int64,
+                    },
+                    MIRValue::Constant {
+                        value: elem_size_bytes.to_string(),
+                        ty: TejxType::Int64,
+                    },
+                    MIRValue::Constant {
+                        value: "0".to_string(), // Literals are growable by default in JS/TejX unless specified?
+                        // Actually, implementation plan said IS_FIXED | IS_CONSTANT.
+                        // Let's use 0 for now to keep them growable, or follow plan?
+                        // "literals like [1, 2, 3]... share same optimized machine code"
+                        // If they are growable, flags=0.
+                        ty: TejxType::Int64,
+                    },
+                ];
+
+                self.emit(MIRInstruction::Call {
+                    dst: arr_temp.clone(),
+                    callee: "rt_Array_constructor".to_string(), // Use the standard wrapper
+                    args,
+                    line: *expr_line,
+                });
+
+                let mut current_arr_val = MIRValue::Variable {
+                    name: arr_temp.clone(),
+                    ty: ty.clone(),
+                };
+
+                for (i, e) in elements.into_iter().enumerate() {
+                    let mut val = self.lower_expression(e);
+                    let elem_ty = ty.get_array_element_type();
+                    let should_box = (val.get_type().is_numeric()
+                        || matches!(val.get_type(), TejxType::Bool | TejxType::Char))
+                        && (elem_ty == TejxType::Class("any".to_string())
+                            || elem_ty == TejxType::Class("object".to_string()));
+
+                    if should_box {
+                        let src_ty = val.get_type();
+                        let box_func = match src_ty {
+                            t if t.is_float() => Some("rt_box_number"),
+                            t if t.is_numeric() => Some("rt_box_int"),
+                            TejxType::Bool => Some("rt_box_boolean"),
+                            TejxType::Char => Some("rt_box_char"),
+                            _ => None,
+                        };
+                        if let Some(f) = box_func {
+                            let temp = self.new_temp(TejxType::Class("any".to_string()));
+                            self.emit(MIRInstruction::Call {
+                                line: 0,
+                                dst: temp.clone(),
+                                callee: f.to_string(),
+                                args: vec![val],
+                            });
+                            val = MIRValue::Variable {
+                                name: temp,
+                                ty: TejxType::Class("any".to_string()),
+                            };
+                        }
+                    }
+
+                    let updated_arr_temp = self.new_temp(ty.clone());
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        callee: RT_ARRAY_PUSH.to_string(),
+                        args: vec![current_arr_val.clone(), val],
+                        dst: updated_arr_temp.clone(),
+                    });
+                    current_arr_val = MIRValue::Variable {
+                        name: updated_arr_temp,
+                        ty: ty.clone(),
+                    };
+                }
+
+                // Final array reference after all pushes
+                self.emit(MIRInstruction::Move {
+                    line: 0,
+                    dst: arr_temp.clone(),
+                    src: current_arr_val,
+                });
+
+                MIRValue::Variable {
+                    name: arr_temp,
                     ty: ty.clone(),
                 }
             }

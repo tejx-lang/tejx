@@ -1,0 +1,354 @@
+import { now } from "std:time";
+import { random, sqrt, sin, cos, pow, floor } from "std:math";
+import {Map} from "std:collections";
+// --- Optimization Barrier ---
+let global_sink: int32 | float = 0;
+
+function DoNotOptimize(val: int32 | float): void {
+    if (typeof(val) == "int" || typeof(val) == "float") {
+        global_sink = val;
+    }
+}
+
+// --- Types ---
+type Node = {
+    value: int;
+    next: Node | None;
+};
+
+type Vec3 = {
+    x: float;
+    y: float;
+    z: float;
+};
+
+// --- 23 Performance Tests ---
+
+// 1. Sieve of Eratosthenes (Memory Write)
+function bench_sieve(): float {
+    let limit = 50000000;
+    let primes: int[] = new Array(limit + 1);
+    for (let i = 0; i <= limit; i++) primes[i] = 1;
+    for (let p = 2; p * p <= limit; p++) {
+        if (primes[p] == 1) {
+            for (let i = p * p; i <= limit; i += p) primes[i] = 0;
+        }
+    }
+    let count = 0.0;
+    for (let p = 2; p <= limit; p++) if (primes[p] == 1) count += 1.0;
+    return count;
+}
+
+// 2. Pointer Chasing (DRAM Latency)
+function bench_pointers(): float {
+    let size = 10000000;
+    let nodes: Node[] = new Array(size);
+    for (let i = 0; i < size; i++) nodes[i] = { value: i, next: None };
+    for (let j = 0; j < size - 1; j++) {
+        let n = nodes[j];
+        n.next = nodes[j + 1];
+    }
+    
+    let curr = nodes[0];
+    let sum = 0;
+    while (curr != None) {
+        sum += curr.value;
+        curr = curr.next;
+    }
+    return sum;
+}
+
+// 3. Math Throughput (FMA Simulation)
+function bench_math(): float {
+    let a = 1.01; let b = 1.00; let c = 1.03;
+    for (let i = 0; i < 500000000; i++) {
+        a = a * b + c;
+    }
+    return a;
+}
+
+// 4. Matrix Transpose (L3 Cache Stride)
+function bench_matrix(): float {
+    let N = 4096;
+
+    let A: float[] = new Array(N*N).fill(1.0);
+    let B: float[] = new Array(N*N).fill(0.0);
+    for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+            B[j * N + i] = A[i * N + j];
+        }
+    }
+    return B[0];
+}
+
+// 5. Binary Search (Logarithmic Lookup)
+function bench_binary_search(): float {
+    let data: int[] = new Array(10000000);
+    for (let i = 0; i < 10000000; i++) data[i] = i;
+    let found = 0;
+    for (let i = 0; i < 10000000; i++) {
+        let low = 0; let high = 9999999;
+        while (low <= high) {
+            let mid = low + ((high - low) >> 1);
+            if (data[mid] == i) { found++; break; }
+            if (data[mid] < i) low = mid + 1;
+            else high = mid - 1;
+        }
+    }
+    return found;
+}
+
+// 6. Mandelbrot Set (Floating Point Heavy)
+function bench_mandelbrot(): float {
+    let count = 0;
+    for (let y = 0; y < 2000; y++) {
+        for (let x = 0; x < 2000; x++) {
+            let cr = x * 0.002 - 1.5; let ci = y * 0.002 - 1.0;
+            let zr = 0.0; let zi = 0.0; let k = 0;
+            while (zr * zr + zi * zi < 4.0 && k < 200) {
+                let tmp = zr * zr - zi * zi + cr;
+                zi = 2.0 * zr * zi + ci;
+                zr = tmp;
+                k++;
+            }
+            if (k == 200) count++;
+        }
+    }
+    return count;
+}
+
+// 7. Branch Prediction (Unsorted vs Sorted Sum)
+function bench_branching(): float {
+    let data: int[] = new Array(20000000);
+    for (let i = 0; i < 20000000; i++) data[i] = i % 100;
+    let sum = 0;
+    for (let j = 0; j < 20; j++) {
+        for (let i = 0; i < 20000000; i++) {
+            if (data[i] < 50) sum += data[i];
+        }
+    }
+    return sum;
+}
+
+// 8. Vector Normalization (3D Geometry - Structure of Arrays to emulate cpp struct layout)
+function bench_vec_norm(): float {
+    let size = 10000000;
+    let xs: float[] = new Array(size);
+    let ys: float[] = new Array(size);
+    let zs: float[] = new Array(size);
+    for (let i = 0; i < size; i++) {
+        xs[i] = 1.1;
+        ys[i] = 2.2;
+        zs[i] = 3.3;
+    }
+    for (let i = 0; i < size; i++) {
+        let x = xs[i];
+        let y = ys[i];
+        let z = zs[i];
+        let mag = 1.0 / sqrt(x * x + y * y + z * z);
+        xs[i] = x * mag;
+        ys[i] = y * mag;
+        zs[i] = z * mag;
+    }
+    return xs[0];
+}
+
+// 9. Heavy Math (Gamma Approximation)
+function bench_gamma(): float {
+    let res = 1.0;
+    for (let i = 0; i < 20000000; i++) {
+        let n = 5.0 + (i % 5);
+        res = sqrt(2.0 * 3.14159 * n) * pow(n / 2.71828, n);
+    }
+    return res;
+}
+
+// 10. String Concatenation Stress
+function bench_strings(): float {
+    let s = "";
+    for (let i = 0; i < 50000000; i++) {
+        s += "a";
+        if (s.length > 100) s = ""; 
+    }
+    return s.length;
+}
+
+// 11. Bitwise Flipping (ALU Logic)
+function bench_bits(): float {
+    let bits: int[] = new Array(10000000);
+    for (let i = 0; i < 10000000; i++) bits[i] = 0;
+    for (let i = 0; i < 200000000; i++) {
+        bits[i % 10000000] ^= (1 << (i % 31));
+    }
+    return bits[0];
+}
+
+// 12. Trigonometric Synthesis
+function bench_trig(): float {
+    let sum = 0.0;
+    for (let i = 0; i < 30000000; i++) {
+        sum += sin(i * 0.01) * cos(i * 0.02);
+    }
+    return sum;
+}
+
+// 13. Map Insertion (Dictionary Stress)
+function bench_map(): float {
+    let m = new Map<int, int>();
+    for (let i = 0; i < 5000000; i++) m.set(i, i);
+    return m.size();
+}
+
+// 14. Heap Allocation Stress
+function bench_heap(): float {
+    let p_a = 0;
+    for (let i = 0; i < 10000000; i++) {
+        let p = { a: i, b: i * 2 };
+        p_a = p.a;
+    }
+    return p_a * 1.0;
+}
+
+// 15. Array Copy (Memcpy Simulation)
+function bench_copy(): float {
+    let src: int[] = new Array(100000);
+    for (let i = 0; i < 100000; i++) src[i] = 1;
+    let dst: int[] = new Array(100000);
+    for (let i = 0; i < 100000; i++) dst[i] = 0;
+    for (let i = 0; i < 5000; i++) {
+        for (let j = 0; j < 100000; j++) dst[j] = src[j];
+    }
+    return dst[0] * 1.0;
+}
+
+// 16. Integer Division Stress
+function bench_div(): float {
+    let res = 5000000;
+    for (let i = 1; i < 200000000; i++) {
+        res /= (i % 10 + 1);
+        if (res == 0) res = 5000000;
+    }
+    return res * 1.0;
+}
+
+// 17. Fibonacci (Recursion Depth)
+function fib(n: int): int {
+    if (n <= 1) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+function bench_fib(): float {
+    return fib(40);
+}
+
+// 18. Bubblesort Small Arrays (JIT/Inlining)
+function bench_bubble(): float {
+    let first = 0;
+    for (let k = 0; k < 1000000; k++) {
+        let arr = [9,8,7,6,5,4,3,2,1,0];
+        for (let i = 0; i < 10; i++) {
+            for (let j = 0; j < 9; j++) {
+                if (arr[j] > arr[j+1]) {
+                    let t = arr[j]; arr[j] = arr[j+1]; arr[j+1] = t;
+                }
+            }
+        }
+    }
+    return first * 1.0 + 0.1;
+}
+
+// 19. Big Float Summation (Precision Loss)
+function bench_float_sum(): float {
+    let sum = 0.0;
+    for (let i = 0; i < 500000000; i++) sum += 0.00001;
+    return sum;
+}
+
+// 20. Object Property Access (Lookup)
+function bench_obj_access(): float {
+    let obj_a = 1;
+    let obj_b = 2;
+    let obj_c = 3;
+    let obj_d = 4;
+    let sum = 0;
+    for (let i = 0; i < 500000000; i++) {
+        sum += obj_a + obj_b + obj_c + obj_d;
+    }
+    return sum;
+}
+
+// 21. Hard: N-Queens
+function solve_nqueens(n: int, row: int, col: int, diag1: int, diag2: int): int {
+    if (row == n) return 1;
+    let count = 0;
+    let available = ((1 << n) - 1) & (-1 ^ (col | diag1 | diag2));
+    while (available != 0) {
+        let pos = available & -available;
+        available ^= pos;
+        count += solve_nqueens(n, row + 1, col | pos, (diag1 | pos) << 1, (diag2 | pos) >> 1);
+    }
+    return count;
+}
+function bench_nqueens(): float {
+    return solve_nqueens(14, 0, 0, 0, 0);
+}
+
+// 22. Hard: Ackermann
+function ackermann(m: int, n: int): int {
+    if (m == 0) return n + 1;
+    if (m > 0 && n == 0) return ackermann(m - 1, 1);
+    return ackermann(m - 1, ackermann(m, n - 1));
+}
+function bench_ackermann(): float {
+    return ackermann(3, 10);
+}
+
+// 23. Regress: Float-to-Int Conversions
+function bench_float_to_int(): float {
+    let sum = 0;
+    for (let i = 0; i < 20000000; i++) {
+        let f = i * 1.5;
+        let v: int = f;
+        sum += v;
+        sum ^= v;
+    }
+    return sum * 1.0 + 0.1;
+}
+
+// --- Benchmark Runner ---
+function run(name: string, fn: () => float): void {
+    let s = now();
+    let res = fn();
+    let e = now();
+    print(name , " -> [" , res , "] : " , (e - s) , " ms");
+}
+
+function main(): float {
+    try {
+        print("--- Unified Performance Suite (23 Tests) ---");
+        run("1. Sieve of Eratosthenes", bench_sieve);
+        run("2. Pointer Chasing", bench_pointers);
+        run("3. Math Throughput", bench_math);
+        run("4. Matrix Transpose", bench_matrix);
+        run("5. Binary Search", bench_binary_search);
+        run("6. Mandelbrot Set", bench_mandelbrot);
+        run("7. Branch Prediction", bench_branching);
+        run("8. Vector Normalization", bench_vec_norm);
+        run("9. Gamma Approx (Math)", bench_gamma);
+        run("10. String Operations", bench_strings);
+        run("11. Bitwise Logic", bench_bits);
+        run("12. Trig Synthesis", bench_trig);
+        run("13. Map/Dictionary Load", bench_map);
+        run("14. Heap Stress", bench_heap);
+        run("15. Array Copy", bench_copy);
+        run("16. Division Stress", bench_div);
+        run("17. Fibonacci (Recursive)", bench_fib);
+        run("18. Small Bubble Sort", bench_bubble);
+        run("19. Float Summation", bench_float_sum);
+        run("20. Property Access", bench_obj_access);
+        run("21. Hard: N-Queens", bench_nqueens);
+        run("22. Hard: Ackermann", bench_ackermann);
+        run("23. Regress: Float-to-Int", bench_float_to_int);
+    } catch (e) {
+        print("Error: " + e);
+    }
+}

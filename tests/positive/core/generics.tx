@@ -1,0 +1,86 @@
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+import { Map, Set } from "std:collections";
+
+// --- Generic Stack (from modern_capabilities.tx) ---
+
+class Stack<T> {
+    items: T[] = [];
+    
+    push(item: T): void {
+        this.items.push(item);
+    }
+    
+    pop(): T | None {
+        return this.items.pop();
+    }
+    
+    peek(): T | None {
+        if (this.items.length == 0) return None;
+        return this.items[this.items.length - 1];
+    }
+    
+    isEmpty(): bool {
+        return this.items.length == 0;
+    }
+}
+
+function test_generic_stack() {
+    print("--- Generic Stack ---");
+    let stack = new Stack<int>();
+    stack.push(10);
+    stack.push(20);
+    stack.push(30);
+
+    assert_eq_int(30, stack.peek() ?? 0, "Stack peek");
+    assert_eq_int(30, stack.pop() ?? 0, "Stack pop 1");
+    assert_eq_int(20, stack.pop() ?? 0, "Stack pop 2");
+    assert_false(stack.isEmpty(), "Stack not empty");
+    stack.pop(); // 10
+    assert_true(stack.isEmpty(), "Stack empty after clearing");
+}
+
+// --- Generic Inference (from generic_inference_valid.tx) ---
+
+class Box<T> {
+    value: T;
+    constructor(val: T) { this.value = val; }
+    unwrap(): T { return this.value; }
+}
+
+function identity<T>(item: T): T { return item; }
+
+function test_generic_inference() {
+    print("--- Generic Inference ---");
+    
+    // 1. Map<K, V> tests
+    let cache = new Map<string, int>();
+    cache.set("Alice", 95);
+    let aliceScore = cache.get("Alice") ?? 0;
+    assert_eq_int(95, aliceScore, "Map inference");
+
+    // 2. Set<T> tests
+    let names = new Set<string>();
+    names.add("Alice");
+    let allNames = names.values();
+    assert_eq_int(1, allNames.length, "Set inference length");
+    assert_eq_string("Alice", allNames[0], "Set inference value");
+
+    // 3. Custom Classes
+    let intBox = new Box<int>(42);
+    let payload = intBox.unwrap();
+    assert_eq_int(42, payload, "Generic class unwrap");
+
+    // 4. Standalone Generic Functions
+    let textResult = identity("Test");
+    assert_eq_string("Test", textResult, "Generic function string");
+
+    let intResult = identity(1234);
+    assert_eq_int(1234, intResult, "Generic function int");
+}
+
+function main() {
+    print("=== GENERICS TESTS START ===");
+    test_generic_stack();
+    test_generic_inference();
+    print("=== GENERICS TESTS COMPLETE ===");
+}

@@ -1,31 +1,31 @@
 import { SharedQueue, Mutex } from "std:thread";
 
-function producer(q: SharedQueue<int>, lock: Mutex): void {
+function producer(q: SharedQueue<int>, mutex: Mutex): void {
   for (let i = 0; i < 100; i++) {
-    lock.acquire();
+    mutex.lock();
     q.enqueue(i);
-    lock.release();
+    mutex.unlock();
   }
 }
 
-function consumer(q: SharedQueue<int>, lock: Mutex): void {
+function consumer(q: SharedQueue<int>, mutex: Mutex): void {
   let count = 0;
   while (count < 100) {
-    lock.acquire();
+    mutex.lock();
     if (!q.isEmpty()) {
       let val = q.dequeue();
       print("Consumed:", val);
       count++;
     }
-    lock.release();
+    mutex.unlock();
   }
 }
 
 function main(): void {
   let q = new SharedQueue<int>();
-  let lock = new Mutex();
-  let producerThread = new Thread(producer, q, lock);
-  let consumerThread = new Thread(consumer, q, lock);
+  let mutex = new Mutex();
+  let producerThread = new Thread(producer, q, mutex);
+  let consumerThread = new Thread(consumer, q, mutex);
   producerThread.join();
   consumerThread.join();
   print("Producer and consumer finished.");

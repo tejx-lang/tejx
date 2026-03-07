@@ -74,3 +74,13 @@ export function assert_ne_string(notExpected: string, actual: string, msg: strin
         print("   Actual:        '" + actual + "'");
     }
 }
+
+export function assert_eq_none(actual: Option<int>, msg: string) {
+    if (actual == None) {
+        print("✅ PASS: " + msg + " - Expected: None, Actual: None");
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: None");
+        print("   Actual:   " + actual);
+    }
+}

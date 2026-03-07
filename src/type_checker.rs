@@ -23,8 +23,8 @@ pub struct MemberInfo {
 pub struct Symbol {
     pub type_name: String,
     pub is_const: bool,
-    pub params: Vec<String>, // Parameter types if function
-
+    pub params: Vec<String>,       // Parameter types if function
+    pub min_params: Option<usize>, // Minimum required params (excluding defaulted ones)
     pub is_variadic: bool,
     pub aliased_type: Option<String>,
     pub is_moved: bool,
@@ -45,6 +45,8 @@ pub struct TypeChecker {
     abstract_classes: std::collections::HashSet<String>,
     /// SOI: Remaining statements in the current block, used for look-ahead
     remaining_stmts: Vec<Statement>,
+    lambda_context_params: Option<Vec<String>>,
+    pub lambda_inferred_types: HashMap<(usize, usize), Vec<String>>,
 }
 
 impl TypeChecker {
@@ -174,6 +176,8 @@ impl TypeChecker {
             async_enabled: true,
             abstract_classes: std::collections::HashSet::new(),
             remaining_stmts: Vec::new(),
+            lambda_context_params: None,
+            lambda_inferred_types: HashMap::new(),
         };
         checker
     }
@@ -270,9 +274,24 @@ impl TypeChecker {
                     } else {
                         method.func.return_type.clone()
                     };
-                    let (final_type, _, _) = self.parse_signature(format!("function:{}", ret_ty));
+                    let mut param_types = Vec::new();
+                    for p in &method.func.params {
+                        param_types.push(p.type_name.clone());
+                    }
+                    let p_str = param_types.join(",");
+                    let sig_str = if p_str.is_empty() {
+                        format!("function:{}", ret_ty)
+                    } else {
+                        format!("function:{}:{}", ret_ty, p_str)
+                    };
+                    let (final_type, final_params, _) = self.parse_signature(sig_str);
+                    let full_sig = if final_params.is_empty() {
+                        final_type
+                    } else {
+                        format!("{}:{}", final_type, final_params.join(","))
+                    };
                     let parameterized_type =
-                        self.parameterize_generics(&final_type, &class_decl.generic_params);
+                        self.parameterize_generics(&full_sig, &class_decl.generic_params);
                     members.insert(
                         method.func.name.clone(),
                         MemberInfo {
@@ -328,6 +347,11 @@ impl TypeChecker {
                     func.return_type.clone()
                 };
                 let mut is_variadic = false;
+                let min_required = func
+                    .params
+                    .iter()
+                    .filter(|p| p._default_value.is_none() && !p._is_rest)
+                    .count();
                 let params = func
                     .params
                     .iter()
@@ -340,7 +364,25 @@ impl TypeChecker {
                     })
                     .collect::<Vec<String>>();
                 let (final_ret, _, _) = self.parse_signature(format!("function:{}", ret_ty));
-                self.define_with_params_variadic(func.name.clone(), final_ret, params, is_variadic);
+                let has_defaults = min_required < params.len();
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.insert(
+                        func.name.clone(),
+                        Symbol {
+                            type_name: final_ret,
+                            is_const: false,
+                            params,
+                            min_params: if has_defaults {
+                                Some(min_required)
+                            } else {
+                                None
+                            },
+                            is_variadic,
+                            aliased_type: None,
+                            is_moved: false,
+                        },
+                    );
+                }
             }
             Statement::TypeAliasDeclaration {
                 name, _type_def, ..
@@ -354,6 +396,7 @@ impl TypeChecker {
                             type_name: "type".to_string(),
                             is_const: true,
                             params: Vec::new(),
+                            min_params: None,
                             is_variadic: false,
                             aliased_type: Some(_type_def.clone()),
                             is_moved: false,
@@ -511,6 +554,7 @@ impl TypeChecker {
                     type_name: final_type,
                     is_const: false,
                     params: final_params,
+                    min_params: None,
                     is_variadic,
                     aliased_type: None,
                     is_moved: false,
@@ -537,6 +581,7 @@ impl TypeChecker {
                     type_name,
                     is_const: false,
                     params,
+                    min_params: None,
                     is_variadic,
                     aliased_type: None,
                     is_moved: false,
@@ -574,6 +619,7 @@ impl TypeChecker {
                     type_name: final_type,
                     is_const,
                     params: final_params,
+                    min_params: None,
                     is_variadic,
                     aliased_type: None,
                     is_moved: false,
@@ -651,22 +697,43 @@ impl TypeChecker {
                 }
 
                 let inner = &type_name[open + 1..type_name.len() - 1];
+                let mut p_count = 0;
                 let mut depth = 0;
                 let mut start = 0;
-                for (i, c) in inner.char_indices() {
-                    match c {
-                        '<' => depth += 1,
-                        '>' => depth -= 1,
-                        ',' if depth == 0 => {
-                            if !self.is_valid_type(inner[start..i].trim()) {
-                                return false;
+                if !inner.trim().is_empty() {
+                    for (i, c) in inner.char_indices() {
+                        match c {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            ',' if depth == 0 => {
+                                if !self.is_valid_type(inner[start..i].trim()) {
+                                    return false;
+                                }
+                                start = i + 1;
+                                p_count += 1;
                             }
-                            start = i + 1;
+                            _ => {}
                         }
-                        _ => {}
+                    }
+                    if !self.is_valid_type(inner[start..].trim()) {
+                        return false;
+                    }
+                    p_count += 1;
+                }
+
+                let expected_count = match base {
+                    "Array" | "Option" | "Promise" | "Ref" | "Weak" => Some(1),
+                    "Map" | "Dict" | "Pair" | "Result" => Some(2),
+                    _ => self.lookup(base).map(|s| s.params.len()),
+                };
+                if let Some(ec) = expected_count {
+                    if ec != p_count && ec > 0 {
+                        // Return false to let caller report invalid type,
+                        // forcing the user to provide the right number of generic arguments!
+                        return false;
                     }
                 }
-                return self.is_valid_type(inner[start..].trim());
+                return true;
             }
         }
 
@@ -777,6 +844,16 @@ impl TypeChecker {
             return true;
         }
 
+        // Concurrency primitives (handles) are also passed by reference (copy semantics) without being prelude classes
+        if t == "Thread"
+            || t == "Mutex"
+            || t == "Condition"
+            || t.starts_with("SharedQueue<")
+            || t == "SharedQueue"
+        {
+            return true;
+        }
+
         // User-defined classes use MOVE semantics — they are NOT copy
         false
     }
@@ -785,10 +862,24 @@ impl TypeChecker {
         if t1 == t2 {
             return t1.to_string();
         }
-        if t1 == "{unknown}" {
+        let is_any_int = |t: &str| {
+            t == "int"
+                || t == "int8"
+                || t == "int16"
+                || t == "int32"
+                || t == "int64"
+                || t == "uint8"
+                || t == "uint16"
+                || t == "uint32"
+                || t == "uint64"
+        };
+        if is_any_int(t1) && is_any_int(t2) {
+            return "int32".to_string(); // Default to int32 for mixed int arrays
+        }
+        if t1 == "unknown" {
             return t2.to_string();
         }
-        if t2 == "{unknown}" {
+        if t2 == "unknown" {
             return t1.to_string();
         }
         if t1 == "any" || t2 == "any" {
@@ -813,7 +904,7 @@ impl TypeChecker {
             }
             curr = parent.clone();
         }
-        "{unknown}".to_string()
+        "unknown".to_string()
     }
 
     fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
@@ -850,8 +941,8 @@ impl TypeChecker {
             return true;
         }
 
-        // Handle Optional<T> explicitly before generic base comparison
-        if expected.starts_with("Optional<") && expected.ends_with(">") {
+        // Handle Option<T> explicitly before generic base comparison
+        if expected.starts_with("Option<") && expected.ends_with(">") {
             let inner = &expected[9..expected.len() - 1]; // extract T
             if actual == "None" || self.are_types_compatible(inner, actual) {
                 return true;
@@ -973,8 +1064,6 @@ impl TypeChecker {
             || actual == "any:"
             || expected == "any:"
             || actual == "object"
-            || expected == "any[]"
-            || actual == "any[]"
         {
             return true;
         }
@@ -999,6 +1088,22 @@ impl TypeChecker {
             return true;
         }
 
+        // Integer types are mutually compatible (int, int8, int16, int32, etc.)
+        let is_any_int = |t: &str| {
+            t == "int"
+                || t == "int8"
+                || t == "int16"
+                || t == "int32"
+                || t == "int64"
+                || t == "uint8"
+                || t == "uint16"
+                || t == "uint32"
+                || t == "uint64"
+        };
+        if is_any_int(expected) && is_any_int(actual) {
+            return true;
+        }
+
         // Handle union types (e.g., "TreeNode | None")
         if expected.contains('|') {
             for part in expected.split('|') {
@@ -1018,6 +1123,21 @@ impl TypeChecker {
             return true;
         }
 
+        // Handle intersection types (e.g., "A & B")
+        if expected.contains('&') {
+            let parts: Vec<&str> = expected.split('&').map(|s| s.trim()).collect();
+            let mut all_match = true;
+            for part in parts {
+                if !self.are_types_compatible(part, actual) {
+                    all_match = false;
+                    break;
+                }
+            }
+            if all_match {
+                return true;
+            }
+        }
+
         // Enum compatibility with int32
         let is_enum = |t: &str| {
             t == "enum"
@@ -1026,8 +1146,10 @@ impl TypeChecker {
                     .map(|s| s.type_name == "enum")
                     .unwrap_or(false)
         };
-        let is_int = |t: &str| t == "int" || t == "int32";
-        if (is_enum(expected) && is_int(actual)) || (is_enum(actual) && is_int(expected)) {
+        let is_int_alias = |t: &str| t == "int" || t == "int16" || t == "int32" || t == "int64";
+        if (is_enum(expected) && is_int_alias(actual))
+            || (is_enum(actual) && is_int_alias(expected))
+        {
             return true;
         }
 
@@ -1074,9 +1196,13 @@ impl TypeChecker {
             // More strict check could be added here
         }
 
-        // Alias check: int == int32
+        // Alias check: int == int32 and float == float32
         let is_int_alias = |t: &str| t == "int" || t == "int32";
         if is_int_alias(expected) && is_int_alias(actual) {
+            return true;
+        }
+        let is_float_alias = |t: &str| t == "float" || t == "float32";
+        if is_float_alias(expected) && is_float_alias(actual) {
             return true;
         }
 
@@ -1130,8 +1256,31 @@ impl TypeChecker {
             return self.are_types_compatible(inner_expected, inner_actual);
         }
 
+        // Slice Coercion: T[] -> slice<T>, T[N] -> slice<T>, string -> slice<char>
+        let is_slice = |t: &str| t.starts_with("slice<") && t.ends_with(">");
+        if is_slice(expected) {
+            let inner_expected = &expected[6..expected.len() - 1];
+            if actual == "string"
+                && (inner_expected == "char" || inner_expected == "byte" || inner_expected == "int")
+            {
+                return true;
+            }
+            if actual.ends_with("[]") {
+                let inner_actual = &actual[..actual.len() - 2];
+                return self.are_types_compatible(inner_expected, inner_actual);
+            }
+            if is_fixed_array(actual) {
+                let inner_actual = actual.split('[').next().unwrap_or("");
+                return self.are_types_compatible(inner_expected, inner_actual);
+            }
+            if is_array_class(actual) {
+                let inner_actual = &actual[6..actual.len() - 1];
+                return self.are_types_compatible(inner_expected, inner_actual);
+            }
+        }
+
         // Empty array assignment
-        if actual == "[]" && expected.ends_with("[]") {
+        if actual == "[]" && (expected.ends_with("[]") || expected.starts_with("Array<")) {
             return true;
         }
 
@@ -1176,15 +1325,45 @@ impl TypeChecker {
             let e_props = self.parse_struct_props(expected);
             let a_props = self.parse_struct_props(actual);
 
-            if e_props.len() != a_props.len() {
-                return false;
+            // Exact type matching for object literals containing extra properties.
+            // If actual has extra properties not in expected, we reject to enforce strict typing.
+            for key in a_props.keys() {
+                if !e_props.contains_key(key) {
+                    return false; // Extra property found
+                }
             }
-            for (k, expected_k_ty) in &e_props {
-                if let Some(actual_k_ty) = a_props.get(k) {
-                    if !self.are_types_compatible(expected_k_ty, actual_k_ty) {
-                        return false;
+
+            for (key, e_type) in &e_props {
+                let is_optional = key.ends_with('?') || e_type.starts_with("Option<");
+                let base_key = key.trim_end_matches('?');
+
+                // Check actual props handling optional keys
+                let mut found = false;
+                for (a_key, a_type) in &a_props {
+                    let base_a_key = a_key.trim_end_matches('?');
+                    if base_key == base_a_key {
+                        found = true;
+                        // For Option<T>, inner T type match or actual type Option<T> is fine
+                        let target_expected =
+                            if e_type.starts_with("Option<") && e_type.ends_with(">") {
+                                &e_type[7..e_type.len() - 1]
+                            } else {
+                                e_type.as_str()
+                            };
+
+                        let target_actual =
+                            if a_type.starts_with("Option<") && a_type.ends_with(">") {
+                                &a_type[7..a_type.len() - 1]
+                            } else {
+                                a_type.as_str()
+                            };
+
+                        if !self.are_types_compatible(target_expected, target_actual) {
+                            return false;
+                        }
                     }
-                } else {
+                }
+                if !found && !is_optional {
                     return false;
                 }
             }
@@ -1298,6 +1477,71 @@ impl TypeChecker {
         props
     }
 
+    fn check_numeric_bounds(
+        &mut self,
+        expr: &Expression,
+        target_type: &str,
+        line: usize,
+        col: usize,
+    ) {
+        let mut val_to_check = None;
+        if let Expression::NumberLiteral { value, .. } = expr {
+            val_to_check = Some(*value);
+        } else if let Expression::UnaryExpr {
+            op: TokenType::Minus,
+            right,
+            ..
+        } = expr
+        {
+            if let Expression::NumberLiteral { value, .. } = &**right {
+                val_to_check = Some(-*value);
+            }
+        }
+
+        if let Some(v) = val_to_check {
+            let mut min = None;
+            let mut max = None;
+            match target_type {
+                "int8" => {
+                    min = Some(-128.0);
+                    max = Some(127.0);
+                }
+                "uint8" => {
+                    min = Some(0.0);
+                    max = Some(255.0);
+                }
+                "int16" => {
+                    min = Some(-32768.0);
+                    max = Some(32767.0);
+                }
+                "uint16" => {
+                    min = Some(0.0);
+                    max = Some(65535.0);
+                }
+                "int32" | "int" => {
+                    min = Some(-2147483648.0);
+                    max = Some(2147483647.0);
+                }
+                "uint32" => {
+                    min = Some(0.0);
+                    max = Some(4294967295.0);
+                }
+                _ => {}
+            }
+            if let (Some(min_val), Some(max_val)) = (min, max) {
+                if v < min_val || v > max_val {
+                    self.report_error_detailed(
+                        format!("Value {} is out of bounds for type '{}'", v, target_type),
+                        line,
+                        col,
+                        "E0100",
+                        Some(&format!("Valid range is {} to {}", min_val, max_val)),
+                    );
+                }
+            }
+        }
+    }
+
     fn check_statement(&mut self, stmt: &Statement) -> Result<(), ()> {
         match stmt {
             Statement::VarDeclaration {
@@ -1312,23 +1556,56 @@ impl TypeChecker {
                     self.report_error_detailed(format!("Unknown data type: '{}'", type_annotation), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                 }
                 if let Some(expr) = initializer {
-                    let init_type = self.check_expression(expr)?;
+                    let mut init_type = self.check_expression(expr)?;
+                    if type_annotation.is_empty() && init_type == "[]" {
+                        self.report_error_detailed(
+                            "Cannot infer type for empty array".to_string(),
+                            *line,
+                            *_col,
+                            "E0106",
+                            Some("Please provide an explicit type annotation (e.g., 'let arr: int[] = []')"),
+                        );
+                        init_type = "unknown".to_string(); // prevent cascading errors
+                    }
+
+                    if !type_annotation.is_empty() {
+                        self.check_numeric_bounds(expr, type_annotation, *line, *_col);
+                    } else if init_type != "any" && init_type != "unknown" {
+                        self.check_numeric_bounds(expr, &init_type, *line, *_col);
+                    }
+
                     if !type_annotation.is_empty()
                         && !self.are_types_compatible(type_annotation, &init_type)
                     {
-                        self.report_error_detailed(
-                            format!(
-                                "Type mismatch: expected '{}', got '{}'",
-                                type_annotation, init_type
-                            ),
-                            *line,
-                            *_col,
-                            "E0100",
-                            Some(&format!(
-                                "Consider converting with 'as {}' or change the variable type",
-                                type_annotation
-                            )),
-                        );
+                        if init_type == "[]" {
+                            self.report_error_detailed(
+                                format!(
+                                    "Type mismatch: expected '{}', got empty array",
+                                    type_annotation
+                                ),
+                                *line,
+                                *_col,
+                                "E0100",
+                                Some(&format!(
+                                    "Empty arrays must be explicitly typed or match the target type '{}'",
+                                    type_annotation
+                                )),
+                            );
+                        } else {
+                            self.report_error_detailed(
+                                format!(
+                                    "Type mismatch: expected '{}', got '{}'",
+                                    type_annotation, init_type
+                                ),
+                                *line,
+                                *_col,
+                                "E0100",
+                                Some(&format!(
+                                    "Consider converting with 'as {}' or change the variable type",
+                                    type_annotation
+                                )),
+                            );
+                        }
                     }
 
                     // Handle Move Semantics: If initializer is an Identifier
@@ -1357,38 +1634,25 @@ impl TypeChecker {
                         }
                     }
 
-                    if type_annotation == "any" || type_annotation == "" {
-                        if type_annotation == "" && init_type != "any" {
-                            let _ = self.define_pattern(
-                                pattern,
-                                init_type.clone(),
-                                *is_const,
-                                *line,
-                                *_col,
-                            );
-                        } else {
-                            let _ = self.define_pattern(
-                                pattern,
-                                "any".to_string(),
-                                *is_const,
-                                *line,
-                                *_col,
-                            );
-                        }
+                    let _target_type = if type_annotation.is_empty() {
+                        init_type
                     } else {
-                        let _ = self.define_pattern(
-                            pattern,
-                            type_annotation.clone(),
-                            *is_const,
+                        type_annotation.clone()
+                    };
+
+                    let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col);
+                } else {
+                    if type_annotation.is_empty() {
+                        self.report_error_detailed(
+                            "Type annotation required for uninitialized variable".to_string(),
                             *line,
                             *_col,
+                            "E0101",
+                            Some("Provide an explicit type (e.g., 'let x: int;')"),
                         );
-                    }
-                } else {
-                    if type_annotation == "any" || type_annotation == "" {
                         let _ = self.define_pattern(
                             pattern,
-                            "any".to_string(),
+                            "{unknown}".to_string(),
                             *is_const,
                             *line,
                             *_col,
@@ -1412,8 +1676,44 @@ impl TypeChecker {
                 self.check_expression(expression)?;
                 Ok(())
             }
+            Statement::DelStmt {
+                target,
+                _line,
+                _col,
+            } => {
+                let _target_type = self.check_expression(target)?;
+                if let Expression::Identifier { name, .. } = &**target {
+                    if let Some(s) = self.lookup(name) {
+                        if s.is_moved {
+                            self.report_error_detailed(
+                                format!("Cannot delete already moved variable '{}'", name),
+                                *_line,
+                                *_col,
+                                "E0103",
+                                Some("Variable was previously deleted or moved"),
+                            );
+                        } else {
+                            self.mark_moved(name, *_line, *_col);
+                        }
+                    }
+                } else if let Expression::MemberAccessExpr { .. } = &**target {
+                    // Allowed to delete properties from objects
+                } else {
+                    self.report_error_detailed(
+                        "Invalid target for 'del'".to_string(),
+                        *_line,
+                        *_col,
+                        "E0100",
+                        Some("'del' can only be used with variables or object properties"),
+                    );
+                }
+                Ok(())
+            }
             Statement::BlockStmt { statements, .. } => {
                 self.enter_scope();
+                for s in statements {
+                    self.collect_declarations(s);
+                }
                 for (i, s) in statements.iter().enumerate() {
                     // SOI: Store remaining statements for look-ahead
                     self.remaining_stmts = statements[i + 1..].to_vec();
@@ -1546,7 +1846,12 @@ impl TypeChecker {
                     ret_ty = format!("Promise<{}>", ret_ty);
                 }
                 let mut is_variadic = false;
-                let params = func
+                let min_required = func
+                    .params
+                    .iter()
+                    .filter(|p| p._default_value.is_none() && !p._is_rest)
+                    .count();
+                let params: Vec<String> = func
                     .params
                     .iter()
                     .map(|p| {
@@ -1556,12 +1861,25 @@ impl TypeChecker {
                         p.type_name.clone()
                     })
                     .collect();
-                self.define_with_params_variadic(
-                    func.name.clone(),
-                    format!("function:{}", ret_ty),
-                    params,
-                    is_variadic,
-                );
+                let has_defaults = min_required < params.len();
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.insert(
+                        func.name.clone(),
+                        Symbol {
+                            type_name: format!("function:{}", ret_ty),
+                            is_const: false,
+                            min_params: if has_defaults {
+                                Some(min_required)
+                            } else {
+                                None
+                            },
+                            params,
+                            is_variadic,
+                            aliased_type: None,
+                            is_moved: false,
+                        },
+                    );
+                }
 
                 self.current_function_return = Some(ret_ty);
                 self.current_function_is_async = func._is_async;
@@ -1790,11 +2108,29 @@ impl TypeChecker {
                 self.check_statement(declaration)?;
                 Ok(())
             }
-            Statement::ImportDecl {
-                _names, source: _, ..
-            } => {
-                // Previously, this contained hardcoded globals and function definitions for `std:` modules.
-                // We now rely on the lowering phase to actually include the `.tx` stdlib files and typecheck those directly.
+            Statement::ImportDecl { _names, source, .. } => {
+                // Register imported names/namespaces so type checker doesn't reject them
+                if _names.is_empty() {
+                    // Whole-module import: `import std:time;` → register `time` as any
+                    let module_name = if source.starts_with("std:") {
+                        source.trim_start_matches("std:").to_string()
+                    } else {
+                        std::path::Path::new(source)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    };
+                    if !module_name.is_empty() {
+                        self.define(module_name, "any".to_string());
+                    }
+                } else {
+                    // Named imports: `import { parse, stringify } from "std:json"`
+                    for item in _names {
+                        if self.lookup(&item.name).is_none() {
+                            self.define(item.name.clone(), "any".to_string());
+                        }
+                    }
+                }
                 Ok(())
             }
             Statement::ExtensionDeclaration(ext_decl) => {
@@ -1897,8 +2233,12 @@ impl TypeChecker {
         for i in 0..5 {
             let placeholder = format!("${}", i);
             if result.contains(&placeholder) {
-                let replacement = if i < parts.len() { parts[i] } else { "any" };
-                result = result.replace(&placeholder, replacement);
+                let replacement = if i < parts.len() {
+                    parts[i].to_string()
+                } else {
+                    format!("$MISSING_GENERIC_{}", i)
+                };
+                result = result.replace(&placeholder, &replacement);
             }
         }
 
@@ -2164,22 +2504,48 @@ impl TypeChecker {
                     Ok("any".to_string())
                 }
             }
-            Expression::LambdaExpr { params, body, .. } => {
+            Expression::LambdaExpr {
+                params,
+                body,
+                _line,
+                _col,
+            } => {
                 self.enter_scope();
-                for p in params {
-                    self.define(p.name.clone(), p.type_name.clone());
+
+                let mut actual_param_types = Vec::new();
+                let mut context_types = None;
+
+                // Use lambda context if available
+                if let Some(ctx) = self.lambda_context_params.clone() {
+                    context_types = Some(ctx);
                 }
 
-                let old_return = self.current_function_return.clone();
+                for (i, p) in params.iter().enumerate() {
+                    let mut p_type = p.type_name.clone();
+                    if p_type.is_empty() || p_type == "any" {
+                        if let Some(ctx_types) = &context_types {
+                            if i < ctx_types.len() {
+                                p_type = ctx_types[i].clone();
+                            }
+                        }
+                    }
+                    self.define(p.name.clone(), p_type.clone());
+                    actual_param_types.push(p_type);
+                }
+
+                // Save inferred types for CodeGen
+                self.lambda_inferred_types
+                    .insert((*_line, *_col), actual_param_types.clone());
+
+                let prev_return = self.current_function_return.take();
                 self.current_function_return = Some("any".to_string());
 
                 self.check_statement(body)?;
 
-                self.current_function_return = old_return;
+                self.current_function_return = prev_return;
                 self.exit_scope();
 
-                let param_types: Vec<String> = params.iter().map(|p| p.type_name.clone()).collect();
-                Ok(format!("function:any:{}", param_types.join(",")))
+                Ok(format!("function:any:{}", actual_param_types.join(",")))
             }
             Expression::Identifier { name, _line, _col } => {
                 if let Some(s) = self.lookup(name) {
@@ -2361,6 +2727,16 @@ impl TypeChecker {
                     return Ok(self.substitute_generics(&info.type_name, &obj_type));
                 }
 
+                // Built-in 'length' property for arrays, strings, and slices
+                if member == "length" {
+                    if obj_type == "string"
+                        || obj_type.ends_with("[]")
+                        || (obj_type.starts_with("slice<") && obj_type.ends_with(">"))
+                    {
+                        return Ok("int32".to_string());
+                    }
+                }
+
                 if obj_type != "any"
                     && !obj_type.is_empty()
                     && obj_type != "object"
@@ -2375,6 +2751,29 @@ impl TypeChecker {
                     {
                         return Ok("int32".to_string());
                     }
+                }
+
+                // --- UFCS Lookup ---
+                // If not found as a member, check if there is a global function name(obj, ...)
+                if let Some(s) = self.lookup(member) {
+                    if s.type_name.starts_with("function:") {
+                        if !s.params.is_empty() {
+                            let first_param = &s.params[0];
+                            if self.are_types_compatible(first_param, &obj_type) {
+                                // Found a match! Return the function type but we keep note it's UFCS
+                                // Actually, for type checking, we just return the function type.
+                                // CodeGen will handle the translation.
+                                return Ok(self.substitute_generics(&s.type_name, &obj_type));
+                            }
+                        }
+                    }
+                }
+
+                if obj_type != "any"
+                    && !obj_type.is_empty()
+                    && obj_type != "object"
+                    && !obj_type.starts_with("{")
+                {
                     self.report_error_detailed(
                         format!(
                             "Property '{}' does not exist on type '{}'",
@@ -2383,10 +2782,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        Some(&format!(
-                            "Check the spelling or add '{}' as a member of class '{}'",
-                            member, obj_type
-                        )),
+                        Some("Check the property name or define it in the class"),
                     );
                 }
                 Ok("any".to_string())
@@ -2425,6 +2821,10 @@ impl TypeChecker {
                         "ref {}",
                         &unwrapped_type[..unwrapped_type.len() - 2]
                     ));
+                }
+                if unwrapped_type.starts_with("Array<") && unwrapped_type.ends_with(">") {
+                    let inner = &unwrapped_type[6..unwrapped_type.len() - 1];
+                    return Ok(format!("ref {}", inner));
                 }
                 if unwrapped_type == "string" {
                     return Ok("ref string".to_string());
@@ -2498,21 +2898,38 @@ impl TypeChecker {
                 }
 
                 let value_type = self.check_expression(value)?;
-                if target_type != "any" && value_type != "any" {
+                if target_type != "any" && value_type != "any" && target_type != "unknown" {
+                    self.check_numeric_bounds(value, &target_type, *_line, *_col);
                     if !self.is_assignable(&target_type, &value_type) {
-                        self.report_error_detailed(
-                            format!(
-                                "Type mismatch in assignment: expected '{}', got '{}'",
-                                target_type, value_type
-                            ),
-                            *_line,
-                            *_col,
-                            "E0100",
-                            Some(&format!(
-                                "Consider converting with 'as {}' or change the variable type",
-                                target_type
-                            )),
-                        );
+                        if value_type == "[]" {
+                            self.report_error_detailed(
+                                format!(
+                                    "Type mismatch in assignment: expected '{}', got empty array",
+                                    target_type
+                                ),
+                                *_line,
+                                *_col,
+                                "E0100",
+                                Some(&format!(
+                                    "Empty arrays must match the target type '{}'",
+                                    target_type
+                                )),
+                            );
+                        } else {
+                            self.report_error_detailed(
+                                format!(
+                                    "Type mismatch in assignment: expected '{}', got '{}'",
+                                    target_type, value_type
+                                ),
+                                *_line,
+                                *_col,
+                                "E0100",
+                                Some(&format!(
+                                    "Consider converting with 'as {}' or change the variable type",
+                                    target_type
+                                )),
+                            );
+                        }
                     }
                 }
 
@@ -2611,11 +3028,11 @@ impl TypeChecker {
                     }
                 }
 
+                let mut generic_map: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+
                 // Check arguments
                 for (i, arg) in args.iter().enumerate() {
-                    let arg_type = self.check_expression(arg)?;
-                    // ... (skipped some lines)
-
                     let target_type = if is_variadic {
                         if s_params.is_empty() {
                             "any".to_string()
@@ -2635,12 +3052,28 @@ impl TypeChecker {
                         "any".to_string()
                     };
 
+                    if matches!(arg, Expression::LambdaExpr { .. }) {
+                        if target_type.starts_with("function:") || target_type.contains("=>") {
+                            let (_, parsed_params, _) = self.parse_signature(target_type.clone());
+
+                            self.lambda_context_params = Some(parsed_params);
+                        }
+                    } else {
+                        self.lambda_context_params = None;
+                    }
+
+                    let arg_type = self.check_expression(arg)?;
+                    self.lambda_context_params = None;
+
                     if !target_type.is_empty()
                         && target_type != "any"
                         && !self.are_types_compatible(&target_type, &arg_type)
                     {
                         // Skip error if either side is a generic type param (defined as 'any' in scope)
                         let is_generic_param = |t: &str| {
+                            if t.starts_with("$MISSING_GENERIC_") {
+                                return true;
+                            }
                             if let Some(sym) = self.lookup(t) {
                                 sym.type_name == "any"
                                     && t.len() <= 2
@@ -2666,13 +3099,28 @@ impl TypeChecker {
                         }
                     }
 
+                    let is_generic_param_check = |t: &str| {
+                        if t.starts_with("$MISSING_GENERIC_") {
+                            return true;
+                        }
+                        t.len() <= 2
+                            && t.chars().next().map_or(false, |c| c.is_uppercase())
+                            && t.chars().all(|c| c.is_alphanumeric())
+                    };
+                    if is_generic_param_check(&target_type) && arg_type != "any" {
+                        generic_map.insert(target_type.clone(), arg_type.clone());
+                    }
+
                     // Handle Move Semantics in Call (SOI: Implicit Borrow)
                     if let Expression::Identifier { name: src_name, .. } = arg {
                         let is_borrowing = callee_str.starts_with("console.")
                             || callee_str.starts_with("assert_")
                             || callee_str.starts_with("rt_")
                             || callee_str.starts_with("RT_")
-                            || callee_str.starts_with("tejx_");
+                            || callee_str.starts_with("tejx_")
+                            || callee_str == "len"
+                            || callee_str == "typeof"
+                            || callee_str == "sizeof";
                         // SOI: Check if variable is used later in the current block.
                         // If used later → implicit borrow (don't mark moved).
                         // If last use → implicit move (mark moved).
@@ -2691,33 +3139,47 @@ impl TypeChecker {
                 }
 
                 if !is_variadic && !s_params.is_empty() && args.len() != s_params.len() {
-                    let mut all_missing_are_optional = true;
-                    if args.len() < s_params.len() {
-                        for missing_param in &s_params[args.len()..] {
-                            if !missing_param.starts_with("Optional<")
-                                && !missing_param.contains("| None")
-                            {
-                                all_missing_are_optional = false;
-                                break;
-                            }
-                        }
-                    } else {
-                        all_missing_are_optional = false;
-                    }
+                    // Check if the callee has min_params (default parameter support)
+                    let min_required = self
+                        .lookup(&callee_str)
+                        .and_then(|s| s.min_params)
+                        .unwrap_or(s_params.len());
 
-                    if !all_missing_are_optional {
-                        self.report_error_detailed(
-                            format!(
-                                "Function '{}' expects {} argument(s), but {} were provided",
-                                callee_str,
-                                s_params.len(),
-                                args.len()
-                            ),
-                            *_line,
-                            *_col,
-                            "E0109",
-                            Some(&format!("Provide exactly {} argument(s)", s_params.len())),
-                        );
+                    if args.len() < min_required || args.len() > s_params.len() {
+                        // Check if missing params are Optional or have defaults
+                        let mut all_missing_are_optional = true;
+                        if args.len() < min_required {
+                            for missing_param in &s_params[args.len()..min_required] {
+                                if !missing_param.starts_with("Option<")
+                                    && !missing_param.contains("| None")
+                                {
+                                    all_missing_are_optional = false;
+                                    break;
+                                }
+                            }
+                        } else if args.len() > s_params.len() {
+                            all_missing_are_optional = false;
+                        }
+
+                        if !all_missing_are_optional {
+                            let expected_msg = if min_required < s_params.len() {
+                                format!("{} to {}", min_required, s_params.len())
+                            } else {
+                                format!("{}", s_params.len())
+                            };
+                            self.report_error_detailed(
+                                format!(
+                                    "Function '{}' expects {} argument(s), but {} were provided",
+                                    callee_str,
+                                    expected_msg,
+                                    args.len()
+                                ),
+                                *_line,
+                                *_col,
+                                "E0109",
+                                Some(&format!("Provide {} argument(s)", expected_msg)),
+                            );
+                        }
                     }
                 }
 
@@ -2730,59 +3192,104 @@ impl TypeChecker {
                     }
                 }
 
-                Ok(return_type)
+                let mut final_ret = return_type.clone();
+                for (k, v) in &generic_map {
+                    if final_ret == *k {
+                        final_ret = v.clone();
+                    } else if final_ret.contains(k) {
+                        final_ret = final_ret.replace(&format!("<{}>", k), &format!("<{}>", v));
+                        final_ret = final_ret.replace(&format!("{},", k), &format!("{},", v));
+                        final_ret = final_ret.replace(&format!(", {}", k), &format!(", {}", v));
+                        final_ret = final_ret.replace(&format!("{}[]", k), &format!("{}[]", v));
+                    }
+                }
+
+                Ok(final_ret)
             }
-            Expression::ObjectLiteralExpr { entries, .. } => {
+            Expression::ObjectLiteralExpr {
+                entries, _spreads, ..
+            } => {
                 let mut type_str = String::from("{");
-                for (i, (key, val_expr)) in entries.iter().enumerate() {
+                let mut is_first = true;
+                for (key, val_expr) in entries {
                     let mut val_ty = self.check_expression(val_expr)?;
                     if val_ty.starts_with("ref ") {
                         val_ty = val_ty[4..].to_string();
                     }
-                    type_str.push_str(&format!("{}: {}", key, val_ty));
-                    if i < entries.len() - 1 {
+                    if !is_first {
                         type_str.push_str(", ");
                     }
+                    type_str.push_str(&format!("{}: {}", key, val_ty));
+                    is_first = false;
                 }
+
+                for spread_expr in _spreads {
+                    let spread_ty = self.check_expression(spread_expr)?;
+                    let props = self.parse_struct_props(&spread_ty);
+                    for (k, val_ty) in props {
+                        if !is_first {
+                            type_str.push_str(", ");
+                        }
+                        type_str.push_str(&format!("{}: {}", k, val_ty));
+                        is_first = false;
+                    }
+                }
+
                 type_str.push('}');
                 Ok(type_str)
             }
-            Expression::ArrayLiteral { elements, ty, .. } => {
+            Expression::ArrayLiteral {
+                elements,
+                ty,
+                _line,
+                _col,
+                ..
+            } => {
                 if !elements.is_empty() {
-                    let mut first_type = self.check_expression(&elements[0])?;
-                    if first_type.starts_with("ref ") {
-                        first_type = first_type[4..].to_string();
-                    }
-                    for i in 1..elements.len() {
+                    let mut first_type_opt: Option<String> = None;
+                    for i in 0..elements.len() {
                         let mut elem_ty = self.check_expression(&elements[i])?;
                         if elem_ty.starts_with("ref ") {
                             elem_ty = elem_ty[4..].to_string();
                         }
-                        if elem_ty != first_type && first_type != "{unknown}" {
-                            let common = self.get_common_ancestor(&first_type, &elem_ty);
-                            if common == "{unknown}" {
-                                self.report_error_detailed(
-                                    format!("Array elements must have consistent types. Expected '{}' but found '{}'", first_type, elem_ty),
-                                    elements[i].get_line(),
-                                    0,
-                                    "E0091",
-                                    Some("Ensure all elements in the array literal match the type of the first element or share a common ancestor"),
-                                );
-                                first_type = "{unknown}".to_string();
-                            } else {
-                                first_type = common;
+                        if let Expression::SpreadExpr { .. } = elements[i] {
+                            if elem_ty.ends_with("[]") {
+                                elem_ty = elem_ty[..elem_ty.len() - 2].to_string();
+                            } else if elem_ty.starts_with("Array<") {
+                                elem_ty = elem_ty[6..elem_ty.len() - 1].to_string();
                             }
                         }
+
+                        if let Some(first_type) = &first_type_opt {
+                            if &elem_ty != first_type && first_type != "unknown" {
+                                let common = self.get_common_ancestor(first_type, &elem_ty);
+                                if common == "unknown" {
+                                    self.report_error_detailed(
+                                        format!("Array elements have incompatible types: '{}' and '{}'", first_type, elem_ty),
+                                        *_line,
+                                        *_col,
+                                        "E0100",
+                                        Some("All elements in an array literal must have the same type")
+                                    );
+                                    first_type_opt = Some("unknown".to_string());
+                                } else {
+                                    first_type_opt = Some(common);
+                                }
+                            }
+                        } else {
+                            first_type_opt = Some(elem_ty);
+                        }
                     }
-                    let inferred = format!("{}[{}]", first_type, elements.len());
-                    *ty.borrow_mut() = Some(inferred.clone());
-                    Ok(inferred)
+                    let t = first_type_opt.unwrap_or_else(|| "unknown".to_string()) + "[]";
+                    *ty.borrow_mut() = Some(t.clone());
+                    Ok(t)
                 } else {
-                    let inferred = "[]".to_string();
-                    *ty.borrow_mut() = Some(inferred.clone());
-                    Ok(inferred)
+                    let t = "[]".to_string();
+                    *ty.borrow_mut() = Some(t.clone());
+                    Ok(t)
                 }
             }
+            Expression::SpreadExpr { _expr, .. } => self.check_expression(_expr),
 
             Expression::AwaitExpr { expr, _line, _col } => {
                 if !self.current_function_is_async && self.current_function_return.is_some() {
@@ -2839,25 +3346,9 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
-                // Check if this class requires generic type parameters
-                if let Some(members) = self.class_members.get(class_name) {
-                    // Classes with generic params should require explicit type args
-                    if members.contains_key("__generic")
-                        || class_name == "Map"
-                        || class_name == "Set"
-                    {
-                        self.report_error_detailed(
-                            format!("{} requires explicit type arguments", class_name),
-                            *_line,
-                            *_col,
-                            "E0101",
-                            Some(&format!(
-                                "Use {}<K, V> or equivalent to strictly type this collection",
-                                class_name
-                            )),
-                        );
-                    }
-                }
+                // Generic type parameters are inferred from the variable declaration's
+                // type annotation (e.g., `let m: Map<string, int> = new Map()`),
+                // so we don't require explicit type args on the constructor call.
                 if !self.is_valid_type(class_name) {
                     self.report_error_detailed(
                         format!("Unknown class '{}'", class_name),

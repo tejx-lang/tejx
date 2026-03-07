@@ -37,7 +37,7 @@ function test_tcp_connect() {
     let stream = net.connect("google.com:80");
     print("Connect result: ", stream);
     
-    if (stream != -1) {
+    if (stream != None) {
         print("Connected to google.com:80");
         net.close(stream);
         assert_true(true, "TCP Connect success");

@@ -43,7 +43,7 @@ function bfs(graph: Map<string, string[]>, start: string): void {
 
 
 function main() {
-  let graph = new Map();
+  let graph = new Map<string, string[]>();
 
   graph.set("A", ["B", "C"]);
   graph.set("B", ["D", "E"]);

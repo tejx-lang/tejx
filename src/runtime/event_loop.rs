@@ -29,32 +29,42 @@ pub unsafe extern "C" fn tejx_dec_async_ops() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tejx_run_event_loop() {
-    loop {
-        // Process all queued tasks
-        let task = if let Ok(mut queue) = TASK_QUEUE.lock() {
-            queue.pop_front()
-        } else {
-            None
-        };
+pub unsafe extern "C" fn tejx_run_event_loop_step() -> bool {
+    let task = if let Ok(mut queue) = TASK_QUEUE.lock() {
+        queue.pop_front()
+    } else {
+        None
+    };
 
-        if let Some((worker, args)) = task {
-            let worker_fn: unsafe extern "C" fn(i64) = std::mem::transmute(worker);
-            worker_fn(args);
-        } else if ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
-            break;
-        } else {
-            std::thread::yield_now();
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+    if let Some((worker, args)) = task {
+        let worker_fn: unsafe extern "C" fn(i64) = std::mem::transmute(worker);
+        worker_fn(args);
+        true
+    } else if ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
+        false
+    } else {
+        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        true
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_run_event_loop() {
+    while tejx_run_event_loop_step() {}
 }
 
 // --- Exception Handling ---
 // TejX uses setjmp/longjmp style exception handling.
 // We maintain a stack of jump buffers for try/catch blocks.
 
-static EXCEPTION_STACK: LazyLock<Mutex<Vec<i64>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+struct ExceptionHandler {
+    jmpbuf: i64,
+    roots_top: usize,
+}
+
+static EXCEPTION_STACK: LazyLock<Mutex<Vec<ExceptionHandler>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 static mut CURRENT_EXCEPTION: i64 = 0;
 
@@ -66,7 +76,10 @@ pub unsafe extern "C" fn tejx_get_exception() -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn tejx_push_handler(jmpbuf: *mut u8) {
     if let Ok(mut stack) = EXCEPTION_STACK.lock() {
-        stack.push(jmpbuf as i64);
+        stack.push(ExceptionHandler {
+            jmpbuf: jmpbuf as i64,
+            roots_top: GC_ROOTS_TOP,
+        });
     }
 }
 
@@ -74,5 +87,30 @@ pub unsafe extern "C" fn tejx_push_handler(jmpbuf: *mut u8) {
 pub unsafe extern "C" fn tejx_pop_handler() {
     if let Ok(mut stack) = EXCEPTION_STACK.lock() {
         stack.pop();
+    }
+}
+
+extern "C" {
+    fn longjmp(env: *mut i8, val: i32);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_throw(exception: i64) {
+    CURRENT_EXCEPTION = exception;
+    let handler = if let Ok(mut stack) = EXCEPTION_STACK.lock() {
+        stack.pop()
+    } else {
+        None
+    };
+
+    if let Some(h) = handler {
+        GC_ROOTS_TOP = h.roots_top;
+        longjmp(h.jmpbuf as *mut i8, 1);
+    } else {
+        printf(
+            "Uncaught exception: %lld\n\0".as_ptr() as *const _,
+            exception,
+        );
+        exit(1);
     }
 }

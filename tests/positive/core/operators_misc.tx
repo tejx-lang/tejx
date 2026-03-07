@@ -8,16 +8,25 @@ function main() {
     // Typeof
     let i = 10;
     let s = "str";
-    let b = true;
+    let c = true;
     
     // Note: assertions depend on implementation return values
     // Using string matching if possible, else print
     print("typeof 10: ", typeof(i));
     print("typeof 'str': ", typeof(s));
-    print("typeof true: ", typeof(b));
+    print("typeof true: ", typeof(c));
     
     // Sizeof
     // console.log("sizeof int: " + sizeof(i));
+
+    // Bitwise (from bitwise.tx)
+    print("--- Bitwise ---");
+    let a = 5;  // 0101
+    let b = 3;  // 0011
+    print("5 & 3: ", a & b); // 1
+    print("5 | 3: ", a | b); // 7
+    print("5 ^ 3: ", a ^ b); // 6
+    print("5 << 1: ", a << 1); // 10
     
     print("=== OPERATORS MISC COMPLETE ===");
 }
