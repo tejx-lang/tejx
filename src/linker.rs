@@ -116,7 +116,7 @@ impl Linker {
 
         // Step 2: Link objects and libraries into final executable
         let mut cmd = Command::new(&compiler);
-        cmd.arg("-O3"); // Linker optimizations
+        cmd.arg("-O0"); // Linker optimizations (disabled for faster debug/test builds)
 
         for obj in &final_objects {
             cmd.arg(obj);
@@ -129,6 +129,13 @@ impl Linker {
             cmd.arg("-lm");
             cmd.arg("-lpthread");
             cmd.arg("-ldl");
+        } else if cfg!(target_os = "macos") {
+            cmd.arg("-framework");
+            cmd.arg("Security");
+            cmd.arg("-framework");
+            cmd.arg("CoreFoundation");
+            cmd.arg("-framework");
+            cmd.arg("SystemConfiguration");
         }
 
         for lib in &self.libs {

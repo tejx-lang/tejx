@@ -47,6 +47,7 @@ pub struct TypeChecker {
     remaining_stmts: Vec<Statement>,
     lambda_context_params: Option<Vec<String>>,
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<String>>,
+    current_expected_type: Option<String>,
 }
 
 impl TypeChecker {
@@ -178,6 +179,7 @@ impl TypeChecker {
             remaining_stmts: Vec::new(),
             lambda_context_params: None,
             lambda_inferred_types: HashMap::new(),
+            current_expected_type: None,
         };
         checker
     }
@@ -256,8 +258,10 @@ impl TypeChecker {
                     members.insert(
                         m._name.clone(),
                         MemberInfo {
-                            type_name: self
-                                .parameterize_generics(&m._type_name, &class_decl.generic_params),
+                            type_name: self.parameterize_generics(
+                                &m._type_name.to_string(),
+                                &class_decl.generic_params,
+                            ),
                             is_static: m._is_static,
                             access: if m._access == crate::ast::AccessModifier::Private {
                                 AccessLevel::Private
@@ -269,14 +273,14 @@ impl TypeChecker {
                     );
                 }
                 for method in &class_decl.methods {
-                    let ret_ty = if method.func.return_type.is_empty() {
+                    let ret_ty = if method.func.return_type.raw_name.is_empty() {
                         "any".to_string()
                     } else {
-                        method.func.return_type.clone()
+                        method.func.return_type.to_string()
                     };
                     let mut param_types = Vec::new();
                     for p in &method.func.params {
-                        param_types.push(p.type_name.clone());
+                        param_types.push(p.type_name.to_string());
                     }
                     let p_str = param_types.join(",");
                     let sig_str = if p_str.is_empty() {
@@ -290,8 +294,8 @@ impl TypeChecker {
                     } else {
                         format!("{}:{}", final_type, final_params.join(","))
                     };
-                    let parameterized_type =
-                        self.parameterize_generics(&full_sig, &class_decl.generic_params);
+                    let parameterized_type = self
+                        .parameterize_generics(&full_sig.to_string(), &class_decl.generic_params);
                     members.insert(
                         method.func.name.clone(),
                         MemberInfo {
@@ -311,7 +315,7 @@ impl TypeChecker {
                         getter._name.clone(),
                         MemberInfo {
                             type_name: self.parameterize_generics(
-                                &getter._return_type,
+                                &getter._return_type.to_string(),
                                 &class_decl.generic_params,
                             ),
                             is_static: false,
@@ -328,7 +332,7 @@ impl TypeChecker {
                             setter._name.clone(),
                             MemberInfo {
                                 type_name: self.parameterize_generics(
-                                    &setter._param_type,
+                                    &setter._param_type.to_string(),
                                     &class_decl.generic_params,
                                 ), // or void?
                                 is_static: false,
@@ -341,10 +345,10 @@ impl TypeChecker {
                 self.class_members.insert(class_decl.name.clone(), members);
             }
             Statement::FunctionDeclaration(func) => {
-                let ret_ty = if func.return_type.is_empty() {
+                let ret_ty = if func.return_type.raw_name.is_empty() {
                     "any".to_string()
                 } else {
-                    func.return_type.clone()
+                    func.return_type.to_string()
                 };
                 let mut is_variadic = false;
                 let min_required = func
@@ -359,7 +363,7 @@ impl TypeChecker {
                         if p._is_rest {
                             is_variadic = true;
                         }
-                        let (t, _, _) = self.parse_signature(p.type_name.clone());
+                        let (t, _, _) = self.parse_signature(p.type_name.to_string());
                         t
                     })
                     .collect::<Vec<String>>();
@@ -398,7 +402,7 @@ impl TypeChecker {
                             params: Vec::new(),
                             min_params: None,
                             is_variadic: false,
-                            aliased_type: Some(_type_def.clone()),
+                            aliased_type: Some(_type_def.to_string()),
                             is_moved: false,
                         },
                     );
@@ -435,7 +439,7 @@ impl TypeChecker {
                     // Extract method info
                     let mut param_types = Vec::new();
                     for p in &m._params {
-                        param_types.push(p.type_name.clone());
+                        param_types.push(p.type_name.to_string());
                     }
                     let p_str = param_types.join(",");
                     let type_str = format!("function:{}:{}", m._return_type, p_str);
@@ -1552,12 +1556,17 @@ impl TypeChecker {
                 line,
                 _col,
             } => {
-                if !self.is_valid_type(type_annotation) {
-                    self.report_error_detailed(format!("Unknown data type: '{}'", type_annotation), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
+                if !self.is_valid_type(&type_annotation.to_string()) {
+                    self.report_error_detailed(format!("Unknown data type: '{}'", type_annotation.to_string()), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                 }
                 if let Some(expr) = initializer {
+                    let prev_expected = self.current_expected_type.take();
+                    if !type_annotation.raw_name.is_empty() {
+                        self.current_expected_type = Some(type_annotation.to_string());
+                    }
                     let mut init_type = self.check_expression(expr)?;
-                    if type_annotation.is_empty() && init_type == "[]" {
+                    self.current_expected_type = prev_expected;
+                    if type_annotation.raw_name.is_empty() && init_type == "[]" {
                         self.report_error_detailed(
                             "Cannot infer type for empty array".to_string(),
                             *line,
@@ -1569,26 +1578,26 @@ impl TypeChecker {
                     }
 
                     if !type_annotation.is_empty() {
-                        self.check_numeric_bounds(expr, type_annotation, *line, *_col);
+                        self.check_numeric_bounds(expr, &type_annotation.to_string(), *line, *_col);
                     } else if init_type != "any" && init_type != "unknown" {
                         self.check_numeric_bounds(expr, &init_type, *line, *_col);
                     }
 
-                    if !type_annotation.is_empty()
-                        && !self.are_types_compatible(type_annotation, &init_type)
+                    if !type_annotation.raw_name.is_empty()
+                        && !self.are_types_compatible(&type_annotation.to_string(), &init_type)
                     {
                         if init_type == "[]" {
                             self.report_error_detailed(
                                 format!(
                                     "Type mismatch: expected '{}', got empty array",
-                                    type_annotation
+                                    type_annotation.to_string()
                                 ),
                                 *line,
                                 *_col,
                                 "E0100",
                                 Some(&format!(
                                     "Empty arrays must be explicitly typed or match the target type '{}'",
-                                    type_annotation
+                                    type_annotation.to_string()
                                 )),
                             );
                         } else {
@@ -1637,7 +1646,7 @@ impl TypeChecker {
                     let _target_type = if type_annotation.is_empty() {
                         init_type
                     } else {
-                        type_annotation.clone()
+                        type_annotation.to_string()
                     };
 
                     let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col);
@@ -1660,7 +1669,7 @@ impl TypeChecker {
                     } else {
                         let _ = self.define_pattern(
                             pattern,
-                            type_annotation.clone(),
+                            type_annotation.to_string(),
                             *is_const,
                             *line,
                             *_col,
@@ -1837,10 +1846,10 @@ impl TypeChecker {
                 Ok(())
             }
             Statement::FunctionDeclaration(func) => {
-                let mut ret_ty = if func.return_type.is_empty() {
+                let mut ret_ty = if func.return_type.raw_name.is_empty() {
                     "any".to_string()
                 } else {
-                    func.return_type.clone()
+                    func.return_type.to_string()
                 };
                 if func._is_async && !ret_ty.starts_with("Promise<") {
                     ret_ty = format!("Promise<{}>", ret_ty);
@@ -1858,7 +1867,7 @@ impl TypeChecker {
                         if p._is_rest {
                             is_variadic = true;
                         }
-                        p.type_name.clone()
+                        p.type_name.to_string()
                     })
                     .collect();
                 let has_defaults = min_required < params.len();
@@ -1891,7 +1900,7 @@ impl TypeChecker {
                 for param in &func.params {
                     self.define_with_params(
                         param.name.clone(),
-                        param.type_name.clone(),
+                        param.type_name.to_string(),
                         Vec::new(),
                     );
                 }
@@ -1955,20 +1964,20 @@ impl TypeChecker {
                         self.define(gp.clone(), "any".to_string());
                     }
                     for param in &method.func.params {
-                        if !self.is_valid_type(&param.type_name) {
-                            self.report_error_detailed(format!("Unknown data type: '{}'", param.type_name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
+                        if !self.is_valid_type(&param.type_name.to_string()) {
+                            self.report_error_detailed(format!("Unknown data type: '{}'", param.type_name.to_string()), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                         }
-                        self.define(param.name.clone(), param.type_name.clone());
+                        self.define(param.name.clone(), param.type_name.to_string());
                     }
                     let prev_return = self.current_function_return.take();
                     let prev_async = self.current_function_is_async;
-                    if !self.is_valid_type(&method.func.return_type) {
-                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", method.func.return_type, method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
+                    if !self.is_valid_type(&method.func.return_type.to_string()) {
+                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", method.func.return_type.to_string(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
                     }
-                    let ret_ty = if method.func.return_type.is_empty() {
+                    let ret_ty = if method.func.return_type.raw_name.is_empty() {
                         "any".to_string()
                     } else {
-                        method.func.return_type.clone()
+                        method.func.return_type.to_string()
                     };
                     self.current_function_return = Some(ret_ty);
                     self.current_function_is_async = method.func._is_async;
@@ -1983,7 +1992,7 @@ impl TypeChecker {
                 if let Some(constructor) = &class_decl._constructor {
                     self.enter_scope();
                     for param in &constructor.params {
-                        self.define(param.name.clone(), param.type_name.clone());
+                        self.define(param.name.clone(), param.type_name.to_string());
                     }
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some("void".to_string());
@@ -1995,7 +2004,7 @@ impl TypeChecker {
                 for getter in &class_decl._getters {
                     self.enter_scope();
                     let prev_return = self.current_function_return.take();
-                    self.current_function_return = Some(getter._return_type.clone());
+                    self.current_function_return = Some(getter._return_type.to_string());
                     self.check_statement(&getter._body)?;
                     self.current_function_return = prev_return;
                     self.exit_scope();
@@ -2003,7 +2012,7 @@ impl TypeChecker {
 
                 for setter in &class_decl._setters {
                     self.enter_scope();
-                    self.define(setter._param_name.clone(), setter._param_type.clone());
+                    self.define(setter._param_name.clone(), setter._param_type.to_string());
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some("void".to_string());
                     self.check_statement(&setter._body)?;
@@ -2139,7 +2148,7 @@ impl TypeChecker {
 
                 let mut existing_members = self
                     .class_members
-                    .get(name)
+                    .get(&name.to_string())
                     .cloned()
                     .unwrap_or(HashMap::new());
                 for method in methods {
@@ -2147,10 +2156,10 @@ impl TypeChecker {
                     // Build method type string
                     let mut param_types = Vec::new();
                     for p in &method.params {
-                        param_types.push(p.type_name.clone());
+                        param_types.push(p.type_name.to_string());
                     }
                     let p_str = param_types.join(",");
-                    let type_str = format!("function:{}:{}", method.return_type, p_str);
+                    let type_str = format!("function:{}:{}", method.return_type.to_string(), p_str);
 
                     existing_members.insert(
                         m_name.clone(),
@@ -2164,22 +2173,22 @@ impl TypeChecker {
 
                     // Check method body
                     let prev_class = self.current_class.clone();
-                    self.current_class = Some(name.clone());
+                    self.current_class = Some(name.to_string());
 
                     self.enter_scope();
-                    self.define("this".to_string(), name.clone());
+                    self.define("this".to_string(), name.to_string());
 
                     for param in &method.params {
-                        self.define(param.name.clone(), param.type_name.clone());
+                        self.define(param.name.clone(), param.type_name.to_string());
                     }
 
                     let prev_return = self.current_function_return.take();
                     let prev_async = self.current_function_is_async;
 
-                    let ret_ty = if method.return_type.is_empty() {
+                    let ret_ty = if method.return_type.raw_name.is_empty() {
                         "any".to_string()
                     } else {
-                        method.return_type.clone()
+                        method.return_type.to_string()
                     };
                     self.current_function_return = Some(ret_ty);
                     self.current_function_is_async = method._is_async;
@@ -2192,7 +2201,8 @@ impl TypeChecker {
                     self.exit_scope();
                     self.current_class = prev_class;
                 }
-                self.class_members.insert(name.clone(), existing_members);
+                self.class_members
+                    .insert(name.to_string(), existing_members);
                 Ok(())
             }
             // Statement::ProtocolDeclaration(_) => Ok(()), // Removed
@@ -2521,7 +2531,7 @@ impl TypeChecker {
                 }
 
                 for (i, p) in params.iter().enumerate() {
-                    let mut p_type = p.type_name.clone();
+                    let mut p_type = p.type_name.to_string();
                     if p_type.is_empty() || p_type == "any" {
                         if let Some(ctx_types) = &context_types {
                             if i < ctx_types.len() {
@@ -2571,7 +2581,7 @@ impl TypeChecker {
                 expr, target_type, ..
             } => {
                 let _expr_type = self.check_expression(expr)?;
-                Ok(target_type.clone())
+                Ok(target_type.to_string())
             }
             Expression::BinaryExpr {
                 left,
@@ -2897,7 +2907,10 @@ impl TypeChecker {
                     }
                 }
 
+                let prev_expected = self.current_expected_type.take();
+                self.current_expected_type = Some(target_type.clone());
                 let value_type = self.check_expression(value)?;
+                self.current_expected_type = prev_expected;
                 if target_type != "any" && value_type != "any" && target_type != "unknown" {
                     self.check_numeric_bounds(value, &target_type, *_line, *_col);
                     if !self.is_assignable(&target_type, &value_type) {
@@ -3062,7 +3075,10 @@ impl TypeChecker {
                         self.lambda_context_params = None;
                     }
 
+                    let prev_expected = self.current_expected_type.take();
+                    self.current_expected_type = Some(target_type.clone());
                     let arg_type = self.check_expression(arg)?;
+                    self.current_expected_type = prev_expected;
                     self.lambda_context_params = None;
 
                     if !target_type.is_empty()
@@ -3284,7 +3300,12 @@ impl TypeChecker {
                     *ty.borrow_mut() = Some(t.clone());
                     Ok(t)
                 } else {
-                    let t = "[]".to_string();
+                    let mut t = "[]".to_string();
+                    if let Some(expected) = &self.current_expected_type {
+                        if expected.ends_with("[]") || expected.starts_with("Array<") {
+                            t = expected.clone();
+                        }
+                    }
                     *ty.borrow_mut() = Some(t.clone());
                     Ok(t)
                 }

@@ -73,7 +73,7 @@ Spawns a new OS thread with a typed callback and argument.
 ```typescript
 function compute(n: int): void {
   let result = fibonacci(n);
-  console.log("Result: " + result);
+  print("Result: " + result);
 }
 
 let worker = new Thread<int>(compute, 40);

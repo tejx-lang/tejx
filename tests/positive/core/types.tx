@@ -45,7 +45,8 @@ function test_declarations() {
     // We check if it returns string containing "string" or "String". 
     // Since assert_eq_string requires exact match, let's rely on truthiness or verify specific implementation return value later.
     // For now logging it.
-    print("typeof 'hello': ", t_str);
+
+    assert_eq_string("string", typeof("hello"), "typeof string");
 
     // Block scoping
     let gVar = "Global";
@@ -98,7 +99,6 @@ function test_concurrency() {
     t1.join();
     t2.join();
 
-    print("Final thread count: ", state.count);
     assert_eq_int(2, state.count, "Thread mutex count");
 }
 

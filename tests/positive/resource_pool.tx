@@ -48,15 +48,17 @@ function main() {
     print("Acquiring 1...");
     let r1 = pool.acquire(); 
     // r1 is now owned by this scope.
-
+    assert_true(r1 != None, "Resource acquired");
     if (r1 != None) {
-        print("Using Resource:", r1.id);
+        assert_eq_int(r1.id, 1, "Resource id");
     }
 
     print("Acquiring 2...");
     let r2 = pool.acquire();
+        assert_true(r2 != None, "Resource acquired");
+
     if (r2 != None) {
-        print("Using Resource:", r2.id);
+        assert_eq_int(r2.id, 2, "Resource id");
     }
 
 
@@ -71,7 +73,10 @@ function main() {
     // Acquire again to verify they are back
     print("Acquiring Reused...");
     let r3 = pool.acquire();
-    print("Got Reused:", r3.id);
+    assert_true(r3 != None, "Resource acquired");
+    if (r3 != None) {
+        assert_eq_int(r3.id, 1, "Resource id");
+    }
 
     print("--- End Test ---");
 }

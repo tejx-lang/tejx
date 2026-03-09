@@ -35,6 +35,20 @@ pub struct CodeGen {
 }
 
 impl CodeGen {
+    fn get_aligned_offset(current: usize, ty: &TejxType) -> usize {
+        let size = ty.size();
+        let align = if size <= 1 {
+            1
+        } else if size <= 2 {
+            2
+        } else if size <= 4 {
+            4
+        } else {
+            8
+        };
+        (current + align - 1) & !(align - 1)
+    }
+
     fn get_llvm_type(ty: &TejxType) -> &str {
         match ty {
             // We use i64 for almost everything to maintain ABI consistency
@@ -47,7 +61,11 @@ impl CodeGen {
 
     fn is_gc_managed(ty: &TejxType) -> bool {
         match ty {
-            TejxType::Class(_) | TejxType::FixedArray(_, _) | TejxType::String => true,
+            TejxType::Class(_)
+            | TejxType::FixedArray(_, _)
+            | TejxType::DynamicArray(_)
+            | TejxType::Function(_, _)
+            | TejxType::String => true,
             _ => matches!(ty, TejxType::Class(c) if c == "any"),
         }
     }
@@ -450,7 +468,7 @@ impl CodeGen {
                     let ptr_key_id = format!("%ptr_key{}", self.temp_counter);
                     self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([4 x i8]* @str_key_ptr to i64))", ptr_key_id));
                     self.emit_line(&format!(
-                        "call i64 @rt_Map_set(i64 {}, i64 {}, i64 {})",
+                        "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
                         closure_id, ptr_key_id, fn_ptr
                     ));
 
@@ -476,7 +494,7 @@ impl CodeGen {
                     let env_key_id = format!("%env_key{}", self.temp_counter);
                     self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([4 x i8]* @str_key_env to i64))", env_key_id));
                     self.emit_line(&format!(
-                        "call i64 @rt_Map_set(i64 {}, i64 {}, i64 {})",
+                        "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
                         closure_id, env_key_id, env_to_pass
                     ));
 
@@ -512,14 +530,10 @@ impl CodeGen {
                     return "0".to_string();
                 }
 
-                if let TejxType::Class(name) = ty {
-                    if name == "any" && value == "0" {
-                        return "0".to_string();
-                    }
-                }
-                if matches!(ty, TejxType::Void) && value == "0" {
+                if value == "null" || (value == "0" && Self::is_gc_managed(ty)) {
                     return "0".to_string();
                 }
+
                 if matches!(ty, TejxType::Void) && value == "0" {
                     return "0".to_string();
                 }
@@ -638,6 +652,12 @@ impl CodeGen {
                     return val_reg;
                 }
 
+                // Check for function pointer using type info
+                if let TejxType::Function(params, _) = ty {
+                    let args_sig = vec!["i64"; params.len()].join(", ");
+                    return format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, name);
+                }
+
                 // Check for function parameter (if not mapped to alloca yet? - should be in value_map)
                 // Fallback for globals
                 if self.declared_functions.contains(name) || name == TEJX_MAIN {
@@ -726,6 +746,99 @@ impl CodeGen {
             .cloned()
             .unwrap_or_else(|| format!("%{}_ptr", name))
     }
+
+    fn emit_store_variable(&mut self, name: &str, val: &str, ty: &TejxType) {
+        if let Some(cap_key) = self.get_captured_key(name) {
+            if let Some(env) = self.current_env.clone() {
+                if !self.declared_functions.contains("rt_Map_set") {
+                    self.global_buffer
+                        .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
+                    self.declared_functions.insert("rt_Map_set".to_string());
+                }
+                if !self.declared_functions.contains("rt_box_string") {
+                    self.global_buffer
+                        .push_str("declare i64 @rt_box_string(i64)\n");
+                    self.declared_functions.insert("rt_box_string".to_string());
+                }
+
+                // Get/Create key string - use base captured name
+                let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
+                if !self.declared_globals.contains(&key_global) {
+                    self.global_buffer.push_str(&format!(
+                        "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
+                        key_global,
+                        cap_key.len() + 1,
+                        cap_key
+                    ));
+                    self.declared_globals.insert(key_global.clone());
+                }
+
+                self.temp_counter += 1;
+                let key_id = format!("%key_id{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))",
+                    key_id,
+                    cap_key.len() + 1,
+                    key_global
+                ));
+
+                let val_to_store = if ty.is_float() {
+                    if !self.declared_functions.contains("rt_box_number") {
+                        self.global_buffer
+                            .push_str("declare i64 @rt_box_number(double)\n");
+                        self.declared_functions.insert("rt_box_number".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let float_tmp = format!("%float_val{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", float_tmp, val));
+                    self.temp_counter += 1;
+                    let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_box_number(double {})",
+                        boxed_tmp, float_tmp
+                    ));
+                    boxed_tmp
+                } else if ty.is_numeric() && !ty.is_float() {
+                    if !self.declared_functions.contains("rt_box_int") {
+                        self.global_buffer
+                            .push_str("declare i64 @rt_box_int(i64) nounwind\n");
+                        self.declared_functions.insert("rt_box_int".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_box_int(i64 {})",
+                        boxed_tmp, val
+                    ));
+                    boxed_tmp
+                } else if *ty == TejxType::Bool {
+                    if !self.declared_functions.contains("rt_box_boolean") {
+                        self.global_buffer
+                            .push_str("declare i64 @rt_box_boolean(i64) nounwind\n");
+                        self.declared_functions.insert("rt_box_boolean".to_string());
+                    }
+                    self.temp_counter += 1;
+                    let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_box_boolean(i64 {})",
+                        boxed_tmp, val
+                    ));
+                    boxed_tmp
+                } else {
+                    val.to_string()
+                };
+
+                self.emit_line(&format!(
+                    "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
+                    env, key_id, val_to_store
+                ));
+            }
+        } else {
+            // Only store to local ptr if it's NOT a captured variable
+            let ptr = self.resolve_ptr(name);
+            self.store_ptr(&ptr, val);
+        }
+    }
 }
 
 /// Second pass: fix Jump and Branch instructions to use block names
@@ -740,6 +853,15 @@ impl CodeGen {
         self.global_buffer.clear();
         self.declared_functions.clear();
         self.declared_globals.clear();
+
+        // Module headers
+        self.global_buffer.push_str("; ModuleID = 'tejx_module'\n");
+        self.global_buffer
+            .push_str("source_filename = \"tejx_module\"\n");
+        self.global_buffer
+            .push_str("target datalayout = \"e-m:o-i64:64-i128:128-n32:64-S128-Fn32\"\n");
+        self.global_buffer
+            .push_str("target triple = \"arm64-apple-macosx15.0.0\"\n");
 
         // Register defined functions and their param counts
         let mut has_tejx_main = false;
@@ -834,10 +956,10 @@ impl CodeGen {
             type_id += 1;
             self.type_id_map.insert(class_name.clone(), id);
 
-            let size: usize = fields.iter().map(|(_, ty)| ty.size()).sum();
             let mut ptr_offsets = Vec::new();
             let mut current_offset = 0;
             for (_name, ty) in fields {
+                current_offset = Self::get_aligned_offset(current_offset, ty);
                 if matches!(
                     ty,
                     TejxType::Class(_) | TejxType::String | TejxType::Ref(_) | TejxType::Weak(_)
@@ -846,6 +968,7 @@ impl CodeGen {
                 }
                 current_offset += ty.size();
             }
+            let size = (current_offset + 7) & !7;
 
             // Create global array for offsets
             let offset_arr_name = format!("@type_{}_offsets", id);
@@ -912,7 +1035,28 @@ impl CodeGen {
                 .insert("rt_register_type".to_string());
         }
 
-        for func in functions {
+        // Filter functions to remove duplicates, prioritizing non-empty tejx_main
+        let mut unique_functions = Vec::new();
+        let mut seen = HashSet::new();
+        let mut tejx_main_to_keep = None;
+
+        for (i, func) in functions.iter().enumerate() {
+            if func.name == "tejx_main" {
+                if tejx_main_to_keep.is_none() || func.blocks[0].instructions.len() > 1 {
+                    tejx_main_to_keep = Some(i);
+                }
+                continue;
+            }
+            if !seen.contains(&func.name) {
+                seen.insert(func.name.clone());
+                unique_functions.push(func);
+            }
+        }
+        if let Some(idx) = tejx_main_to_keep {
+            unique_functions.push(&functions[idx]);
+        }
+
+        for func in unique_functions {
             self.gen_function_v2(func);
         }
 
@@ -966,6 +1110,7 @@ impl CodeGen {
         self.local_vars.clear();
         self.current_env = None;
         self.current_arena = None;
+        self.num_roots = 0;
 
         for p in &func.params {
             self.current_function_params.insert(p.clone());
@@ -1015,11 +1160,17 @@ impl CodeGen {
 
         // Entry: allocas for all variables used in the function
         self.emit("entry:\n");
-        if func.name == "tejx_main" {
-            // rt_init_types is called by the runtime entry point
+        let entry_marker = self.buffer.len();
+
+        if !self.declared_functions.contains("rt_safepoint_poll") {
+            self.global_buffer
+                .push_str("declare void @rt_safepoint_poll() nounwind\n");
+            self.declared_functions
+                .insert("rt_safepoint_poll".to_string());
         }
 
-        if self.needs_arena(func) {
+        // 1. Scan for all local variables
+        for bb in &func.blocks {
             if !self.declared_functions.contains(RT_ARENA_CREATE) {
                 self.global_buffer
                     .push_str(&format!("declare i64 @{}(i64) nounwind\n", RT_ARENA_CREATE));
@@ -1041,7 +1192,7 @@ impl CodeGen {
             self.current_arena = Some(arena_reg);
         }
 
-        // Scan for all local variables
+        // 1. Scan for all local variables
         for bb in &func.blocks {
             for inst in &bb.instructions {
                 let dest_var = match inst {
@@ -1062,13 +1213,70 @@ impl CodeGen {
             }
         }
 
+        // 2. Deterministic IR: Collect and sort ALL variables that need an alloca (params + locals)
+        let mut sorted_alloca_vars: Vec<String> = Vec::new();
+        for p in &func.params {
+            if !self.is_captured(p) {
+                sorted_alloca_vars.push(p.clone());
+            }
+        }
+        for name in &self.local_vars {
+            if !self.is_captured(name) {
+                sorted_alloca_vars.push(name.clone());
+            }
+        }
+        sorted_alloca_vars.sort();
+        sorted_alloca_vars.dedup();
+
+        // 3. Emit allocas deterministically
+        for name in &sorted_alloca_vars {
+            let reg_name = format!("%{}_ptr", name.replace('$', "_"));
+            let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
+            let llvm_ty = Self::get_llvm_type(ty);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca {}\n", reg_name, llvm_ty));
+            self.ptr_types.insert(reg_name.clone(), llvm_ty.to_string());
+            self.value_map.insert(name.clone(), reg_name.clone());
+        }
+
         // Create environment if needed
         let has_captures = self.local_vars.iter().any(|v| self.is_captured(v))
             || func.params.iter().any(|p| self.is_captured(p));
 
         if func.name.starts_with("lambda_") {
             if !func.params.is_empty() {
-                self.current_env = Some(format!("%{}", func.params[0]));
+                // Create a NEW environment map for this lambda call
+                // and COPY all keys from the passed environment (%__env)
+                if !self.declared_functions.contains("rt_map_new") {
+                    self.global_buffer
+                        .push_str("declare i64 @rt_map_new(i64) nounwind\n");
+                    self.declared_functions.insert("rt_map_new".to_string());
+                }
+                if !self.declared_functions.contains("rt_Map_merge") {
+                    self.global_buffer
+                        .push_str("declare void @rt_Map_merge(i64, i64) nounwind\n");
+                    self.declared_functions.insert("rt_Map_merge".to_string());
+                }
+
+                self.temp_counter += 1;
+                let env_alloca = format!("%env_alloca_{}", self.temp_counter);
+                self.alloca_buffer
+                    .push_str(&format!("  {} = alloca i64\n", env_alloca));
+
+                let new_env = format!("%new_env_{}", self.temp_counter);
+                let passed_env = format!("%{}", func.params[0]);
+
+                self.emit_line(&format!("{} = call i64 @rt_map_new(i64 0)", new_env));
+                self.emit_line(&format!("store i64 {}, i64* {}", new_env, env_alloca));
+                self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
+                self.num_roots += 1;
+
+                self.emit_line(&format!(
+                    "call void @rt_Map_merge(i64 {}, i64 {})",
+                    new_env, passed_env
+                ));
+
+                self.current_env = Some(new_env);
             }
         } else if has_captures {
             if !self.declared_functions.contains("rt_map_new") {
@@ -1077,60 +1285,51 @@ impl CodeGen {
                 self.declared_functions.insert("rt_map_new".to_string());
             }
 
+            self.temp_counter += 1;
+            let env_alloca = format!("%env_alloca_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", env_alloca));
+
             let env_reg = format!("%env_id{}", self.temp_counter);
             self.emit_line(&format!("{} = call i64 @rt_map_new(i64 0)", env_reg));
+            self.emit_line(&format!("store i64 {}, i64* {}", env_reg, env_alloca));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
+            self.num_roots += 1;
             self.current_env = Some(env_reg);
         }
 
-        // Allocas for parameters first
+        // 4. Store parameters into their allocas
         for p in &func.params {
-            if self.is_captured(p) {
-                continue;
-            } // Skip alloca for captured params
-            if !self.value_map.contains_key(p) {
-                let reg_name = format!("%{}_ptr", p);
-                let ty = func.variables.get(p).unwrap_or(&TejxType::Void);
-                let llvm_ty = Self::get_llvm_type(ty);
-                self.emit_line(&format!("{} = alloca {}", reg_name, llvm_ty));
-                self.ptr_types.insert(reg_name.clone(), llvm_ty.to_string());
-                self.value_map.insert(p.clone(), reg_name.clone());
-
-                // CRITICAL: Store the incoming argument into the alloca
+            if let Some(reg_name) = self.value_map.get(p).cloned() {
                 self.store_ptr(&reg_name, &format!("%{}", p));
             }
         }
 
-        // Allocas for all local variables
-        let locals: Vec<String> = self.local_vars.iter().cloned().collect();
-        for name in &locals {
-            if self.is_captured(name) {
-                continue;
-            } // Skip alloca for captured locals
-            if !self.value_map.contains_key(name) {
-                let reg_name = format!("%{}_ptr", name);
-                let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
-                let llvm_ty = Self::get_llvm_type(ty);
-                self.emit_line(&format!("{} = alloca {}", reg_name, llvm_ty));
-                self.ptr_types.insert(reg_name.clone(), llvm_ty.to_string());
-                self.value_map.insert(name.clone(), reg_name);
-            }
-        }
+        // 5. GC Root Registration: Emit managed variables deterministically
+        let mut sorted_managed_vars: Vec<String> = sorted_alloca_vars
+            .iter()
+            .filter(|name| {
+                let ty = func.variables.get(*name).unwrap_or_else(|| {
+                    panic!(
+                        "Variable '{}' not found in variables map of function '{}'",
+                        name, func.name
+                    );
+                });
+                Self::is_gc_managed(ty)
+            })
+            .cloned()
+            .collect();
+        sorted_managed_vars.sort();
 
-        // --- GC Root Registration ---
-        self.num_roots = 0;
-        let vars_to_track: Vec<String> = func.variables.keys().cloned().collect();
-        for name in vars_to_track {
-            let ty = func.variables.get(&name).unwrap();
-            if Self::is_gc_managed(ty) && !self.is_captured(&name) {
-                if let Some(ptr_name) = self.value_map.get(&name).cloned() {
-                    if !self.declared_functions.contains("rt_push_root") {
-                        self.global_buffer
-                            .push_str("declare void @rt_push_root(i64*) nounwind\n");
-                        self.declared_functions.insert("rt_push_root".to_string());
-                    }
-                    self.emit_line(&format!("call void @rt_push_root(i64* {})", ptr_name));
-                    self.num_roots += 1;
+        for name in sorted_managed_vars {
+            if let Some(ptr_name) = self.value_map.get(&name).cloned() {
+                if !self.declared_functions.contains("rt_push_root") {
+                    self.global_buffer
+                        .push_str("declare void @rt_push_root(i64*) nounwind\n");
+                    self.declared_functions.insert("rt_push_root".to_string());
                 }
+                self.emit_line(&format!("call void @rt_push_root(i64* {})", ptr_name));
+                self.num_roots += 1;
             }
         }
 
@@ -1140,7 +1339,7 @@ impl CodeGen {
                 if let Some(env) = self.current_env.clone() {
                     if !self.declared_functions.contains("rt_Map_set") {
                         self.global_buffer
-                            .push_str("declare i64 @rt_Map_set(i64, i64, i64) nounwind\n");
+                            .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
                         self.declared_functions.insert("rt_Map_set".to_string());
                     }
                     if !self.declared_functions.contains("rt_box_string") {
@@ -1171,25 +1370,23 @@ impl CodeGen {
                     ));
 
                     self.emit_line(&format!(
-                        "call i64 @rt_Map_set(i64 {}, i64 {}, i64 %{})",
+                        "call void @rt_Map_set(i64 {}, i64 {}, i64 %{})",
                         env, key_id, p
                     ));
                 }
             }
         }
 
-        // We record the position to inject alloca instructions later
-        let entry_marker = self.buffer.len();
-
         // Branch to first block
         if !func.blocks.is_empty() {
+            self.emit_line("call void @rt_safepoint_poll()");
             self.emit_line(&format!("br label %{}", func.blocks[0].name));
         } else {
             self.emit_line("ret i64 0");
         }
 
         // Generate blocks with block name resolution
-        for (_i, bb) in func.blocks.iter().enumerate() {
+        for (i, bb) in func.blocks.iter().enumerate() {
             self.emit(&format!("{}:\n", bb.name));
 
             let mut has_handler = false;
@@ -1200,7 +1397,8 @@ impl CodeGen {
                     // Allocate jmp_buf on THIS function's stack frame
                     self.temp_counter += 1;
                     let jmpbuf = format!("%jmpbuf{}", self.temp_counter);
-                    self.emit_line(&format!("{} = alloca [37 x i64]", jmpbuf));
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca [37 x i64]\n", jmpbuf));
                     self.temp_counter += 1;
                     let jmpbuf_ptr = format!("%jmpbuf_ptr{}", self.temp_counter);
                     self.emit_line(&format!(
@@ -1236,7 +1434,7 @@ impl CodeGen {
             }
 
             for inst in &bb.instructions {
-                self.gen_instruction_v2(inst, func, &bb.name);
+                self.gen_instruction_v2(inst, func, &bb.name, i);
             }
 
             if has_handler {
@@ -1256,110 +1454,18 @@ impl CodeGen {
         }
     }
 
-    fn gen_instruction_v2(&mut self, inst: &MIRInstruction, func: &MIRFunction, _bb_name: &str) {
+    fn gen_instruction_v2(
+        &mut self,
+        inst: &MIRInstruction,
+        func: &MIRFunction,
+        _bb_name: &str,
+        current_bb: usize,
+    ) {
         match inst {
             MIRInstruction::Move { dst, src, .. } => {
                 let val = self.resolve_value(src);
-
-                if let Some(cap_key) = self.get_captured_key(dst) {
-                    if let Some(env) = self.current_env.clone() {
-                        if !self.declared_functions.contains("rt_Map_set") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_Map_set(i64, i64, i64) nounwind\n");
-                            self.declared_functions.insert("rt_Map_set".to_string());
-                        }
-                        if !self.declared_functions.contains("rt_box_string") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_string(i64)\n");
-                            self.declared_functions.insert("rt_box_string".to_string());
-                        }
-
-                        // Get/Create key string - use base captured name
-                        let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
-                        if !self.declared_globals.contains(&key_global) {
-                            self.global_buffer.push_str(&format!(
-                                "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
-                                key_global,
-                                cap_key.len() + 1,
-                                cap_key
-                            ));
-                            self.declared_globals.insert(key_global.clone());
-                        }
-
-                        self.temp_counter += 1;
-                        let key_id = format!("%key_id{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))",
-                            key_id,
-                            cap_key.len() + 1,
-                            key_global
-                        ));
-
-                        let src_ty = match src {
-                            MIRValue::Variable { ty, .. } => ty,
-                            MIRValue::Constant { ty, .. } => ty,
-                        };
-
-                        let val_to_store = if src_ty.is_float() {
-                            if !self.declared_functions.contains("rt_box_number") {
-                                self.global_buffer
-                                    .push_str("declare i64 @rt_box_number(double)\n");
-                                self.declared_functions.insert("rt_box_number".to_string());
-                            }
-                            self.temp_counter += 1;
-                            let float_tmp = format!("%float_val{}", self.temp_counter);
-                            self.emit_line(&format!(
-                                "{} = bitcast i64 {} to double",
-                                float_tmp, val
-                            ));
-                            self.temp_counter += 1;
-                            let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
-                            self.emit_line(&format!(
-                                "{} = call i64 @rt_box_number(double {})",
-                                boxed_tmp, float_tmp
-                            ));
-                            boxed_tmp
-                        } else if src_ty.is_numeric() && !src_ty.is_float() {
-                            if !self.declared_functions.contains("rt_box_int") {
-                                self.global_buffer
-                                    .push_str("declare i64 @rt_box_int(i64) nounwind\n");
-                                self.declared_functions.insert("rt_box_int".to_string());
-                            }
-                            self.temp_counter += 1;
-                            let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
-                            self.emit_line(&format!(
-                                "{} = call i64 @rt_box_int(i64 {})",
-                                boxed_tmp, val
-                            ));
-                            boxed_tmp
-                        } else if *src_ty == TejxType::Bool {
-                            if !self.declared_functions.contains("rt_box_boolean") {
-                                self.global_buffer
-                                    .push_str("declare i64 @rt_box_boolean(i64) nounwind\n");
-                                self.declared_functions.insert("rt_box_boolean".to_string());
-                            }
-                            self.temp_counter += 1;
-                            let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
-                            self.emit_line(&format!(
-                                "{} = call i64 @rt_box_boolean(i64 {})",
-                                boxed_tmp, val
-                            ));
-                            boxed_tmp
-                        } else {
-                            val
-                        };
-
-                        self.emit_line(&format!(
-                            "call i64 @rt_Map_set(i64 {}, i64 {}, i64 {})",
-                            env, key_id, val_to_store
-                        ));
-                        return;
-                    }
-                }
-
-                // Store new value (reassignment drops are handled statically by BorrowChecker)
-                let ptr = self.resolve_ptr(dst);
-                self.store_ptr(&ptr, &val);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                self.emit_store_variable(dst, &val, dst_ty);
 
                 // Propagate array data pointer tracking across variable copies
                 if let MIRValue::Variable { name: src_name, .. } = src {
@@ -1517,7 +1623,7 @@ impl CodeGen {
                         let boxed = format!("%boxed_r{}", self.temp_counter);
                         self.emit_line(&format!("{} = call i64 @rt_box_string(i64 {})", boxed, r));
                         boxed
-                    } else if false {
+                    } else if matches!(r_ty, TejxType::Int32 | TejxType::Int64) {
                         if !self.declared_functions.contains("rt_box_int") {
                             self.global_buffer
                                 .push_str("declare i64 @rt_box_int(i64)\n");
@@ -1611,7 +1717,7 @@ impl CodeGen {
                             if llvm_op == "sdiv" || llvm_op == "srem" {
                                 if !self.declared_functions.contains("rt_div_zero_error") {
                                     self.global_buffer
-                                        .push_str("declare void @rt_div_zero_error()\n");
+                                        .push_str("declare void @rt_div_zero_error() nounwind\n");
                                     self.declared_functions
                                         .insert("rt_div_zero_error".to_string());
                                 }
@@ -1731,8 +1837,8 @@ impl CodeGen {
                             }
                         }
                     }
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &tmp);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    self.emit_store_variable(dst, &tmp, dst_ty);
                 } else {
                     // Integer / DefaultFallback
                     let (is_cmp, llvm_op, pred) = match op {
@@ -1769,8 +1875,8 @@ impl CodeGen {
                             self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, res_i));
                         }
                     }
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &tmp);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    self.emit_store_variable(dst, &tmp, dst_ty);
                 }
             }
 
@@ -1781,6 +1887,11 @@ impl CodeGen {
                     .any(|b| b.name == _bb_name && b.exception_handler.is_some());
                 if has_handler {
                     self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
+                }
+
+                // Safepoint poll for backward jumps (loops)
+                if *target <= current_bb {
+                    self.emit_line("call void @rt_safepoint_poll()");
                 }
 
                 if *target < func.blocks.len() {
@@ -1831,6 +1942,11 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let cmp = format!("%cmp{}", self.temp_counter);
                 self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, cond));
+
+                // Safepoint poll for backward branches (loops)
+                if *true_target <= current_bb || *false_target <= current_bb {
+                    self.emit_line("call void @rt_safepoint_poll()");
+                }
 
                 let true_name = if *true_target < func.blocks.len() {
                     func.blocks[*true_target].name.clone()
@@ -1896,8 +2012,8 @@ impl CodeGen {
                     ));
                     if !dst.is_empty() {
                         self.float_ssa_vars.insert(dst.clone(), float_val);
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &result_tmp);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &result_tmp, dst_ty);
                     }
                     return;
                 }
@@ -1913,8 +2029,8 @@ impl CodeGen {
                             "{} = bitcast double {} to i64",
                             bits_tmp, float_val
                         ));
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &bits_tmp);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &bits_tmp, dst_ty);
                     }
                     return;
                 }
@@ -1929,7 +2045,14 @@ impl CodeGen {
                     let body_size = self
                         .class_fields
                         .get(&class_name)
-                        .map(|fields| fields.iter().map(|(_, ty)| ty.size()).sum::<usize>())
+                        .map(|fields| {
+                            let mut offset = 0;
+                            for (_, ty) in fields {
+                                offset = Self::get_aligned_offset(offset, ty);
+                                offset += ty.size();
+                            }
+                            (offset + 7) & !7
+                        })
                         .unwrap_or(0);
 
                     let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
@@ -2589,22 +2712,70 @@ impl CodeGen {
                         "i64"
                     };
 
+                    let use_quotes = !(final_callee.starts_with("rt_")
+                        || final_callee.starts_with("tejx_")
+                        || final_callee.starts_with("std_")
+                        || final_callee == "printf"
+                        || final_callee == "malloc"
+                        || final_callee == "free");
+
+                    let callee_symbol = if use_quotes
+                        || final_callee.starts_with("f_")
+                        || final_callee.starts_with("m_")
+                    {
+                        format!("@\"{}\"", final_callee)
+                    } else {
+                        format!("@{}", final_callee)
+                    };
+
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
                     if !self.declared_functions.contains(&final_callee) {
                         let pure_attrs = "";
+                        let mut decl_ret = ret_ty;
+
+                        // Fix: rt_promise_resolve/reject and others are void in runtime
+                        if final_callee == "rt_promise_resolve"
+                            || final_callee == "rt_promise_reject"
+                            || final_callee == "rt_promise_await_resume"
+                            || final_callee == "rt_Map_set"
+                            || final_callee == "rt_Map_merge"
+                        {
+                            decl_ret = "void";
+                        }
+
                         self.global_buffer.push_str(&format!(
-                            "declare {} @\"{}\"({}){}\n",
-                            ret_ty, final_callee, decl_args_str, pure_attrs
+                            "declare {} {}({}){}\n",
+                            decl_ret, callee_symbol, decl_args_str, pure_attrs
                         ));
                         self.declared_functions.insert(final_callee.clone());
                     }
-                    self.emit_line(&format!(
-                        "{} = call {} @\"{}\"({})",
-                        result_tmp, ret_ty, final_callee, args_str
-                    ));
+
+                    if final_callee == "rt_promise_resolve"
+                        || final_callee == "rt_promise_reject"
+                        || final_callee == "rt_promise_await_resume"
+                        || final_callee == "rt_Map_set"
+                        || final_callee == "rt_Map_merge"
+                    {
+                        self.emit_line(&format!("call void {}({})", callee_symbol, args_str));
+                    } else {
+                        self.emit_line(&format!(
+                            "{} = call {} {}({})",
+                            result_tmp, ret_ty, callee_symbol, args_str
+                        ));
+                    }
 
                     let mut final_result = result_tmp.clone();
+                    // If it was a void call, we still might have a 'dst' that expects a value.
+                    // Store 0 as a dummy if needed, though well-formed MIR shouldn't do this.
+                    if final_callee == "rt_promise_resolve"
+                        || final_callee == "rt_promise_reject"
+                        || final_callee == "rt_promise_await_resume"
+                        || final_callee == "rt_Map_set"
+                        || final_callee == "rt_Map_merge"
+                    {
+                        final_result = "0".to_string();
+                    }
                     if callee_returns_double {
                         self.temp_counter += 1;
                         let i_res = format!("%i_res_{}", self.temp_counter);
@@ -2810,6 +2981,10 @@ impl CodeGen {
                 for _ in 0..args.len() {
                     arg_types.push("i64");
                 }
+                // Pad to at least 5 total arguments (env + 4)
+                while arg_types.len() < 5 {
+                    arg_types.push("i64");
+                }
                 let ptr_args = arg_types.join(", ");
                 self.emit_line(&format!(
                     "{} = inttoptr i64 {} to i64 ({})*",
@@ -2825,6 +3000,10 @@ impl CodeGen {
                     }
                     arg_vals.push(format!("i64 {}", val));
                 }
+                // Pad with zeros to reach minimum 5 arguments
+                while arg_vals.len() < 5 {
+                    arg_vals.push("i64 0".to_string());
+                }
                 let args_str = arg_vals.join(", ");
 
                 self.temp_counter += 1;
@@ -2835,8 +3014,8 @@ impl CodeGen {
                 ));
 
                 if !dst.is_empty() {
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &result_tmp);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    self.emit_store_variable(dst, &result_tmp, dst_ty);
                 }
             }
             MIRInstruction::LoadMember {
@@ -2864,9 +3043,13 @@ impl CodeGen {
                         };
                         let field_info = self.class_fields.get(lookup_name).and_then(|fields| {
                             fields.iter().position(|(f, _)| f == member).map(|pos| {
-                                let offset: usize =
-                                    fields[..pos].iter().map(|(_, ty)| ty.size()).sum::<usize>();
+                                let mut offset = 0;
+                                for (_, ty) in &fields[..pos] {
+                                    offset = Self::get_aligned_offset(offset, ty);
+                                    offset += ty.size();
+                                }
                                 let field_ty = fields[pos].1.clone();
+                                offset = Self::get_aligned_offset(offset, &field_ty);
                                 (offset, field_ty)
                             })
                         });
@@ -2916,15 +3099,8 @@ impl CodeGen {
                                 ));
                             } else {
                                 self.emit_line(&format!(
-                                    "{} = {} {} {} to i64",
-                                    res_tmp,
-                                    if field_ty.is_float() {
-                                        "bitcast"
-                                    } else {
-                                        "zext"
-                                    },
-                                    llvm_ty,
-                                    loaded_val
+                                    "{} = zext {} {} to i64",
+                                    res_tmp, llvm_ty, loaded_val
                                 ));
                             }
 
@@ -3022,8 +3198,8 @@ impl CodeGen {
                     res_tmp
                 };
 
-                let ptr = self.resolve_ptr(dst);
-                self.store_ptr(&ptr, &final_res);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                self.emit_store_variable(dst, &final_res, dst_ty);
             }
             MIRInstruction::StoreMember {
                 obj, member, src, ..
@@ -3051,9 +3227,13 @@ impl CodeGen {
                     };
                     let field_info = self.class_fields.get(lookup_name).and_then(|fields| {
                         fields.iter().position(|(f, _)| f == member).map(|pos| {
+                            let mut offset = 0;
+                            for (_, ty) in &fields[..pos] {
+                                offset = Self::get_aligned_offset(offset, ty);
+                                offset += ty.size();
+                            }
                             let field_ty = fields[pos].1.clone();
-                            let offset: usize =
-                                fields[..pos].iter().map(|(_, ty)| ty.size()).sum::<usize>();
+                            offset = Self::get_aligned_offset(offset, &field_ty);
 
                             (field_ty, offset)
                         })
@@ -3098,15 +3278,8 @@ impl CodeGen {
                             ));
                         } else {
                             self.emit_line(&format!(
-                                "{} = {} i64 {} to {}",
-                                truncated_val,
-                                if field_ty.is_float() {
-                                    "bitcast"
-                                } else {
-                                    "trunc"
-                                },
-                                v_val,
-                                llvm_ty
+                                "{} = trunc i64 {} to {}",
+                                truncated_val, v_val, llvm_ty
                             ));
                         }
                         self.emit_line(&format!(
@@ -3121,8 +3294,9 @@ impl CodeGen {
                 if !used_fast_store && obj.get_type().is_array() {
                     if let Ok(idx) = member.parse::<i64>() {
                         if !self.declared_functions.contains("rt_array_set_fast") {
-                            self.global_buffer
-                                .push_str("declare void @rt_array_set_fast(i64, i64, i64)\n");
+                            self.global_buffer.push_str(
+                                "declare void @rt_array_set_fast(i64, i64, i64) nounwind\n",
+                            );
                             self.declared_functions
                                 .insert("rt_array_set_fast".to_string());
                         }
@@ -3182,7 +3356,7 @@ impl CodeGen {
                 if !used_fast_store {
                     if !self.declared_functions.contains("rt_Map_set") {
                         self.global_buffer
-                            .push_str("declare void @rt_Map_set(i64, i64, i64)\n");
+                            .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
                         self.declared_functions.insert("rt_Map_set".to_string());
                     }
                     self.emit_line(&format!(
@@ -3199,715 +3373,18 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let res_tmp = format!("%val{}", self.temp_counter);
 
-                // --- STACK ARRAY DIRECT ACCESS (bypasses all cache checks) ---
-                let obj_name = match obj {
-                    MIRValue::Variable { name, .. } => Some(name.as_str()),
-                    _ => None,
-                };
-                let is_stack_array = obj_name
-                    .map(|n| self.stack_arrays.contains(n))
-                    .unwrap_or(false);
-
-                if is_stack_array {
-                    let elem_type = obj.get_type().get_array_element_type();
-                    let (llvm_ty, is_float) = {
-                        let ty_str = match elem_type {
-                            TejxType::Bool => "i8",
-                            TejxType::Int16 | TejxType::Float16 => "i16",
-                            TejxType::Int32 | TejxType::Float32 => "i32",
-                            _ => "i64",
-                        };
-                        (ty_str, elem_type.is_float())
-                    };
-
-                    let label_id = self.temp_counter;
-                    self.temp_counter += 1;
-                    let sa_fast = format!("sa_fast_{}", label_id);
-                    let sa_slow = format!("sa_slow_{}", label_id);
-                    let sa_done = format!("sa_done_{}", label_id);
-
-                    // Load length from stack header offset 1 (8 bytes)
-                    self.temp_counter += 1;
-                    let base_ptr = format!("%sa_base_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = inttoptr i64 {} to i64*", base_ptr, obj_val));
-                    self.temp_counter += 1;
-                    let len_ptr = format!("%sa_len_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds i64, i64* {}, i64 1",
-                        len_ptr, base_ptr
-                    ));
-                    self.temp_counter += 1;
-                    let len_val = format!("%sa_len_{}", self.temp_counter);
-                    self.load_ptr(&len_ptr, &len_val);
-
-                    if self.unsafe_arrays {
-                        // Unsafe mode: no bounds check, jump directly to fast path
-                        self.emit_line(&format!("br label %{}", sa_fast));
-                    } else {
-                        // Bounds check: idx < length
-                        self.temp_counter += 1;
-                        let in_bounds = format!("%sa_inb_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = icmp ult i64 {}, {}",
-                            in_bounds, idx_val, len_val
-                        ));
-                        self.emit_line(&format!(
-                            "br i1 {}, label %{}, label %{}",
-                            in_bounds, sa_fast, sa_slow
-                        ));
-                    }
-
-                    // Fast path: direct GEP access
-                    self.emit_line(&format!("{}:", sa_fast));
-                    self.temp_counter += 1;
-                    let base_i8 = format!("%sa_base8_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = bitcast i64* {} to i8*", base_i8, base_ptr));
-                    // Load the actual data pointer from offset 3 (24 bytes)
-                    self.temp_counter += 1;
-                    let data_ptr_ptr = format!("%sa_data_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds i8, i8* {}, i64 24",
-                        data_ptr_ptr, base_i8
-                    ));
-                    self.temp_counter += 1;
-                    let data_ptr_raw = format!("%sa_data_raw_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to i8**",
-                        data_ptr_raw, data_ptr_ptr
-                    ));
-                    self.temp_counter += 1;
-                    let data_ptr = format!("%sa_data_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** {}", data_ptr, data_ptr_raw));
-
-                    let typed_ptr = format!("%sa_typed_{}", self.temp_counter);
-                    self.temp_counter += 1;
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        typed_ptr, data_ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let elem_ptr = format!("%sa_elem_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        elem_ptr, llvm_ty, llvm_ty, typed_ptr, idx_val
-                    ));
-
-                    self.temp_counter += 1;
-                    let loaded_val_fast = format!("%sa_loaded_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = load {}, {}* {}",
-                        loaded_val_fast, llvm_ty, llvm_ty, elem_ptr
-                    ));
-
-                    self.temp_counter += 1;
-                    let casted_fast = format!("%sa_cast_{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!(
-                            "{} = bitcast i64 {} to i64",
-                            casted_fast, loaded_val_fast
-                        ));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = {} {} {} to i64",
-                            casted_fast,
-                            if is_float { "bitcast" } else { "zext" },
-                            llvm_ty,
-                            loaded_val_fast
-                        ));
-                    }
-
-                    // Fast path result — branch to done
-                    self.emit_line(&format!("br label %{}", sa_done));
-
-                    // Slow path: call rt_array_get_fast (handles OOB error)
-                    self.emit_line(&format!("{}:", sa_slow));
-                    if !self.unsafe_arrays {
-                        if !self.declared_functions.contains("rt_array_get_fast") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_array_get_fast(i64, i64) nounwind\n");
-                            self.declared_functions
-                                .insert("rt_array_get_fast".to_string());
-                        }
-                        self.temp_counter += 1;
-                        let slow_res = format!("%sa_slow_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
-                            slow_res, obj_val, idx_val
-                        ));
-                        self.emit_line(&format!("br label %{}", sa_done));
-
-                        // Done: phi merge
-                        self.emit_line(&format!("{}:", sa_done));
-                        self.temp_counter += 1;
-                        let final_res = format!("%sa_final_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = phi i64 [ {}, %{} ], [ {}, %{} ]",
-                            final_res, res_tmp, sa_fast, slow_res, sa_slow
-                        ));
-                        // Store final result
-                        let _dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &final_res);
-                    } else {
-                        // If unsafe, slow path shouldn't be reached, so just unreachable
-                        self.emit_line("unreachable");
-                        self.emit_line(&format!("{}:", sa_done));
-                        let _dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &res_tmp);
-                    }
-
-                    return;
+                if !self.declared_functions.contains("rt_array_get_fast") {
+                    self.global_buffer
+                        .push_str("declare i64 @rt_array_get_fast(i64, i64) nounwind\n");
+                    self.declared_functions
+                        .insert("rt_array_get_fast".to_string());
                 }
-
-                // --- HEAP ARRAY DIRECT ACCESS (cached data pointer from rt_array_get_data_ptr) ---
-                let heap_info = obj_name.and_then(|n| self.heap_array_ptrs.get(n).cloned());
-                if let Some((data_ptr_alloca, _)) = heap_info {
-                    // Load data pointer from alloca
-                    self.temp_counter += 1;
-                    let dp_raw = format!("%ha_dp_{}", self.temp_counter);
-                    self.load_ptr(&data_ptr_alloca, &dp_raw);
-                    self.temp_counter += 1;
-                    let dp_ptr = format!("%ha_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = inttoptr i64 {} to i8*", dp_ptr, dp_raw));
-
-                    let elem_type = obj.get_type().get_array_element_type();
-                    let (llvm_ty, is_float) = {
-                        let ty_str = match elem_type {
-                            TejxType::Bool => "i8",
-                            TejxType::Int16 | TejxType::Float16 => "i16",
-                            TejxType::Int32 | TejxType::Float32 => "i32",
-                            _ => "i64",
-                        };
-                        (ty_str, elem_type.is_float())
-                    };
-
-                    self.temp_counter += 1;
-                    let typed_ptr = format!("%ha_typed_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        typed_ptr, dp_ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let elem_ptr = format!("%ha_elem_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        elem_ptr, llvm_ty, llvm_ty, typed_ptr, idx_val
-                    ));
-
-                    self.temp_counter += 1;
-                    let loaded_val = format!("%ha_loaded_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = load {}, {}* {}",
-                        loaded_val, llvm_ty, llvm_ty, elem_ptr
-                    ));
-
-                    self.temp_counter += 1;
-                    let casted = format!("%ha_cast_{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!("{} = bitcast i64 {} to i64", casted, loaded_val));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = {} {} {} to i64",
-                            casted,
-                            if is_float { "bitcast" } else { "zext" },
-                            llvm_ty,
-                            loaded_val
-                        ));
-                    }
-
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &casted);
-                    return;
-                }
-
-                let known_byte_array = if let TejxType::Class(name) = obj.get_type() {
-                    name == "ByteArray"
-                } else {
-                    false
-                };
-
-                if known_byte_array {
-                    // ===== SPECIALIZED BYTE ARRAY FAST PATH =====
-                    // Unconditional direct byte GEP via cached @LAST_PTR.
-                    // Safe because fill() populates the cache before any loop access.
-                    if !self.declared_functions.contains("LAST_ID") {
-                        self.global_buffer
-                            .push_str("@LAST_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@LAST_LEN = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_ELEM_SIZE = external global i64\n");
-                        self.declared_functions.insert("LAST_ID".to_string());
-                    }
-
-                    let label_id = self.temp_counter;
-                    self.temp_counter += 1;
-
-                    let idx_norm = idx_val.clone();
-
-                    // --- Cache check ---
-                    self.temp_counter += 1;
-                    let last_id = format!("%ba_last_id{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @LAST_ID", last_id));
-                    self.temp_counter += 1;
-                    let id_match = format!("%ba_id_match{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        id_match, last_id, obj_val
-                    ));
-
-                    let fast_path = format!("ba_get_fast{}", label_id);
-                    let slow_path = format!("ba_get_slow{}", label_id);
-                    let done_path = format!("ba_get_done{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        id_match, fast_path, slow_path
-                    ));
-
-                    // --- Fast path: direct byte GEP ---
-                    self.emit_line(&format!("{}:", fast_path));
-                    self.temp_counter += 1;
-                    let ptr = format!("%ba_ptr{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @LAST_PTR", ptr));
-                    self.temp_counter += 1;
-                    let gep = format!("%ba_gep{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds i8, i8* {}, i64 {}",
-                        gep, ptr, idx_norm
-                    ));
-                    self.temp_counter += 1;
-                    let byte_val = format!("%ba_byte{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8, i8* {}", byte_val, gep));
-                    self.temp_counter += 1;
-                    let fast_res = format!("%ba_fast_res{}", self.temp_counter);
-                    self.emit_line(&format!("{} = zext i8 {} to i64", fast_res, byte_val));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- Slow path: runtime call (populates cache) ---
-                    self.emit_line(&format!("{}:", slow_path));
-                    if !self.declared_functions.contains("rt_array_get_fast") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_array_get_fast(i64, i64) nounwind\n");
-                        self.declared_functions
-                            .insert("rt_array_get_fast".to_string());
-                    }
-                    self.temp_counter += 1;
-                    let slow_res = format!("%ba_slow_res{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
-                        slow_res, obj_val, idx_val
-                    ));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- Merge ---
-                    self.emit_line(&format!("{}:", done_path));
-                    self.emit_line(&format!(
-                        "{} = phi i64 [ {}, %{} ], [ {}, %{} ]",
-                        res_tmp, fast_res, fast_path, slow_res, slow_path
-                    ));
-
-                    // --- Store based on destination type ---
-                    let ptr = self.resolve_ptr(dst);
-                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-
-                    if false {
-                        if !self.declared_functions.contains("rt_box_boolean") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_boolean(i64)\n");
-                            self.declared_functions.insert("rt_box_boolean".to_string());
-                        }
-                        self.temp_counter += 1;
-                        let boxed = format!("%ba_boxed{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_box_boolean(i64 {})",
-                            boxed, res_tmp
-                        ));
-                        self.store_ptr(&ptr, &boxed);
-                    } else if dst_ty.is_float() {
-                        self.temp_counter += 1;
-                        let f_val = format!("%ba_f{}", self.temp_counter);
-                        self.emit_line(&format!("{} = sitofp i64 {} to double", f_val, res_tmp));
-                        self.temp_counter += 1;
-                        let f_bc = format!("%ba_fbc{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast double {} to i64", f_bc, f_val));
-                        self.store_ptr(&ptr, &f_bc);
-                    } else {
-                        self.store_ptr(&ptr, &res_tmp);
-                    }
-                } else if obj.get_type().is_array() {
-                    // --- GENERIC ARRAY OPTIMIZATION: INLINED CACHE CHECK ---
-                    if !self.declared_functions.contains("LAST_ID") {
-                        self.global_buffer
-                            .push_str("@LAST_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@LAST_LEN = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_ELEM_SIZE = external global i64\n");
-                        self.declared_functions.insert("LAST_ID".to_string());
-                    }
-                    if !self.declared_functions.contains("PREV_ID") {
-                        self.global_buffer
-                            .push_str("@PREV_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@PREV_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@PREV_LEN = external global i64\n");
-                        self.declared_functions.insert("PREV_ID".to_string());
-                    }
-                    if !self.declared_functions.contains("PREV2_ID") {
-                        self.global_buffer
-                            .push_str("@PREV2_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@PREV2_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@PREV2_LEN = external global i64\n");
-                        self.declared_functions.insert("PREV2_ID".to_string());
-                    }
-                    if !self.declared_functions.contains("rt_array_get_fast") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_array_get_fast(i64, i64) nounwind\n");
-                        self.declared_functions
-                            .insert("rt_array_get_fast".to_string());
-                    }
-
-                    let label_id = self.temp_counter;
-                    self.temp_counter += 1;
-
-                    self.temp_counter += 1;
-                    let last_id = format!("%last_id{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @LAST_ID", last_id));
-
-                    self.temp_counter += 1;
-                    let id_match = format!("%id_match{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        id_match, last_id, obj_val
-                    ));
-
-                    let fast_path = format!("array_get_fast{}", label_id);
-                    let prev_check = format!("array_get_prev{}", label_id);
-                    let slow_path = format!("array_get_slow{}", label_id);
-                    let done_path = format!("array_get_done{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        id_match, fast_path, prev_check
-                    ));
-
-                    self.emit_line(&format!("{}:", fast_path));
-                    self.temp_counter += 1;
-                    let last_len = format!("%last_len{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @LAST_LEN", last_len));
-                    self.temp_counter += 1;
-                    let in_bounds = format!("%in_bounds{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ult i64 {}, {}",
-                        in_bounds, idx_val, last_len
-                    ));
-
-                    let fast_access = format!("array_get_access{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        in_bounds, fast_access, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", fast_access));
-                    self.temp_counter += 1;
-                    let ptr = format!("%ptr{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @LAST_PTR", ptr));
-
-                    let elem_type = obj.get_type().get_array_element_type();
-                    let elem_size_const = elem_type.size();
-
-                    let (llvm_ty, is_float) = match elem_size_const {
-                        1 => ("i8", false),
-                        2 => ("i16", false),
-                        4 if elem_type.is_float() => ("float", true),
-                        4 => ("i32", false),
-                        8 if elem_type.is_float() => ("double", true),
-                        _ => ("i64", false),
-                    };
-
-                    let get_fast = format!("array_get_fast_path{}", label_id);
-                    self.emit_line(&format!("br label %{}", get_fast));
-
-                    self.emit_line(&format!("{}:", get_fast));
-                    self.temp_counter += 1;
-                    let last_typed = format!("%last_typed{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        last_typed, ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let last_gep = format!("%last_gep{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        last_gep, llvm_ty, llvm_ty, last_typed, idx_val
-                    ));
-                    self.temp_counter += 1;
-                    let last_loaded = format!("%last_loaded{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = load {}, {}* {}",
-                        last_loaded, llvm_ty, llvm_ty, last_gep
-                    ));
-
-                    self.temp_counter += 1;
-                    let last_res_raw = format!("%last_res_raw{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!(
-                            "{} = bitcast i64 {} to i64",
-                            last_res_raw, last_loaded
-                        ));
-                    } else if is_float {
-                        self.emit_line(&format!(
-                            "{} = bitcast {} {} to i64",
-                            last_res_raw, llvm_ty, last_loaded
-                        ));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = zext {} {} to i64",
-                            last_res_raw, llvm_ty, last_loaded
-                        ));
-                    }
-
-                    let _res64_raw = last_res_raw.clone();
-                    let _res64 = last_res_raw.clone(); // For compatibility with existing phi
-                    let _res8 = last_res_raw.clone(); // For compatibility with existing phi
-                    let _res8_boxed = last_res_raw.clone(); // For compatibility
-                    let _res8_bc = last_res_raw.clone();
-
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- PREV cache check (inline second slot) ---
-                    self.emit_line(&format!("{}:", prev_check));
-                    self.temp_counter += 1;
-                    let prev_id = format!("%prev_id{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV_ID", prev_id));
-                    self.temp_counter += 1;
-                    let prev_match = format!("%prev_match{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        prev_match, prev_id, obj_val
-                    ));
-                    let prev_fast = format!("array_get_prev_fast{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev_match, prev_fast, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", prev_fast));
-                    self.temp_counter += 1;
-                    let prev_len = format!("%prev_len{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV_LEN", prev_len));
-                    self.temp_counter += 1;
-                    let prev_bounds = format!("%prev_bounds{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ult i64 {}, {}",
-                        prev_bounds, idx_val, prev_len
-                    ));
-                    let prev_access = format!("array_get_prev_access{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev_bounds, prev_access, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", prev_access));
-                    self.temp_counter += 1;
-                    let prev_ptr = format!("%prev_ptr{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @PREV_PTR", prev_ptr));
-                    let prev_typed = format!("%prev_typed{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        prev_typed, prev_ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let prev_gep = format!("%prev_gep{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        prev_gep, llvm_ty, llvm_ty, prev_typed, idx_val
-                    ));
-                    self.temp_counter += 1;
-                    let prev_loaded = format!("%prev_loaded{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = load {}, {}* {}",
-                        prev_loaded, llvm_ty, llvm_ty, prev_gep
-                    ));
-                    self.temp_counter += 1;
-                    let prev_res_raw = format!("%prev_res_raw{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!(
-                            "{} = bitcast i64 {} to i64",
-                            prev_res_raw, prev_loaded
-                        ));
-                    } else if is_float {
-                        self.emit_line(&format!(
-                            "{} = bitcast {} {} to i64",
-                            prev_res_raw, llvm_ty, prev_loaded
-                        ));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = zext {} {} to i64",
-                            prev_res_raw, llvm_ty, prev_loaded
-                        ));
-                    }
-
-                    let _prev_raw = prev_res_raw.clone();
-                    let _prev_val = prev_res_raw.clone();
-                    let _prev_f_bc = prev_res_raw.clone();
-
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- PREV2 cache check ---
-                    let prev2_check = format!("array_get_prev2{}", label_id);
-                    self.emit_line(&format!("{}:", prev2_check));
-                    self.temp_counter += 1;
-                    let prev2_id = format!("%prev2_id{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV2_ID", prev2_id));
-
-                    self.temp_counter += 1;
-                    let prev2_match = format!("%prev2_match{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        prev2_match, prev2_id, obj_val
-                    ));
-
-                    let prev2_fast = format!("array_get_prev2_fast{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev2_match, prev2_fast, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", prev2_fast));
-                    self.temp_counter += 1;
-                    let prev2_len = format!("%prev2_len{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV2_LEN", prev2_len));
-
-                    self.temp_counter += 1;
-                    let prev2_in_bounds = format!("%prev2_bounds{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ult i64 {}, {}",
-                        prev2_in_bounds, idx_val, prev2_len
-                    ));
-
-                    let prev2_access = format!("array_get_prev2_access{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev2_in_bounds, prev2_access, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", prev2_access));
-                    self.temp_counter += 1;
-                    let prev2_ptr = format!("%prev2_ptr{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @PREV2_PTR", prev2_ptr));
-
-                    let prev2_typed = format!("%prev2_typed{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        prev2_typed, prev2_ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let prev2_gep = format!("%prev2_gep{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        prev2_gep, llvm_ty, llvm_ty, prev2_typed, idx_val
-                    ));
-                    self.temp_counter += 1;
-                    let prev2_loaded = format!("%prev2_loaded{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = load {}, {}* {}",
-                        prev2_loaded, llvm_ty, llvm_ty, prev2_gep
-                    ));
-                    self.temp_counter += 1;
-                    let prev2_res_raw = format!("%prev2_res_raw{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!(
-                            "{} = bitcast i64 {} to i64",
-                            prev2_res_raw, prev2_loaded
-                        ));
-                    } else if is_float {
-                        self.emit_line(&format!(
-                            "{} = bitcast {} {} to i64",
-                            prev2_res_raw, llvm_ty, prev2_loaded
-                        ));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = zext {} {} to i64",
-                            prev2_res_raw, llvm_ty, prev2_loaded
-                        ));
-                    }
-
-                    let _prev2_raw = prev2_res_raw.clone();
-                    let _prev2_val = prev2_res_raw.clone();
-                    let _prev2_f_bc = prev2_res_raw.clone();
-                    let _prev2_byte = prev2_res_raw.clone();
-
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    self.emit_line(&format!("{}:", slow_path));
-                    self.temp_counter += 1;
-                    let slow_res_raw = format!("%slow_res_raw{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
-                        slow_res_raw, obj_val, idx_val
-                    ));
-
-                    let _slow_raw = slow_res_raw.clone();
-                    let _slow_res = slow_res_raw.clone();
-                    let _slow_f_bc = slow_res_raw.clone();
-
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    self.emit_line(&format!("{}:", done_path));
-                    self.temp_counter += 1;
-                    let final_res = format!("%final_res{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = phi i64 [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
-                        final_res,
-                        last_res_raw,
-                        fast_access,
-                        prev_res_raw,
-                        prev_access,
-                        prev2_res_raw,
-                        prev2_access,
-                        slow_res_raw,
-                        slow_path
-                    ));
-
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &final_res);
-                } else {
-                    // Fallback for Any or non-array types
-                    let idx_ty = index.get_type();
-                    if idx_ty.is_numeric() && !idx_ty.is_float() {
-                        if !self.declared_functions.contains("rt_array_get_fast") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_array_get_fast(i64, i64) nounwind\n");
-                            self.declared_functions
-                                .insert("rt_array_get_fast".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
-                            res_tmp, obj_val, idx_val
-                        ));
-                    } else {
-                        if !self.declared_functions.contains("rt_map_get_fast") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_map_get_fast(i64, i64)\n");
-                            self.declared_functions
-                                .insert("rt_map_get_fast".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_map_get_fast(i64 {}, i64 {})",
-                            res_tmp, obj_val, idx_val
-                        ));
-                    }
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &res_tmp);
-                }
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
+                    res_tmp, obj_val, idx_val
+                ));
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                self.emit_store_variable(dst, &res_tmp, dst_ty);
             }
             MIRInstruction::StoreIndex {
                 obj, index, src, ..
@@ -3916,680 +3393,16 @@ impl CodeGen {
                 let idx_val = self.resolve_value(index);
                 let v_val = self.resolve_value(src);
 
-                // --- STACK ARRAY DIRECT STORE (bypasses all cache checks) ---
-                let obj_name = match obj {
-                    MIRValue::Variable { name, .. } => Some(name.as_str()),
-                    _ => None,
-                };
-                let is_stack_array = obj_name
-                    .map(|n| self.stack_arrays.contains(n))
-                    .unwrap_or(false);
-
-                if is_stack_array {
-                    let elem_type = obj.get_type().get_array_element_type();
-                    let (llvm_ty, is_float) = {
-                        let ty_str = match elem_type {
-                            TejxType::Bool => "i8",
-                            TejxType::Int16 | TejxType::Float16 => "i16",
-                            TejxType::Int32 | TejxType::Float32 => "i32",
-                            _ => "i64",
-                        };
-                        (ty_str, elem_type.is_float())
-                    };
-
-                    let label_id = self.temp_counter;
-                    self.temp_counter += 1;
-                    let ss_fast = format!("ss_fast_{}", label_id);
-                    let ss_slow = format!("ss_slow_{}", label_id);
-                    let ss_done = format!("ss_done_{}", label_id);
-
-                    // Load length from stack header offset 1 (8 bytes)
-                    self.temp_counter += 1;
-                    let base_ptr = format!("%ss_base_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = inttoptr i64 {} to i64*", base_ptr, obj_val));
-                    self.temp_counter += 1;
-                    let len_ptr = format!("%ss_len_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds i64, i64* {}, i64 1",
-                        len_ptr, base_ptr
-                    ));
-                    self.temp_counter += 1;
-                    let len_val = format!("%ss_len_{}", self.temp_counter);
-                    self.load_ptr(&len_ptr, &len_val);
-
-                    if self.unsafe_arrays {
-                        self.emit_line(&format!("br label %{}", ss_fast));
-                    } else {
-                        self.temp_counter += 1;
-                        let in_bounds = format!("%ss_inb_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = icmp ult i64 {}, {}",
-                            in_bounds, idx_val, len_val
-                        ));
-                        self.emit_line(&format!(
-                            "br i1 {}, label %{}, label %{}",
-                            in_bounds, ss_fast, ss_slow
-                        ));
-                    }
-
-                    self.emit_line(&format!("{}:", ss_fast));
-                    self.temp_counter += 1;
-                    let base_i8 = format!("%ss_base8_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = bitcast i64* {} to i8*", base_i8, base_ptr));
-                    // Load the actual data pointer from offset 3 (24 bytes)
-                    self.temp_counter += 1;
-                    let data_ptr_ptr = format!("%ss_data_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds i8, i8* {}, i64 24",
-                        data_ptr_ptr, base_i8
-                    ));
-                    self.temp_counter += 1;
-                    let data_ptr_raw = format!("%ss_data_raw_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to i8**",
-                        data_ptr_raw, data_ptr_ptr
-                    ));
-                    self.temp_counter += 1;
-                    let data_ptr = format!("%ss_data_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** {}", data_ptr, data_ptr_raw));
-
-                    let typed_ptr = format!("%ss_typed_{}", self.temp_counter);
-                    self.temp_counter += 1;
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        typed_ptr, data_ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let elem_ptr = format!("%ss_elem_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        elem_ptr, llvm_ty, llvm_ty, typed_ptr, idx_val
-                    ));
-
-                    self.temp_counter += 1;
-                    let truncated_val = format!("%ss_trunc_{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!(
-                            "{} = bitcast i64 {} to i64",
-                            truncated_val, v_val
-                        ));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = {} i64 {} to {}",
-                            truncated_val,
-                            if is_float { "bitcast" } else { "trunc" },
-                            v_val,
-                            llvm_ty
-                        ));
-                    }
-                    self.emit_line(&format!(
-                        "store {} {}, {}* {}",
-                        llvm_ty, truncated_val, llvm_ty, elem_ptr
-                    ));
-                    self.emit_line(&format!("br label %{}", ss_done));
-
-                    // Slow path: call rt_array_set_fast (handles OOB error)
-                    self.emit_line(&format!("{}:", ss_slow));
-                    if !self.unsafe_arrays {
-                        if !self.declared_functions.contains("rt_array_set_fast") {
-                            self.global_buffer.push_str(
-                                "declare i64 @rt_array_set_fast(i64, i64, i64) nounwind\n",
-                            );
-                            self.declared_functions
-                                .insert("rt_array_set_fast".to_string());
-                        }
-                        if !self.declared_functions.contains("rt_write_barrier") {
-                            self.global_buffer
-                                .push_str("declare void @rt_write_barrier(i64, i64)\n");
-                            self.declared_functions
-                                .insert("rt_write_barrier".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "call void @rt_write_barrier(i64 {}, i64 {})",
-                            obj_val, v_val
-                        ));
-
-                        self.emit_line(&format!(
-                            "call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
-                            obj_val, idx_val, v_val
-                        ));
-                        self.emit_line(&format!("br label %{}", ss_done));
-
-                        // Done
-                        self.emit_line(&format!("{}:", ss_done));
-                    } else {
-                        // If unsafe, slow path shouldn't be reached
-                        self.emit_line("unreachable");
-                        self.emit_line(&format!("{}:", ss_done));
-                    }
-
-                    return;
+                if !self.declared_functions.contains("rt_array_set_fast") {
+                    self.global_buffer
+                        .push_str("declare void @rt_array_set_fast(i64, i64, i64) nounwind\n");
+                    self.declared_functions
+                        .insert("rt_array_set_fast".to_string());
                 }
-
-                // --- HEAP ARRAY DIRECT STORE (cached data pointer) ---
-                let heap_info = obj_name.and_then(|n| self.heap_array_ptrs.get(n).cloned());
-                if let Some((data_ptr_alloca, elem_size)) = heap_info {
-                    self.temp_counter += 1;
-                    let dp_raw = format!("%hs_dp_{}", self.temp_counter);
-                    self.load_ptr(&data_ptr_alloca, &dp_raw);
-                    self.temp_counter += 1;
-                    let dp_ptr = format!("%hs_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = inttoptr i64 {} to i8*", dp_ptr, dp_raw));
-
-                    if elem_size == 1 {
-                        self.temp_counter += 1;
-                        let elem_ptr = format!("%hs_elem_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = getelementptr inbounds i8, i8* {}, i64 {}",
-                            elem_ptr, dp_ptr, idx_val
-                        ));
-                        self.temp_counter += 1;
-                        let v_byte = format!("%hs_byte_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = trunc i64 {} to i8", v_byte, v_val));
-                        self.emit_line(&format!("store i8 {}, i8* {}", v_byte, elem_ptr));
-                    } else if elem_size == 2 {
-                        self.temp_counter += 1;
-                        let typed_ptr = format!("%hs_typed_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast i8* {} to i16*", typed_ptr, dp_ptr));
-                        self.temp_counter += 1;
-                        let elem_ptr = format!("%hs_elem_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = getelementptr inbounds i16, i16* {}, i64 {}",
-                            elem_ptr, typed_ptr, idx_val
-                        ));
-                        self.temp_counter += 1;
-                        let v_short = format!("%hs_short_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = trunc i64 {} to i16", v_short, v_val));
-                        self.emit_line(&format!("store i16 {}, i16* {}", v_short, elem_ptr));
-                    } else if elem_size == 4 {
-                        self.temp_counter += 1;
-                        let typed_ptr = format!("%hs_typed_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast i8* {} to i32*", typed_ptr, dp_ptr));
-                        self.temp_counter += 1;
-                        let elem_ptr = format!("%hs_elem_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = getelementptr inbounds i32, i32* {}, i64 {}",
-                            elem_ptr, typed_ptr, idx_val
-                        ));
-                        self.temp_counter += 1;
-                        let v_int = format!("%hs_int_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = trunc i64 {} to i32", v_int, v_val));
-                        self.emit_line(&format!("store i32 {}, i32* {}", v_int, elem_ptr));
-                    } else {
-                        self.temp_counter += 1;
-                        let typed_ptr = format!("%hs_typed_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast i8* {} to i64*", typed_ptr, dp_ptr));
-                        self.temp_counter += 1;
-                        let elem_ptr = format!("%hs_elem_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = getelementptr inbounds i64, i64* {}, i64 {}",
-                            elem_ptr, typed_ptr, idx_val
-                        ));
-                        self.store_ptr(&elem_ptr, &v_val);
-                    }
-                    return;
-                }
-
-                let known_byte_array = if let TejxType::Class(name) = obj.get_type() {
-                    name == "ByteArray"
-                } else {
-                    false
-                };
-
-                if known_byte_array {
-                    // ===== SPECIALIZED BYTE ARRAY STORE =====
-                    if !self.declared_functions.contains("LAST_ID") {
-                        self.global_buffer
-                            .push_str("@LAST_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@LAST_LEN = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_ELEM_SIZE = external global i64\n");
-                        self.declared_functions.insert("LAST_ID".to_string());
-                    }
-                    if !self.declared_functions.contains("rt_array_set_fast") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_array_set_fast(i64, i64, i64) nounwind\n");
-                        self.declared_functions
-                            .insert("rt_array_set_fast".to_string());
-                    }
-
-                    let label_id = self.temp_counter;
-                    self.temp_counter += 1;
-
-                    let idx_norm = idx_val.clone();
-
-                    // --- Cache check ---
-                    self.temp_counter += 1;
-                    let last_id = format!("%ba_s_last_id{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @LAST_ID", last_id));
-                    self.temp_counter += 1;
-                    let id_match = format!("%ba_s_id_match{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        id_match, last_id, obj_val
-                    ));
-
-                    let fast_path = format!("ba_set_fast{}", label_id);
-                    let slow_path = format!("ba_set_slow{}", label_id);
-                    let done_path = format!("ba_set_done{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        id_match, fast_path, slow_path
-                    ));
-
-                    // --- Fast path: direct byte store ---
-                    self.emit_line(&format!("{}:", fast_path));
-                    self.temp_counter += 1;
-                    let ptr = format!("%ba_s_ptr{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @LAST_PTR", ptr));
-                    self.temp_counter += 1;
-                    let gep = format!("%ba_s_gep{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds i8, i8* {}, i64 {}",
-                        gep, ptr, idx_norm
-                    ));
-
-                    // Value conversion to i8
-                    let src_ty = src.get_type();
-                    self.temp_counter += 1;
-                    let v_byte = format!("%ba_s_byte{}", self.temp_counter);
-                    if matches!(src_ty, TejxType::Bool)
-                        || (src_ty.is_numeric() && !src_ty.is_float())
-                    {
-                        if !self.declared_functions.contains("rt_i64_to_i8") {
-                            self.global_buffer
-                                .push_str("declare i8 @rt_i64_to_i8(i64)\n");
-                            self.declared_functions.insert("rt_i64_to_i8".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i8 @rt_i64_to_i8(i64 {})",
-                            v_byte, v_val
-                        ));
-                    } else if src_ty.is_float() || false {
-                        self.temp_counter += 1;
-                        let v_f = format!("%ba_s_vf{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast i64 {} to double", v_f, v_val));
-                        if !self.declared_functions.contains("rt_f64_to_i8") {
-                            self.global_buffer
-                                .push_str("declare i8 @rt_f64_to_i8(double)\n");
-                            self.declared_functions.insert("rt_f64_to_i8".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i8 @rt_f64_to_i8(double {})",
-                            v_byte, v_f
-                        ));
-                    } else {
-                        if !self.declared_functions.contains("rt_i64_to_i8") {
-                            self.global_buffer
-                                .push_str("declare i8 @rt_i64_to_i8(i64)\n");
-                            self.declared_functions.insert("rt_i64_to_i8".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i8 @rt_i64_to_i8(i64 {})",
-                            v_byte, v_val
-                        ));
-                    }
-
-                    self.emit_line(&format!("store i8 {}, i8* {}", v_byte, gep));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- Slow path ---
-                    self.emit_line(&format!("{}:", slow_path));
-                    if !self.declared_functions.contains("rt_array_set_fast") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_array_set_fast(i64, i64, i64) nounwind\n");
-                        self.declared_functions
-                            .insert("rt_array_set_fast".to_string());
-                    }
-                    self.temp_counter += 1;
-                    let unused_res = format!("%ba_s_slow_res{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
-                        unused_res, obj_val, idx_val, v_val
-                    ));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    self.emit_line(&format!("{}:", done_path));
-                } else if obj.get_type().is_array() {
-                    // --- GENERIC ARRAY OPTIMIZATION: INLINED CACHE CHECK ---
-                    if !self.declared_functions.contains("LAST_ID") {
-                        self.global_buffer
-                            .push_str("@LAST_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@LAST_LEN = external global i64\n");
-                        self.global_buffer
-                            .push_str("@LAST_ELEM_SIZE = external global i64\n");
-                        self.declared_functions.insert("LAST_ID".to_string());
-                    }
-                    if !self.declared_functions.contains("rt_array_set_fast") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_array_set_fast(i64, i64, i64) nounwind\n");
-                        self.declared_functions
-                            .insert("rt_array_set_fast".to_string());
-                    }
-                    if !self.declared_functions.contains("PREV_ID") {
-                        self.global_buffer
-                            .push_str("@PREV_ID = external global i64\n");
-                        self.global_buffer
-                            .push_str("@PREV_PTR = external global i8*\n");
-                        self.global_buffer
-                            .push_str("@PREV_LEN = external global i64\n");
-                        self.declared_functions.insert("PREV_ID".to_string());
-                    }
-
-                    let label_id = self.temp_counter;
-                    self.temp_counter += 1;
-                    let done_path = format!("array_set_done{}", label_id);
-
-                    let elem_type_set = obj.get_type().get_array_element_type();
-                    let elem_size_const = elem_type_set.size();
-
-                    let llvm_ty = match elem_size_const {
-                        1 => "i8",
-                        2 => "i16",
-                        4 if elem_type_set.is_float() => "float",
-                        4 => "i32",
-                        8 if elem_type_set.is_float() => "double",
-                        _ => "i64",
-                    };
-
-                    self.temp_counter += 1;
-                    let v_to_store = format!("%v_to_store{}", self.temp_counter);
-                    if llvm_ty == "i64" {
-                        self.emit_line(&format!("{} = bitcast i64 {} to i64", v_to_store, v_val));
-                    } else if elem_type_set.is_float() {
-                        self.emit_line(&format!(
-                            "{} = bitcast i64 {} to {}",
-                            v_to_store, v_val, llvm_ty
-                        ));
-                    } else {
-                        self.emit_line(&format!(
-                            "{} = trunc i64 {} to {}",
-                            v_to_store, v_val, llvm_ty
-                        ));
-                    }
-
-                    let idx_norm = idx_val.clone();
-
-                    self.temp_counter += 1;
-                    let last_id = format!("%last_id{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @LAST_ID", last_id));
-
-                    self.temp_counter += 1;
-                    let id_match = format!("%id_match{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        id_match, last_id, obj_val
-                    ));
-
-                    let slow_path = format!("array_set_slow{}", label_id);
-                    let check_len = format!("array_set_check_len{}", label_id);
-                    let prev_set_check = format!("array_set_prev{}", label_id);
-
-                    // Branch to check_len if ID matches, else prev check
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        id_match, check_len, prev_set_check
-                    ));
-
-                    self.emit_line(&format!("{}:", check_len));
-                    self.temp_counter += 1;
-                    let last_len = format!("%last_len{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @LAST_LEN", last_len));
-
-                    self.temp_counter += 1;
-                    let in_bounds = format!("%in_bounds{}", self.temp_counter);
-                    // Check bounds normally
-                    self.emit_line(&format!(
-                        "{} = icmp ult i64 {}, {}",
-                        in_bounds, idx_norm, last_len
-                    ));
-
-                    let fast_access = format!("array_set_access{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        in_bounds, fast_access, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", fast_access));
-                    self.temp_counter += 1;
-                    let ptr = format!("%ptr{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @LAST_PTR", ptr));
-
-                    let set_fast = format!("array_set_fast_path{}", label_id);
-                    self.emit_line(&format!("br label %{}", set_fast));
-
-                    self.emit_line(&format!("{}:", set_fast));
-                    self.temp_counter += 1;
-                    let typed_ptr = format!("%set_ptr_typed{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        typed_ptr, ptr, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let elem_gep = format!("%set_elem_gep{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        elem_gep, llvm_ty, llvm_ty, typed_ptr, idx_norm
-                    ));
-
-                    self.emit_line(&format!(
-                        "store {} {}, {}* {}",
-                        llvm_ty, v_to_store, llvm_ty, elem_gep
-                    ));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- PREV cache check for StoreIndex ---
-                    self.emit_line(&format!("{}:", prev_set_check));
-                    self.temp_counter += 1;
-                    let prev_id_s = format!("%prev_id_s{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV_ID", prev_id_s));
-                    self.temp_counter += 1;
-                    let prev_match_s = format!("%prev_match_s{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        prev_match_s, prev_id_s, obj_val
-                    ));
-                    let prev_set_fast = format!("array_set_prev_fast{}", label_id);
-                    let prev2_set_check = format!("array_set_prev2{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev_match_s, prev_set_fast, prev2_set_check
-                    ));
-
-                    self.emit_line(&format!("{}:", prev_set_fast));
-                    self.temp_counter += 1;
-                    let prev_len_s = format!("%prev_len_s{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV_LEN", prev_len_s));
-                    self.temp_counter += 1;
-                    let prev_bounds_s = format!("%prev_bounds_s{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ult i64 {}, {}",
-                        prev_bounds_s, idx_norm, prev_len_s
-                    ));
-                    let prev_set_access = format!("array_set_prev_access{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev_bounds_s, prev_set_access, prev2_set_check
-                    ));
-
-                    self.emit_line(&format!("{}:", prev_set_access));
-                    self.temp_counter += 1;
-                    let prev_ptr_s = format!("%prev_ptr_s{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @PREV_PTR", prev_ptr_s));
-                    self.temp_counter += 1;
-                    let prev_typed = format!("%prev_typed{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        prev_typed, prev_ptr_s, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let prev_gep_s = format!("%prev_gep_s{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        prev_gep_s, llvm_ty, llvm_ty, prev_typed, idx_norm
-                    ));
-                    self.emit_line(&format!(
-                        "store {} {}, {}* {}",
-                        llvm_ty, v_to_store, llvm_ty, prev_gep_s
-                    ));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    // --- PREV2 cache check for StoreIndex ---
-                    self.emit_line(&format!("{}:", prev2_set_check));
-                    self.temp_counter += 1;
-                    let prev2_id_s = format!("%prev2_id_s{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV2_ID", prev2_id_s));
-                    self.temp_counter += 1;
-                    let prev2_match_s = format!("%prev2_match_s{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        prev2_match_s, prev2_id_s, obj_val
-                    ));
-                    let prev2_set_fast = format!("array_set_prev2_fast{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev2_match_s, prev2_set_fast, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", prev2_set_fast));
-                    self.temp_counter += 1;
-                    let prev2_len_s = format!("%prev2_len_s{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @PREV2_LEN", prev2_len_s));
-                    self.temp_counter += 1;
-                    let prev2_bounds_s = format!("%prev2_bounds_s{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ult i64 {}, {}",
-                        prev2_bounds_s, idx_norm, prev2_len_s
-                    ));
-                    let prev2_set_access = format!("array_set_prev2_access{}", label_id);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        prev2_bounds_s, prev2_set_access, slow_path
-                    ));
-
-                    self.emit_line(&format!("{}:", prev2_set_access));
-                    self.temp_counter += 1;
-                    let prev2_ptr_s = format!("%prev2_ptr_s{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i8*, i8** @PREV2_PTR", prev2_ptr_s));
-                    self.temp_counter += 1;
-                    let prev2_typed = format!("%prev2_typed{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i8* {} to {}*",
-                        prev2_typed, prev2_ptr_s, llvm_ty
-                    ));
-                    self.temp_counter += 1;
-                    let prev2_gep_s = format!("%prev2_gep_s{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = getelementptr inbounds {}, {}* {}, i64 {}",
-                        prev2_gep_s, llvm_ty, llvm_ty, prev2_typed, idx_norm
-                    ));
-                    self.emit_line(&format!(
-                        "store {} {}, {}* {}",
-                        llvm_ty, v_to_store, llvm_ty, prev2_gep_s
-                    ));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    self.emit_line(&format!("{}:", slow_path));
-                    self.temp_counter += 1;
-                    let unused_res = format!("%array_set_slow_res{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
-                        unused_res, obj_val, idx_val, v_val
-                    ));
-                    self.emit_line(&format!("br label %{}", done_path));
-
-                    self.emit_line(&format!("{}:", done_path));
-                } else {
-                    // When obj type is Any but index is numeric, it's likely an array
-                    // accessed through a class field (LoadMember returns Any).
-                    // Use rt_array_set_fast which handles arrays correctly at runtime.
-                    let idx_ty = index.get_type();
-                    if idx_ty.is_numeric() && !idx_ty.is_float() {
-                        if !self.declared_functions.contains("rt_array_set_fast") {
-                            self.global_buffer.push_str(
-                                "declare i64 @rt_array_set_fast(i64, i64, i64) nounwind\n",
-                            );
-                            self.declared_functions
-                                .insert("rt_array_set_fast".to_string());
-                        }
-                        self.temp_counter += 1;
-                        let unused_res = format!("%any_set_res_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
-                            unused_res, obj_val, idx_val, v_val
-                        ));
-                    } else {
-                        if !self.declared_functions.contains("m_set") {
-                            self.global_buffer
-                                .push_str("declare i64 @m_set(i64, i64, i64)\n");
-                            self.declared_functions.insert("m_set".to_string());
-                        }
-                        // Box primitives for index access fallback (always 'Any' slot)
-                        let v_ty = src.get_type();
-                        let mut final_v_val = v_val;
-                        if v_ty.is_numeric() || matches!(v_ty, TejxType::Bool | TejxType::Char) {
-                            self.temp_counter += 1;
-                            let boxed_reg = format!("%boxed_idx_set_{}", self.temp_counter);
-
-                            if v_ty.is_float() {
-                                self.temp_counter += 1;
-                                let d_val = format!("%d_val_idx_set_{}", self.temp_counter);
-                                self.emit_line(&format!(
-                                    "{} = bitcast i64 {} to double",
-                                    d_val, final_v_val
-                                ));
-
-                                if !self.declared_functions.contains("rt_box_number") {
-                                    self.global_buffer
-                                        .push_str("declare i64 @rt_box_number(double)\n");
-                                    self.declared_functions.insert("rt_box_number".to_string());
-                                }
-                                self.emit_line(&format!(
-                                    "{} = call i64 @rt_box_number(double {})",
-                                    boxed_reg, d_val
-                                ));
-                            } else if matches!(v_ty, TejxType::Bool) {
-                                if !self.declared_functions.contains("rt_box_boolean") {
-                                    self.global_buffer
-                                        .push_str("declare i64 @rt_box_boolean(i64)\n");
-                                    self.declared_functions.insert("rt_box_boolean".to_string());
-                                }
-                                self.emit_line(&format!(
-                                    "{} = call i64 @rt_box_boolean(i64 {})",
-                                    boxed_reg, final_v_val
-                                ));
-                            } else {
-                                if !self.declared_functions.contains("rt_box_int") {
-                                    self.global_buffer
-                                        .push_str("declare i64 @rt_box_int(i64)\n");
-                                    self.declared_functions.insert("rt_box_int".to_string());
-                                }
-                                self.emit_line(&format!(
-                                    "{} = call i64 @rt_box_int(i64 {})",
-                                    boxed_reg, final_v_val
-                                ));
-                            }
-                            final_v_val = boxed_reg;
-                        }
-
-                        if !self.declared_functions.contains("rt_map_set_fast") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_map_set_fast(i64, i64, i64)\n");
-                            self.declared_functions
-                                .insert("rt_map_set_fast".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "call i64 @rt_map_set_fast(i64 {}, i64 {}, i64 {})",
-                            obj_val, idx_val, final_v_val
-                        ));
-                    }
-                }
+                self.emit_line(&format!(
+                    "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                    obj_val, idx_val, v_val
+                ));
             }
             MIRInstruction::Throw { value, .. } => {
                 if self.num_roots > 0 {
@@ -4633,7 +3446,7 @@ impl CodeGen {
                         self.emit_line(&format!("{} = bitcast double {} to i64", tmp, f_res));
                     } else {
                         // Same kind or same bit-width (i64 vs i64)
-                        self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
+                        self.emit_line(&format!("{} = add i64 {}, 0", tmp, s));
                     }
                 } else if src_ty.is_numeric() && *ty == TejxType::Class("any".to_string()) {
                     // Boxing: int/float → any
@@ -4709,8 +3522,8 @@ impl CodeGen {
                     // Generic bitcast for other types
                     self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
                 }
-                let ptr = self.resolve_ptr(dst);
-                self.store_ptr(&ptr, &tmp);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                self.emit_store_variable(dst, &tmp, dst_ty);
             }
         }
     }

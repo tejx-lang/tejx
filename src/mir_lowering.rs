@@ -27,6 +27,11 @@ pub struct MIRLowering {
     scopes: Vec<HashMap<String, String>>, // Stack of scopes: original_name -> unique_mir_name
     var_counter: usize,
     class_fields: HashMap<String, Vec<(String, TejxType)>>,
+    async_state_counter: usize,
+    pub async_continuations: Vec<(usize, usize)>, // (state, target_block_idx)
+    pub current_async_params: Option<Vec<(String, TejxType)>>,
+    pub current_promise_id: Option<String>,
+    pub async_locals: Vec<String>,
 }
 
 impl MIRLowering {
@@ -48,6 +53,11 @@ impl MIRLowering {
             scopes: vec![HashMap::new()], // Global/Function scope
             var_counter: 0,
             class_fields,
+            async_state_counter: 1,
+            async_continuations: Vec::new(),
+            current_async_params: None,
+            current_promise_id: None,
+            async_locals: Vec::new(),
         }
     }
 
@@ -68,17 +78,15 @@ impl MIRLowering {
             }
             return name.to_string();
         }
-        let unique_name = if self.scopes.len() == 1 {
-            // Global/Top-level: preserve name (or prefix if needed, but globals usually static)
-            // Actually, for shadowing test, even top-level vars inside 'main' are local.
-            // Only truly global if outside function?
-            // checking 'lower' method: it creates a new MIRFunction.
-            // So these are all local to function.
-            format!("{}_{}", name, self.var_counter)
+        let unique_name = if name.contains('$') || self.scopes.len() == 1 {
+            // Global/Top-level or already mangled: preserve name
+            name.to_string()
         } else {
             format!("{}_{}", name, self.var_counter)
         };
-        self.var_counter += 1;
+        if !name.contains('$') {
+            self.var_counter += 1;
+        }
 
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), unique_name.clone());
@@ -99,13 +107,14 @@ impl MIRLowering {
 
     pub fn lower(&mut self, hir_func: &HIRStatement) -> MIRFunction {
         // Extract function info
-        let (name, params, body, ret_ty, is_extern) = match hir_func {
+        let info = match hir_func {
             HIRStatement::Function {
                 name,
                 params,
                 body,
                 _return_type,
                 is_extern,
+                async_params,
                 ..
             } => (
                 name.clone(),
@@ -113,32 +122,59 @@ impl MIRLowering {
                 body.as_ref(),
                 _return_type.clone(),
                 *is_extern,
+                async_params.clone(),
             ),
             _ => (
-                TEJX_MAIN.to_string(),
+                crate::intrinsics::TEJX_MAIN.to_string(),
                 vec![],
                 hir_func,
                 TejxType::Void,
                 false,
+                None,
             ),
         };
 
-        self.current_return_type = ret_ty;
+        let (name, params, body, ret_ty, is_extern, async_params) = info;
+        self.lower_function(name, params, ret_ty, body, is_extern, async_params)
+    }
 
-        self.current_function = MIRFunction::new(name);
-        self.current_function.params = params.iter().map(|(n, _)| n.clone()).collect();
-        self.current_function.is_extern = is_extern;
+    pub fn lower_function(
+        &mut self,
+        name: String,
+        params: Vec<(String, TejxType)>,
+        return_type: TejxType,
+        body: &HIRStatement,
+        is_extern: bool,
+        async_params: Option<Vec<(String, TejxType)>>,
+    ) -> MIRFunction {
+        self.current_function = MIRFunction::new(name.clone());
+        self.current_return_type = return_type.clone();
         self.temp_counter = 0;
         self.block_counter = 0;
+        self.var_counter = 0;
+        self.loop_stack.clear();
+        self.exception_handler_stack.clear();
         self.scopes.clear();
-        self.scopes.push(HashMap::new()); // Reset to function scope
+        self.scopes.push(HashMap::new());
 
-        // Register parameters in the top-level scope
+        // Reset async state
+        self.async_state_counter = 1;
+        self.async_continuations.clear();
+        self.current_async_params = None;
+        self.current_promise_id = None;
+        self.async_locals.clear();
+
+        // Reset async state
+        self.async_state_counter = 1;
+        self.async_continuations.clear();
+        self.current_async_params = None;
+        self.current_promise_id = None;
+        self.async_locals.clear();
+
+        self.current_function.params = params.iter().map(|(n, _)| n.clone()).collect();
+        self.current_function.is_extern = is_extern;
+
         for (pname, pty) in params.iter() {
-            // Parameters are available throughout the function
-            // We use the original name for parameters as they are part of the signature/ABI
-            // But if we want to support shadowing logic, we should probably map them too?
-            // For now, let's map param name -> param name to be consistent with resolve_variable
             if let Some(scope) = self.scopes.last_mut() {
                 scope.insert(pname.clone(), pname.clone());
             }
@@ -147,31 +183,306 @@ impl MIRLowering {
                 .insert(pname.clone(), pty.clone());
         }
 
-        let entry = self.new_block("entry");
-        self.current_function.entry_block = entry;
-        self.current_block = entry;
+        // --- NEW: Pre-define original async parameters for machines ---
+        // This ensures they are available in variable_map for collect_async_locals
+        if let Some(aps) = &async_params {
+            for (pname, pty) in aps {
+                self.declare_variable(pname);
+                // Also ensure the type is recorded
+                self.current_function
+                    .variables
+                    .insert(pname.clone(), pty.clone());
+            }
+        }
 
-        // Initialize parameters as moves from argument registers - REMOVED
-        // CodeGen handles this automatically by storing %__argN into the parameter alloca.
-        // for (_i, (pname, pty)) in params.iter().enumerate() {
-        // let arg_name = format!("__arg{}", i);
-        // self.current_function.variables.insert(pname.clone(), pty.clone());
-        /*
-        self.emit(MIRInstruction::Move { line: 0,  dst: pname.clone(),
-            src: MIRValue::Variable { name: arg_name, ty: pty.clone()  },
-        });
-        */
-        // }
+        let is_async_worker =
+            name.ends_with("_worker") && async_params.is_some() && params.len() == 1;
+        if is_async_worker {
+            if let Some(ref ap) = async_params {
+                for (pname, pty) in ap.iter() {
+                    self.current_function
+                        .variables
+                        .insert(pname.clone(), pty.clone());
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.insert(pname.clone(), pname.clone());
+                    }
+                }
+            }
+        }
+
+        self.pre_collect_variables(body);
+
+        if is_async_worker {
+            // Find mangled promise_id_local
+            for var_name in self.current_function.variables.keys() {
+                if var_name.starts_with("promise_id_local") {
+                    self.current_promise_id = Some(var_name.clone());
+                    break;
+                }
+            }
+            self.current_async_params = async_params.clone();
+            self.async_locals.clear();
+            let aps = self.current_async_params.clone();
+            self.collect_async_locals(&aps, &params);
+        }
+
+        let switch_block = if is_async_worker {
+            Some(self.new_block("async_switch"))
+        } else {
+            None
+        };
+
+        if let Some(sb) = switch_block {
+            self.current_function.entry_block = sb;
+            let entry = self.new_block("entry");
+            self.async_continuations.push((0, entry));
+            self.current_block = entry;
+        } else {
+            let entry = self.new_block("entry");
+            self.current_function.entry_block = entry;
+            self.current_block = entry;
+        }
 
         self.lower_statement(body);
 
-        // Ensure last block is terminated
+        if is_async_worker {
+            let aps = self.current_async_params.clone();
+            self.collect_async_locals(&aps, &params);
+        }
+
+        // Ensure current block is terminated
         let cb = self.current_block;
         if !self.current_function.blocks[cb].is_terminated() {
-            self.emit(MIRInstruction::Return {
+            if is_async_worker {
+                let ctx_val = MIRValue::Variable {
+                    name: "ctx".to_string(),
+                    ty: TejxType::Class("any[]".to_string()),
+                };
+                let promise_id = self.new_async_temp(TejxType::Class("any".to_string()));
+                self.emit(MIRInstruction::Call {
+                    line: 0,
+                    dst: promise_id.clone(),
+                    callee: "rt_array_get_fast".to_string(),
+                    args: vec![
+                        ctx_val.clone(),
+                        MIRValue::Constant {
+                            value: "0".to_string(),
+                            ty: TejxType::Int32,
+                        },
+                    ],
+                });
+
+                let unused = self.new_async_temp(TejxType::Void);
+                self.emit(MIRInstruction::Call {
+                    line: 0,
+                    dst: unused.clone(),
+                    callee: "rt_promise_resolve".to_string(),
+                    args: vec![
+                        MIRValue::Variable {
+                            name: promise_id,
+                            ty: TejxType::Class("any".to_string()),
+                        },
+                        MIRValue::Constant {
+                            value: "0".to_string(),
+                            ty: TejxType::Int32,
+                        },
+                    ],
+                });
+
+                let unused2 = self.new_async_temp(TejxType::Void);
+                self.emit(MIRInstruction::Call {
+                    line: 0,
+                    dst: unused2,
+                    callee: "tejx_dec_async_ops".to_string(),
+                    args: vec![],
+                });
+
+                self.emit(MIRInstruction::Return {
+                    line: 0,
+                    value: None,
+                });
+            } else {
+                self.emit(MIRInstruction::Return {
+                    line: 0,
+                    value: None,
+                });
+            }
+        }
+
+        if is_async_worker {
+            // Restore async state from ctx
+            let ctx_val = MIRValue::Variable {
+                name: "ctx".to_string(),
+                ty: TejxType::Class("any[]".to_string()),
+            };
+
+            let mut restoration_instrs = Vec::new();
+
+            // 1. Initial State: Zero-initialize all temporaries and locals to be safe
+            for (name, ty) in self.current_function.variables.iter() {
+                if name == "ctx" || name.starts_with("promise_id_local") {
+                    continue;
+                }
+                restoration_instrs.push(MIRInstruction::Move {
+                    line: 0,
+                    dst: name.clone(),
+                    src: MIRValue::Constant {
+                        value: "0".to_string(),
+                        ty: ty.clone(),
+                    },
+                });
+            }
+
+            // 2. Restore Params & Locals from ctx
+            // They are stored at ctx[2...] as unified in collect_async_locals
+            for (i, name) in self.async_locals.iter().enumerate() {
+                let ix = 2 + i;
+                let ty = self
+                    .current_function
+                    .variables
+                    .get(name)
+                    .expect("Variable not found in async worker")
+                    .clone();
+                if ty == TejxType::Class("any".to_string()) {
+                    restoration_instrs.push(MIRInstruction::Call {
+                        line: 0,
+                        dst: name.clone(),
+                        callee: "rt_array_get_fast".to_string(),
+                        args: vec![
+                            ctx_val.clone(),
+                            MIRValue::Constant {
+                                value: ix.to_string(),
+                                ty: TejxType::Int32,
+                            },
+                        ],
+                    });
+                } else {
+                    let temp = format!("_restore_local_{}", i);
+                    self.current_function
+                        .variables
+                        .insert(temp.clone(), TejxType::Class("any".to_string()));
+                    restoration_instrs.push(MIRInstruction::Call {
+                        line: 0,
+                        dst: temp.clone(),
+                        callee: "rt_array_get_fast".to_string(),
+                        args: vec![
+                            ctx_val.clone(),
+                            MIRValue::Constant {
+                                value: ix.to_string(),
+                                ty: TejxType::Int32,
+                            },
+                        ],
+                    });
+                    restoration_instrs.push(MIRInstruction::Cast {
+                        line: 0,
+                        dst: name.clone(),
+                        src: MIRValue::Variable {
+                            name: temp,
+                            ty: TejxType::Class("any".to_string()),
+                        },
+                        ty: ty.clone(),
+                    });
+                }
+            }
+
+            // Restore promise_id_local at index 0
+            if let Some(ref p_var) = self.current_promise_id {
+                restoration_instrs.push(MIRInstruction::Call {
+                    line: 0,
+                    dst: p_var.clone(),
+                    callee: "rt_array_get_fast".to_string(),
+                    args: vec![
+                        ctx_val.clone(),
+                        MIRValue::Constant {
+                            value: "0".to_string(),
+                            ty: TejxType::Int32,
+                        },
+                    ],
+                });
+            }
+
+            // Extract state and build switch
+            let state_any_temp = self.new_async_temp(TejxType::Class("any".to_string()));
+            restoration_instrs.push(MIRInstruction::Call {
                 line: 0,
-                value: None,
+                dst: state_any_temp.clone(),
+                callee: "rt_array_get_fast".to_string(),
+                args: vec![
+                    ctx_val.clone(),
+                    MIRValue::Constant {
+                        value: "1".to_string(),
+                        ty: TejxType::Int32,
+                    },
+                ],
             });
+
+            let state_temp = self.new_async_temp(TejxType::Int32);
+            restoration_instrs.push(MIRInstruction::Cast {
+                line: 0,
+                dst: state_temp.clone(),
+                src: MIRValue::Variable {
+                    name: state_any_temp,
+                    ty: TejxType::Class("any".to_string()),
+                },
+                ty: TejxType::Int32,
+            });
+
+            let state_val = MIRValue::Variable {
+                name: state_temp,
+                ty: TejxType::Int32,
+            };
+
+            let entry_idx = self.current_function.entry_block;
+
+            // 3. Build switch chain using multiple blocks
+            let conts = self.async_continuations.clone();
+            let mut prev_block = entry_idx;
+
+            for i in 0..conts.len() {
+                let (state_id, target_block) = conts[i];
+                self.current_block = prev_block;
+
+                if i == conts.len() - 1 {
+                    self.emit(MIRInstruction::Jump {
+                        line: 0,
+                        target: target_block,
+                    });
+                } else {
+                    let next_check = self.new_block("async_check_next");
+                    let cmp_res = format!("_cmp_state_{}", i);
+                    self.current_function
+                        .variables
+                        .insert(cmp_res.clone(), TejxType::Bool);
+
+                    self.emit(MIRInstruction::BinaryOp {
+                        line: 0,
+                        dst: cmp_res.clone(),
+                        left: state_val.clone(),
+                        op: TokenType::EqualEqual,
+                        right: MIRValue::Constant {
+                            value: state_id.to_string(),
+                            ty: TejxType::Int32,
+                        },
+                    });
+
+                    self.emit(MIRInstruction::Branch {
+                        line: 0,
+                        condition: MIRValue::Variable {
+                            name: cmp_res,
+                            ty: TejxType::Bool,
+                        },
+                        true_target: target_block,
+                        false_target: next_check,
+                    });
+
+                    prev_block = next_check;
+                }
+            }
+
+            // Prepend only restoration instructions (excluding switch) to the entry block
+            self.current_function.blocks[entry_idx]
+                .instructions
+                .splice(0..0, restoration_instrs);
         }
 
         self.current_function.clone()
@@ -186,8 +497,135 @@ impl MIRLowering {
         self.current_function.blocks.len() - 1
     }
 
+    fn pre_collect_variables(&mut self, stmt: &HIRStatement) {
+        match stmt {
+            HIRStatement::Block { statements, .. } => {
+                for s in statements {
+                    self.pre_collect_variables(s);
+                }
+            }
+            HIRStatement::VarDecl { name, ty, .. } => {
+                self.current_function
+                    .variables
+                    .insert(name.clone(), ty.clone());
+            }
+            HIRStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.pre_collect_variables_expr(condition);
+                self.pre_collect_variables(then_branch);
+                if let Some(eb) = else_branch {
+                    self.pre_collect_variables(eb);
+                }
+            }
+            HIRStatement::Loop { body, .. } => {
+                self.pre_collect_variables(body);
+            }
+            HIRStatement::Try {
+                try_block,
+                catch_var,
+                catch_block,
+                finally_block,
+                ..
+            } => {
+                if let Some(var) = catch_var {
+                    self.current_function
+                        .variables
+                        .insert(var.clone(), TejxType::Class("any".to_string()));
+                }
+                self.pre_collect_variables(try_block);
+                self.pre_collect_variables(catch_block);
+                if let Some(fb) = finally_block {
+                    self.pre_collect_variables(fb);
+                }
+            }
+            HIRStatement::ExpressionStmt { expr, .. } => {
+                self.pre_collect_variables_expr(expr);
+            }
+            HIRStatement::Sequence { statements, .. } => {
+                for s in statements {
+                    self.pre_collect_variables(s);
+                }
+            }
+            HIRStatement::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.pre_collect_variables_expr(v);
+                }
+            }
+            HIRStatement::Throw { value, .. } => {
+                self.pre_collect_variables_expr(value);
+            }
+            _ => {}
+        }
+    }
+
+    fn pre_collect_variables_expr(&mut self, expr: &HIRExpression) {
+        match expr {
+            HIRExpression::BinaryExpr { left, right, .. } => {
+                self.pre_collect_variables_expr(left);
+                self.pre_collect_variables_expr(right);
+            }
+            HIRExpression::Call { args, .. } => {
+                for arg in args {
+                    self.pre_collect_variables_expr(arg);
+                }
+            }
+            HIRExpression::IndirectCall { callee, args, .. } => {
+                self.pre_collect_variables_expr(callee);
+                for arg in args {
+                    self.pre_collect_variables_expr(arg);
+                }
+            }
+            HIRExpression::MemberAccess { target, .. } => {
+                self.pre_collect_variables_expr(target);
+            }
+            HIRExpression::IndexAccess { target, index, .. } => {
+                self.pre_collect_variables_expr(target);
+                self.pre_collect_variables_expr(index);
+            }
+            HIRExpression::Assignment { target, value, .. } => {
+                self.pre_collect_variables_expr(target);
+                self.pre_collect_variables_expr(value);
+            }
+            HIRExpression::Await { expr, .. } => {
+                self.pre_collect_variables_expr(expr);
+            }
+            HIRExpression::ObjectLiteral { entries, .. } => {
+                for (_, v) in entries {
+                    self.pre_collect_variables_expr(v);
+                }
+            }
+            HIRExpression::ArrayLiteral { elements, .. } => {
+                for e in elements {
+                    self.pre_collect_variables_expr(e);
+                }
+            }
+            HIRExpression::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.pre_collect_variables_expr(condition);
+                self.pre_collect_variables_expr(then_branch);
+                self.pre_collect_variables_expr(else_branch);
+            }
+            HIRExpression::Sequence { expressions, .. } => {
+                for e in expressions {
+                    self.pre_collect_variables_expr(e);
+                }
+            }
+            HIRExpression::SomeExpr { value, .. } => {
+                self.pre_collect_variables_expr(value);
+            }
+            _ => {}
+        }
+    }
     fn new_temp(&mut self, ty: TejxType) -> String {
-        let name = format!("t{}", self.temp_counter);
+        let name = format!("_t{}", self.temp_counter);
         self.temp_counter += 1;
         self.current_function
             .variables
@@ -195,9 +633,68 @@ impl MIRLowering {
         name
     }
 
+    fn new_async_temp(&mut self, ty: TejxType) -> String {
+        let name = format!("_atmp{}", self.temp_counter);
+        self.temp_counter += 1;
+        self.current_function
+            .variables
+            .insert(name.clone(), ty.clone());
+        name
+    }
+
+    fn collect_async_locals(
+        &mut self,
+        async_params: &Option<Vec<(String, TejxType)>>,
+        _params: &[(String, TejxType)],
+    ) {
+        // Collect existing names into a loopup set for additive behavior
+        let mut added: std::collections::HashSet<String> =
+            self.async_locals.iter().cloned().collect();
+
+        // 1. Original parameters MUST come first (after promise and state)
+        // because lowering.rs puts them there: [promise, state, params..., locals...]
+        if let Some(aps) = async_params {
+            for (pname, _pty) in aps {
+                let mangled = self.resolve_variable(pname);
+                if !mangled.is_empty() {
+                    if !added.contains(&mangled) {
+                        self.async_locals.push(mangled.clone());
+                        added.insert(mangled.clone());
+                    }
+                }
+            }
+        }
+
+        // 2. All other variables, sorted for determinism
+        let mut keys: Vec<_> = self.current_function.variables.keys().cloned().collect();
+        keys.sort();
+        for name in keys {
+            if name == "ctx"
+                || name.starts_with("__ctx_")
+                || name.starts_with("__p_")
+                || name.starts_with("promise_id_local")
+                || name.starts_with("_atmp")
+                || name.starts_with("_restore_local_")
+                || name.starts_with("_state")
+                || name.starts_with("_cmp_state_")
+            {
+                continue;
+            }
+            if !added.contains(&name) {
+                self.async_locals.push(name.clone());
+                added.insert(name.clone());
+            }
+        }
+    }
+
     fn emit(&mut self, mut inst: MIRInstruction) {
         inst.set_line(self.current_line);
         let cb = self.current_block;
+        if cb < self.current_function.blocks.len()
+            && self.current_function.blocks[cb].is_terminated()
+        {
+            return;
+        }
         self.current_function.blocks[cb].add_instruction(inst);
     }
 
@@ -481,10 +978,63 @@ impl MIRLowering {
                     val = Some(self.auto_box(ret_val, &self.current_return_type.clone()));
                 }
 
-                self.emit(MIRInstruction::Return {
-                    line: 0,
-                    value: val,
-                });
+                let is_async_worker = self.current_function.name.ends_with("_worker");
+                if is_async_worker {
+                    let ctx_val = MIRValue::Variable {
+                        name: "ctx".to_string(),
+                        ty: TejxType::Class("any[]".to_string()),
+                    };
+                    let promise_id = self.new_async_temp(TejxType::Class("any".to_string()));
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        dst: promise_id.clone(),
+                        callee: "rt_array_get_fast".to_string(),
+                        args: vec![
+                            ctx_val.clone(),
+                            MIRValue::Constant {
+                                value: "0".to_string(),
+                                ty: TejxType::Int32,
+                            },
+                        ],
+                    });
+
+                    let resolve_val = val.clone().unwrap_or(MIRValue::Constant {
+                        value: "0".to_string(),
+                        ty: TejxType::Int32,
+                    });
+
+                    let unused = self.new_async_temp(TejxType::Void);
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        dst: unused.clone(),
+                        callee: "rt_promise_resolve".to_string(),
+                        args: vec![
+                            MIRValue::Variable {
+                                name: promise_id,
+                                ty: TejxType::Class("any".to_string()),
+                            },
+                            resolve_val,
+                        ],
+                    });
+
+                    let unused2 = self.new_async_temp(TejxType::Void);
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        dst: unused2,
+                        callee: "tejx_dec_async_ops".to_string(),
+                        args: vec![],
+                    });
+
+                    self.emit(MIRInstruction::Return {
+                        line: 0,
+                        value: None,
+                    });
+                } else {
+                    self.emit(MIRInstruction::Return {
+                        line: 0,
+                        value: val,
+                    });
+                }
             }
             HIRStatement::ExpressionStmt { expr, .. } => {
                 self.lower_expression(expr);
@@ -856,6 +1406,25 @@ impl MIRLowering {
             },
             HIRExpression::Variable { name, ty, .. } => {
                 let unique_name = self.resolve_variable(name);
+                if let TejxType::Function(_, _) = ty {
+                    if name.starts_with("f_") {
+                        let temp = self.new_temp(TejxType::Class("any".to_string()));
+                        let raw_ptr = MIRValue::Variable {
+                            name: unique_name,
+                            ty: ty.clone(),
+                        };
+                        self.emit(MIRInstruction::Call {
+                            line: 0,
+                            dst: temp.clone(),
+                            callee: "rt_closure_from_ptr".to_string(),
+                            args: vec![raw_ptr],
+                        });
+                        return MIRValue::Variable {
+                            name: temp,
+                            ty: TejxType::Class("any".to_string()),
+                        };
+                    }
+                }
                 MIRValue::Variable {
                     name: unique_name,
                     ty: ty.clone(),
@@ -996,12 +1565,12 @@ impl MIRLowering {
                         // `resolve_value` returns register/const string.
                         // `codegen.rs`: "if is_bool_type { ... return "1" }"
                         // It seems CodeGen expects the condition value to be boolean-ish i1?
-                        // Wait, `rt_is_nullish` returns i64 (1 or 0).
+                        // Wait, `rt_is_nullish` returns 1 or 0 (i64).
                         // If we pass this i64 to Branch, LLVM verify might fail if it expects i1.
                         // CodeGen: "br i1 {}, ..."
                         // We need to Compare with 0?
                         // `MIRInstruction::Branch` takes a `condition` MIRValue.
-                        // In `If` lowering: `cond_val = lower_expr(condition)`.
+                        // In `If` lowering: `cond_val = self.lower_expression(condition)`.
                         // If `condition` expr was `BinaryExpr` (e.g. `==`), it returns `Bool`.
                         // In CodeGen `BinaryOp` for comparators: `zext i1 %cmp to i64`. It returns i64!
                         // In CodeGen `Branch`:
@@ -1436,19 +2005,241 @@ impl MIRLowering {
                     ty: ty.clone(),
                 }
             }
-            HIRExpression::Await { expr, ty, .. } => {
-                // Lower to runtime call: __await(expr)
+            HIRExpression::Await { expr, ty, line } => {
                 let val = self.lower_expression(expr);
-                let temp = self.new_temp(ty.clone());
-                self.emit(MIRInstruction::Call {
-                    line: 0,
-                    dst: temp.clone(),
-                    callee: "rt_await".to_string(),
-                    args: vec![val],
-                });
-                MIRValue::Variable {
-                    name: temp,
-                    ty: ty.clone(),
+                let is_async_worker = self.current_function.name.ends_with("_worker");
+
+                if is_async_worker {
+                    // 1. Evaluate the promise (val)
+                    // 2. Schedule continuation: rt_promise_then(val, worker_ptr, ctx, next_state)
+                    let next_state_id = self.async_state_counter;
+                    self.async_state_counter += 1;
+
+                    let worker_ptr = MIRValue::Constant {
+                        value: format!("@{}", self.current_function.name),
+                        ty: TejxType::Int64,
+                    };
+
+                    let ctx_val = MIRValue::Variable {
+                        name: "ctx".to_string(),
+                        ty: TejxType::Class("any[]".to_string()),
+                    };
+
+                    // --- SAVE LOCALS TO CTX ---
+                    let aps = self.current_async_params.clone();
+                    self.collect_async_locals(&aps, &[]);
+                    let promise_id_var = self.current_promise_id.clone();
+                    let mut other_vars = self.async_locals.clone();
+
+                    let mut ap_len = 0;
+                    let local_ap = self.current_async_params.clone();
+                    if let Some(ref ap) = local_ap {
+                        let ap_names: Vec<String> = ap.iter().map(|(n, _)| n.clone()).collect();
+                        other_vars.retain(|n: &String| !ap_names.contains(n));
+                        ap_len = ap.len();
+
+                        for (i, (name, ty)) in ap.iter().enumerate() {
+                            let src_val = if ty.is_numeric()
+                                || matches!(ty, TejxType::Bool | TejxType::Char)
+                            {
+                                let temp = self.new_async_temp(TejxType::Class("any".to_string()));
+                                self.emit(MIRInstruction::Cast {
+                                    line: *line,
+                                    dst: temp.clone(),
+                                    src: MIRValue::Variable {
+                                        name: name.clone(),
+                                        ty: ty.clone(),
+                                    },
+                                    ty: TejxType::Class("any".to_string()),
+                                });
+                                MIRValue::Variable {
+                                    name: temp,
+                                    ty: TejxType::Class("any".to_string()),
+                                }
+                            } else {
+                                MIRValue::Variable {
+                                    name: name.clone(),
+                                    ty: ty.clone(),
+                                }
+                            };
+
+                            let unused = self.new_async_temp(TejxType::Void);
+                            self.emit(MIRInstruction::Call {
+                                line: *line,
+                                dst: unused,
+                                callee: "rt_array_set_fast".to_string(),
+                                args: vec![
+                                    ctx_val.clone(),
+                                    MIRValue::Constant {
+                                        value: (i + 2).to_string(),
+                                        ty: TejxType::Int32,
+                                    },
+                                    src_val,
+                                ],
+                            });
+                        }
+                    }
+
+                    if let Some(ref p_var) = promise_id_var {
+                        let ty = self.current_function.variables.get(p_var).unwrap().clone();
+                        let src_val =
+                            if ty.is_numeric() || matches!(ty, TejxType::Bool | TejxType::Char) {
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
+                                self.emit(MIRInstruction::Cast {
+                                    line: *line,
+                                    dst: temp.clone(),
+                                    src: MIRValue::Variable {
+                                        name: p_var.clone(),
+                                        ty: ty.clone(),
+                                    },
+                                    ty: TejxType::Class("any".to_string()),
+                                });
+                                MIRValue::Variable {
+                                    name: temp,
+                                    ty: TejxType::Class("any".to_string()),
+                                }
+                            } else {
+                                MIRValue::Variable {
+                                    name: p_var.clone(),
+                                    ty: ty.clone(),
+                                }
+                            };
+
+                        let unused = self.new_async_temp(TejxType::Void);
+                        self.emit(MIRInstruction::Call {
+                            line: *line,
+                            dst: unused,
+                            callee: "rt_array_set_fast".to_string(),
+                            args: vec![
+                                ctx_val.clone(),
+                                MIRValue::Constant {
+                                    value: "0".to_string(),
+                                    ty: TejxType::Int32,
+                                },
+                                src_val,
+                            ],
+                        });
+                    }
+
+                    for (i, name) in other_vars.iter().enumerate() {
+                        let ix = 2 + ap_len + i;
+                        let ty = self.current_function.variables.get(name).unwrap().clone();
+                        let src_val =
+                            if ty.is_numeric() || matches!(ty, TejxType::Bool | TejxType::Char) {
+                                let temp = self.new_async_temp(TejxType::Class("any".to_string()));
+                                self.emit(MIRInstruction::Cast {
+                                    line: *line,
+                                    dst: temp.clone(),
+                                    src: MIRValue::Variable {
+                                        name: name.clone(),
+                                        ty: ty.clone(),
+                                    },
+                                    ty: TejxType::Class("any".to_string()),
+                                });
+                                MIRValue::Variable {
+                                    name: temp,
+                                    ty: TejxType::Class("any".to_string()),
+                                }
+                            } else {
+                                MIRValue::Variable {
+                                    name: name.clone(),
+                                    ty: ty.clone(),
+                                }
+                            };
+
+                        let unused = self.new_async_temp(TejxType::Void);
+                        self.emit(MIRInstruction::Call {
+                            line: *line,
+                            dst: unused,
+                            callee: "rt_array_set_fast".to_string(),
+                            args: vec![
+                                ctx_val.clone(),
+                                MIRValue::Constant {
+                                    value: ix.to_string(),
+                                    ty: TejxType::Int32,
+                                },
+                                src_val,
+                            ],
+                        });
+                    }
+
+                    // Update ctx[1] = next_state_id (boxed) before yielding
+                    let next_state_any = self.new_temp(TejxType::Class("any".to_string()));
+                    self.emit(MIRInstruction::Cast {
+                        line: *line,
+                        dst: next_state_any.clone(),
+                        src: MIRValue::Constant {
+                            value: next_state_id.to_string(),
+                            ty: TejxType::Int32,
+                        },
+                        ty: TejxType::Class("any".to_string()),
+                    });
+
+                    let unused = self.new_temp(TejxType::Void);
+                    self.emit(MIRInstruction::Call {
+                        line: *line,
+                        dst: unused,
+                        callee: "rt_array_set_fast".to_string(),
+                        args: vec![
+                            ctx_val.clone(),
+                            MIRValue::Constant {
+                                value: "1".to_string(),
+                                ty: TejxType::Int32,
+                            },
+                            MIRValue::Variable {
+                                name: next_state_any,
+                                ty: TejxType::Class("any".to_string()),
+                            },
+                        ],
+                    });
+
+                    // Call rt_promise_await_resume
+                    let dummy_dst = self.new_temp(TejxType::Void);
+                    self.emit(MIRInstruction::Call {
+                        line: *line,
+                        dst: dummy_dst,
+                        callee: "rt_promise_await_resume".to_string(),
+                        args: vec![val.clone(), worker_ptr, ctx_val.clone()],
+                    });
+
+                    // Return to event loop
+                    self.emit(MIRInstruction::Return {
+                        line: *line,
+                        value: None,
+                    });
+
+                    // --- Split Block ---
+                    let continuation_block =
+                        self.new_block(&format!("await_cont_{}", next_state_id));
+                    self.async_continuations
+                        .push((next_state_id, continuation_block));
+                    self.current_block = continuation_block;
+
+                    let result_temp = self.new_temp(ty.clone());
+                    self.emit(MIRInstruction::Call {
+                        line: *line,
+                        dst: result_temp.clone(),
+                        callee: "rt_promise_get_value".to_string(),
+                        args: vec![val],
+                    });
+
+                    MIRValue::Variable {
+                        name: result_temp,
+                        ty: ty.clone(),
+                    }
+                } else {
+                    // Synchronous blocking wrapper fallback (for top-level await if allowed, or non-async functions)
+                    let temp = self.new_temp(ty.clone());
+                    self.emit(MIRInstruction::Call {
+                        line: *line,
+                        dst: temp.clone(),
+                        callee: "rt_await".to_string(),
+                        args: vec![val],
+                    });
+                    MIRValue::Variable {
+                        name: temp,
+                        ty: ty.clone(),
+                    }
                 }
             }
             HIRExpression::OptionalChain {
@@ -1496,6 +2287,20 @@ impl MIRLowering {
                 }
 
                 let obj_ty = obj.get_type();
+                if matches!(obj_ty, TejxType::String) {
+                    let temp = self.new_temp(TejxType::String);
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        dst: temp.clone(),
+                        callee: "rt_str_at".to_string(),
+                        args: vec![obj, idx],
+                    });
+                    return MIRValue::Variable {
+                        name: temp,
+                        ty: TejxType::String,
+                    };
+                }
+
                 let elem_ty = obj_ty.get_array_element_type();
 
                 // Only load as 'any' if the array actually stores tagged values.
@@ -1634,10 +2439,20 @@ impl MIRLowering {
             }
             HIRExpression::ArrayLiteral {
                 elements,
+                sized_allocation,
                 ty,
                 line: expr_line,
             } => {
                 let arr_temp = self.new_temp(ty.clone());
+
+                let initial_size = if let Some(size_hir) = sized_allocation {
+                    self.lower_expression(&*size_hir)
+                } else {
+                    MIRValue::Constant {
+                        value: elements.len().to_string(),
+                        ty: TejxType::Int64,
+                    }
+                };
                 let array_obj = MIRValue::Constant {
                     value: "0".to_string(),
                     ty: TejxType::Int64,
@@ -1649,36 +2464,25 @@ impl MIRLowering {
 
                 let args = vec![
                     array_obj,
-                    MIRValue::Constant {
-                        value: "0".to_string(), // Accurate initial size
-                        ty: TejxType::Int64,
-                    },
+                    initial_size,
                     MIRValue::Constant {
                         value: elem_size_bytes.to_string(),
                         ty: TejxType::Int64,
                     },
                     MIRValue::Constant {
-                        value: "0".to_string(), // Literals are growable by default in JS/TejX unless specified?
-                        // Actually, implementation plan said IS_FIXED | IS_CONSTANT.
-                        // Let's use 0 for now to keep them growable, or follow plan?
-                        // "literals like [1, 2, 3]... share same optimized machine code"
-                        // If they are growable, flags=0.
+                        value: "0".to_string(), // Literals are growable by default
                         ty: TejxType::Int64,
                     },
                 ];
 
                 self.emit(MIRInstruction::Call {
                     dst: arr_temp.clone(),
-                    callee: "rt_Array_constructor".to_string(), // Use the standard wrapper
+                    callee: "rt_Array_constructor_v2".to_string(),
                     args,
                     line: *expr_line,
                 });
 
-                let mut current_arr_val = MIRValue::Variable {
-                    name: arr_temp.clone(),
-                    ty: ty.clone(),
-                };
-
+                let unused = self.new_temp(TejxType::Void);
                 for (i, e) in elements.into_iter().enumerate() {
                     let mut val = self.lower_expression(e);
                     let elem_ty = ty.get_array_element_type();
@@ -1711,25 +2515,25 @@ impl MIRLowering {
                         }
                     }
 
-                    let updated_arr_temp = self.new_temp(ty.clone());
                     self.emit(MIRInstruction::Call {
                         line: 0,
-                        callee: RT_ARRAY_PUSH.to_string(),
-                        args: vec![current_arr_val.clone(), val],
-                        dst: updated_arr_temp.clone(),
+                        callee: "rt_array_set_fast".to_string(),
+                        args: vec![
+                            MIRValue::Variable {
+                                name: arr_temp.clone(),
+                                ty: ty.clone(),
+                            },
+                            MIRValue::Constant {
+                                value: i.to_string(),
+                                ty: TejxType::Int64,
+                            },
+                            val,
+                        ],
+                        dst: unused.clone(),
                     });
-                    current_arr_val = MIRValue::Variable {
-                        name: updated_arr_temp,
-                        ty: ty.clone(),
-                    };
                 }
 
-                // Final array reference after all pushes
-                self.emit(MIRInstruction::Move {
-                    line: 0,
-                    dst: arr_temp.clone(),
-                    src: current_arr_val,
-                });
+                // Final results already in arr_temp
 
                 MIRValue::Variable {
                     name: arr_temp,

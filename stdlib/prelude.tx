@@ -21,7 +21,7 @@ extern function rt_to_string<T>(val: T): string;
 extern function rt_promise_new<T>(): any;
 extern function rt_promise_resolve<T>(p: any, val: T): void;
 extern function rt_promise_reject<T>(p: any, err: Error): void;
-extern function rt_promise_then<T, U>(p: any, cb: (v: T) => U): any;
+extern function rt_promise_then<T, U>(p: any, onResolve: (v: T) => U, onReject: (e: any) => U): any;
 extern function rt_str_equals(a: string, b: string): bool;
 extern function rt_str_concat_v2(a: string, b: string): string;
 extern function rt_String_toUpperCase(s: string): string;
@@ -216,8 +216,12 @@ export class Promise<T> {
         );
     }
 
-    then<U>(cb: (v: T) => U): Promise<U> {
-        return rt_promise_then(this, cb);
+    then<U>(onResolve: (v: T) => U, onReject: (e: any) => U): Promise<U> {
+        return rt_promise_then(this, onResolve, onReject);
+    }
+
+    catchError<U>(onReject: (e: any) => U): Promise<U> {
+        return rt_promise_then(this, 0 as any, onReject);
     }
 
     static resolve<T>(v: T): Promise<T> {
@@ -244,16 +248,23 @@ export class Promise<T> {
         for (let i = 0; i < total; i++) {
             rt_array_push(results, 0 as any);
         }
-        let count = 0;
+        let state = { count: 0, rejected: false };
         for (let i = 0; i < total; i++) {
             let callback = (index: int) => {
                 promises[index].then((v) => {
+                    if (state.rejected) return v;
                     results[index] = v;
-                    count = count + 1;
-                    if (count == total) {
+                    state.count = state.count + 1;
+                    if (state.count == total) {
                         rt_promise_resolve(p, results);
                     }
                     return v;
+                }, (e) => {
+                    if (!state.rejected) {
+                        state.rejected = true;
+                        rt_promise_reject(p, e);
+                    }
+                    return e;
                 });
             };
             callback(i);

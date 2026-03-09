@@ -92,6 +92,12 @@ extern function rt_Set_values<T>(_this: Set<T>): T[];
 extern function rt_Set_size<T>(_this: Set<T>): int;
 
 export class Map<K, V> {
+    private _size: int64;
+    private _capacity: int64;
+    private _keys: any;
+    private _vals: any;
+    private _db: int64;
+
     constructor() {
         rt_Map_constructor(this);
     }
@@ -143,6 +149,12 @@ export class Map<K, V> {
 }
 
 export class Set<T> {
+    private _size: int64;
+    private _capacity: int64;
+    private _keys: any;
+    private _vals: any;
+    private _db: int64;
+
     constructor() {
         rt_Set_constructor(this);
     }

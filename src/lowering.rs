@@ -28,6 +28,7 @@ pub struct Lowering {
     class_setters: RefCell<HashMap<String, HashSet<String>>>,
     class_parents: RefCell<HashMap<String, String>>,
     class_generic_params: RefCell<HashMap<String, Vec<String>>>,
+    function_generic_params: RefCell<HashMap<String, Vec<String>>>,
     pub async_enabled: bool,
     current_async_promise_id: RefCell<Option<String>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
@@ -70,6 +71,7 @@ impl Lowering {
             class_setters: RefCell::new(HashMap::new()),
             class_parents: RefCell::new(HashMap::new()),
             class_generic_params: RefCell::new(HashMap::new()),
+            function_generic_params: RefCell::new(HashMap::new()),
             async_enabled: false,
             current_async_promise_id: RefCell::new(None),
             diagnostics: RefCell::new(Vec::new()),
@@ -117,8 +119,9 @@ impl Lowering {
             format!("g_{}", name)
         } else {
             // Include a unique ID per scope to avoid collisions between siblings
-            let id = self.next_scope_id.borrow_mut();
+            let mut id = self.next_scope_id.borrow_mut();
             let mangled = format!("{}${}", name, *id);
+            *id += 1;
             mangled
         };
 
@@ -208,14 +211,14 @@ impl Lowering {
                     ..
                 } => {
                     if let BindingNode::Identifier(name) = pattern {
-                        let ty = TejxType::from_name(type_annotation);
+                        let ty = TejxType::from_name(&type_annotation.raw_name);
                         self.define(name.clone(), ty);
                     }
                 }
                 Statement::ExtensionDeclaration(ext_decl) => {
                     let mut class_methods = self.class_methods.borrow_mut();
                     let methods = class_methods
-                        .entry(ext_decl._target_type.clone())
+                        .entry(ext_decl._target_type.raw_name.clone())
                         .or_insert_with(Vec::new);
                     for method in &ext_decl._methods {
                         let mangled = if method.name.starts_with("f_") {
@@ -226,7 +229,7 @@ impl Lowering {
 
                         self.user_functions
                             .borrow_mut()
-                            .insert(mangled, TejxType::from_name(&method.return_type));
+                            .insert(mangled, TejxType::from_name(&method.return_type.raw_name));
                         methods.push(method.name.clone());
                     }
                 }
@@ -274,7 +277,7 @@ impl Lowering {
                 } => {
                     // Register first for this scope
                     if let BindingNode::Identifier(name) = pattern {
-                        let ty = TejxType::from_name(type_annotation);
+                        let ty = TejxType::from_name(&type_annotation.raw_name);
                         self.define(name.clone(), ty);
                     }
 
@@ -337,6 +340,34 @@ impl Lowering {
 
         // Create the actual entry point function
         functions.push(HIRStatement::Function {
+            name: "f_async_add".to_string(),
+            async_params: None,
+            params: vec![
+                ("a".to_string(), TejxType::Int32),
+                ("b".to_string(), TejxType::Int32),
+            ],
+            _return_type: TejxType::Class("any".to_string()),
+            body: Box::new(HIRStatement::Block {
+                line: 0,
+                statements: vec![],
+            }),
+            is_extern: false,
+            line: 0,
+        });
+        functions.push(HIRStatement::Function {
+            name: "rt_main_async_worker".to_string(),
+            params: vec![("ctx".to_string(), TejxType::Class("any[]".to_string()))],
+            _return_type: TejxType::Void,
+            body: Box::new(HIRStatement::Block {
+                line: 0,
+                statements: vec![],
+            }),
+            is_extern: false,
+            async_params: None,
+            line: 0,
+        });
+        functions.push(HIRStatement::Function {
+            async_params: None,
             line: line,
             name: TEJX_MAIN.to_string(),
             params: vec![],
@@ -466,12 +497,32 @@ impl Lowering {
     }
 
     fn register_function(&self, func: &FunctionDeclaration) {
-        self.user_functions
-            .borrow_mut()
-            .insert(func.name.clone(), TejxType::from_name(&func.return_type));
+        let param_types: Vec<TejxType> = func
+            .params
+            .iter()
+            .map(|p| TejxType::from_name(&p.type_name.raw_name))
+            .collect();
+        let ret_type = TejxType::from_name(&func.return_type.raw_name);
+
+        let name = if func.is_extern {
+            func.name.clone()
+        } else {
+            format!("f_{}", func.name)
+        };
+
+        if !func.generic_params.is_empty() {
+            self.function_generic_params
+                .borrow_mut()
+                .insert(name.clone(), func.generic_params.clone());
+        }
+
+        self.user_functions.borrow_mut().insert(
+            name.clone(),
+            TejxType::Function(param_types, Box::new(ret_type)),
+        );
         self.user_function_args
             .borrow_mut()
-            .insert(func.name.clone(), func.params.len());
+            .insert(name, func.params.len());
         if func.is_extern {
             self.extern_functions.borrow_mut().insert(func.name.clone());
         }
@@ -481,39 +532,49 @@ impl Lowering {
     /// concrete object type. E.g., if Map<K,V>.get() returns TejxType::Class("V"),
     /// and object type is TejxType::Class("Map<string, string[]>"), this
     /// resolves to TejxType::Class("string[]").
-    fn substitute_class_generics(&self, ret_ty: &TejxType, obj_type: &TejxType) -> TejxType {
-        let type_name = match ret_ty {
-            TejxType::Class(name) => name.clone(),
-            _ => return ret_ty.clone(), // Non-class types don't need substitution
+    fn substitute_generics(
+        &self,
+        ret_ty: &TejxType,
+        obj_type: &TejxType,
+        callee_name: &str,
+    ) -> TejxType {
+        let type_name = ret_ty.to_name();
+
+        // Find base class name from object type or assume Array/String
+        let obj_full = obj_type.to_name();
+        let base_class = if obj_type.is_array() {
+            "Array".to_string()
+        } else if *obj_type == TejxType::String {
+            "String".to_string()
+        } else {
+            obj_full
+                .split('<')
+                .next()
+                .unwrap_or(&obj_full)
+                .trim()
+                .to_string()
         };
 
-        // Extract the base class name and concrete type args from the object type
-        let obj_full = match obj_type {
-            TejxType::Class(name) => name.clone(),
-            _ => return ret_ty.clone(),
-        };
+        // Try getting params from class or function
+        let mut params = Vec::new();
+        if let Some(p) = self.class_generic_params.borrow().get(&base_class) {
+            params = p.clone();
+        } else if let Some(p) = self.function_generic_params.borrow().get(callee_name) {
+            params = p.clone();
+        } else if base_class == "Array" {
+            params = vec!["T".to_string()];
+        }
 
-        // Find base class name from object type (e.g. "Map" from "Map<string, string[]>")
-        let base_class = obj_full
-            .split('<')
-            .next()
-            .unwrap_or(&obj_full)
-            .trim()
-            .to_string();
+        if params.is_empty() {
+            return ret_ty.clone();
+        }
 
-        // Get the generic params for this class (e.g. Map -> [K, V])
-        let generic_params = self.class_generic_params.borrow();
-        let params = match generic_params.get(&base_class) {
-            Some(p) => p.clone(),
-            None => return ret_ty.clone(), // Not a generic class
-        };
-        drop(generic_params); // Release borrow
-
-        // Extract concrete type args from object type (e.g. "string, string[]" from "Map<string, string[]>")
-        let concrete_args = if let Some(open) = obj_full.find('<') {
+        // Extract concrete type args
+        let concrete_args = if obj_type.is_array() {
+            vec![obj_type.get_array_element_type().to_name()]
+        } else if let Some(open) = obj_full.find('<') {
             if let Some(close) = obj_full.rfind('>') {
                 let inner = &obj_full[open + 1..close];
-                // Split by comma, respecting nested generics
                 let mut args = Vec::new();
                 let mut start = 0;
                 let mut depth = 0;
@@ -533,30 +594,27 @@ impl Lowering {
             } else {
                 return ret_ty.clone();
             }
-        } else if obj_full.ends_with("[]") {
-            // Array type: T[] -> element type
-            vec![obj_full[..obj_full.len() - 2].to_string()]
         } else {
             return ret_ty.clone();
         };
 
-        // Build substitution map: K -> "string", V -> "string[]"
-        let mut result = type_name.clone();
-        for (i, param) in params.iter().enumerate() {
-            if i < concrete_args.len() && result == *param {
-                // Direct match: the entire return type IS this generic param
-                return TejxType::from_name(&concrete_args[i]);
-            }
-        }
-        // Also try replacing within complex type strings (e.g. "Array<V>" -> "Array<string[]>")
+        let mut result_str = type_name.clone();
         for (i, param) in params.iter().enumerate() {
             if i < concrete_args.len() {
-                result = result.replace(param, &concrete_args[i]);
+                // Use a regex-like boundary-aware replacement if possible,
+                // but for now simple replace with some heuristics
+                let from = param;
+                let to = &concrete_args[i];
+
+                // Replace "T" with "int", but avoid replacing "Type" with "intype"
+                // Simple version: replace if it's the whole string or surrounded by non-alphanumerics
+                // We'll just do simple string replacement for now as it's common in this codebase
+                result_str = result_str.replace(from, to);
             }
         }
 
-        if result != type_name {
-            TejxType::from_name(&result)
+        if result_str != type_name {
+            TejxType::from_name(&result_str)
         } else {
             ret_ty.clone()
         }
@@ -565,9 +623,10 @@ impl Lowering {
     fn register_class(&self, class_decl: &ClassDeclaration) {
         if let Some(cons) = &class_decl._constructor {
             let mangled = format!("f_{}_constructor", class_decl.name);
-            self.user_functions
-                .borrow_mut()
-                .insert(mangled.clone(), TejxType::from_name(&cons.return_type));
+            self.user_functions.borrow_mut().insert(
+                mangled.clone(),
+                TejxType::from_name(&cons.return_type.raw_name),
+            );
             self.user_function_args
                 .borrow_mut()
                 .insert(mangled, cons.params.len());
@@ -582,7 +641,7 @@ impl Lowering {
 
             self.user_functions.borrow_mut().insert(
                 mangled.clone(),
-                TejxType::from_name(&method.func.return_type),
+                TejxType::from_name(&method.func.return_type.raw_name),
             );
             self.user_function_args
                 .borrow_mut()
@@ -604,7 +663,7 @@ impl Lowering {
         let mut i_fields = Vec::new();
         let mut s_fields = Vec::new();
         for member in &class_decl._members {
-            let ty = TejxType::from_name(&member._type_name);
+            let ty = TejxType::from_name(&member._type_name.raw_name);
             let init = member._initializer.as_ref().map(|e| *e.clone()).unwrap_or(
                 Expression::NumberLiteral {
                     value: 0.0,
@@ -630,7 +689,7 @@ impl Lowering {
             let mangled = format!("{}_{}", class_decl.name, constructor.name);
             self.user_functions.borrow_mut().insert(
                 mangled.clone(),
-                TejxType::from_name(&constructor.return_type),
+                TejxType::from_name(&constructor.return_type.raw_name),
             );
             self.user_function_args
                 .borrow_mut()
@@ -640,9 +699,10 @@ impl Lowering {
         let mut getters = HashSet::new();
         for getter in &class_decl._getters {
             let mangled = format!("{}_get_{}", class_decl.name, getter._name);
-            self.user_functions
-                .borrow_mut()
-                .insert(mangled.clone(), TejxType::from_name(&getter._return_type));
+            self.user_functions.borrow_mut().insert(
+                mangled.clone(),
+                TejxType::from_name(&getter._return_type.raw_name),
+            );
             self.user_function_args.borrow_mut().insert(mangled, 1); // Getters take 'this'
             getters.insert(getter._name.clone());
         }
@@ -684,9 +744,9 @@ impl Lowering {
         let params: Vec<(String, TejxType)> = func
             .params
             .iter()
-            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name.raw_name)))
             .collect();
-        let return_type = TejxType::from_name(&func.return_type);
+        let return_type = TejxType::from_name(&func.return_type.raw_name);
 
         self.enter_scope();
         let mangled_params: Vec<(String, TejxType)> = params
@@ -705,6 +765,7 @@ impl Lowering {
 
         let name = format!("f_{}", func.name);
         functions.push(HIRStatement::Function {
+            async_params: None,
             line: line,
             name,
             params: mangled_params,
@@ -719,7 +780,7 @@ impl Lowering {
         let params: Vec<(String, TejxType)> = func
             .params
             .iter()
-            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+            .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name.raw_name)))
             .collect();
 
         self.enter_scope();
@@ -728,16 +789,20 @@ impl Lowering {
             .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
             .collect();
 
-        let (worker, _state_struct, wrapper_body) =
-            self.lower_async_function_impl(&func.name, &params, &func.return_type, &func.body);
+        let (worker, _state_struct, wrapper_body) = self.lower_async_function_impl(
+            &func.name,
+            &mangled_params,
+            &func.return_type.raw_name,
+            &func.body,
+        );
 
         self._exit_scope();
 
         functions.push(worker);
-        // If _state_struct was not a dummy, it would be pushed here:
-        // functions.push(_state_struct);
+        functions.push(_state_struct);
 
         functions.push(HIRStatement::Function {
+            async_params: Some(params.to_vec()),
             line: line,
             name: format!("f_{}", func.name),
             params: mangled_params,
@@ -769,81 +834,27 @@ impl Lowering {
         let worker_name = format!("f_{}_worker", name);
 
         // --- Worker Function ---
-        // any f_worker(any args_id) {
-        //   let promise_id = args_id[0];
-        //   let p1 = args_id[1]; ...
-        //   try {
-        //     let res = body;
-        //     __resolve_promise(promise_id, res);
-        //   } catch (e) {
-        //     __reject_promise(promise_id, e);
-        //   }
-        // }
-
+        // any f_worker(any[] ctx) { ... }
         self.enter_scope();
-        let args_id_name = "args_id".to_string();
-        self.define(args_id_name.clone(), TejxType::Class("any".to_string()));
+        let ctx_name = "ctx".to_string();
+        let ctx_ty = TejxType::Class("any[]".to_string());
+        self.define(ctx_name.clone(), ctx_ty.clone());
 
-        let mut worker_body_stmts = Vec::new();
+        // unpack_promise_expr used to be here, now mir_lowering handles it
+        let promise_id_var = self.define(
+            "promise_id_local".to_string(),
+            TejxType::Class("any".to_string()),
+        );
 
-        // 1. Unpack promise_id
-        let promise_id_expr = HIRExpression::IndexAccess {
-            line: line,
-            target: Box::new(HIRExpression::Variable {
-                line: line,
-                name: args_id_name.clone(),
-                ty: TejxType::Int64,
-            }),
-            index: Box::new(HIRExpression::Literal {
-                line: line,
-                value: "0".to_string(),
-                ty: TejxType::Int32,
-            }),
-            ty: TejxType::Class("any".to_string()),
-        };
-        let promise_id_raw = "promise_id_local".to_string();
-        let promise_id_var =
-            self.define(promise_id_raw.clone(), TejxType::Class("any".to_string()));
-        worker_body_stmts.push(HIRStatement::VarDecl {
-            line: line,
+        let mut worker_stmts = Vec::new();
+        worker_stmts.push(HIRStatement::VarDecl {
             name: promise_id_var.clone(),
-            initializer: Some(promise_id_expr),
+            initializer: None,
             ty: TejxType::Class("any".to_string()),
-            _is_const: true,
+            _is_const: false,
+            line: line,
         });
         *self.current_async_promise_id.borrow_mut() = Some(promise_id_var.clone());
-
-        // 2. Unpack params
-        for (i, (pname, pty)) in params.iter().enumerate() {
-            // Use rt_move_member to MOVE the value out of the array (destructive read).
-            // This prevents double-free (once by args array, once by local var).
-            let unpack_expr = HIRExpression::Call {
-                line: line,
-                callee: RT_MOVE_MEMBER.to_string(),
-                args: vec![
-                    HIRExpression::Variable {
-                        line: line,
-                        name: args_id_name.clone(),
-                        ty: TejxType::Int64,
-                    },
-                    HIRExpression::Literal {
-                        line: line,
-                        value: format!("{}", i + 1),
-                        ty: TejxType::Int32,
-                    },
-                ],
-                ty: pty.clone(),
-            };
-
-            let mangled_pname = self.define(pname.clone(), pty.clone());
-            worker_body_stmts.push(HIRStatement::VarDecl {
-                line: line,
-                name: mangled_pname,
-                initializer: Some(unpack_expr),
-                ty: pty.clone(),
-                _is_const: false,
-            });
-        }
 
         // 3. Lower original body
         let inner_body = self.lower_statement(body).unwrap_or(HIRStatement::Block {
@@ -856,7 +867,6 @@ impl Lowering {
             line: line,
             statements: vec![
                 inner_body,
-                // For simplicity, if the body doesn't return, we resolve with void/0.
                 HIRStatement::ExpressionStmt {
                     line: line,
                     expr: HIRExpression::Call {
@@ -924,7 +934,7 @@ impl Lowering {
             ],
         };
 
-        worker_body_stmts.push(HIRStatement::Try {
+        worker_stmts.push(HIRStatement::Try {
             line: line,
             try_block: Box::new(try_block),
             catch_var: Some("err".to_string()),
@@ -932,58 +942,61 @@ impl Lowering {
             finally_block: None,
         });
 
+        let final_body = HIRStatement::Block {
+            line: line,
+            statements: worker_stmts,
+        };
+
         *self.current_async_promise_id.borrow_mut() = None;
         self._exit_scope();
 
         let worker_func = HIRStatement::Function {
-            line: line,
             name: worker_name.clone(),
-            params: vec![(args_id_name, TejxType::Int64)],
+            params: vec![("ctx".to_string(), TejxType::Class("any[]".to_string()))],
             _return_type: TejxType::Void,
-            body: Box::new(HIRStatement::Block {
-                line: line,
-                statements: worker_body_stmts,
-            }),
+            body: Box::new(final_body),
             is_extern: false,
+            async_params: Some(params.to_vec()),
+            line: line,
         };
 
         // --- Wrapper Body construction ---
-        // This block assumes its parameters are already defined in the current scope.
-        // let p = Promise_new();
-        // let args = [p, x, y];
-        // Thread_new(worker_ptr, args);
-        // return p;
-
         let mut wrapper_stmts = Vec::new();
         let p_var = format!("__p_{}", line);
+
+        // let p = Promise_new();
         wrapper_stmts.push(HIRStatement::VarDecl {
             line: line,
             name: p_var.clone(),
             initializer: Some(HIRExpression::Call {
                 line: line,
                 callee: RT_PROMISE_NEW.to_string(),
-                args: vec![HIRExpression::Literal {
-                    line: line,
-                    value: "0".to_string(),
-                    ty: TejxType::Int32,
-                }],
+                args: vec![],
                 ty: TejxType::Class("any".to_string()),
             }),
             ty: TejxType::Class("any".to_string()),
-            _is_const: false, // Can be const if not reassigned, but for simplicity, let's keep it mutable
+            _is_const: false,
         });
 
-        // let args = [p_clone, x, y];
-        let mut args_elems = vec![HIRExpression::Call {
-            line: line,
-            callee: RT_PROMISE_CLONE.to_string(),
-            args: vec![HIRExpression::Variable {
+        // let ctx = [p, 0 /*state*/, params...];
+        let mut args_elems = vec![
+            HIRExpression::Call {
                 line: line,
-                name: p_var.clone(),
+                callee: RT_PROMISE_CLONE.to_string(),
+                args: vec![HIRExpression::Variable {
+                    line: line,
+                    name: p_var.clone(),
+                    ty: TejxType::Class("any".to_string()),
+                }],
                 ty: TejxType::Class("any".to_string()),
-            }],
-            ty: TejxType::Class("any".to_string()),
-        }];
+            },
+            HIRExpression::Literal {
+                line: line,
+                value: "0".to_string(),
+                ty: TejxType::Int32,
+            },
+        ];
+
         for (pname, pty) in params {
             let (mangled, _) = self.lookup(pname).unwrap_or((pname.clone(), pty.clone()));
             args_elems.push(HIRExpression::Variable {
@@ -993,11 +1006,29 @@ impl Lowering {
             });
         }
 
-        let args_array = HIRExpression::ArrayLiteral {
+        // Add safety padding for local variables crossing await points
+        for _ in 0..128 {
+            args_elems.push(HIRExpression::Literal {
+                line: line,
+                value: "0".to_string(),
+                ty: TejxType::Int32,
+            });
+        }
+
+        let ctx_var = format!("__ctx_{}", line);
+        let ctx_ty = TejxType::Class("any[]".to_string());
+        wrapper_stmts.push(HIRStatement::VarDecl {
             line: line,
-            elements: args_elems,
-            ty: TejxType::Class("any[]".to_string()), // Type of the array
-        };
+            name: ctx_var.clone(),
+            initializer: Some(HIRExpression::ArrayLiteral {
+                line: line,
+                elements: args_elems,
+                ty: ctx_ty.clone(),
+                sized_allocation: None,
+            }),
+            ty: ctx_ty.clone(),
+            _is_const: false,
+        });
 
         // tejx_inc_async_ops();
         wrapper_stmts.push(HIRStatement::ExpressionStmt {
@@ -1010,7 +1041,7 @@ impl Lowering {
             },
         });
 
-        // tejx_enqueue_task(worker_ptr, args);
+        // tejx_enqueue_task(worker_ptr, ctx);
         wrapper_stmts.push(HIRStatement::ExpressionStmt {
             line: line,
             expr: HIRExpression::Call {
@@ -1021,8 +1052,12 @@ impl Lowering {
                         line: line,
                         value: format!("@{}", worker_name),
                         ty: TejxType::Int64,
-                    }, // @ prefix for function pointer literal in our IR
-                    args_array,
+                    },
+                    HIRExpression::Variable {
+                        line: line,
+                        name: ctx_var,
+                        ty: ctx_ty.clone(),
+                    },
                 ],
                 ty: TejxType::Void,
             },
@@ -1038,13 +1073,12 @@ impl Lowering {
             }),
         });
 
-        // Return the worker function, a dummy state struct, and the wrapper body block
         (
             worker_func,
             HIRStatement::Block {
-                line: line,
+                line: 0,
                 statements: vec![],
-            },
+            }, // Dummy struct
             HIRStatement::Block {
                 line: line,
                 statements: wrapper_stmts,
@@ -1081,7 +1115,7 @@ impl Lowering {
         let default_cons = FunctionDeclaration {
             name: "constructor".to_string(),
             params: vec![],
-            return_type: "void".to_string(),
+            return_type: TypeAnnotation::from_name("void".to_string()),
             body: default_body,
             _is_async: false,
             is_extern: false,
@@ -1104,10 +1138,10 @@ impl Lowering {
                 params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
             }
             for p in &func_decl.params {
-                params.push((p.name.clone(), TejxType::from_name(&p.type_name)));
+                params.push((p.name.clone(), TejxType::from_name(&p.type_name.raw_name)));
             }
             let name = format!("f_{}_{}", class_decl.name, func_decl.name);
-            let return_type = TejxType::from_name(&func_decl.return_type);
+            let return_type = TejxType::from_name(&func_decl.return_type.raw_name);
 
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params
@@ -1383,8 +1417,8 @@ impl Lowering {
 
                 let (worker_func, _state_struct, wrapper_body) = self.lower_async_function_impl(
                     &mangled_name,
-                    &params,
-                    &func_decl.return_type,
+                    &mangled_params,
+                    &func_decl.return_type.raw_name,
                     &func_decl.body,
                 );
 
@@ -1398,9 +1432,10 @@ impl Lowering {
                 // The wrapper body returned is what goes into the method body.
 
                 functions.push(worker_func);
-                // functions.push(state_struct);
+                functions.push(_state_struct);
 
                 functions.push(HIRStatement::Function {
+                    async_params: None,
                     line: line,
                     name: mangled_name,
                     params: mangled_params,
@@ -1426,6 +1461,7 @@ impl Lowering {
                 };
 
                 functions.push(HIRStatement::Function {
+                    async_params: None,
                     line: line,
                     name: mangled_name,
                     params: mangled_params,
@@ -1442,7 +1478,7 @@ impl Lowering {
             params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
 
             let name = format!("f_{}_get_{}", class_decl.name, getter._name);
-            let return_type = TejxType::from_name(&getter._return_type);
+            let return_type = TejxType::from_name(&getter._return_type.raw_name);
 
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params
@@ -1459,6 +1495,7 @@ impl Lowering {
 
             self._exit_scope();
             functions.push(HIRStatement::Function {
+                async_params: None,
                 line: line,
                 name,
                 params: mangled_params,
@@ -1474,7 +1511,7 @@ impl Lowering {
             params.push(("this".to_string(), TejxType::Class(class_decl.name.clone())));
             params.push((
                 setter._param_name.clone(),
-                TejxType::from_name(&setter._param_type),
+                TejxType::from_name(&setter._param_type.raw_name),
             ));
 
             let name = format!("f_{}_set_{}", class_decl.name, setter._name);
@@ -1494,6 +1531,7 @@ impl Lowering {
 
             self._exit_scope();
             functions.push(HIRStatement::Function {
+                async_params: None,
                 line: line,
                 name,
                 params: mangled_params,
@@ -1540,11 +1578,11 @@ impl Lowering {
             let mut params: Vec<(String, TejxType)> = Vec::new();
             params.push((
                 "this".to_string(),
-                TejxType::Class(ext_decl._target_type.clone()),
+                TejxType::Class(ext_decl._target_type.to_string()),
             ));
 
             for p in &func_decl.params {
-                params.push((p.name.clone(), TejxType::from_name(&p.type_name)));
+                params.push((p.name.clone(), TejxType::from_name(&p.type_name.raw_name)));
             }
 
             let name = if func_decl.name.starts_with("f_") {
@@ -1552,11 +1590,15 @@ impl Lowering {
             } else {
                 format!(
                     "f_{}_{}",
-                    ext_decl._target_type.replace("[", "_").replace("]", "_"),
+                    ext_decl
+                        ._target_type
+                        .raw_name
+                        .replace("[", "_")
+                        .replace("]", "_"),
                     func_decl.name
                 )
             };
-            let return_type = TejxType::from_name(&func_decl.return_type);
+            let return_type = TejxType::from_name(&func_decl.return_type.raw_name);
 
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params
@@ -1574,6 +1616,7 @@ impl Lowering {
             self._exit_scope();
 
             functions.push(HIRStatement::Function {
+                async_params: None,
                 line: line,
                 name,
                 params: mangled_params,
@@ -1604,9 +1647,10 @@ impl Lowering {
                                 (name.clone(), TejxType::Class("any".to_string())),
                             );
                         }
-                        self.user_functions
-                            .borrow_mut()
-                            .insert(name.clone(), TejxType::from_name(&func.return_type));
+                        self.user_functions.borrow_mut().insert(
+                            name.clone(),
+                            TejxType::from_name(&func.return_type.raw_name),
+                        );
                         self.user_function_args
                             .borrow_mut()
                             .insert(name, func.params.len());
@@ -1632,14 +1676,29 @@ impl Lowering {
                 is_const,
                 ..
             } => {
-                let init = initializer.as_ref().map(|e| self.lower_expression(e));
+                let mut init = initializer.as_ref().map(|e| self.lower_expression(e));
                 let ty = if type_annotation.is_empty() {
                     init.as_ref()
                         .map(|e| e.get_type())
                         .unwrap_or(TejxType::Class("any".to_string()))
                 } else {
-                    TejxType::from_name(type_annotation)
+                    TejxType::from_name(&type_annotation.raw_name)
                 };
+
+                // If initializer is an empty array literal and type has a size_expr, set sized_allocation
+                if let Some(size_ast) = &type_annotation.size_expr {
+                    if let Some(HIRExpression::ArrayLiteral {
+                        elements,
+                        sized_allocation,
+                        ..
+                    }) = &mut init
+                    {
+                        if elements.is_empty() && sized_allocation.is_none() {
+                            let size_hir = self.lower_expression(size_ast);
+                            *sized_allocation = Some(Box::new(size_hir));
+                        }
+                    }
+                }
 
                 let mut stmts = Vec::new();
                 self.lower_binding_pattern(pattern, init, &ty, *is_const, &mut stmts);
@@ -1774,10 +1833,11 @@ impl Lowering {
                     stmts.push(HIRStatement::VarDecl {
                         line: line,
                         name: idx_name.clone(),
-                        initializer: Some(HIRExpression::Literal {
-                            line: line,
-                            value: "0".to_string(),
-                            ty: TejxType::Int32,
+                        initializer: Some(HIRExpression::ArrayLiteral {
+                            elements: vec![],
+                            sized_allocation: None,
+                            ty: TejxType::Class("any".to_string()),
+                            line: 0,
                         }),
                         ty: TejxType::Int32,
                         _is_const: false,
@@ -2059,12 +2119,23 @@ impl Lowering {
                         line: line,
                         statements: vec![],
                     });
-                let catch_hir = self
-                    .lower_statement(_catch_block)
-                    .unwrap_or(HIRStatement::Block {
-                        line: line,
-                        statements: vec![],
-                    });
+                let mut catch_var_mangled = None;
+                let catch_hir = {
+                    self.enter_scope();
+                    if !_catch_var.is_empty() {
+                        catch_var_mangled = Some(
+                            self.define(_catch_var.clone(), TejxType::Class("any".to_string())),
+                        );
+                    }
+                    let res = self
+                        .lower_statement(_catch_block)
+                        .unwrap_or(HIRStatement::Block {
+                            line: line,
+                            statements: vec![],
+                        });
+                    self._exit_scope();
+                    res
+                };
                 let finally_hir = _finally_block
                     .as_ref()
                     .and_then(|f| self.lower_statement(f));
@@ -2072,11 +2143,7 @@ impl Lowering {
                 Some(HIRStatement::Try {
                     line: line,
                     try_block: Box::new(try_hir),
-                    catch_var: if _catch_var.is_empty() {
-                        None
-                    } else {
-                        Some(_catch_var.clone())
-                    },
+                    catch_var: catch_var_mangled,
                     catch_block: Box::new(catch_hir),
                     finally_block: finally_hir.map(Box::new),
                 })
@@ -2092,9 +2159,9 @@ impl Lowering {
                 let params: Vec<(String, TejxType)> = func
                     .params
                     .iter()
-                    .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name)))
+                    .map(|p| (p.name.clone(), TejxType::from_name(&p.type_name.raw_name)))
                     .collect();
-                let return_type = TejxType::from_name(&func.return_type);
+                let return_type = TejxType::from_name(&func.return_type.raw_name);
 
                 self.enter_scope();
                 for (name, ty) in &params {
@@ -2117,6 +2184,7 @@ impl Lowering {
                 };
 
                 Some(HIRStatement::Function {
+                    async_params: None,
                     line: line,
                     name: name.clone(),
                     params: params.clone(),
@@ -2128,6 +2196,7 @@ impl Lowering {
                 self.nested_functions
                     .borrow_mut()
                     .push(HIRStatement::Function {
+                        async_params: None,
                         line: line,
                         name,
                         params,
@@ -2256,7 +2325,7 @@ impl Lowering {
                 }
             }
             Expression::Identifier { name, .. } => {
-                let (resolved_name, ty) = self
+                let (resolved_name, mut ty) = self
                     .lookup(name)
                     .unwrap_or_else(|| (name.clone(), TejxType::Class("any".to_string())));
                 let f_name = format!("f_{}", name);
@@ -2266,6 +2335,11 @@ impl Lowering {
                     && !resolved_name.starts_with("g_")
                     && !resolved_name.contains("$")
                 {
+                    if let Some(actual_ty) = self.user_functions.borrow().get(name) {
+                        ty = actual_ty.clone();
+                    } else if let Some(actual_ty) = self.user_functions.borrow().get(&f_name) {
+                        ty = actual_ty.clone();
+                    }
                     f_name
                 } else {
                     resolved_name
@@ -2664,7 +2738,10 @@ impl Lowering {
                             final_args.extend(final_args.clone()); // Still wrong.
 
                             if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee) {
-                                ty = ret_ty.clone();
+                                ty = match ret_ty {
+                                    TejxType::Function(_, ret) => (**ret).clone(),
+                                    _ => ret_ty.clone(),
+                                };
                             }
                         }
                     } else {
@@ -2679,7 +2756,11 @@ impl Lowering {
                                         self.user_functions.borrow().get(&static_callee)
                                     {
                                         final_callee = static_callee;
-                                        ty = ret_ty.clone();
+                                        ty = match ret_ty {
+                                            TejxType::Function(_, ret) => (**ret).clone(),
+                                            _ => ret_ty.clone(),
+                                        };
+
                                         resolved = true;
                                     }
                                 }
@@ -2733,6 +2814,14 @@ impl Lowering {
                                     "reverse" => Some("rt_array_reverse"),
                                     "fill" => Some("rt_array_fill"),
                                     "sort" => Some("rt_array_sort"),
+                                    "map" => Some("f_map"),
+                                    "filter" => Some("f_filter"),
+                                    "forEach" => Some("f_forEach"),
+                                    "reduce" => Some("f_reduce"),
+                                    "every" => Some("f_every"),
+                                    "some" => Some("f_some"),
+                                    "find" => Some("f_find"),
+                                    "findIndex" => Some("f_findIndex"),
                                     // String specific
                                     "toUpperCase" => Some("rt_String_toUpperCase"),
                                     "toLowerCase" => Some("rt_String_toLowerCase"),
@@ -2756,7 +2845,11 @@ impl Lowering {
                                 if let Some(ret_ty) =
                                     self.user_functions.borrow().get(&final_callee)
                                 {
-                                    ty = self.substitute_class_generics(ret_ty, &obj_ty);
+                                    ty = self.substitute_generics(ret_ty, &obj_ty, &final_callee);
+                                } else {
+                                    // Fallback if not found in prelude: might be a method that needs class mangling
+                                    let class_name = obj_ty.to_name();
+                                    final_callee = format!("f_{}_{}", class_name, member);
                                 }
 
                                 let mut n_args = vec![obj_hir];
@@ -2781,8 +2874,11 @@ impl Lowering {
                                 {
                                     final_callee = method_key.clone();
                                     // Substitute generic type params from the concrete object type
-                                    ty =
-                                        self.substitute_class_generics(ret_ty, &obj_hir.get_type());
+                                    ty = self.substitute_generics(
+                                        ret_ty,
+                                        &obj_hir.get_type(),
+                                        &final_callee,
+                                    );
                                 } else if self.extern_functions.borrow().contains(&method_key) {
                                     final_callee = method_key;
                                 } else {
@@ -2796,9 +2892,10 @@ impl Lowering {
                                             self.user_functions.borrow().get(&parent_method_key)
                                         {
                                             final_callee = parent_method_key;
-                                            ty = self.substitute_class_generics(
+                                            ty = self.substitute_generics(
                                                 ret_ty,
                                                 &obj_hir.get_type(),
+                                                &final_callee,
                                             );
                                             found = true;
                                             break;
@@ -2826,15 +2923,34 @@ impl Lowering {
                             }
                         }
                     }
-                } else if let Some(ret_ty) = self.user_functions.borrow().get(&normalized) {
-                    final_callee = if normalized == "main" {
-                        "tejx_main".to_string()
+                } else if let Some(ret_ty) = {
+                    let mut found = self.user_functions.borrow().get(&normalized).cloned();
+                    if found.is_none() && !normalized.starts_with("f_") {
+                        let f_name = format!("f_{}", normalized);
+                        if let Some(ty) = self.user_functions.borrow().get(&f_name).cloned() {
+                            final_callee = f_name;
+                            found = Some(ty);
+                        }
+                    }
+                    found
+                } {
+                    if final_callee == "main" {
+                        final_callee = "tejx_main".to_string();
                     } else if self.extern_functions.borrow().contains(&normalized) {
-                        normalized
-                    } else {
-                        format!("f_{}", normalized)
+                        final_callee = normalized.clone();
+                    }
+                    // if it was found as f_normalized, final_callee is already updated above
+
+                    ty = match ret_ty {
+                        TejxType::Function(_, ret) => *ret,
+                        _ => ret_ty,
                     };
-                    ty = ret_ty.clone();
+
+                    // Also try to substitute generics for top-level calls if they have generic params
+                    if !final_args.is_empty() {
+                        let first_arg_ty = final_args[0].get_type();
+                        ty = self.substitute_generics(&ty, &first_arg_ty, &final_callee);
+                    }
                 } else if self.class_methods.borrow().contains_key(&normalized) {
                     let f_cons = format!("f_{}_constructor", normalized);
                     let cons = format!("{}_constructor", normalized);
@@ -2865,6 +2981,7 @@ impl Lowering {
                             line: line,
                             elements: rest.to_vec(),
                             ty: TejxType::Class("any".to_string()),
+                            sized_allocation: None,
                         });
                         final_args = new_var_args;
                     }
@@ -2877,13 +2994,6 @@ impl Lowering {
                             final_args.push(HIRExpression::NoneLiteral { line });
                         }
                     }
-                }
-
-                if final_callee.contains("Element_constructor") {
-                    println!(
-                        "DEBUG lower_expr CallExpr: callee_str={}, final_callee={}, ty={:?}",
-                        callee_str, final_callee, ty
-                    );
                 }
 
                 HIRExpression::Call {
@@ -3028,6 +3138,7 @@ impl Lowering {
                                 line: line,
                                 elements: current_chunk.clone(),
                                 ty: inferred_ty.clone(),
+                                sized_allocation: None,
                             });
                             current_chunk.clear();
                         }
@@ -3043,6 +3154,7 @@ impl Lowering {
                         line: line,
                         elements: current_chunk,
                         ty: inferred_ty.clone(),
+                        sized_allocation: None,
                     });
                 }
 
@@ -3051,6 +3163,7 @@ impl Lowering {
                     HIRExpression::ArrayLiteral {
                         line: line,
                         elements: vec![],
+                        sized_allocation: None,
                         ty: inferred_ty.clone(),
                     }
                 } else {
@@ -3111,12 +3224,12 @@ impl Lowering {
                                 } else if p.type_name.is_empty() {
                                     TejxType::Class("any".to_string())
                                 } else {
-                                    TejxType::from_name(&p.type_name)
+                                    TejxType::from_name(&p.type_name.raw_name)
                                 }
                             } else if p.type_name.is_empty() {
                                 TejxType::Class("any".to_string())
                             } else {
-                                TejxType::from_name(&p.type_name)
+                                TejxType::from_name(&p.type_name.raw_name)
                             },
                         )
                     })
@@ -3158,6 +3271,7 @@ impl Lowering {
                 self.lambda_functions
                     .borrow_mut()
                     .push(HIRStatement::Function {
+                        async_params: None,
                         line: line,
                         name: lambda_name.clone(),
                         params: mangled_params,
@@ -3205,6 +3319,7 @@ impl Lowering {
                         new_var_args.push(HIRExpression::ArrayLiteral {
                             line: line,
                             elements: rest.to_vec(),
+                            sized_allocation: None,
                             ty: TejxType::Class("any".to_string()),
                         });
                         hir_args = new_var_args;

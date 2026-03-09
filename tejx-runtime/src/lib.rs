@@ -1,7 +1,7 @@
 pub mod gc;
 pub use gc::{
-    GC_ROOTS_TOP, ObjectHeader, gc_allocate, rt_get_header, rt_init_gc, rt_is_gc_ptr, rt_pop_roots,
-    rt_push_root,
+    gc_allocate, rt_get_header, rt_init_gc, rt_is_gc_ptr, rt_pop_roots, rt_push_root,
+    rt_write_barrier, ObjectHeader,
 };
 
 #[no_mangle]
@@ -47,7 +47,6 @@ pub static BOOL_FALSE: i64 = 0;
 #[no_mangle]
 pub static BOOL_TRUE: i64 = 1;
 
-// --- Globals used by Codegen Cache ---
 #[no_mangle]
 pub static mut LAST_ID: i64 = 0;
 #[no_mangle]
@@ -269,7 +268,11 @@ pub unsafe extern "C" fn rt_array_slice(arr: i64, start: i64, end: i64) -> i64 {
     let arr_len = rt_len(arr);
     let s = if start < 0 {
         let v = arr_len + start;
-        if v < 0 { 0 } else { v }
+        if v < 0 {
+            0
+        } else {
+            v
+        }
     } else if start > arr_len {
         arr_len
     } else {
@@ -277,7 +280,11 @@ pub unsafe extern "C" fn rt_array_slice(arr: i64, start: i64, end: i64) -> i64 {
     };
     let e = if end < 0 {
         let v = arr_len + end;
-        if v < 0 { 0 } else { v }
+        if v < 0 {
+            0
+        } else {
+            v
+        }
     } else if end > arr_len {
         arr_len
     } else {
@@ -324,7 +331,7 @@ pub unsafe extern "C" fn rt_array_reverse(arr: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        printf("RuntimeError: Cannot reverse a constant array.\n\0".as_ptr() as *const _);
+        //printf("RuntimeError: Cannot reverse a constant array.\n\0".as_ptr() as *const _);
         exit(1);
     }
 
@@ -378,7 +385,7 @@ pub unsafe extern "C" fn rt_array_sort(arr: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        printf("RuntimeError: Cannot sort a constant array.\n\0".as_ptr() as *const _);
+        //printf("RuntimeError: Cannot sort a constant array.\n\0".as_ptr() as *const _);
         exit(1);
     }
 
@@ -388,9 +395,9 @@ pub unsafe extern "C" fn rt_array_sort(arr: i64) -> i64 {
         return arr;
     }
     let data = body as *mut i64; // Still i64 for sort?
-    // WARNING: sort_unstable only works for i64 slices here.
-    // If we have Array<int32>, this might be wrong if it's treating it as i64.
-    // However, the standard sort is usually for Any[].
+                                 // WARNING: sort_unstable only works for i64 slices here.
+                                 // If we have Array<int32>, this might be wrong if it's treating it as i64.
+                                 // However, the standard sort is usually for Any[].
     if elem_size == 8 {
         let slice = std::slice::from_raw_parts_mut(data, len as usize);
         slice.sort_unstable();
@@ -410,7 +417,7 @@ pub unsafe extern "C" fn rt_array_fill(arr: i64, val: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        printf("RuntimeError: Cannot fill a constant array.\n\0".as_ptr() as *const _);
+        //printf("RuntimeError: Cannot fill a constant array.\n\0".as_ptr() as *const _);
         exit(1);
     }
 
@@ -435,7 +442,7 @@ pub unsafe extern "C" fn rt_malloc(size: usize) -> *mut u8 {
     let header_size = std::mem::size_of::<ObjectHeader>();
     let p = calloc(1, size + header_size);
     if p.is_null() {
-        printf("FATAL: Out of memory\n\0".as_ptr() as *const _);
+        //printf("FATAL: Out of memory\n\0".as_ptr() as *const _);
         std::process::exit(1);
     }
     let header = p as *mut ObjectHeader;
@@ -488,12 +495,11 @@ pub unsafe extern "C" fn rt_free(val: i64) {
             rt_free_raw(data as *mut std::ffi::c_void);
         }
     } else if type_id == TAG_OBJECT {
-        let _cap = *ptr.offset(2); // Renamed 'cap' to '_cap'
-        let keys = *ptr.offset(3) as *mut i64;
-        let values = *ptr.offset(4) as *mut i64;
+        let _cap = *ptr.offset(1);
+        let keys = *ptr.offset(2) as *mut i64;
+        let values = *ptr.offset(3) as *mut i64;
         if !keys.is_null() {
             for i in 0.._cap {
-                // Use _cap here
                 let k = *keys.offset(i as isize);
                 if k != 0 {
                     rt_free(k);
@@ -534,6 +540,8 @@ pub unsafe extern "C" fn rt_box_int(n: i64) -> i64 {
 
     let ptr = body_ptr as *mut i64;
     *ptr = n;
+
+    fflush(std::ptr::null_mut());
 
     (body_ptr as i64) + HEAP_OFFSET
 }
@@ -611,6 +619,24 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_str_at(id: i64, index: i64) -> i64 {
+    if (id as u64) < (HEAP_OFFSET as u64) {
+        return rt_box_string("\0".as_ptr() as *const _);
+    }
+    let body = (id - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    let len = (*header).length as i64;
+    if index < 0 || index >= len {
+        return rt_box_string("\0".as_ptr() as *const _);
+    }
+    let c = *body.offset(index as isize);
+    let mut buf = [0u8; 2];
+    buf[0] = c;
+    buf[1] = 0;
+    rt_box_string(buf.as_ptr() as *const _)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_box_string(s: *const std::ffi::c_char) -> i64 {
     if s.is_null() {
         return 0;
@@ -653,6 +679,7 @@ pub unsafe extern "C" fn tejx_libc_puts(s_ptr: i64) -> i64 {
         let header = rt_get_header(body as *mut u8);
         if (*header).type_id == TAG_STRING as u16 {
             printf("%s\n\0".as_ptr() as *const _, body as *const _);
+            fflush(std::ptr::null_mut());
             return 0;
         }
     }
@@ -741,11 +768,11 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
                     break;
                 }
 
-                let current_keys = *current_ptr.offset(2) as *const i64;
-                let current_vals = *current_ptr.offset(3) as *const i64;
+                let current_keys = *current_ptr.offset(2);
+                let current_vals = *current_ptr.offset(3);
 
-                let mut k = *current_keys.offset(i as isize);
-                let mut v_val = *current_vals.offset(i as isize);
+                let mut k = rt_array_get_fast(current_keys, i as i64);
+                let mut v_val = rt_array_get_fast(current_vals, i as i64);
                 rt_push_root(&mut k);
                 rt_push_root(&mut v_val);
 
@@ -780,6 +807,8 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
             rt_pop_roots(1);
         } else if tag == TAG_FUNCTION {
             res_id = rt_box_string("[function]\0".as_ptr() as *const _);
+        } else if tag == TAG_PROMISE {
+            res_id = rt_box_string("[Promise]\0".as_ptr() as *const _);
         } else {
             res_id = rt_box_string("[object]\0".as_ptr() as *const _);
         }
@@ -793,16 +822,16 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
 pub unsafe extern "C" fn rt_panic(msg_id: i64) {
     if let Some(s) = i64_to_rust_str(msg_id) {
         let c_str = std::ffi::CString::new(s).unwrap_or_default();
-        printf("PANIC: %s\n\0".as_ptr() as *const _, c_str.as_ptr());
+        //printf("PANIC: %s\n\0".as_ptr() as *const _, c_str.as_ptr());
     } else {
-        printf("PANIC: (invalid string object)\n\0".as_ptr() as *const _);
+        //printf("PANIC: (invalid string object)\n\0".as_ptr() as *const _);
     }
     exit(1);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_div_zero_error() {
-    eprintln!("PANIC: Division by zero");
+    //eprintln!("PANIC: Division by zero");
     exit(1);
 }
 
@@ -927,9 +956,9 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
         elem_size = 8; // Default to 8 if unknown
     }
     let total_size = (cap * elem_size) as usize;
-
-    // Allocate space for data only
     let body_ptr = gc_allocate(total_size);
+
+    fflush(std::ptr::null_mut());
     let header = rt_get_header(body_ptr);
 
     (*header).type_id = TAG_ARRAY as u16;
@@ -959,7 +988,7 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
     }
 
     if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 {
-        printf("RuntimeError: Cannot resize a fixed-size array.\n\0".as_ptr() as *const _);
+        //printf("RuntimeError: Cannot resize a fixed-size array.\n\0".as_ptr() as *const _);
         exit(1);
     }
 
@@ -1035,7 +1064,7 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        printf("RuntimeError: Cannot push to a constant array.\n\0".as_ptr() as *const _);
+        //printf("RuntimeError: Cannot push to a constant array.\n\0".as_ptr() as *const _);
         exit(1);
     }
 
@@ -1052,11 +1081,14 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
         1 => *(data.offset((len * elem_size) as isize) as *mut i8) = current_val as i8,
         2 => *(data.offset((len * elem_size) as isize) as *mut i16) = current_val as i16,
         4 => *(data.offset((len * elem_size) as isize) as *mut i32) = current_val as i32,
-        _ => *(data.offset((len * elem_size) as isize) as *mut i64) = current_val,
+        _ => {
+            *(data.offset((len * elem_size) as isize) as *mut i64) = current_val;
+            rt_write_barrier(current_id, current_val);
+        }
     }
 
     (*new_header).length = (len + 1) as u32;
-    rt_update_array_cache(current_id, new_body, len + 1, elem_size);
+    rt_update_array_cache(current_id, new_body, (len + 1) as i64, elem_size);
 
     rt_pop_roots(2);
     current_id
@@ -1071,10 +1103,12 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & ((ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16)) != 0 {
+        /*
         printf(
             "RuntimeError: Cannot pop from a fixed-size or constant array.\n\0".as_ptr()
                 as *const _,
         );
+        */
         exit(1);
     }
 
@@ -1108,7 +1142,7 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        printf("RuntimeError: Cannot set element in a constant array.\n\0".as_ptr() as *const _);
+        //printf("RuntimeError: Cannot set element in a constant array.\n\0".as_ptr() as *const _);
         exit(1);
     }
 
@@ -1116,13 +1150,19 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) {
     if index < 0 || index >= len {
         return;
     }
+
+    fflush(std::ptr::null_mut());
+
     let data = body as *mut i8; // Data starts directly at body_ptr
     let elem_size = (flags & 0xFF) as i64;
     match elem_size {
         1 => *(data.offset(index as isize) as *mut i8) = val as i8,
         2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
         4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
-        _ => *(data.offset((index * 8) as isize) as *mut i64) = val,
+        _ => {
+            *(data.offset((index * 8) as isize) as *mut i64) = val;
+            rt_write_barrier(id, val);
+        }
     }
     rt_update_array_cache(id, body, len, elem_size);
 }
@@ -1136,9 +1176,11 @@ pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & ((ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16)) != 0 {
+        /*
         printf(
             "RuntimeError: Cannot shift a fixed-size or constant array.\n\0".as_ptr() as *const _,
         );
+        */
         exit(1);
     }
 
@@ -1180,9 +1222,11 @@ pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & ((ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16)) != 0 {
+        /*
         printf(
             "RuntimeError: Cannot unshift a fixed-size or constant array.\n\0".as_ptr() as *const _,
         );
+        */
         exit(1);
     }
 
@@ -1229,9 +1273,11 @@ pub unsafe extern "C" fn rt_array_splice(
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16) != 0 {
+        /*
         printf(
             "RuntimeError: Cannot splice a fixed-size or constant array.\n\0".as_ptr() as *const _,
         );
+        */
         exit(1);
     }
 
@@ -1376,37 +1422,89 @@ pub unsafe extern "C" fn rt_closure_new(capacity: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_closure_from_ptr(ptr: i64) -> i64 {
+    let closure = rt_closure_new(0);
+    let mut c = closure;
+    rt_push_root(&mut c);
+
+    let key_ptr = rt_box_string("ptr\0".as_ptr() as *const _);
+    let boxed_ptr = rt_box_int(ptr);
+    rt_Map_set(c, key_ptr, boxed_ptr);
+
+    let key_env = rt_box_string("env\0".as_ptr() as *const _);
+    rt_Map_set(c, key_env, 0); // null env
+
+    rt_pop_roots(1);
+    c
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_Map_constructor(_this: i64) -> i64 {
-    // If _this is already a TAG_OBJECT (called from class constructor), record data_base
-    if (_this as u64) >= (HEAP_OFFSET as u64) {
-        let body = (_this - HEAP_OFFSET) as *mut u8;
-        let header = rt_get_header(body);
-        if (*header).type_id == TAG_OBJECT as u16 {
-            let ptr = body as *mut i64;
-            // Record current size as data_base (method slots count)
-            // Layout: [size, capacity, keys_ptr, values_ptr, data_base]
-            let current_size = *ptr;
-            *ptr.offset(4) = current_size; // data_base is at offset 4
-            return _this;
-        }
+    let mut v_this = _this;
+    let mut is_existing = false;
+
+    if (v_this as u64) >= (HEAP_OFFSET as u64) {
+        let body = (v_this - HEAP_OFFSET) as *mut u8;
+        let _header = rt_get_header(body); // Use _header to avoid warning
+        is_existing = true;
     }
-    let body_ptr = gc_allocate(40); // 5 * 8 bytes for [size, capacity, keys_ptr, values_ptr, data_base]
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_OBJECT as u16;
-    (*header).length = 0;
 
-    let ptr = body_ptr as *mut i64;
-    *ptr.offset(0) = 0; // size at offset 0
-    let cap: i64 = 8;
-    *ptr.offset(1) = cap; // capacity at offset 1
-    let keys = calloc(cap as usize, 8) as *mut i64;
-    let vals = calloc(cap as usize, 8) as *mut i64;
+    if !is_existing {
+        let body_ptr = gc_allocate(40);
+        let header = rt_get_header(body_ptr);
+        (*header).type_id = TAG_OBJECT as u16;
+        (*header).length = 0;
+        v_this = (body_ptr as i64) + HEAP_OFFSET;
+    }
 
-    *ptr.offset(2) = keys as i64; // keys_ptr at offset 2
-    *ptr.offset(3) = vals as i64; // values_ptr at offset 3
-    *ptr.offset(4) = 0; // data_base at offset 4
+    rt_push_root(&mut v_this);
 
-    (body_ptr as i64) + HEAP_OFFSET
+    let ptr = (v_this - HEAP_OFFSET) as *mut i64;
+    // Map class fields (_size, _capacity, _keys, _vals, _db) are at 0, 1, 2, 3, 4
+    *ptr.offset(0) = 0; // _size
+    *ptr.offset(1) = 8; // _capacity
+
+    let keys_id = rt_Array_new_fixed(8, 8);
+    let mut v_keys = keys_id;
+    rt_push_root(&mut v_keys);
+    *ptr.offset(2) = v_keys;
+
+    let vals_id = rt_Array_new_fixed(8, 8);
+    let mut v_vals = vals_id;
+    rt_push_root(&mut v_vals);
+    *ptr.offset(3) = v_vals;
+
+    *ptr.offset(4) = 0; // _db
+
+    rt_write_barrier(v_this, v_keys);
+    rt_write_barrier(v_this, v_vals);
+
+    rt_pop_roots(3); // v_this, v_keys, v_vals
+    v_this
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Map_merge(dest: i64, src: i64) {
+    if (dest as u64) < (HEAP_OFFSET as u64) || (src as u64) < (HEAP_OFFSET as u64) {
+        return;
+    }
+    let mut v_dest = dest;
+    let mut v_src = src;
+    rt_push_root(&mut v_dest);
+    rt_push_root(&mut v_src);
+
+    let src_ptr = (v_src - HEAP_OFFSET) as *const i64;
+    let size = *src_ptr.offset(0);
+    let keys = (*src_ptr.offset(2) - HEAP_OFFSET) as *const i64;
+    let vals = (*src_ptr.offset(3) - HEAP_OFFSET) as *const i64;
+
+    for i in 0..size {
+        let k = *keys.offset(i as isize);
+        let v = *vals.offset(i as isize);
+        rt_Map_set(v_dest, k, v);
+    }
+
+    rt_pop_roots(2);
 }
 
 unsafe fn map_key_eq(a: i64, b: i64) -> bool {
@@ -1447,66 +1545,111 @@ pub unsafe extern "C" fn rt_Map_set(this: i64, key: i64, val: i64) {
     rt_push_root(&mut v_key);
     rt_push_root(&mut v_val);
 
-    // Clone key and val - these can trigger GC
+    // Clone key - these can trigger GC
     let key_owned = rt_clone(v_key);
     let mut v_key_owned = key_owned;
     rt_push_root(&mut v_key_owned);
 
-    let val_owned = rt_clone(v_val);
-    let mut v_val_owned = val_owned;
-    rt_push_root(&mut v_val_owned);
+    let v_val_owned = v_val; // Now we just use the original value
 
     let body_ptr = (v_this - HEAP_OFFSET) as *mut u8;
     let ptr = body_ptr as *mut i64;
     let header = rt_get_header(body_ptr);
+    let size = *ptr.offset(0);
+    let cap = *ptr.offset(1);
+    let mut keys_id = *ptr.offset(2);
+    let mut vals_id = *ptr.offset(3);
 
-    if (*header).type_id != TAG_OBJECT as u16 && (*header).type_id != TAG_FUNCTION as u16 {
-        rt_pop_roots(5);
+    if keys_id == 0 || vals_id == 0 {
+        rt_Map_constructor(v_this);
+        keys_id = *ptr.offset(2);
+        vals_id = *ptr.offset(3);
+    }
+
+    if (*header).type_id < TAG_OBJECT as u16 {
+        rt_pop_roots(4);
         return;
     }
 
     let size = *ptr.offset(0);
     let cap = *ptr.offset(1);
-    let mut keys = *ptr.offset(2) as *mut i64;
-    let mut vals = *ptr.offset(3) as *mut i64;
+    let mut keys_id = *ptr.offset(2);
+    let mut vals_id = *ptr.offset(3);
 
     // Check if key exists
+    let keys_ptr = (keys_id - HEAP_OFFSET) as *mut i64;
+    let vals_ptr = (vals_id - HEAP_OFFSET) as *mut i64;
     for i in 0..size {
-        if map_key_eq(*keys.offset(i as isize), v_key_owned) {
-            // Free old value before replacing it
-            rt_free(*vals.offset(i as isize));
-            *vals.offset(i as isize) = v_val_owned;
-            rt_pop_roots(5);
+        if map_key_eq(*keys_ptr.offset(i as isize), v_key_owned) {
+            *vals_ptr.offset(i as isize) = v_val_owned;
+            rt_write_barrier(vals_id, v_val_owned);
+            rt_pop_roots(4);
             return;
         }
     }
 
-    // Need to grow?
     if size >= cap {
         let new_cap = cap * 2;
-        let new_keys = realloc(keys as *mut _, (new_cap * 8) as usize) as *mut i64;
-        let new_vals = realloc(vals as *mut _, (new_cap * 8) as usize) as *mut i64;
+        let new_keys_id = rt_Array_new_fixed(new_cap, 8);
+        let mut v_new_keys = new_keys_id;
+        rt_push_root(&mut v_new_keys);
+        let new_vals_id = rt_Array_new_fixed(new_cap, 8);
+        let mut v_new_vals = new_vals_id;
+        rt_push_root(&mut v_new_vals);
 
-        // Zero out the newly allocated capacity
-        for i in cap..new_cap {
-            *new_keys.offset(i as isize) = 0;
-            *new_vals.offset(i as isize) = 0;
+        let current_body = (v_this - HEAP_OFFSET) as *mut u8;
+        let current_ptr = current_body as *mut i64;
+        let old_keys = (*current_ptr.offset(2) - HEAP_OFFSET) as *const i64;
+        let old_vals = (*current_ptr.offset(3) - HEAP_OFFSET) as *const i64;
+        let dst_keys = (v_new_keys - HEAP_OFFSET) as *mut i64;
+        let dst_vals = (v_new_vals - HEAP_OFFSET) as *mut i64;
+
+        for i in 0..size {
+            let k = *old_keys.offset(i as isize);
+            let v = *old_vals.offset(i as isize);
+            *dst_keys.offset(i as isize) = k;
+            *dst_vals.offset(i as isize) = v;
+            rt_write_barrier(v_new_keys, k);
+            rt_write_barrier(v_new_vals, v);
         }
 
-        let current_ptr = (v_this - HEAP_OFFSET) as *mut i64;
-        *current_ptr.offset(1) = new_cap;
-        *current_ptr.offset(2) = new_keys as i64;
-        *current_ptr.offset(3) = new_vals as i64;
+        *dst_keys.offset(size as isize) = v_key_owned;
+        *dst_vals.offset(size as isize) = v_val_owned;
+        rt_write_barrier(v_new_keys, v_key_owned);
+        rt_write_barrier(v_new_vals, v_val_owned);
 
-        *new_keys.offset(size as isize) = v_key_owned;
-        *new_vals.offset(size as isize) = v_val_owned;
+        let final_ptr = (v_this - HEAP_OFFSET) as *mut i64;
+        let new_size = size + 1;
+        *final_ptr.offset(0) = new_size;
+        *final_ptr.offset(1) = new_cap;
+        *final_ptr.offset(2) = v_new_keys;
+        *final_ptr.offset(3) = v_new_vals;
+
+        // Sync header lengths
+        let h_keys = rt_get_header((v_new_keys - HEAP_OFFSET) as *mut u8);
+        let h_vals = rt_get_header((v_new_vals - HEAP_OFFSET) as *mut u8);
+        (*h_keys).length = new_size as u32;
+        (*h_vals).length = new_size as u32;
+
+        rt_write_barrier(v_this, v_new_keys);
+        rt_write_barrier(v_this, v_new_vals);
+        rt_pop_roots(6); // 4 initial + 2 new
     } else {
-        *keys.offset(size as isize) = v_key_owned;
-        *vals.offset(size as isize) = v_val_owned;
+        *keys_ptr.offset(size as isize) = v_key_owned;
+        *vals_ptr.offset(size as isize) = v_val_owned;
+        rt_write_barrier(keys_id, v_key_owned);
+        rt_write_barrier(vals_id, v_val_owned);
+        let new_size = size + 1;
+        *ptr.offset(0) = new_size;
+
+        // Sync header lengths
+        let h_keys = rt_get_header((keys_id - HEAP_OFFSET) as *mut u8);
+        let h_vals = rt_get_header((vals_id - HEAP_OFFSET) as *mut u8);
+        (*h_keys).length = new_size as u32;
+        (*h_vals).length = new_size as u32;
+
+        rt_pop_roots(4);
     }
-    let current_ptr = (v_this - HEAP_OFFSET) as *mut i64;
-    *current_ptr.offset(0) = size + 1;
-    rt_pop_roots(5);
 }
 
 #[no_mangle]
@@ -1515,9 +1658,12 @@ pub unsafe extern "C" fn rt_Map_get(this: i64, key: i64) -> i64 {
         return 0;
     }
     let ptr = (this - HEAP_OFFSET) as *const i64;
-    let size = *ptr;
-    let keys = *ptr.offset(2) as *const i64;
-    let vals = *ptr.offset(3) as *const i64;
+    let size = *ptr.offset(0);
+    let keys_id = *ptr.offset(2);
+    let vals_id = *ptr.offset(3);
+
+    let keys = (keys_id - HEAP_OFFSET) as *const i64;
+    let vals = (vals_id - HEAP_OFFSET) as *const i64;
     for i in 0..size {
         if map_key_eq(*keys.offset(i as isize), key) {
             return *vals.offset(i as isize);
@@ -1533,7 +1679,7 @@ pub unsafe extern "C" fn rt_Map_has(this: i64, key: i64) -> i64 {
     }
     let ptr = (this - HEAP_OFFSET) as *const i64;
     let size = *ptr;
-    let keys = *ptr.offset(2) as *const i64;
+    let keys = (*ptr.offset(2) - HEAP_OFFSET) as *const i64;
     for i in 0..size {
         if map_key_eq(*keys.offset(i as isize), key) {
             return 1;
@@ -1549,8 +1695,8 @@ pub unsafe extern "C" fn rt_Map_delete(this: i64, key: i64) -> i64 {
     }
     let ptr = (this - HEAP_OFFSET) as *mut i64;
     let size = *ptr;
-    let keys = *ptr.offset(2) as *mut i64;
-    let vals = *ptr.offset(3) as *mut i64;
+    let keys = (*ptr.offset(2) - HEAP_OFFSET) as *mut i64;
+    let vals = (*ptr.offset(3) - HEAP_OFFSET) as *mut i64;
     for i in 0..size {
         if map_key_eq(*keys.offset(i as isize), key) {
             // Shift remaining elements
@@ -1578,7 +1724,7 @@ pub unsafe extern "C" fn rt_Map_keys(this: i64) -> i64 {
     let ptr = (v_this - HEAP_OFFSET) as *const i64;
     let size = *ptr;
     let data_base = *ptr.offset(4);
-    let keys = *ptr.offset(2) as *const i64;
+    let keys = (*ptr.offset(2) - HEAP_OFFSET) as *const i64;
     for i in data_base..size {
         result = rt_array_push(result, *keys.offset(i as isize));
     }
@@ -1620,12 +1766,7 @@ pub unsafe extern "C" fn rt_Set_size(this: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Set_constructor(_this: i64) {
-    // Record data_base for size tracking (same as Map constructor logic)
-    if (_this as u64) >= (HEAP_OFFSET as u64) {
-        let ptr = (_this - HEAP_OFFSET) as *mut i64;
-        let current_size = *ptr;
-        *ptr.offset(4) = current_size;
-    }
+    rt_Map_constructor(_this);
 }
 
 #[no_mangle]
@@ -1633,13 +1774,13 @@ pub unsafe extern "C" fn rt_Set_add(this: i64, val: i64) {
     if (this as u64) < (HEAP_OFFSET as u64) {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
+    let body = (this - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
     // If it has a TAG_OBJECT layout, use map operations
-    if *ptr == TAG_OBJECT {
+    if (*header).type_id >= TAG_OBJECT as u16 {
         rt_Map_set(this, val, 1); // value doesn't matter for Set
         return;
     }
-    // Fallback: treat as inline array of values at offset 3
 }
 
 #[no_mangle]
@@ -1647,8 +1788,9 @@ pub unsafe extern "C" fn rt_Set_has(this: i64, val: i64) -> i64 {
     if (this as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    if *ptr == TAG_OBJECT {
+    let body = (this - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    if (*header).type_id >= TAG_OBJECT as u16 {
         return rt_Map_has(this, val);
     }
     0
@@ -1659,8 +1801,9 @@ pub unsafe extern "C" fn rt_Set_delete(this: i64, val: i64) -> i64 {
     if (this as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    if *ptr == TAG_OBJECT {
+    let body = (this - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    if (*header).type_id >= TAG_OBJECT as u16 {
         return rt_Map_delete(this, val);
     }
     0
@@ -1669,8 +1812,9 @@ pub unsafe extern "C" fn rt_Set_delete(this: i64, val: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_Set_values(this: i64) -> i64 {
     if (this as u64) >= (HEAP_OFFSET as u64) {
-        let ptr = (this - HEAP_OFFSET) as *const i64;
-        if *ptr == TAG_OBJECT {
+        let body = (this - HEAP_OFFSET) as *mut u8;
+        let header = rt_get_header(body);
+        if (*header).type_id == TAG_OBJECT as u16 {
             return rt_Map_keys(this); // Set stores values as keys
         }
     }
@@ -1802,7 +1946,7 @@ pub unsafe extern "C" fn rt_Map_values(this: i64) -> i64 {
     let ptr = (v_this - HEAP_OFFSET) as *const i64;
     let size = *ptr;
     let data_base = *ptr.offset(4);
-    let vals = *ptr.offset(3) as *const i64;
+    let vals = (*ptr.offset(3) - HEAP_OFFSET) as *const i64;
     for i in data_base..size {
         result = rt_array_push(result, *vals.offset(i as isize));
     }
@@ -2294,16 +2438,14 @@ pub unsafe extern "C" fn rt_time_now_ms() -> i64 {
 }
 
 // --- Timer Management ---
-
-use std::sync::Mutex as StdMutex;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
 
-static TIMERS: std::sync::LazyLock<
-    StdMutex<std::collections::HashMap<i64, std::sync::Arc<AtomicBool>>>,
-> = std::sync::LazyLock::new(|| StdMutex::new(std::collections::HashMap::new()));
+thread_local! {
+    static CANCELLED_TIMERS: std::cell::RefCell<std::collections::HashSet<i64>> = std::cell::RefCell::new(std::collections::HashSet::new());
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_timer_worker(closure_id: i64) {
@@ -2311,36 +2453,31 @@ pub unsafe extern "C" fn rt_timer_worker(closure_id: i64) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_promise_resolver_worker(args: i64) {
+    let pid = rt_array_get_fast(args, 0);
+    let val = rt_array_get_fast(args, 1);
+    rt_promise_resolve(pid, val);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-
-    if let Ok(mut timers) = TIMERS.lock() {
-        timers.insert(timer_id, cancelled.clone());
-    }
-
     unsafe { crate::event_loop::tejx_inc_async_ops() };
 
-    let cancelled_clone = cancelled.clone();
-    std::thread::spawn(move || {
-        let mut elapsed = 0;
-        while elapsed < ms {
-            if cancelled_clone.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            elapsed += 10;
-        }
-        if !cancelled_clone.load(Ordering::SeqCst) {
-            // Execute callback on the main event loop
+    let handle = unsafe { crate::event_loop::tejx_create_global_handle(callback) };
+    crate::event_loop::TOKIO_RT.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(ms as u64)).await;
+
+        let cancelled = CANCELLED_TIMERS.with(|c| c.borrow().contains(&timer_id));
+        if !cancelled {
             unsafe {
-                crate::event_loop::tejx_enqueue_task(rt_timer_worker as i64, callback);
+                let cb = crate::event_loop::tejx_get_global_handle(handle);
+                crate::event_loop::tejx_enqueue_task(rt_timer_worker as i64, cb);
             }
-            // Clean up
-            if let Ok(mut timers) = TIMERS.lock() {
-                timers.remove(&timer_id);
-            }
+        } else {
+            CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
         }
+        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
         unsafe { crate::event_loop::tejx_dec_async_ops() };
     });
 
@@ -2350,32 +2487,29 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-
-    if let Ok(mut timers) = TIMERS.lock() {
-        timers.insert(timer_id, cancelled.clone());
-    }
-
     unsafe { crate::event_loop::tejx_inc_async_ops() };
 
-    let cancelled_clone = cancelled.clone();
-    std::thread::spawn(move || {
-        while !cancelled_clone.load(Ordering::SeqCst) {
-            let mut elapsed = 0;
-            while elapsed < ms {
-                if cancelled_clone.load(Ordering::SeqCst) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                elapsed += 10;
+    let handle = unsafe { crate::event_loop::tejx_create_global_handle(callback) };
+    crate::event_loop::TOKIO_RT.spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(ms as u64));
+        interval.tick().await; // first tick returns immediately
+
+        loop {
+            interval.tick().await;
+
+            let cancelled = CANCELLED_TIMERS.with(|c| c.borrow().contains(&timer_id));
+            if cancelled {
+                CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
+                unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
+                unsafe { crate::event_loop::tejx_dec_async_ops() };
+                break;
             }
-            if !cancelled_clone.load(Ordering::SeqCst) {
-                unsafe {
-                    crate::event_loop::tejx_enqueue_task(rt_timer_worker as i64, callback);
-                }
+
+            unsafe {
+                let cb = crate::event_loop::tejx_get_global_handle(handle);
+                crate::event_loop::tejx_enqueue_task(rt_timer_worker as i64, cb);
             }
         }
-        unsafe { crate::event_loop::tejx_dec_async_ops() };
     });
 
     timer_id
@@ -2383,28 +2517,41 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
-    if let Ok(mut timers) = TIMERS.lock() {
-        if let Some(cancelled) = timers.remove(&id) {
-            cancelled.store(true, Ordering::SeqCst);
-        }
-    }
+    CANCELLED_TIMERS.with(|c| c.borrow_mut().insert(id));
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
-    rt_clearTimeout(id)
+    CANCELLED_TIMERS.with(|c| c.borrow_mut().insert(id));
+    0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
+    let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
     let actual_ms = rt_to_number(ms) as u64;
     let pid = rt_promise_new();
+
     unsafe { crate::event_loop::tejx_inc_async_ops() };
 
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(actual_ms));
-        rt_promise_resolve(pid, 0);
+    let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
+    crate::event_loop::TOKIO_RT.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(actual_ms)).await;
+
+        let cancelled = CANCELLED_TIMERS.with(|c| c.borrow().contains(&timer_id));
+        if !cancelled {
+            unsafe {
+                let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                let task_args = rt_Array_new_fixed(2, 8);
+                rt_array_set_fast(task_args, 0, actual_pid);
+                rt_array_set_fast(task_args, 1, 0);
+                crate::event_loop::tejx_enqueue_task(rt_promise_resolver_worker as i64, task_args);
+            }
+        } else {
+            CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
+        }
+        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
         unsafe { crate::event_loop::tejx_dec_async_ops() };
     });
 
@@ -2413,49 +2560,166 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_connect(addr: i64) -> i64 {
-    use std::net::TcpStream;
+    let pid = rt_promise_new();
+    unsafe { crate::event_loop::tejx_inc_async_ops() };
+
     if let Some(address) = i64_to_rust_str(addr) {
-        if let Ok(stream) = TcpStream::connect(&address) {
-            let boxed = Box::new(stream);
-            return Box::into_raw(boxed) as i64;
-        }
+        let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
+        crate::event_loop::TOKIO_RT.spawn(async move {
+            match tokio::net::TcpStream::connect(&address).await {
+                Ok(stream) => {
+                    let boxed = Box::new(stream);
+                    let ptr = Box::into_raw(boxed) as i64;
+                    unsafe {
+                        let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                        let mut task_args = rt_Array_new_fixed(2, 8);
+                        rt_array_set_fast(task_args, 0, actual_pid);
+                        rt_array_set_fast(task_args, 1, ptr);
+                        crate::event_loop::tejx_enqueue_task(
+                            rt_promise_resolver_worker as i64,
+                            task_args,
+                        );
+                    }
+                }
+                Err(_) => unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    rt_array_set_fast(task_args, 1, -1);
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_promise_resolver_worker as i64,
+                        task_args,
+                    );
+                },
+            }
+            unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
+            unsafe { crate::event_loop::tejx_dec_async_ops() };
+        });
+    } else {
+        rt_promise_resolve(pid, -1);
+        unsafe { crate::event_loop::tejx_dec_async_ops() };
     }
-    -1
+    pid
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_send(stream: i64, data: i64) -> i64 {
-    use std::io::Write;
+    let pid = rt_promise_new();
     if stream <= 0 {
-        return -1;
+        rt_promise_resolve(pid, -1);
+        return pid;
     }
-    let s = &mut *(stream as *mut std::net::TcpStream);
+
+    unsafe { crate::event_loop::tejx_inc_async_ops() };
+
     if let Some((bytes, len)) = get_str_parts(data) {
-        let slice = std::slice::from_raw_parts(bytes, len as usize);
-        if s.write_all(slice).is_ok() {
-            return len;
-        }
+        let slice = std::slice::from_raw_parts(bytes, len as usize).to_vec();
+        let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
+
+        crate::event_loop::TOKIO_RT.spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let s = &mut *(stream as *mut tokio::net::TcpStream);
+            match s.write_all(&slice).await {
+                Ok(_) => unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    rt_array_set_fast(task_args, 1, len as i64);
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_promise_resolver_worker as i64,
+                        task_args,
+                    );
+                },
+                Err(_) => unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    rt_array_set_fast(task_args, 1, -1);
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_promise_resolver_worker as i64,
+                        task_args,
+                    );
+                },
+            }
+            unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
+            unsafe { crate::event_loop::tejx_dec_async_ops() };
+        });
+    } else {
+        rt_promise_resolve(pid, -1);
+        unsafe { crate::event_loop::tejx_dec_async_ops() };
     }
-    -1
+
+    pid
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
-    use std::io::Read;
+    let pid = rt_promise_new();
     if stream <= 0 {
-        return rt_box_string("\0".as_ptr() as *const _);
+        let empty_str = rt_box_string("\0".as_ptr() as *const _);
+        rt_promise_resolve(pid, empty_str);
+        return pid;
     }
-    let s = &mut *(stream as *mut std::net::TcpStream);
+
+    unsafe { crate::event_loop::tejx_inc_async_ops() };
     let max = if max_len <= 0 { 4096 } else { max_len as usize };
-    let mut buf = vec![0u8; max];
-    match s.read(&mut buf) {
-        Ok(n) => {
-            buf.truncate(n);
-            buf.push(0);
-            rt_box_string(buf.as_ptr() as *const _)
+    let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
+
+    crate::event_loop::TOKIO_RT.spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let s = &mut *(stream as *mut tokio::net::TcpStream);
+        let mut buf = vec![0u8; max];
+        match s.read(&mut buf).await {
+            Ok(n) => {
+                buf.truncate(n);
+                buf.push(0);
+                // We must yield back to Tejx thread to allocate the string safely since GC runs on main thread
+                unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(3, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    let boxed = Box::new(buf);
+                    let ptr = Box::into_raw(boxed) as i64;
+                    rt_array_set_fast(task_args, 1, ptr);
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_net_receive_resolver_worker as i64,
+                        task_args,
+                    );
+                }
+            }
+            Err(_) => {
+                unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    rt_array_set_fast(task_args, 1, 0); // 0 means error/empty
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_net_receive_resolver_worker as i64,
+                        task_args,
+                    );
+                }
+            }
         }
-        Err(_) => rt_box_string("\0".as_ptr() as *const _),
-    }
+        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
+        unsafe { crate::event_loop::tejx_dec_async_ops() };
+    });
+
+    pid
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_net_receive_resolver_worker(args: i64) {
+    let pid = rt_array_get_fast(args, 0);
+    let vec_ptr = rt_array_get_fast(args, 1);
+
+    let res_str = if vec_ptr == 0 {
+        rt_box_string("\0".as_ptr() as *const _)
+    } else {
+        let boxed_vec = Box::from_raw(vec_ptr as *mut Vec<u8>);
+        rt_box_string(boxed_vec.as_ptr() as *const _)
+    };
+
+    rt_promise_resolve(pid, res_str);
 }
 
 #[no_mangle]
@@ -2463,39 +2727,99 @@ pub unsafe extern "C" fn rt_net_close(stream: i64) -> i64 {
     if stream <= 0 {
         return -1;
     }
-    let _ = Box::from_raw(stream as *mut std::net::TcpStream); // drops & closes
+    let _ = Box::from_raw(stream as *mut tokio::net::TcpStream); // drops & closes
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_http_request(url: i64, method: i64, body: i64) -> i64 {
+    let pid = rt_promise_new();
+
     let url_str = match i64_to_rust_str(url) {
         Some(s) => s,
-        None => return 0,
+        None => {
+            rt_promise_resolve(pid, 0);
+            return pid;
+        }
     };
     let method_str = i64_to_rust_str(method).unwrap_or_else(|| "GET".to_string());
     let body_str = i64_to_rust_str(body);
 
-    use std::process::Command;
-    let mut cmd = Command::new("/usr/bin/curl");
-    cmd.arg("-s").arg("-X").arg(&method_str).arg(&url_str);
-    if let Some(b) = body_str {
-        if !b.is_empty() {
-            cmd.arg("-d").arg(&b);
-        }
-    }
-    match cmd.output() {
-        Ok(output) => {
-            if output.status.success() {
-                let s = String::from_utf8_lossy(&output.stdout);
-                let c_str = std::ffi::CString::new(s.as_ref()).unwrap_or_default();
-                rt_box_string(c_str.as_ptr())
-            } else {
-                0
+    unsafe { crate::event_loop::tejx_inc_async_ops() };
+    let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
+
+    crate::event_loop::TOKIO_RT.spawn(async move {
+        let client = reqwest::Client::new();
+        let mut req = match method_str.as_str() {
+            "POST" => client.post(&url_str),
+            "PUT" => client.put(&url_str),
+            "DELETE" => client.delete(&url_str),
+            _ => client.get(&url_str),
+        };
+
+        if let Some(b) = body_str {
+            if !b.is_empty() {
+                req = req.body(b);
             }
         }
-        Err(_) => 0,
-    }
+
+        match req.send().await {
+            Ok(response) => match response.text().await {
+                Ok(text) => unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    let boxed = Box::new(text);
+                    let ptr = Box::into_raw(boxed) as i64;
+                    rt_array_set_fast(task_args, 1, ptr);
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_http_request_resolver_worker as i64,
+                        task_args,
+                    );
+                },
+                Err(_) => unsafe {
+                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    rt_array_set_fast(task_args, 0, actual_pid);
+                    rt_array_set_fast(task_args, 1, 0);
+                    crate::event_loop::tejx_enqueue_task(
+                        rt_http_request_resolver_worker as i64,
+                        task_args,
+                    );
+                },
+            },
+            Err(_) => unsafe {
+                let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+                let mut task_args = rt_Array_new_fixed(2, 8);
+                rt_array_set_fast(task_args, 0, actual_pid);
+                rt_array_set_fast(task_args, 1, 0);
+                crate::event_loop::tejx_enqueue_task(
+                    rt_http_request_resolver_worker as i64,
+                    task_args,
+                );
+            },
+        }
+        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
+        unsafe { crate::event_loop::tejx_dec_async_ops() };
+    });
+
+    pid
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_http_request_resolver_worker(args: i64) {
+    let pid = rt_array_get_fast(args, 0);
+    let str_ptr = rt_array_get_fast(args, 1);
+
+    let res_str = if str_ptr == 0 {
+        0
+    } else {
+        let boxed_str = Box::from_raw(str_ptr as *mut String);
+        let c_str = std::ffi::CString::new(boxed_str.as_str()).unwrap_or_default();
+        rt_box_string(c_str.as_ptr())
+    };
+
+    rt_promise_resolve(pid, res_str);
 }
 
 static mut RNG_STATE: u64 = 0;
@@ -2538,6 +2862,8 @@ pub unsafe extern "C" fn rt_to_number_v2(v: i64) -> i64 {
     // Unbox Any, convert it to f64 using standard rules, then return raw bits
     // instead of boxing it back in TAG_FLOAT. This allows LLVM to `bitcast` it directly to `double`.
     let f = rt_to_number(v); // Returns a f64
+
+    fflush(std::ptr::null_mut());
     f.to_bits() as i64
 }
 
@@ -2548,31 +2874,31 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     }
     let body = (id - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
-    let tag = (*header).type_id as i64;
     let len = (*header).length as i64;
-    let elem_size = ((*header).flags & 0xFF) as usize;
+    let flags = (*header).flags;
 
-    if index < 0 || index >= len {
-        printf(
-            "FATAL: Array index out of bounds: %lld / %lld\n\0".as_ptr() as *const _,
-            index,
-            len,
-        );
-        exit(1);
-    }
+    /*
+    /*
+    printf(
+        "FATAL: Array index out of bounds: %lld / %lld id=0x%llx\n\0".as_ptr() as *const _,
+        index,
+        len,
+        id,
+    );
+    */
+    */
 
-    let res = if tag == TAG_STRING {
-        let ch = *body.offset(index as isize);
-        let buf = [ch, 0];
-        rt_box_string(buf.as_ptr() as *const _)
+    let elem_size = (flags & 0xFF) as i64;
+    let res = if elem_size == 1 {
+        *(body.offset(index as isize) as *mut i8) as i64
+    } else if elem_size == 2 {
+        *(body.offset((index * 2) as isize) as *mut i16) as i64
+    } else if elem_size == 4 {
+        *(body.offset((index * 4) as isize) as *mut i32) as i64
     } else {
-        match elem_size {
-            1 => *body.offset(index as isize) as i64,
-            2 => *(body.offset((index * 2) as isize) as *const i16) as i64,
-            4 => *(body.offset((index * 4) as isize) as *const i32) as i64,
-            _ => *(body.offset((index * 8) as isize) as *const i64),
-        }
+        *(body.offset((index * 8) as isize) as *const i64)
     };
+
     res
 }
 
@@ -2638,7 +2964,7 @@ pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
         }
     }
     if res == 0 {
-        printf("Runtime Error: Closure function pointer is NULL\n\0".as_ptr() as *const _);
+        //printf("Runtime Error: Closure function pointer is NULL\n\0".as_ptr() as *const _);
     }
     rt_pop_roots(1);
     res
@@ -2686,13 +3012,13 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
         rt_pop_roots(2);
         return 0;
     }
-    // Expected signature: fn(env: i64, arg: i64) -> i64
-    let func: unsafe extern "C" fn(i64, i64) -> i64 = std::mem::transmute::<
-        *const (),
-        unsafe extern "C" fn(i64, i64) -> i64,
-    >(raw_func_ptr as *const ());
+    // Expected signature: fn(env: i64, arg: i64, p1: i64, p2: i64, p3: i64) -> i64
+    let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
+        std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64>(
+            raw_func_ptr as *const (),
+        );
 
-    let result = func(env, a);
+    let result = func(env, a, 0, 0, 0);
 
     rt_pop_roots(2);
     result
@@ -2770,7 +3096,16 @@ pub unsafe extern "C" fn rt_not(val: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_boolean(val: i64) -> i64 {
-    if val == 0 || val == BOOL_FALSE { 0 } else { 1 }
+    if val < HEAP_OFFSET {
+        return if val != 0 { 1 } else { 0 };
+    }
+    let body = (val - HEAP_OFFSET) as *mut i64;
+    let header = rt_get_header(body as *mut u8);
+    let tag = (*header).type_id as i64;
+    if tag == TAG_BOOLEAN {
+        return if *body != 0 { 1 } else { 0 };
+    }
+    1 // Other objects are truthy
 }
 
 #[no_mangle]
@@ -2804,6 +3139,14 @@ pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
     let mut val_b = b_id;
     rt_push_root(&mut val_a);
     rt_push_root(&mut val_b);
+
+    // Ensure they are strings by converting if necessary
+    if get_str_parts(val_a).is_none() {
+        val_a = rt_to_string(val_a);
+    }
+    if get_str_parts(val_b).is_none() {
+        val_b = rt_to_string(val_b);
+    }
 
     let parts_a = get_str_parts(val_a);
     let parts_b = get_str_parts(val_b);
@@ -2960,6 +3303,12 @@ pub unsafe extern "C" fn rt_Atomic_compareExchange(this: i64, expected: i64, des
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_Mutex_new() -> i64 {
+    let boxed = Box::new(std::sync::Mutex::new(()));
+    Box::into_raw(boxed) as i64
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
     let atom = Box::new(AtomicI64::new(val));
     let atom_ptr = Box::into_raw(atom);
@@ -2968,12 +3317,7 @@ pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
     *obj = 0; // No tag needed
     *obj.offset(1) = atom_ptr as i64;
     let result = (obj as i64) + HEAP_OFFSET;
-    printf(
-        "DEBUG: rt_atomic_new val=%lld ptr=%p result=%lld\n\0".as_ptr() as *const _,
-        val,
-        obj,
-        result,
-    );
+
     result
 }
 
@@ -2988,7 +3332,7 @@ pub unsafe extern "C" fn rt_Mutex_constructor(this: i64) {
         return;
     }
     let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let mutex = Box::new(StdMutex::new(()));
+    let mutex = Box::new(std::sync::Mutex::new(()));
     *ptr.offset(1) = Box::into_raw(mutex) as i64;
 }
 
@@ -2998,11 +3342,13 @@ pub unsafe extern "C" fn rt_Mutex_acquire(this: i64) {
         return;
     }
     let ptr = (this - HEAP_OFFSET) as *const i64;
-    let mutex_ptr = *ptr.offset(1) as *const StdMutex<()>;
+    let mutex_ptr = *ptr.offset(1) as *const std::sync::Mutex<()>;
     if mutex_ptr.is_null() {
         return;
     }
-    let _guard = (*mutex_ptr).lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = (*mutex_ptr)
+        .lock()
+        .unwrap_or_else(|e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner());
     std::mem::forget(_guard); // Keep locked until release
 }
 
@@ -3012,7 +3358,7 @@ pub unsafe extern "C" fn rt_Mutex_release(this: i64) {
         return;
     }
     let ptr = (this - HEAP_OFFSET) as *const i64;
-    let mutex_ptr = *ptr.offset(1) as *const StdMutex<()>;
+    let mutex_ptr = *ptr.offset(1) as *const std::sync::Mutex<()>;
     if mutex_ptr.is_null() {
         return;
     }
@@ -3020,6 +3366,24 @@ pub unsafe extern "C" fn rt_Mutex_release(this: i64) {
     // The MutexGuard was forgotten in acquire. We cannot cleanly release it.
     // For TejX threading, we use a simpler approach: just remember the guard.
     // This is a known limitation; for production use, switch to parking_lot::Mutex.
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Mutex_lock(mutex: i64) {
+    if mutex <= 0 {
+        return;
+    }
+    let mutex_ptr = mutex as *const std::sync::Mutex<()>;
+    // Blocking acquire
+    let _guard = (*mutex_ptr)
+        .lock()
+        .unwrap_or_else(|e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner());
+    // In actual Tejx we don't hold the lock across ticks usually, or if we do,
+    // we drop the guard but keep a flag? No, std::sync::Mutex locks across block.
+    // Wait, if it locks, we need to return the guard and store it, else it unlocks instantly.
+    // For a true Mutex accessible from TS, we can't easily map Rust's RAII guard to TS without
+    // storing it. Actually, typical C-style mutex mapping:
+    // This is fundamentally broken if we just drop the guard.
 }
 
 #[no_mangle]
@@ -3090,9 +3454,18 @@ pub unsafe extern "C" fn rt_Thread_join(this: i64) {
 // --- SharedQueue Operations ---
 
 use std::collections::VecDeque;
+use std::sync::Mutex; // Import Mutex here
 
-struct SharedQueueData {
-    mutex: StdMutex<VecDeque<i64>>,
+struct SharedQueue {
+    mutex: Mutex<VecDeque<i64>>,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_SharedQueue_new() -> i64 {
+    let boxed = Box::new(SharedQueue {
+        mutex: Mutex::new(VecDeque::new()),
+    });
+    Box::into_raw(boxed) as i64
 }
 
 #[no_mangle]
@@ -3101,38 +3474,36 @@ pub unsafe extern "C" fn rt_SharedQueue_constructor(this: i64) {
         return;
     }
     let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let data = Box::new(SharedQueueData {
-        mutex: StdMutex::new(VecDeque::new()),
+    let data = Box::new(SharedQueue {
+        mutex: Mutex::new(VecDeque::new()),
     });
     *ptr.offset(1) = Box::into_raw(data) as i64;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_enqueue(this: i64, val: i64) {
-    if this < HEAP_OFFSET {
+pub unsafe extern "C" fn rt_SharedQueue_enqueue(q_ptr: i64, val: i64) {
+    if q_ptr <= 0 {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let data = *ptr.offset(1) as *const SharedQueueData;
-    if data.is_null() {
-        return;
-    }
-    if let Ok(mut q) = (*data).mutex.lock() {
+    let queue = &*(q_ptr as *const SharedQueue);
+    if let Ok(mut q) = queue.mutex.lock() {
+        q.push_back(val);
+    } else if let Err(e) = queue.mutex.lock() {
+        let mut q = e.into_inner();
         q.push_back(val);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_dequeue(this: i64) -> i64 {
-    if this < HEAP_OFFSET {
+pub unsafe extern "C" fn rt_SharedQueue_dequeue(q_ptr: i64) -> i64 {
+    if q_ptr <= 0 {
         return 0;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let data = *ptr.offset(1) as *const SharedQueueData;
-    if data.is_null() {
-        return 0;
-    }
-    if let Ok(mut q) = (*data).mutex.lock() {
+    let queue = &*(q_ptr as *const SharedQueue);
+    if let Ok(mut q) = queue.mutex.lock() {
+        q.pop_front().unwrap_or(0)
+    } else if let Err(e) = queue.mutex.lock() {
+        let mut q = e.into_inner();
         q.pop_front().unwrap_or(0)
     } else {
         0
@@ -3140,16 +3511,15 @@ pub unsafe extern "C" fn rt_SharedQueue_dequeue(this: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_size(this: i64) -> i64 {
-    if this < HEAP_OFFSET {
+pub unsafe extern "C" fn rt_SharedQueue_size(q_ptr: i64) -> i64 {
+    if q_ptr <= 0 {
         return 0;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let data = *ptr.offset(1) as *const SharedQueueData;
-    if data.is_null() {
-        return 0;
-    }
-    if let Ok(q) = (*data).mutex.lock() {
+    let queue = &*(q_ptr as *const SharedQueue);
+    if let Ok(q) = queue.mutex.lock() {
+        q.len() as i64
+    } else if let Err(e) = queue.mutex.lock() {
+        let q = e.into_inner();
         q.len() as i64
     } else {
         0
@@ -3200,11 +3570,13 @@ pub unsafe extern "C" fn rt_Condition_wait(this: i64, mutex: i64) {
     let cond_ptr = (this - HEAP_OFFSET) as *const i64;
     let cond_data = *cond_ptr.offset(1) as *const ConditionData;
     let mutex_obj = (mutex - HEAP_OFFSET) as *const i64;
-    let mutex_ptr = *mutex_obj.offset(1) as *const StdMutex<()>;
+    let mutex_ptr = *mutex_obj.offset(1) as *const std::sync::Mutex<()>;
     if cond_data.is_null() || mutex_ptr.is_null() {
         return;
     }
-    let guard = (*mutex_ptr).lock().unwrap_or_else(|e| e.into_inner());
+    let guard = (*mutex_ptr)
+        .lock()
+        .unwrap_or_else(|e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner());
     drop(
         (*cond_data)
             .condvar
@@ -3242,85 +3614,291 @@ pub unsafe extern "C" fn rt_Condition_notifyAll(this: i64) {
 // --- Promises ---
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_new() -> i64 {
-    let obj = malloc(32) as *mut i64;
-    *obj = TAG_OBJECT;
-    *obj.offset(1) = 0; // State: Pending
-    *obj.offset(2) = 0; // Value
-    *obj.offset(3) = rt_Array_new_fixed(0, 8); // Callbacks array (empty)
-    (obj as i64) + HEAP_OFFSET
+    let mut callbacks = rt_Array_new_fixed(0, 8);
+    rt_push_root(&mut callbacks);
+
+    let body = gc_allocate(40);
+    let obj = body as *mut i64;
+    let header = rt_get_header(body);
+    (*header).type_id = TAG_PROMISE as u16;
+
+    *obj.offset(0) = 0; // State: Pending
+    *obj.offset(1) = 0; // Value
+    *obj.offset(2) = callbacks; // Callbacks array
+    *obj.offset(3) = 0; // data_base
+    *obj.offset(4) = 0;
+
+    rt_pop_roots(1);
+    (body as i64) + HEAP_OFFSET
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_promise_resolve(p: i64, val: i64) {
+pub unsafe extern "C" fn rt_promise_resolve(p: i64, v_val: i64) {
     if p < HEAP_OFFSET {
         return;
     }
-    let ptr = (p - HEAP_OFFSET) as *mut i64;
-    if *ptr != TAG_OBJECT {
+    let mut v_p = p;
+    let mut v_v = v_val;
+    rt_push_root(&mut v_p);
+    rt_push_root(&mut v_v);
+
+    let body = (v_p - HEAP_OFFSET) as *mut i64;
+    let header = rt_get_header(body as *mut u8);
+    if (*header).type_id != TAG_PROMISE as u16 {
+        rt_pop_roots(2);
         return;
     }
-    if *ptr.offset(1) != 0 {
+    if *body.offset(0) != 0 {
+        rt_pop_roots(2);
         return;
-    } // Already resolved/rejected
+    } // Already settled
 
-    *ptr.offset(1) = 1; // Resolved
-    *ptr.offset(2) = val; // Store value
+    *body.offset(0) = 1; // Resolved
+    *body.offset(1) = v_v; // Store value
 
-    // Execute callbacks
-    let callbacks_arr = *ptr.offset(3);
-    let n = rt_len(callbacks_arr);
+    // Execute callbacks asynchronously
+    let callbacks_arr = *body.offset(2);
+    if callbacks_arr >= HEAP_OFFSET {
+        let mut v_callbacks = callbacks_arr;
+        rt_push_root(&mut v_callbacks);
+        let n = rt_len(v_callbacks);
 
-    for i in (0..n).step_by(2) {
-        let cb = rt_array_get_fast(callbacks_arr, i as i64);
-        let next_p = rt_array_get_fast(callbacks_arr, (i + 1) as i64);
+        for i in (0..n).step_by(3) {
+            let mut cb_resolve = rt_array_get_fast(v_callbacks, i as i64);
+            let mut cb_reject = rt_array_get_fast(v_callbacks, (i + 1) as i64);
+            let mut next_p = rt_array_get_fast(v_callbacks, (i + 2) as i64);
+            rt_push_root(&mut cb_resolve);
+            rt_push_root(&mut cb_reject);
+            rt_push_root(&mut next_p);
 
+            if next_p == -2 {
+                // State machine resume: cb_resolve is worker, cb_reject is ctx
+                tejx_enqueue_task(cb_resolve, cb_reject);
+            } else {
+                // Standard .then() callback: [callback, value, next_promise]
+                let mut task_args = rt_Array_new_fixed(3, 8);
+                rt_push_root(&mut task_args);
+                rt_array_set_fast(task_args, 0, cb_resolve);
+                rt_array_set_fast(task_args, 1, v_v);
+                rt_array_set_fast(task_args, 2, next_p);
+                tejx_enqueue_task(rt_promise_callback_worker as i64, task_args);
+                rt_pop_roots(1); // task_args
+            }
+
+            rt_pop_roots(3); // next_p, cb_reject, cb_resolve
+        }
+        rt_pop_roots(1); // v_callbacks
+    }
+    rt_pop_roots(2); // v_p, v_val
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_callback_worker(args: i64) {
+    if args < HEAP_OFFSET {
+        return;
+    }
+    let mut v_args = args;
+    rt_push_root(&mut v_args);
+
+    let mut cb = rt_array_get_fast(v_args, 0);
+    let mut val = rt_array_get_fast(v_args, 1);
+    let mut next_p = rt_array_get_fast(v_args, 2);
+    rt_push_root(&mut cb);
+    rt_push_root(&mut val);
+    rt_push_root(&mut next_p);
+
+    if cb >= HEAP_OFFSET {
+        // Call callback and resolve next promise in chain with result
         let res = rt_call_closure(cb, val);
         rt_promise_resolve(next_p, res);
+    } else {
+        // No handler: propagate resolution
+        rt_promise_resolve(next_p, val);
     }
+
+    rt_pop_roots(4); // next_p, val, cb, v_args
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_promise_reject(p: i64, err: i64) {
+pub unsafe extern "C" fn rt_promise_reject(p: i64, v_err: i64) {
     if p < HEAP_OFFSET {
         return;
     }
-    let ptr = (p - HEAP_OFFSET) as *mut i64;
-    if *ptr != TAG_OBJECT {
-        return;
-    }
-    if *ptr.offset(1) != 0 {
-        return;
-    }
+    let mut v_p = p;
+    let mut v_e = v_err;
+    rt_push_root(&mut v_p);
+    rt_push_root(&mut v_e);
 
-    *ptr.offset(1) = 2; // Rejected
-    *ptr.offset(2) = err; // Store error
+    let body = (v_p - HEAP_OFFSET) as *mut i64;
+    let header = rt_get_header(body as *mut u8);
+    if (*header).type_id != TAG_PROMISE as u16 {
+        rt_pop_roots(2);
+        return;
+    }
+    if *body.offset(0) != 0 {
+        rt_pop_roots(2);
+        return;
+    } // Already settled
+    *body.offset(0) = 2; // Rejected
+    *body.offset(1) = v_e;
+
+    // Propagate rejection asynchronously
+    let callbacks_arr = *body.offset(2);
+    if callbacks_arr >= HEAP_OFFSET {
+        let mut v_callbacks = callbacks_arr;
+        rt_push_root(&mut v_callbacks);
+        let n = rt_len(v_callbacks);
+
+        for i in (0..n).step_by(3) {
+            let mut cb_resolve = rt_array_get_fast(v_callbacks, i as i64);
+            let mut cb_reject = rt_array_get_fast(v_callbacks, (i + 1) as i64);
+            let mut next_p = rt_array_get_fast(v_callbacks, (i + 2) as i64);
+            rt_push_root(&mut cb_resolve);
+            rt_push_root(&mut cb_reject);
+            rt_push_root(&mut next_p);
+
+            if next_p == -2 {
+                // State machine resume: worker(ctx)
+                tejx_enqueue_task(cb_resolve, cb_reject);
+            } else {
+                let mut task_args = rt_Array_new_fixed(3, 8);
+                rt_push_root(&mut task_args);
+                rt_array_set_fast(task_args, 0, cb_reject);
+                rt_array_set_fast(task_args, 1, v_e);
+                rt_array_set_fast(task_args, 2, next_p);
+                tejx_enqueue_task(rt_promise_rejection_worker as i64, task_args);
+                rt_pop_roots(1); // task_args
+            }
+
+            rt_pop_roots(3); // next_p, cb_reject, cb_resolve
+        }
+        rt_pop_roots(1); // v_callbacks
+    }
+    rt_pop_roots(2);
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_promise_then(p: i64, cb: i64) -> i64 {
+pub unsafe extern "C" fn rt_promise_rejection_worker(args: i64) {
+    if args < HEAP_OFFSET {
+        return;
+    }
+    let mut v_args = args;
+    rt_push_root(&mut v_args);
+
+    let mut cb_reject = rt_array_get_fast(v_args, 0);
+    let mut err = rt_array_get_fast(v_args, 1);
+    let mut next_p = rt_array_get_fast(v_args, 2);
+    rt_push_root(&mut cb_reject);
+    rt_push_root(&mut err);
+    rt_push_root(&mut next_p);
+
+    if cb_reject >= HEAP_OFFSET {
+        // Call rejection handler and resolve NEXT promise with result
+        let res = rt_call_closure(cb_reject, err);
+        rt_promise_resolve(next_p, res);
+    } else {
+        // No handler: propagate rejection to NEXT promise
+        rt_promise_reject(next_p, err);
+    }
+
+    rt_pop_roots(4); // next_p, err, cb_reject, v_args
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_then(p: i64, cb_resolve: i64, cb_reject: i64) -> i64 {
     if p < HEAP_OFFSET {
         return rt_promise_new();
     }
-    let ptr = (p - HEAP_OFFSET) as *mut i64;
-    if *ptr != TAG_OBJECT {
+    let mut v_p = p;
+    let mut v_cb_res = cb_resolve;
+    let mut v_cb_rej = cb_reject;
+    rt_push_root(&mut v_p);
+    rt_push_root(&mut v_cb_res);
+    rt_push_root(&mut v_cb_rej);
+
+    let body = (v_p - HEAP_OFFSET) as *mut i64;
+    let header = rt_get_header(body as *mut u8);
+    if (*header).type_id != TAG_PROMISE as u16 {
+        rt_pop_roots(3);
         return rt_promise_new();
     }
 
-    let state = *ptr.offset(1);
+    let state = *body.offset(0);
     let new_p = rt_promise_new();
+    let mut v_new_p = new_p;
+    rt_push_root(&mut v_new_p);
 
     if state == 0 {
-        // Pending: Store (cb, new_p)
-        let callbacks_arr = *ptr.offset(3);
-        rt_array_push(callbacks_arr, cb);
-        rt_array_push(callbacks_arr, new_p);
+        // Pending: Store (cb_res, cb_rej, new_p)
+        let mut callbacks_arr = *body.offset(2);
+        callbacks_arr = rt_array_push(callbacks_arr, v_cb_res);
+        callbacks_arr = rt_array_push(callbacks_arr, v_cb_rej);
+        callbacks_arr = rt_array_push(callbacks_arr, v_new_p);
+        *body.offset(2) = callbacks_arr;
     } else if state == 1 {
-        // Resolved: Execute immediately (or enqueue)
-        let val = *ptr.offset(2);
-        let res = rt_call_closure(cb, val);
-        rt_promise_resolve(new_p, res);
+        let mut val = *body.offset(1);
+        rt_push_root(&mut val);
+        let mut task_args = rt_Array_new_fixed(3, 8);
+        rt_push_root(&mut task_args);
+        rt_array_set_fast(task_args, 0, v_cb_res);
+        rt_array_set_fast(task_args, 1, val);
+        rt_array_set_fast(task_args, 2, v_new_p);
+        tejx_enqueue_task(rt_promise_callback_worker as i64, task_args);
+        rt_pop_roots(2); // task_args, val
+    } else if state == 2 {
+        // Rejected: Enqueue rejection microtask
+        let mut err = *body.offset(1);
+        rt_push_root(&mut err);
+        let mut task_args = rt_Array_new_fixed(3, 8);
+        rt_push_root(&mut task_args);
+        rt_array_set_fast(task_args, 0, v_cb_rej);
+        rt_array_set_fast(task_args, 1, err);
+        rt_array_set_fast(task_args, 2, v_new_p);
+        tejx_enqueue_task(rt_promise_rejection_worker as i64, task_args);
+        rt_pop_roots(2); // task_args, err
     }
+
+    rt_pop_roots(4);
     new_p
+}
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_await_resume(p: i64, worker: i64, ctx: i64) {
+    if p < HEAP_OFFSET {
+        return;
+    }
+    let mut v_p = p;
+    let mut v_worker = worker;
+    let mut v_ctx = ctx;
+    rt_push_root(&mut v_p);
+    rt_push_root(&mut v_worker);
+    rt_push_root(&mut v_ctx);
+
+    let body = (v_p - HEAP_OFFSET) as *mut i64;
+    let state = *body.offset(0);
+
+    if state == 0 {
+        // Pending: Store (worker, ctx, -2) in callbacks
+        let mut callbacks_arr = *body.offset(2);
+        callbacks_arr = rt_array_push(callbacks_arr, v_worker);
+        callbacks_arr = rt_array_push(callbacks_arr, v_ctx);
+        callbacks_arr = rt_array_push(callbacks_arr, -2); // Marker for state machine resume
+        *body.offset(2) = callbacks_arr;
+    } else {
+        // Already settled: Enqueue microtask immediately
+        tejx_enqueue_task(v_worker, v_ctx);
+    }
+
+    rt_pop_roots(3);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_get_value(p: i64) -> i64 {
+    if p < HEAP_OFFSET {
+        return 0;
+    }
+    let body = (p - HEAP_OFFSET) as *mut i64;
+    // Return the resolved value or error (offset 1)
+    *body.offset(1)
 }
 
 #[no_mangle]
@@ -3333,10 +3911,10 @@ pub unsafe extern "C" fn rt_move_member(id: i64, index: i32) -> i64 {
     if id < HEAP_OFFSET {
         return 0;
     }
-    let ptr = (id - HEAP_OFFSET) as *mut i64;
-    let tag = *ptr;
+    let body = (id - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    let tag = (*header).type_id as i64;
     if tag == TAG_ARRAY {
-        let body = (id - HEAP_OFFSET) as *mut u8;
         let header = rt_get_header(body);
         let len = (*header).length as i64;
         let data = body as *mut i64;
@@ -3354,10 +3932,11 @@ pub unsafe extern "C" fn rt_instanceof(obj: i64, _class_name: i64) -> i32 {
     if obj < HEAP_OFFSET {
         return 0;
     }
-    // Simple mock for now: Check if it's an object/map or array based on tag
-    let ptr = (obj - HEAP_OFFSET) as *const i64;
-    let tag = *ptr;
-    if tag == TAG_OBJECT || tag == TAG_ARRAY {
+    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    let tag = (*header).type_id as i64;
+    // Return true for objects, arrays, and user-defined classes (tag >= 12)
+    if tag == TAG_OBJECT || tag == TAG_ARRAY || tag >= 12 {
         return 1;
     }
     0
@@ -3400,30 +3979,26 @@ pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
             return if na == nb { BOOL_TRUE } else { BOOL_FALSE };
         }
     }
-    printf(
-        "DEBUG: rt_eq fallback to BOOL_FALSE for tags %d and %d\n\0".as_ptr() as *const _,
-        if a >= HEAP_OFFSET {
-            *((a - HEAP_OFFSET) as *const i64)
-        } else {
-            -1
-        },
-        if b >= HEAP_OFFSET {
-            *((b - HEAP_OFFSET) as *const i64)
-        } else {
-            -1
-        },
-    );
+
     BOOL_FALSE
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_strict_equal(a: i64, b: i64) -> i64 {
-    if a == b { 1 } else { 0 }
+    if a == b {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_strict_ne(a: i64, b: i64) -> i64 {
-    if a != b { 1 } else { 0 }
+    if a != b {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -3486,6 +4061,8 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
             return rt_box_string("int\0".as_ptr() as *const _);
         } else if tag == TAG_CHAR {
             return rt_box_string("char\0".as_ptr() as *const _);
+        } else if tag == TAG_PROMISE {
+            return rt_box_string("promise\0".as_ptr() as *const _);
         } else {
             return rt_box_string("object\0".as_ptr() as *const _);
         }
@@ -3498,6 +4075,9 @@ pub unsafe extern "C" fn rt_sizeof(val: i64) -> i64 {
         return 8; // Non-GC primitive
     }
     let body_ptr = (val - HEAP_OFFSET) as *mut u8;
+    if !rt_is_gc_ptr(body_ptr) {
+        return 8; // Likely a 64-bit float or other non-pointer
+    }
     let header = rt_get_header(body_ptr);
     let type_id = (*header).type_id;
 
@@ -3551,18 +4131,37 @@ pub unsafe extern "C" fn rt_await(p: i64) -> i64 {
     if p < HEAP_OFFSET {
         return p;
     }
-    let ptr = (p - HEAP_OFFSET) as *mut i64;
-    if *ptr != TAG_OBJECT {
-        return p;
+    let mut v_p = p;
+    rt_push_root(&mut v_p);
+
+    let mut body = (v_p - HEAP_OFFSET) as *mut i64;
+    let header = rt_get_header(body as *mut u8);
+    if (*header).type_id != TAG_PROMISE as u16 {
+        rt_pop_roots(1);
+        return v_p;
     }
 
     // Pump the event loop until the promise is resolved/rejected
-    while *ptr.offset(1) == 0 {
-        event_loop::tejx_run_event_loop_step();
+    while *body.offset(0) == 0 {
+        let has_more = event_loop::tejx_run_event_loop_step();
+        // Re-resolve body in case p moved during GC
+        body = (v_p - HEAP_OFFSET) as *mut i64;
+
+        if !has_more && *body.offset(0) == 0 {
+            /*
+            printf(
+                "Uncaught exception: Deadlock detected! Awaited Promise will never resolve.\n\0"
+                    .as_ptr() as *const _,
+            );
+            */
+            exit(1);
+        }
     }
 
-    // Return the resolved value (or error, which should ideally be thrown, but we just return it for now)
-    return *ptr.offset(2);
+    // Return the resolved value
+    let res = *body.offset(1);
+    rt_pop_roots(1);
+    res
 }
 
 #[no_mangle]

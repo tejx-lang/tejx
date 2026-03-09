@@ -82,6 +82,7 @@ pub enum HIRExpression {
     },
     ArrayLiteral {
         elements: Vec<HIRExpression>,
+        sized_allocation: Option<Box<HIRExpression>>,
         ty: TejxType,
         line: usize,
     },
@@ -176,6 +177,7 @@ pub enum HIRStatement {
         _return_type: TejxType,
         body: Box<HIRStatement>, // Should be a Block
         is_extern: bool,
+        async_params: Option<Vec<(String, TejxType)>>,
         line: usize,
     },
     Return {

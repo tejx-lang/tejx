@@ -208,6 +208,10 @@ fn main() {
 
     let mut mir_functions = Vec::new();
     for hir_func in &lowering_result.functions {
+        let name = match hir_func {
+            crate::hir::HIRStatement::Function { name, .. } => name.clone(),
+            _ => "unknown".to_string(),
+        };
         let mut mir_lowering = MIRLowering::new(
             lowering_result.signatures.clone(),
             lowering_result.class_fields.clone(),
@@ -305,7 +309,7 @@ fn main() {
         Ok(_) => {
             // Success - cleanup temp files if not compile_only or if otherwise needed
             if !compile_only {
-                let _ = fs::remove_file(&temp_ll_file);
+                // let _ = fs::remove_file(&temp_ll_file);
                 let _ = fs::remove_file(&temp_runtime_path);
             }
         }

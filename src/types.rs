@@ -20,8 +20,9 @@ pub enum TejxType {
     DynamicArray(Box<TejxType>),
     Slice(Box<TejxType>),
     Void,
-    Ref(Box<TejxType>),  // Non-owning borrow
-    Weak(Box<TejxType>), // Non-owning cycle-breaker
+    Ref(Box<TejxType>),                     // Non-owning borrow
+    Weak(Box<TejxType>),                    // Non-owning cycle-breaker
+    Function(Vec<TejxType>, Box<TejxType>), // (Params, Return)
 }
 
 impl TejxType {
@@ -44,8 +45,11 @@ impl TejxType {
             | TejxType::Ref(_)
             | TejxType::Weak(_) => false,
             // Re-enabling drops. Strict checking in borrow checker will prevent double-frees.
-            TejxType::String | TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) => true,
-            TejxType::Slice(_) => false, // Slice is a non-owning fat pointer
+            TejxType::String
+            | TejxType::FixedArray(_, _)
+            | TejxType::DynamicArray(_)
+            | TejxType::Function(_, _) => true,
+            TejxType::Slice(_) => false,
             TejxType::Class(name) => name != "void",
         }
     }
@@ -60,6 +64,7 @@ impl TejxType {
             | TejxType::Float32
             | TejxType::Float64 => true,
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_numeric(),
+            TejxType::Function(_, _) => false,
             _ => false,
         }
     }
@@ -68,6 +73,7 @@ impl TejxType {
         match self {
             TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => true,
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_float(),
+            TejxType::Function(_, _) => false,
             _ => false,
         }
     }
@@ -75,8 +81,12 @@ impl TejxType {
     pub fn is_array(&self) -> bool {
         match self {
             TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) | TejxType::Slice(_) => true,
-            TejxType::Class(name) => name.ends_with("[]") && !name.starts_with("Array<"),
+            TejxType::Class(name) => {
+                (name.ends_with("[]") || (name.contains('[') && name.ends_with(']')))
+                    && !name.starts_with("Array<")
+            }
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_array(),
+            TejxType::Function(_, _) => false,
             _ => false,
         }
     }
@@ -85,6 +95,7 @@ impl TejxType {
         match self {
             TejxType::Slice(_) => true,
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_slice(),
+            TejxType::Function(_, _) => false,
             _ => false,
         }
     }
@@ -117,6 +128,7 @@ impl TejxType {
             }
             TejxType::String => TejxType::String,
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.get_array_element_type(), // Delegate to underlying type
+            TejxType::Function(_, _) => TejxType::Void,
             _ => TejxType::Void,
         }
     }
@@ -133,7 +145,8 @@ impl TejxType {
             | TejxType::Class(_)
             | TejxType::Ref(_)
             | TejxType::Weak(_)
-            | TejxType::DynamicArray(_) => 8, // Pointers/Boxed/Borrows
+            | TejxType::DynamicArray(_)
+            | TejxType::Function(_, _) => 8, // Pointers/Boxed/Borrows/Function pointers
             TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Void => 0,
@@ -217,6 +230,10 @@ impl TejxType {
             TejxType::Void => "void".to_string(),
             TejxType::Ref(inner) => format!("ref {}", inner.to_name()),
             TejxType::Weak(inner) => format!("weak {}", inner.to_name()),
+            TejxType::Function(params, ret) => {
+                let p_names: Vec<String> = params.iter().map(|p| p.to_name()).collect();
+                format!("({}) => {}", p_names.join(", "), ret.to_name())
+            }
         }
     }
 }

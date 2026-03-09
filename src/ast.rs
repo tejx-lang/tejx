@@ -7,10 +7,57 @@ pub struct Program {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeAnnotation {
+    pub raw_name: String,
+    pub size_expr: Option<Box<Expression>>,
+}
+
+impl PartialEq for TypeAnnotation {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw_name == other.raw_name
+    }
+}
+
+impl Eq for TypeAnnotation {}
+
+impl std::hash::Hash for TypeAnnotation {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.raw_name.hash(state);
+    }
+}
+
+impl TypeAnnotation {
+    pub fn from_name(name: String) -> Self {
+        TypeAnnotation {
+            raw_name: name,
+            size_expr: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.raw_name.is_empty()
+    }
+
+    pub fn starts_with(&self, s: &str) -> bool {
+        self.raw_name.starts_with(s)
+    }
+
+    pub fn to_string(&self) -> String {
+        self.raw_name.clone()
+    }
+}
+
+impl std::fmt::Display for TypeAnnotation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Statement {
     VarDeclaration {
         pattern: BindingNode,
-        type_annotation: String,
+        type_annotation: TypeAnnotation,
         initializer: Option<Box<Expression>>,
         is_const: bool,
         line: usize,
@@ -24,7 +71,7 @@ pub enum Statement {
     EnumDeclaration(EnumDeclaration),
     TypeAliasDeclaration {
         name: String,
-        _type_def: String,
+        _type_def: TypeAnnotation,
         _line: usize,
         _col: usize,
     },
@@ -285,7 +332,7 @@ pub enum Expression {
     },
     CastExpr {
         expr: Box<Expression>,
-        target_type: String,
+        target_type: TypeAnnotation,
         _line: usize,
         _col: usize,
     },
@@ -295,7 +342,7 @@ pub enum Expression {
 pub struct FunctionDeclaration {
     pub name: String,
     pub params: Vec<Parameter>,
-    pub return_type: String,
+    pub return_type: TypeAnnotation,
     pub body: Box<Statement>, // BlockStmt
     pub _is_async: bool,
     pub is_extern: bool,
@@ -307,7 +354,7 @@ pub struct FunctionDeclaration {
 #[derive(Debug, Clone)]
 pub struct Parameter {
     pub name: String,
-    pub type_name: String,
+    pub type_name: TypeAnnotation,
     pub _default_value: Option<Box<Expression>>,
     pub _is_rest: bool,
 }
@@ -331,7 +378,7 @@ pub struct ClassDeclaration {
 #[derive(Debug, Clone)]
 pub struct ClassMember {
     pub _name: String,
-    pub _type_name: String,
+    pub _type_name: TypeAnnotation,
     pub _access: AccessModifier,
     pub _is_static: bool,
     pub _initializer: Option<Box<Expression>>,
@@ -348,7 +395,7 @@ pub struct ClassMethod {
 #[derive(Debug, Clone)]
 pub struct ClassGetter {
     pub _name: String,
-    pub _return_type: String,
+    pub _return_type: TypeAnnotation,
     pub _body: Box<Statement>,
     pub _access: AccessModifier,
 }
@@ -357,7 +404,7 @@ pub struct ClassGetter {
 pub struct ClassSetter {
     pub _name: String,
     pub _param_name: String,
-    pub _param_type: String,
+    pub _param_type: TypeAnnotation,
     pub _body: Box<Statement>,
     pub _access: AccessModifier,
 }
@@ -393,14 +440,14 @@ pub struct Case {
 pub struct InterfaceMethod {
     pub _name: String,
     pub _params: Vec<Parameter>,
-    pub _return_type: String,
+    pub _return_type: TypeAnnotation,
 }
 
 // Removed ProtocolDeclaration
 
 #[derive(Debug, Clone)]
 pub struct ExtensionDeclaration {
-    pub _target_type: String,
+    pub _target_type: TypeAnnotation,
     pub _methods: Vec<FunctionDeclaration>,
     pub _line: usize,
     pub _col: usize,

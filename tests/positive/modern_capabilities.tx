@@ -109,7 +109,7 @@ function main() {
 
     let btn = new Button(1, "Submit");
     print("Deep Inheritance: Expected: Button['Submit'] -> Element(button) -> Node(1)");
-    print("Actual: ", btn.describe());
+    assert_eq_string(btn.describe(), "Button['Submit'] -> Element(button) -> Node(1)", "Deep Inheritance");
 
     // Polymorphism
     print("\n--- Polymorphism: Mixed Collection ---");
@@ -140,7 +140,7 @@ function main() {
         sumSquares = sumSquares + squares[i];
     }
 
-    print("Even Squares Sum: Expected: 220, Actual: ", sumSquares);
+    assert_eq_int(sumSquares, 220, "Even Squares Sum");
     // (2^2 + 4^2 + 6^2 + 8^2 + 10^2) = 4 + 16 + 36 + 64 + 100 = 220
 
 
@@ -151,29 +151,30 @@ function main() {
     stack.push(20);
     stack.push(30);
 
-    print("Peek: Expected: 30, Actual: ", stack.peek());
-    print("Pop: Expected: 30, Actual: ", stack.pop());
-    print("Pop: Expected: 20, Actual: ", stack.pop());
-    print("IsEmpty: Expected: false, Actual: ", stack.isEmpty());
+    assert_eq_int(stack.peek(), 30, "Peek");
+    assert_eq_int(stack.pop(), 30, "Pop");
+    assert_eq_int(stack.pop(), 20, "Pop");
+    assert_eq_int(stack.isEmpty(), false, "IsEmpty");
     stack.pop(); // 10
-    print("IsEmpty after clearing: Expected: true, Actual: ", stack.isEmpty());
+    assert_eq_int(stack.isEmpty(), true, "IsEmpty after clearing");
 
 
     print("\n--- Algorithms: Binary Search ---");
 
     let sorted = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-    print("Search 40: Expected: 3, Actual: ", binarySearch(sorted, 40));
-    print("Search 90: Expected: 8, Actual: ", binarySearch(sorted, 90));
-    print("Search 25 (Missing): Expected: -1, Actual: ", binarySearch(sorted, 25));
+    assert_eq_int(binarySearch(sorted, 40), 3, "Binary Search");
+    assert_eq_int(binarySearch(sorted, 90), 8, "Binary Search");
+    assert_eq_int(binarySearch(sorted, 25), -1, "Binary Search");
 
 
     print("\n--- Error Handling Logic ---");
 
     let r1 = validate("hello");
-    print("Valid input: Expected: true, Actual: ", r1.isValid);
+    assert_eq_int(r1.isValid, true, "Valid input");
 
     let r2 = validate("");
-    print("Empty input: Expected: false, Error: Empty string. Actual: ", r2.isValid, ", ", r2.error);
+    assert_eq_int(r2.isValid, false, "Empty input");
+    assert_eq_string(r2.error, "Empty string", "Error message");
 
 
     print("\n=== Modern Capabilities Test Complete ===");

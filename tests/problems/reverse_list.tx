@@ -1,3 +1,4 @@
+import {assert_eq_int} from "../utils.tx"
 class Node {
   data: int;
   next: Node | None;
@@ -31,13 +32,7 @@ function reverseList(head: Node | None): Node | None {
   return prev; 
 }
 
-function assert(condition: bool, message: string): void {
-    if (!condition) {
-        print("❌ ASSERT FAILED: " + message);
-    } else {
-        print("✅ PASS: " + message);
-    }
-}
+
 
 function main(): void {
   let n1 = new Node(1);
@@ -52,19 +47,23 @@ function main(): void {
   print("New Head ID:", head);
 
   print("Reversed List Check:");
+     assert_eq_int(head.data, 3, "Head data is not 3");
+
   if (head != None) {
-      print("Head data:", head.data);
       if (head.data == 3) {
-           print("Head data Correct");
            // Traverse
            let second = head.next;
+            assert_eq_int(second.data, 2, "Second data is not 2");
+
            if (second != None) {
-             print("Second data:", second.data);
              let third = second.next;
+                              assert_eq_int(third.data, 1, "Third data is not 1");
+
              if (third != None) { 
-                 print("Third data:", third.data);
+                                   assert_eq_none(third.next, "Tail Next is NOT None!");
+
                  if (third.next == None) {
-                     print("Tail Correct");
+                  print("Tail Correct");
                  } else {
                      print("Tail Next is NOT None!");
                  }
