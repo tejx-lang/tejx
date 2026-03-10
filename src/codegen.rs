@@ -61,12 +61,12 @@ impl CodeGen {
 
     fn is_gc_managed(ty: &TejxType) -> bool {
         match ty {
-            TejxType::Class(_)
+            TejxType::Class(_, _)
             | TejxType::FixedArray(_, _)
             | TejxType::DynamicArray(_)
             | TejxType::Function(_, _)
             | TejxType::String => true,
-            _ => matches!(ty, TejxType::Class(c) if c == "any"),
+            _ => false,
         }
     }
 
@@ -398,24 +398,6 @@ impl CodeGen {
                 float_val, normal_val
             ));
             return float_val;
-        } else if *ty == TejxType::Class("any".to_string()) {
-            if !self.declared_functions.contains("rt_to_number_v2") {
-                self.global_buffer
-                    .push_str("declare i64 @rt_to_number_v2(i64) readonly\n");
-                self.declared_functions
-                    .insert("rt_to_number_v2".to_string());
-            }
-            self.temp_counter += 1;
-            let bits_tmp = format!("%any_bits_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = call i64 @rt_to_number_v2(i64 {})",
-                bits_tmp, normal_val
-            ));
-            self.emit_line(&format!(
-                "{} = bitcast i64 {} to double",
-                float_val, bits_tmp
-            ));
-            return float_val;
         } else {
             self.emit_line(&format!(
                 "{} = sitofp i64 {} to double",
@@ -446,10 +428,11 @@ impl CodeGen {
                             .push_str("declare i64 @rt_closure_new(i64) nounwind\n");
                         self.declared_functions.insert("rt_closure_new".to_string());
                     }
-                    if !self.declared_functions.contains("rt_box_string") {
+                    if !self.declared_functions.contains("rt_string_from_c_str") {
                         self.global_buffer
-                            .push_str("declare i64 @rt_box_string(i64)\n");
-                        self.declared_functions.insert("rt_box_string".to_string());
+                            .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                        self.declared_functions
+                            .insert("rt_string_from_c_str".to_string());
                     }
 
                     self.temp_counter += 1;
@@ -466,7 +449,7 @@ impl CodeGen {
                     }
                     self.temp_counter += 1;
                     let ptr_key_id = format!("%ptr_key{}", self.temp_counter);
-                    self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([4 x i8]* @str_key_ptr to i64))", ptr_key_id));
+                    self.emit_line(&format!("{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([4 x i8]* @str_key_ptr to i64))", ptr_key_id));
                     self.emit_line(&format!(
                         "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
                         closure_id, ptr_key_id, fn_ptr
@@ -492,7 +475,7 @@ impl CodeGen {
                     }
                     self.temp_counter += 1;
                     let env_key_id = format!("%env_key{}", self.temp_counter);
-                    self.emit_line(&format!("{} = call i64 @rt_box_string(i64 ptrtoint ([4 x i8]* @str_key_env to i64))", env_key_id));
+                    self.emit_line(&format!("{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([4 x i8]* @str_key_env to i64))", env_key_id));
                     self.emit_line(&format!(
                         "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
                         closure_id, env_key_id, env_to_pass
@@ -507,7 +490,6 @@ impl CodeGen {
                 let is_integer_type = ty.is_numeric() && !ty.is_float();
                 let is_float_type = ty.is_float();
                 let is_bool_type = matches!(ty, TejxType::Bool);
-                let is_any_type = false;
 
                 if is_bool_type {
                     if value == "true" || value == "1" {
@@ -522,9 +504,9 @@ impl CodeGen {
                     }
                 }
 
-                if is_float_type || is_any_type && value.parse::<f64>().is_ok() {
+                if is_float_type {
                     if let Ok(d) = value.parse::<f64>() {
-                        // Variables of type Any/Number ALWAYS store bitcasted doubles
+                        // Variables of type Number ALWAYS store bitcasted doubles
                         return format!("{}", d.to_bits());
                     }
                     return "0".to_string();
@@ -539,10 +521,11 @@ impl CodeGen {
                 }
 
                 let raw_ptr = self.emit_string_constant(value);
-                if !self.declared_functions.contains("rt_box_string") {
+                if !self.declared_functions.contains("rt_string_from_c_str") {
                     self.global_buffer
-                        .push_str("declare i64 @rt_box_string(i64)\n");
-                    self.declared_functions.insert("rt_box_string".to_string());
+                        .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                    self.declared_functions
+                        .insert("rt_string_from_c_str".to_string());
                 }
                 self.emit_box_string(&raw_ptr)
             }
@@ -571,10 +554,11 @@ impl CodeGen {
                                 .push_str("declare i64 @rt_Map_get(i64, i64)\n");
                             self.declared_functions.insert("rt_Map_get".to_string());
                         }
-                        if !self.declared_functions.contains("rt_box_string") {
+                        if !self.declared_functions.contains("rt_string_from_c_str") {
                             self.global_buffer
-                                .push_str("declare i64 @rt_box_string(i64)\n");
-                            self.declared_functions.insert("rt_box_string".to_string());
+                                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                            self.declared_functions
+                                .insert("rt_string_from_c_str".to_string());
                         }
 
                         // Get/Create key string - use base captured name for consistent keys
@@ -592,7 +576,7 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let key_id = format!("%key_id{}", self.temp_counter);
                         self.emit_line(&format!(
-                            "{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))",
+                            "{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([{} x i8]* {} to i64))",
                             key_id,
                             cap_key.len() + 1,
                             key_global
@@ -755,10 +739,11 @@ impl CodeGen {
                         .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
                     self.declared_functions.insert("rt_Map_set".to_string());
                 }
-                if !self.declared_functions.contains("rt_box_string") {
+                if !self.declared_functions.contains("rt_string_from_c_str") {
                     self.global_buffer
-                        .push_str("declare i64 @rt_box_string(i64)\n");
-                    self.declared_functions.insert("rt_box_string".to_string());
+                        .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                    self.declared_functions
+                        .insert("rt_string_from_c_str".to_string());
                 }
 
                 // Get/Create key string - use base captured name
@@ -776,54 +761,19 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let key_id = format!("%key_id{}", self.temp_counter);
                 self.emit_line(&format!(
-                    "{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))",
+                    "{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([{} x i8]* {} to i64))",
                     key_id,
                     cap_key.len() + 1,
                     key_global
                 ));
 
-                let val_to_store = if ty.is_float() {
-                    if !self.declared_functions.contains("rt_box_number") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_box_number(double)\n");
-                        self.declared_functions.insert("rt_box_number".to_string());
-                    }
-                    self.temp_counter += 1;
-                    let float_tmp = format!("%float_val{}", self.temp_counter);
-                    self.emit_line(&format!("{} = bitcast i64 {} to double", float_tmp, val));
-                    self.temp_counter += 1;
-                    let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_box_number(double {})",
-                        boxed_tmp, float_tmp
-                    ));
-                    boxed_tmp
-                } else if ty.is_numeric() && !ty.is_float() {
-                    if !self.declared_functions.contains("rt_box_int") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_box_int(i64) nounwind\n");
-                        self.declared_functions.insert("rt_box_int".to_string());
-                    }
-                    self.temp_counter += 1;
-                    let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_box_int(i64 {})",
-                        boxed_tmp, val
-                    ));
-                    boxed_tmp
-                } else if *ty == TejxType::Bool {
-                    if !self.declared_functions.contains("rt_box_boolean") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_box_boolean(i64) nounwind\n");
-                        self.declared_functions.insert("rt_box_boolean".to_string());
-                    }
-                    self.temp_counter += 1;
-                    let boxed_tmp = format!("%boxed_val{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_box_boolean(i64 {})",
-                        boxed_tmp, val
-                    ));
-                    boxed_tmp
+                let val_to_store = if ty.is_float()
+                    || ty.is_numeric()
+                    || *ty == TejxType::Bool
+                    || *ty == TejxType::Char
+                {
+                    // Primitives are now bitcasted directly into i64 slots (generic slots)
+                    val.to_string()
                 } else {
                     val.to_string()
                 };
@@ -960,10 +910,7 @@ impl CodeGen {
             let mut current_offset = 0;
             for (_name, ty) in fields {
                 current_offset = Self::get_aligned_offset(current_offset, ty);
-                if matches!(
-                    ty,
-                    TejxType::Class(_) | TejxType::String | TejxType::Ref(_) | TejxType::Weak(_)
-                ) {
+                if matches!(ty, TejxType::Class(_, _) | TejxType::String) {
                     ptr_offsets.push(current_offset);
                 }
                 current_offset += ty.size();
@@ -1075,9 +1022,9 @@ impl CodeGen {
             self.global_buffer
                 .push_str(&format!("declare i64 @{}()\n", TEJX_GET_EXCEPTION));
         }
-        if !self.declared_functions.contains("rt_box_string") {
+        if !self.declared_functions.contains("rt_string_from_c_str") {
             self.global_buffer
-                .push_str("declare i64 @rt_box_string(i64)\n");
+                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
         }
 
         // Generate main wrapper if tejx_main exists
@@ -1170,7 +1117,7 @@ impl CodeGen {
         }
 
         // 1. Scan for all local variables
-        for bb in &func.blocks {
+        for _bb in &func.blocks {
             if !self.declared_functions.contains(RT_ARENA_CREATE) {
                 self.global_buffer
                     .push_str(&format!("declare i64 @{}(i64) nounwind\n", RT_ARENA_CREATE));
@@ -1342,10 +1289,11 @@ impl CodeGen {
                             .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
                         self.declared_functions.insert("rt_Map_set".to_string());
                     }
-                    if !self.declared_functions.contains("rt_box_string") {
+                    if !self.declared_functions.contains("rt_string_from_c_str") {
                         self.global_buffer
-                            .push_str("declare i64 @rt_box_string(i64)\n");
-                        self.declared_functions.insert("rt_box_string".to_string());
+                            .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                        self.declared_functions
+                            .insert("rt_string_from_c_str".to_string());
                     }
 
                     // Create key string - use base captured name
@@ -1363,7 +1311,7 @@ impl CodeGen {
                     self.temp_counter += 1;
                     let key_id = format!("%key_id{}", self.temp_counter);
                     self.emit_line(&format!(
-                        "{} = call i64 @rt_box_string(i64 ptrtoint ([{} x i8]* {} to i64))",
+                        "{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([{} x i8]* {} to i64))",
                         key_id,
                         cap_key.len() + 1,
                         key_global
@@ -1498,13 +1446,7 @@ impl CodeGen {
                     MIRValue::Variable { ty, .. } => ty,
                 };
 
-                // Helper to unwrap Ref/Weak to check inner type
-                let unwrap_ty = |ty: &TejxType| -> TejxType {
-                    match ty {
-                        TejxType::Ref(inner) | TejxType::Weak(inner) => (**inner).clone(),
-                        _ => ty.clone(),
-                    }
-                };
+                let unwrap_ty = |ty: &TejxType| -> TejxType { ty.clone() };
 
                 // Check types
                 let is_string_op = matches!(unwrap_ty(l_ty), TejxType::String)
@@ -1522,13 +1464,6 @@ impl CodeGen {
 
                 if is_string_op {
                     let l_val = if l_ty.is_numeric() {
-                        if !self.declared_functions.contains("rt_box_number") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_number(double)\n");
-                            self.declared_functions.insert("rt_box_number".to_string());
-                        }
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_l{}", self.temp_counter);
                         let val_as_double = if !l_ty.is_float() {
                             self.temp_counter += 1;
                             let d = format!("%d_l{}", self.temp_counter);
@@ -1540,53 +1475,37 @@ impl CodeGen {
                             self.emit_line(&format!("{} = bitcast i64 {} to double", d, l));
                             d
                         };
+                        self.temp_counter += 1;
+                        let boxed = format!("%boxed_l{}", self.temp_counter);
                         self.emit_line(&format!(
-                            "{} = call i64 @rt_box_number(double {})",
+                            "{} = bitcast double {} to i64",
                             boxed, val_as_double
                         ));
                         boxed
                     } else if matches!(l_ty, TejxType::Bool) {
-                        if !self.declared_functions.contains("rt_box_boolean") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_boolean(i64)\n");
-                            self.declared_functions.insert("rt_box_boolean".to_string());
-                        }
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_l{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed, l));
+                        self.emit_line(&format!("{} = or i64 0, {}", boxed, l));
                         boxed
                     } else if matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint") {
-                        if !self.declared_functions.contains("rt_box_string") {
+                        if !self.declared_functions.contains("rt_string_from_c_str") {
                             self.global_buffer
-                                .push_str("declare i64 @rt_box_string(i64)\n");
-                            self.declared_functions.insert("rt_box_string".to_string());
+                                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                            self.declared_functions
+                                .insert("rt_string_from_c_str".to_string());
                         }
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_l{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_box_string(i64 {})", boxed, l));
-                        boxed
-                    } else if false {
-                        if !self.declared_functions.contains("rt_box_int") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_int(i64)\n");
-                            self.declared_functions.insert("rt_box_int".to_string());
-                        }
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_l{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed, l));
+                        self.emit_line(&format!(
+                            "{} = call i64 @rt_string_from_c_str(i64 {})",
+                            boxed, l
+                        ));
                         boxed
                     } else {
                         l.to_string()
                     };
 
                     let r_val = if r_ty.is_numeric() {
-                        if !self.declared_functions.contains("rt_box_number") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_number(double)\n");
-                            self.declared_functions.insert("rt_box_number".to_string());
-                        }
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_r{}", self.temp_counter);
                         let val_as_double = if !r_ty.is_float() {
                             self.temp_counter += 1;
                             let d = format!("%d_r{}", self.temp_counter);
@@ -1598,40 +1517,36 @@ impl CodeGen {
                             self.emit_line(&format!("{} = bitcast i64 {} to double", d, r));
                             d
                         };
+                        self.temp_counter += 1;
+                        let boxed = format!("%boxed_r{}", self.temp_counter);
                         self.emit_line(&format!(
-                            "{} = call i64 @rt_box_number(double {})",
+                            "{} = bitcast double {} to i64",
                             boxed, val_as_double
                         ));
                         boxed
                     } else if matches!(r_ty, TejxType::Bool) {
-                        if !self.declared_functions.contains("rt_box_boolean") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_boolean(i64)\n");
-                            self.declared_functions.insert("rt_box_boolean".to_string());
-                        }
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_r{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", boxed, r));
+                        self.emit_line(&format!("{} = or i64 0, {}", boxed, r));
                         boxed
                     } else if matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint") {
-                        if !self.declared_functions.contains("rt_box_string") {
+                        if !self.declared_functions.contains("rt_string_from_c_str") {
                             self.global_buffer
-                                .push_str("declare i64 @rt_box_string(i64)\n");
-                            self.declared_functions.insert("rt_box_string".to_string());
+                                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+                            self.declared_functions
+                                .insert("rt_string_from_c_str".to_string());
                         }
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_r{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_box_string(i64 {})", boxed, r));
+                        self.emit_line(&format!(
+                            "{} = call i64 @rt_string_from_c_str(i64 {})",
+                            boxed, r
+                        ));
                         boxed
                     } else if matches!(r_ty, TejxType::Int32 | TejxType::Int64) {
-                        if !self.declared_functions.contains("rt_box_int") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_int(i64)\n");
-                            self.declared_functions.insert("rt_box_int".to_string());
-                        }
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_r{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed, r));
+                        self.emit_line(&format!("{} = or i64 0, {}", boxed, r));
                         boxed
                     } else {
                         r.to_string()
@@ -1998,20 +1913,13 @@ impl CodeGen {
                 if callee == "rt_box_number" {
                     let float_val = self.resolve_float_value(&args[0]);
 
-                    if !self.declared_functions.contains("rt_box_number") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_box_number(double)\n");
-                        self.declared_functions.insert("rt_box_number".to_string());
-                    }
-
                     self.temp_counter += 1;
-                    let result_tmp = format!("%call{}", self.temp_counter);
+                    let result_tmp = format!("%boxed_num{}", self.temp_counter);
                     self.emit_line(&format!(
-                        "{} = call i64 @rt_box_number(double {})",
+                        "{} = bitcast double {} to i64",
                         result_tmp, float_val
                     ));
                     if !dst.is_empty() {
-                        self.float_ssa_vars.insert(dst.clone(), float_val);
                         let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                         self.emit_store_variable(dst, &result_tmp, dst_ty);
                     }
@@ -2038,7 +1946,7 @@ impl CodeGen {
                 if callee == RT_CLASS_NEW {
                     let class_name = match &args[0] {
                         MIRValue::Constant { value, .. } => value.trim_matches('"').to_string(),
-                        _ => "Object".to_string(),
+                        _ => "any".to_string(),
                     };
 
                     let type_id = self.type_id_map.get(&class_name).cloned().unwrap_or(2);
@@ -2284,22 +2192,28 @@ impl CodeGen {
                     return;
                 }
 
-                if callee == "rt_box_int" {
+                if callee == "rt_box_int" || callee == "rt_box_boolean" || callee == "rt_box_char" {
                     let arg_val = self.resolve_value(&args[0]);
-
-                    if !self.declared_functions.contains("rt_box_int") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_box_int(i64)\n");
-                        self.declared_functions.insert("rt_box_int".to_string());
-                    }
-
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
+                    // Primitives are now bitcasted directly into i64 slots (generic slots)
+                    self.emit_line(&format!("{} = or i64 0, {}", result_tmp, arg_val));
+                    if !dst.is_empty() {
+                        let ptr = self.resolve_ptr(dst);
+                        self.store_ptr(&ptr, &result_tmp);
+                    }
+                    return;
+                }
+
+                if callee == "rt_box_number" {
+                    let arg_val = self.resolve_value(&args[0]);
+                    self.temp_counter += 1;
+                    let result_tmp = format!("%call{}", self.temp_counter);
+                    // Bitcast double -> i64 to store in generic slot
                     self.emit_line(&format!(
-                        "{} = call i64 @rt_box_int(i64 {})",
+                        "{} = bitcast double {} to i64",
                         result_tmp, arg_val
                     ));
-
                     if !dst.is_empty() {
                         let ptr = self.resolve_ptr(dst);
                         self.store_ptr(&ptr, &result_tmp);
@@ -2483,10 +2397,7 @@ impl CodeGen {
                         let args_str = arg_vals.join(", ");
 
                         let ret_ty = if !dst.is_empty() {
-                            func.variables
-                                .get(dst)
-                                .cloned()
-                                .unwrap_or(TejxType::Class("any".to_string()))
+                            func.variables.get(dst).cloned().unwrap_or(TejxType::Void)
                         } else {
                             TejxType::Void
                         };
@@ -2565,17 +2476,15 @@ impl CodeGen {
                             if self.value_map.contains_key(base) {
                                 is_instance_call = true;
                                 instance_var = base.to_string();
-                                if method == "join" && func.variables.get(base).map(|t| matches!(t, TejxType::Class(n) if n == "Thread" || n.starts_with("Thread<"))).unwrap_or(false) {
+                                if method == "join" && func.variables.get(base).map(|t| matches!(t, TejxType::Class(n, _) if n == "Thread" || n.starts_with("Thread<"))).unwrap_or(false) {
                                     final_callee = "f_Thread_join".to_string();
                                 } else {
                                     // Resolve instance type to get class name dynamically
                                     let mut class_name = base.to_string();
                                     if let Some(ty) = func.variables.get(base) {
                                         match ty {
-                                            TejxType::Class(name) => {
-                                                if name == "any"
-                                                    || name == "any[]"
-                                                    || name.starts_with("Array<")
+                                            TejxType::Class(name, _) => {
+                                                if name.starts_with("Array<")
                                                     || name.ends_with("[]")
                                                 {
                                                     class_name = "Array".to_string();
@@ -2638,7 +2547,7 @@ impl CodeGen {
                             call_args_info.push((
                                 MIRValue::Variable {
                                     name: instance_var.clone(),
-                                    ty: TejxType::Class("any".to_string()),
+                                    ty: TejxType::Class("any".to_string(), vec![]),
                                 },
                                 tmp,
                             ));
@@ -2646,7 +2555,7 @@ impl CodeGen {
                     }
 
                     for arg in args {
-                        let reg = if final_callee == "rt_box_string" {
+                        let reg = if final_callee == "rt_string_from_c_str" {
                             if let MIRValue::Constant {
                                 value,
                                 ty: TejxType::String,
@@ -2674,10 +2583,10 @@ impl CodeGen {
                         let arg_ty = arg_mir.get_type();
                         let mut final_reg = reg;
 
-                        // Ensure string literals are boxed when passed to functions (unless the function is rt_box_string)
+                        // Ensure string literals are boxed when passed to functions (unless the function is rt_string_from_c_str)
                         if matches!(arg_ty, TejxType::String)
                             && final_reg.starts_with("ptrtoint")
-                            && final_callee != "rt_box_string"
+                            && final_callee != "rt_string_from_c_str"
                         {
                             final_reg = self.emit_box_string(&final_reg);
                         }
@@ -2941,7 +2850,7 @@ impl CodeGen {
                 let err_obj = format!("%err_obj{}", self.temp_counter);
                 self.emit_line(&format!(
                     "{} = call i64 @{}(i64 {})",
-                    err_obj, RT_BOX_STRING, err_msg
+                    err_obj, RT_STRING_FROM_C_STR, err_msg
                 ));
                 self.emit_line(&format!("call void @{}(i64 {})", TEJX_THROW, err_obj));
                 self.emit_line("unreachable");
@@ -3035,7 +2944,7 @@ impl CodeGen {
                     self.emit_line(&format!("{} = call i64 @rt_len(i64 {})", res_tmp, obj_val));
                     used_fast = true;
                 } else {
-                    if let TejxType::Class(class_name) = obj.get_type() {
+                    if let TejxType::Class(class_name, _) = obj.get_type() {
                         let lookup_name = if class_name.contains('<') {
                             class_name.split('<').next().unwrap()
                         } else {
@@ -3130,7 +3039,7 @@ impl CodeGen {
                 let mut needs_unboxing = !used_fast;
 
                 if !used_fast {
-                    if let TejxType::Class(class_name) = obj.get_type() {
+                    if let TejxType::Class(class_name, _) = obj.get_type() {
                         let lookup_name = if class_name.contains('<') {
                             class_name.split('<').next().unwrap()
                         } else {
@@ -3219,7 +3128,7 @@ impl CodeGen {
                 // Only box if target is not a known primitive field of a class
                 let mut needs_boxing = true;
                 let mut used_fast_store = false;
-                if let TejxType::Class(class_name) = obj.get_type() {
+                if let TejxType::Class(class_name, _) = obj.get_type() {
                     let lookup_name = if class_name.contains('<') {
                         class_name.split('<').next().unwrap()
                     } else {
@@ -3315,40 +3224,11 @@ impl CodeGen {
                     self.temp_counter += 1;
                     let boxed_reg = format!("%boxed_set_{}", self.temp_counter);
 
+                    // Primitives are now bitcasted directly into i64 slots (generic slots)
                     if v_ty.is_float() {
-                        self.temp_counter += 1;
-                        let d_val = format!("%d_val_set_{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, v_val));
-
-                        if !self.declared_functions.contains("rt_box_number") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_number(double)\n");
-                            self.declared_functions.insert("rt_box_number".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_box_number(double {})",
-                            boxed_reg, d_val
-                        ));
-                    } else if matches!(v_ty, TejxType::Bool) {
-                        if !self.declared_functions.contains("rt_box_boolean") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_boolean(i64)\n");
-                            self.declared_functions.insert("rt_box_boolean".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_box_boolean(i64 {})",
-                            boxed_reg, v_val
-                        ));
+                        self.emit_line(&format!("{} = bitcast double {} to i64", boxed_reg, v_val));
                     } else {
-                        if !self.declared_functions.contains("rt_box_int") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_int(i64)\n");
-                            self.declared_functions.insert("rt_box_int".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_box_int(i64 {})",
-                            boxed_reg, v_val
-                        ));
+                        self.emit_line(&format!("{} = or i64 0, {}", boxed_reg, v_val));
                     }
                     v_val = boxed_reg;
                 }
@@ -3424,14 +3304,7 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let tmp = format!("%cast{}", self.temp_counter);
 
-                // SOI: Handle Reference Bit-Flipping for Runtime Memory Safety
-                if matches!(ty, TejxType::Ref(_) | TejxType::Weak(_)) {
-                    // Set BORROW_FLAG (1 << 63)
-                    self.emit_line(&format!("{} = or i64 {}, -9223372036854775808", tmp, s));
-                } else if matches!(src_ty, TejxType::Ref(_) | TejxType::Weak(_)) {
-                    // Clear BORROW_FLAG to recover raw pointer if needed
-                    self.emit_line(&format!("{} = and i64 {}, 9223372036854775807", tmp, s));
-                } else if src_ty.is_numeric() && ty.is_numeric() {
+                if src_ty.is_numeric() && ty.is_numeric() {
                     if src_ty.is_float() && !ty.is_float() {
                         // bits(double) -> int
                         self.temp_counter += 1;
@@ -3448,43 +3321,7 @@ impl CodeGen {
                         // Same kind or same bit-width (i64 vs i64)
                         self.emit_line(&format!("{} = add i64 {}, 0", tmp, s));
                     }
-                } else if src_ty.is_numeric() && *ty == TejxType::Class("any".to_string()) {
-                    // Boxing: int/float → any
-                    if src_ty.is_float() {
-                        // float → any: bitcast to double, then rt_box_number
-                        self.temp_counter += 1;
-                        let d_val = format!("%cast_d{}", self.temp_counter);
-                        self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, s));
-                        if !self.declared_functions.contains("rt_box_number") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_number(double)\n");
-                            self.declared_functions.insert("rt_box_number".to_string());
-                        }
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_box_number(double {})",
-                            tmp, d_val
-                        ));
-                    } else {
-                        // int → any: call rt_box_int
-                        if !self.declared_functions.contains("rt_box_int") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_box_int(i64)\n");
-                            self.declared_functions.insert("rt_box_int".to_string());
-                        }
-                        self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", tmp, s));
-                    }
-                } else if matches!(src_ty, TejxType::Bool)
-                    && *ty == TejxType::Class("any".to_string())
-                {
-                    // bool → any: call rt_box_boolean
-                    if !self.declared_functions.contains("rt_box_boolean") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_box_boolean(i64)\n");
-                        self.declared_functions.insert("rt_box_boolean".to_string());
-                    }
-                    self.emit_line(&format!("{} = call i64 @rt_box_boolean(i64 {})", tmp, s));
-                } else if *src_ty == TejxType::Class("any".to_string()) && ty.is_numeric() {
-                    // Unboxing: any → int/float
+                } else if ty.is_numeric() {
                     if !self.declared_functions.contains("rt_to_number_v2") {
                         self.global_buffer
                             .push_str("declare i64 @rt_to_number_v2(i64)\n");
@@ -3492,32 +3329,37 @@ impl CodeGen {
                             .insert("rt_to_number_v2".to_string());
                     }
                     self.temp_counter += 1;
-                    let float_bits = format!("%fbits_cast_{}", self.temp_counter);
+                    let num_val = format!("%num_val{}", self.temp_counter);
                     self.emit_line(&format!(
                         "{} = call i64 @rt_to_number_v2(i64 {})",
-                        float_bits, s
-                    ));
-                    self.temp_counter += 1;
-                    let double_val = format!("%dval_cast_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i64 {} to double",
-                        double_val, float_bits
+                        num_val, s
                     ));
 
                     if ty.is_float() {
-                        self.emit_line(&format!("{} = bitcast double {} to i64", tmp, double_val));
+                        self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, num_val));
                     } else {
-                        self.emit_line(&format!("{} = fptosi double {} to i64", tmp, double_val));
+                        self.temp_counter += 1;
+                        let f_val = format!("%f_val{}", self.temp_counter);
+                        self.emit_line(&format!("{} = bitcast i64 {} to double", f_val, num_val));
+                        self.emit_line(&format!("{} = fptosi double {} to i64", tmp, f_val));
                     }
-                } else if *src_ty == TejxType::Class("any".to_string())
-                    && matches!(ty, TejxType::Bool)
-                {
+                } else if matches!(ty, TejxType::Bool) {
                     if !self.declared_functions.contains("rt_to_boolean") {
                         self.global_buffer
                             .push_str("declare i64 @rt_to_boolean(i64)\n");
                         self.declared_functions.insert("rt_to_boolean".to_string());
                     }
                     self.emit_line(&format!("{} = call i64 @rt_to_boolean(i64 {})", tmp, s));
+                } else if matches!(ty, TejxType::String)
+                    && !src_ty.is_numeric()
+                    && !matches!(src_ty, TejxType::Bool)
+                {
+                    if !self.declared_functions.contains("rt_to_string") {
+                        self.global_buffer
+                            .push_str("declare i64 @rt_to_string(i64)\n");
+                        self.declared_functions.insert("rt_to_string".to_string());
+                    }
+                    self.emit_line(&format!("{} = call i64 @rt_to_string(i64 {})", tmp, s));
                 } else {
                     // Generic bitcast for other types
                     self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
@@ -3565,15 +3407,16 @@ impl CodeGen {
     }
 
     fn emit_box_string(&mut self, raw_ptr: &str) -> String {
-        if !self.declared_functions.contains("rt_box_string") {
+        if !self.declared_functions.contains("rt_string_from_c_str") {
             self.global_buffer
-                .push_str("declare i64 @rt_box_string(i64)\n");
-            self.declared_functions.insert("rt_box_string".to_string());
+                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
+            self.declared_functions
+                .insert("rt_string_from_c_str".to_string());
         }
         self.temp_counter += 1;
         let boxed = format!("%boxed_str{}", self.temp_counter);
         self.emit_line(&format!(
-            "{} = call i64 @rt_box_string(i64 {})",
+            "{} = call i64 @rt_string_from_c_str(i64 {})",
             boxed, raw_ptr
         ));
         boxed

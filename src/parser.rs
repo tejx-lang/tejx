@@ -1210,12 +1210,6 @@ impl Parser {
                 }
                 base_type_name.push('>');
             }
-        } else if self.match_token(TokenType::Ref) {
-            let inner_type = self.parse_base_type();
-            base_type_name = format!("ref {}", inner_type);
-        } else if self.match_token(TokenType::Weak) {
-            let inner_type = self.parse_base_type();
-            base_type_name = format!("weak {}", inner_type);
         }
 
         if base_type_name.is_empty() {
@@ -1984,9 +1978,9 @@ impl Parser {
                     };
                 } else if self.match_token(TokenType::OpenBracket) {
                     let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
-                    // match_token(QuestionDot) advanced. current is at next token.
-                    // if next token is OpenParen -> call.
-                    // else if next is OpenBracket -> index.
+                                                                              // match_token(QuestionDot) advanced. current is at next token.
+                                                                              // if next token is OpenParen -> call.
+                                                                              // else if next is OpenBracket -> index.
                     let index = self.parse_assignment();
                     self.consume(TokenType::CloseBracket, "Expected ']'");
                     expr = Expression::OptionalArrayAccessExpr {

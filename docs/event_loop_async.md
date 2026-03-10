@@ -2,56 +2,60 @@
 
 ## 1. Overview
 
-The TejX runtime leverages a strictly **Non-Blocking, Single-Threaded Reactor Architecture** modeled closely after V8, Node.js, and browser environments. The central goal is maximum concurrency for I/O bound tasks without introducing the complexity, synchronization bugs, or memory-safety violations associated with multi-threaded, parallel scripting code.
+TejX implements a **Single-Threaded Reactor Pattern** for concurrency. While the underlying runtime is multi-threaded (Rust's Tokio), the TejX execution environment remains strictly single-threaded to guarantee memory safety and eliminate the need for complex synchronization in user scripts.
 
-## 2. Core Architecture: The Tokio Reactor
+---
 
-Under the hood, TejX integrates the industry-standard Rust `tokio` asynchronous runtime.
-However, instead of using a multi-threaded work-stealing scheduler, TejX explicitly initializes an embedded **Current-Thread Runtime** (`tokio::runtime::Builder::new_current_thread()`).
+## 2. The Core: Current-Thread Tokio
 
-### Why Single-Threaded Tokio?
+TejX embeds a specialized instance of the Tokio runtime configured in `CurrentThread` mode.
 
-Dynamic languages that execute synchronously on shared heaps generally suffer when heavily parallelized (requiring massive global locks, like Python's GIL).
-By employing a single-threaded runtime:
+### Why Single-Threaded?
 
-- **No Mutexes:** Core event queue structures, object properties, and closures can be accessed lock-free. Data races inside TejX code are impossible by design.
-- **Microtask Efficiency:** The `thread_local! { static TASK_QUEUE: RefCell<VecDeque> }` allows virtually zero-overhead scheduling. Resolving a promise directly pushes to this thread-local queue memory.
+- **Deterministic Heap:** Since only one thread modifies the TejX heap at any given time, we avoid the performance overhead of Mutexes and Atomic Pointers for every object access.
+- **Zero-Cost Promises:** Resolving a promise is as simple as pushing a pointer to a thread-local queue. There is no cross-thread signaling or thread-safety overhead.
 
-## 3. The Event Loop Cycle
+---
 
-The event loop executes in a continuous tick process, defined physically by `tejx_run_event_loop_step`:
+## 3. The Lifecycle: Tick & Poll
 
-1. **Microtask Queue Processing:**
-   The loop first actively drains the synchronous `TASK_QUEUE`. These are callbacks from immediately resolved promises, `await` continuations, and `.then()` chains.
-2. **Reactor Polling (I/O & Timers):**
-   If the microtask queue is empty but active asynchronous operations exist (`ASYNC_OPS > 0`), the runtime yields control down to the OS kernel (`epoll` on Linux, `kqueue` on macOS) via the `TOKIO_RT.block_on` cycle.
-3. **Yielding control:**
-   During this poll phase, background I/O operations (like socket reads/writes or HTTP streams) that are unblocked by the OS will push their completion payloads (the un-suspended closures) back onto the native TejX `TASK_QUEUE`.
+The event loop follows a strictly defined cycle to balance execution and I/O responsiveness.
 
-## 4. Modernizing I/O Intrinsics
+### Step 1: Microtask Queue (The Task Stack)
 
-Standard blocking OS operations are disastrous for a single-threaded architecture. To maintain smoothness, TejX translates all classical blocking code into state-machine driven futures.
+- **Priority:** Draining the microtask queue is the highest priority.
+- **Content:** These are immediately resolved promise callbacks and `await` continuations.
+- **Reasoning:** Microtasks must complete before the next I/O poll to ensure that logical chains (e.g., `Promise.resolve().then(...)`) execute with minimal latency and consistent state.
 
-### Network Sockets (`tokio::net`)
+### Step 2: Reactor Polling (Tokio `block_on`)
 
-When compiling `net.connect()`, the runtime invokes an intrinsic that spawns a non-blocking `TcpStream`.
-Rather than blocking the CPU, the intrinsic registers the socket descriptor with the OS kernel. The thread is immediately released, and the TejX script receives a `Promise` representing the future connection.
+- **Action:** If the microtask queue is empty but asynchronous operations are in flight, the runtime invokes `tokio::runtime::Runtime::block_on`.
+- **Reasoning:** This yields the CPU back to the OS, allowing the kernel to awaken the thread only when I/O (sockets, files, timers) is ready.
 
-### Asynchronous HTTP (`reqwest`)
+---
 
-High-level HTTP protocol handling operates over `reqwest`. When an HTTP request is fired, a new background Tokio task is spawned. The internal Rust implementation parses TLS and packet framing asynchronously, and upon completion, dynamically invokes `rt_promise_resolve`, pushing the final payload onto the TejX microtask queue.
+## 4. Async Intrinsics: Bridging to Native I/O
 
-## 5. Safely Crossing the Async / GC Boundary
+TejX provides native "intrinsics" that wrap top-tier Rust asynchronous libraries.
 
-The most dangerous aspect of mapping garbage-collected dynamic memory to background asynchronous kernel events is **object relocation** and **use-after-free**.
+### Network Stack (`tokio::net`)
 
-If a closure (or Promise pointer) is passed to a background HTTP task, and a GC cycle triggers while the HTTP request is in-flight, the Garbage Collector will move the Promise object in memory. If the background HTTP task attempts to resolve the old pointer address, a segmentation fault occurs.
+- When you call `socket.read()`, the compiler emits a call to a native intrinsic.
+- This intrinsic returns a **Promise** immediately and registers a "Wakeup" closure with the OS.
+- This ensures the main TejX thread never blocks on network latency.
 
-### The Global Handle Resolution
+### HTTP Stack (`reqwest`)
 
-To perfectly insulate background Tokio tasks from the TejX GC timeline:
+- High-level requests use `reqwest` in the background.
+- Because `reqwest` operations can involve complex TLS handshaking, they are offloaded to background worker threads.
+- Upon completion, they use the **Global Handle** system to safely signal the main thread from a background context.
 
-- The runtime uses a `GLOBAL_HANDLES` registry.
-- When an intrinsic pushes work to Tokio, it generates a unique, stationary integer ID (`tejx_create_global_handle`). The actual closure/Promise pointers never cross the thread boundary.
-- The JIT compiler's GC scanner natively hooks into `GLOBAL_HANDLES`. It tracks exactly which handles are in flight, actively treating them as root pointers and accurately rewriting the pointers directly inside the registry when objects are compacted or evacuated.
-- When the background Tokio task resolves, it returns the stationary integer ID to the main thread. The main thread dereferences the ID through the `GLOBAL_HANDLES` registry (which accurately points to the post-GC living memory address) and safely executes the callback.
+---
+
+## 5. Async/Await: Structural Lowering
+
+The compiler transforms `async` functions into state machines.
+
+- **Suspension:** When an `await` is encountered, the current function's state (local variables, instruction pointer) is captured in a **Closure** (Environment).
+- **Resumption:** Once the awaited promise resolves, the event loop picks up this closure from the microtask queue and restores execution exactly where it left off.
+- **Reasoning:** This "Syntactic Sugar" allows developers to write sequential-looking code that is internally executing as a high-efficiency async state machine.

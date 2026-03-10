@@ -1,4 +1,5 @@
 
+import { assert_eq_string } from "./utils.tx";
 function main() {
     let s = "Escape \"quote\" test";
     let s2 = 'Single \'quote\' test';

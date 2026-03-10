@@ -19,7 +19,7 @@ pub const RT_PROMISE_REJECT: &str = "rt_promise_reject";
 pub const RT_PROMISE_CLONE: &str = "rt_promise_clone";
 
 // Runtime helpers referenced by codegen
-pub const RT_BOX_STRING: &str = "rt_box_string";
+pub const RT_STRING_FROM_C_STR: &str = "rt_string_from_c_str";
 pub const RT_MOVE_MEMBER: &str = "rt_move_member";
 pub const RT_LEN: &str = "rt_len";
 pub const RT_SIZEOF: &str = "rt_sizeof";

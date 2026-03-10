@@ -102,7 +102,7 @@ export function forEach<T>(arr: T[], callback: (val: T, index: int) => void): vo
 
 export function map<T, U>(arr: T[], callback: (val: T, index: int) => U): U[] {
     let l = rt_len(arr);
-    let result: U[] = rt_array_new(l, 8) as any; // Boxed default
+    let result: U[] = rt_array_new(l, 8) as U[]; // Boxed default
     for (let i = 0; i < l; i++) {
         result[i] = callback(arr[i], i);
     }
@@ -137,7 +137,7 @@ export function find<T>(arr: T[], cb: (item: T) => bool): T {
             return arr[i];
         }
     }
-    return 0 as any;
+    return 0 as T;
 }
 
 export function findIndex<T>(arr: T[], cb: (item: T) => bool): int {
@@ -150,10 +150,10 @@ export function findIndex<T>(arr: T[], cb: (item: T) => bool): int {
     return -1;
 }
 
-export function includes<T>(obj: T, val: any): bool {
+export function includes<T, U>(obj: T, val: U): bool {
     if (rt_is_array(obj)) {
         let l = rt_len(obj);
-        let arr = obj as any[];
+        let arr = obj as U[];
         for (let i = 0; i < l; i++) {
             if (arr[i] == val) return true;
         }
@@ -198,6 +198,10 @@ export function split(s: string, sep: string): string[] { return rt_String_split
 export function startsWith(s: string, prefix: string): bool { return rt_String_startsWith(s, prefix); }
 export function endsWith(s: string, suffix: string): bool { return rt_String_endsWith(s, suffix); }
 export function indexOf(s: string, search: string): int { return rt_String_indexOf(s, search) as int; }
+export function padStart(s: string, len: int, pad: string): string { return rt_String_padStart(s, len, pad); }
+export function padEnd(s: string, len: int, pad: string): string { return rt_String_padEnd(s, len, pad); }
+export function repeat(s: string, count: int): string { return rt_String_repeat(s, count); }
+export function replace(s: string, search: string, replacement: string): string { return rt_String_replace(s, search, replacement); }
 
 export class Error {
     private message: string;
@@ -216,38 +220,35 @@ export class Promise<T> {
         );
     }
 
-    then<U>(onResolve: (v: T) => U, onReject: (e: any) => U): Promise<U> {
-        return rt_promise_then(this, onResolve, onReject);
+    then<U>(onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U> {
+        return rt_promise_then(this, onResolve, onReject) as Promise<U>;
     }
 
     catchError<U>(onReject: (e: any) => U): Promise<U> {
-        return rt_promise_then(this, 0 as any, onReject);
+        return rt_promise_then(this, 0 as (v: T) => U, onReject) as Promise<U>;
     }
 
     static resolve<T>(v: T): Promise<T> {
-        let p = rt_promise_new();
+        let p = rt_promise_new() as Promise<T>;
         rt_promise_resolve(p, v);
         return p;
     }
 
     static reject<T>(e: Error): Promise<T> {
-        let p = rt_promise_new();
+        let p = rt_promise_new() as Promise<T>;
         rt_promise_reject(p, e);
         return p;
     }
 
     static all<T>(promises: Promise<T>[]): Promise<T[]> {
-        let p = rt_promise_new();
+        let p = rt_promise_new() as Promise<T[]>;
         let total = rt_len(promises);
         if (total == 0) {
             rt_promise_resolve(p, []);
             return p;
         }
         
-        let results: T[] = [];
-        for (let i = 0; i < total; i++) {
-            rt_array_push(results, 0 as any);
-        }
+        let results: T[] = rt_array_new(total, 8) as T[];
         let state = { count: 0, rejected: false };
         for (let i = 0; i < total; i++) {
             let callback = (index: int) => {
@@ -285,6 +286,11 @@ export function print<T>(...args: T[]): void {
     tejx_libc_puts(out);
 }
 
+
+export function panic(msg: string): void {
+    rt_panic(msg);
+}
+
 export function eprint<T>(...args: T[]): void {
     let out = "";
     for (let i = 0; i < rt_len(args); i++) {
@@ -293,12 +299,7 @@ export function eprint<T>(...args: T[]): void {
             out = out + " ";
         }
     }
-    out = out + "\n";
     tejx_libc_write(2, out);
-}
-
-export function panic(msg: string): void {
-    rt_panic(msg);
 }
 
 export function len<T>(val: T): int {
@@ -328,15 +329,15 @@ export function RT_Array_sliceRest<T>(arr: T[], start: int): T[] {
 }
 
 // --- flat (flatten nested arrays up to given depth) ---
-export function flat<T>(arr: T[], depth: int): T[] {
+export function flat<T>(arr: T[], depth: int = 1): T[] {
     let result: T[] = [];
     let l = rt_len(arr);
     for (let i = 0; i < l; i++) {
         if (depth > 0 && rt_is_array(arr[i])) {
-            let inner = flat(arr[i] as any, depth - 1);
+            let inner = flat(arr[i] as T[], depth - 1);
             let inner_l = rt_len(inner);
             for (let j = 0; j < inner_l; j++) {
-                rt_array_push(result, inner[j] as any);
+                rt_array_push(result, inner[j]);
             }
         } else {
             rt_array_push(result, arr[i]);

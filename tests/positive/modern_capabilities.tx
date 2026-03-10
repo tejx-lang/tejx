@@ -1,4 +1,5 @@
 import {floor} from "std:math";
+import {assert_eq_int, assert_eq_string,assert_true,assert_false} from "./utils.tx";
 // Modern Capabilities Test Suite
 // Covers: Advanced OOP, Functional Patterns, Error Handling, Algorithms
 // ====================================================================
@@ -154,9 +155,9 @@ function main() {
     assert_eq_int(stack.peek(), 30, "Peek");
     assert_eq_int(stack.pop(), 30, "Pop");
     assert_eq_int(stack.pop(), 20, "Pop");
-    assert_eq_int(stack.isEmpty(), false, "IsEmpty");
+    assert_false(stack.isEmpty(), "IsEmpty");
     stack.pop(); // 10
-    assert_eq_int(stack.isEmpty(), true, "IsEmpty after clearing");
+    assert_true(stack.isEmpty(), "IsEmpty after clearing");
 
 
     print("\n--- Algorithms: Binary Search ---");
@@ -170,10 +171,10 @@ function main() {
     print("\n--- Error Handling Logic ---");
 
     let r1 = validate("hello");
-    assert_eq_int(r1.isValid, true, "Valid input");
+    assert_true(r1.isValid, "Valid input");
 
     let r2 = validate("");
-    assert_eq_int(r2.isValid, false, "Empty input");
+    assert_false(r2.isValid, "Empty input");
     assert_eq_string(r2.error, "Empty string", "Error message");
 
 

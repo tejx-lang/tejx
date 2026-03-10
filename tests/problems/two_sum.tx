@@ -1,5 +1,5 @@
 import { Map } from "std:collections";
-
+import {assert_eq_int} from "../positive/utils.tx";
 function findTwoSum(nums: int[], target: int): int[] | None {
   // Map stores: Value -> Index
   let prevMap: Map<int, int> = new Map();

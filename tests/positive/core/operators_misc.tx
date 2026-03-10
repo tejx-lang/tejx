@@ -16,8 +16,6 @@ function main() {
     assert_eq_string(typeof(s), "string", "typeof(s) should be string");
     assert_eq_string(typeof(c), "bool", "typeof(c) should be bool");
     
-    // Sizeof
-    // console.log("sizeof int: " + sizeof(i));
 
     // Bitwise (from bitwise.tx)
     print("--- Bitwise ---");

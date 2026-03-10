@@ -14,46 +14,16 @@ pub enum TejxType {
     Bool,
     String,
 
-    Char, // 4-byte
-    Class(String),
+    Char,                         // 4-byte
+    Class(String, Vec<TejxType>), // Name, Generics
     FixedArray(Box<TejxType>, usize),
     DynamicArray(Box<TejxType>),
     Slice(Box<TejxType>),
     Void,
-    Ref(Box<TejxType>),                     // Non-owning borrow
-    Weak(Box<TejxType>),                    // Non-owning cycle-breaker
     Function(Vec<TejxType>, Box<TejxType>), // (Params, Return)
 }
 
 impl TejxType {
-    pub fn is_class(&self) -> bool {
-        matches!(self, TejxType::Class(_))
-    }
-
-    pub fn needs_drop(&self) -> bool {
-        match self {
-            TejxType::Int16
-            | TejxType::Int32
-            | TejxType::Int64
-            | TejxType::Int128
-            | TejxType::Float16
-            | TejxType::Float32
-            | TejxType::Float64
-            | TejxType::Bool
-            | TejxType::Char
-            | TejxType::Void
-            | TejxType::Ref(_)
-            | TejxType::Weak(_) => false,
-            // Re-enabling drops. Strict checking in borrow checker will prevent double-frees.
-            TejxType::String
-            | TejxType::FixedArray(_, _)
-            | TejxType::DynamicArray(_)
-            | TejxType::Function(_, _) => true,
-            TejxType::Slice(_) => false,
-            TejxType::Class(name) => name != "void",
-        }
-    }
-
     pub fn is_numeric(&self) -> bool {
         match self {
             TejxType::Int16
@@ -63,7 +33,6 @@ impl TejxType {
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64 => true,
-            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_numeric(),
             TejxType::Function(_, _) => false,
             _ => false,
         }
@@ -72,7 +41,6 @@ impl TejxType {
     pub fn is_float(&self) -> bool {
         match self {
             TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => true,
-            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_float(),
             TejxType::Function(_, _) => false,
             _ => false,
         }
@@ -81,11 +49,10 @@ impl TejxType {
     pub fn is_array(&self) -> bool {
         match self {
             TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) | TejxType::Slice(_) => true,
-            TejxType::Class(name) => {
+            TejxType::Class(name, _) => {
                 (name.ends_with("[]") || (name.contains('[') && name.ends_with(']')))
                     && !name.starts_with("Array<")
             }
-            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_array(),
             TejxType::Function(_, _) => false,
             _ => false,
         }
@@ -94,7 +61,6 @@ impl TejxType {
     pub fn is_slice(&self) -> bool {
         match self {
             TejxType::Slice(_) => true,
-            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.is_slice(),
             TejxType::Function(_, _) => false,
             _ => false,
         }
@@ -105,12 +71,18 @@ impl TejxType {
             TejxType::FixedArray(inner, _)
             | TejxType::DynamicArray(inner)
             | TejxType::Slice(inner) => (**inner).clone(),
-            TejxType::Class(name) if name.starts_with("Array<") => {
-                // Simplified extraction: Array<T>
-                let inner = &name[6..name.len() - 1];
-                TejxType::from_name(inner)
+            TejxType::Class(name, generics) if name == "Array" || name.starts_with("Array<") => {
+                // If it's Array<T>, return T. If it's missing generics, return Void to fail.
+                if let Some(t) = generics.first() {
+                    t.clone()
+                } else if name.starts_with("Array<") {
+                    let inner = &name[6..name.len() - 1];
+                    TejxType::from_name(inner)
+                } else {
+                    TejxType::Void
+                }
             }
-            TejxType::Class(name) if name.ends_with("[]") => {
+            TejxType::Class(name, _) if name.ends_with("[]") => {
                 let inner = &name[0..name.len() - 2];
                 // Manually map built-in types inside array brackets
                 match inner {
@@ -118,16 +90,15 @@ impl TejxType {
                     "int" => TejxType::Int32,
                     "float" => TejxType::Float64,
                     "bool" | "boolean" => TejxType::Bool,
-                    "any" => TejxType::Class("any".to_string()),
                     _ => TejxType::from_name(inner),
                 }
             }
-            TejxType::Class(name) if name == "ByteArray" => TejxType::Bool,
-            TejxType::Class(name) if name == "Array" || name == "any" => {
-                TejxType::Class("any".to_string())
+            TejxType::Class(name, _) if name == "ByteArray" => TejxType::Bool,
+            TejxType::Class(name, generics) if name == "Array" => {
+                // Return Array as-is; it should fail validation later if missing generics
+                TejxType::Class(name.to_string(), generics.clone())
             }
             TejxType::String => TejxType::String,
-            TejxType::Ref(inner) | TejxType::Weak(inner) => inner.get_array_element_type(), // Delegate to underlying type
             TejxType::Function(_, _) => TejxType::Void,
             _ => TejxType::Void,
         }
@@ -142,9 +113,7 @@ impl TejxType {
             TejxType::Bool => 1,
             TejxType::Char => 4,
             TejxType::String
-            | TejxType::Class(_)
-            | TejxType::Ref(_)
-            | TejxType::Weak(_)
+            | TejxType::Class(_, _)
             | TejxType::DynamicArray(_)
             | TejxType::Function(_, _) => 8, // Pointers/Boxed/Borrows/Function pointers
             TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
@@ -155,12 +124,6 @@ impl TejxType {
 
     pub fn from_name(name: &str) -> TejxType {
         let name = name.trim();
-        if name.starts_with("ref ") {
-            return TejxType::Ref(Box::new(TejxType::from_name(&name[4..])));
-        }
-        if name.starts_with("weak ") {
-            return TejxType::Weak(Box::new(TejxType::from_name(&name[5..])));
-        }
 
         if name.contains('|') {
             // Simple union handling: T | None -> T (nullable)
@@ -186,7 +149,7 @@ impl TejxType {
                     return TejxType::FixedArray(Box::new(TejxType::from_name(base)), size);
                 }
                 // Fallback to dynamic array? or Class?
-                return TejxType::Class(name.to_string());
+                return TejxType::Class(name.to_string(), vec![]);
             }
         }
 
@@ -207,7 +170,41 @@ impl TejxType {
             "char" => TejxType::Char,
             "boolean" | "bool" => TejxType::Bool,
             "" => TejxType::Void,
-            other => TejxType::Class(other.to_string()),
+            other => {
+                // Support parsing generic syntax like Map<String, Int>
+                if let Some(open) = other.find('<') {
+                    if other.ends_with('>') {
+                        let base_name = &other[..open];
+                        let inner_args_str = &other[open + 1..other.len() - 1];
+
+                        // Parse comma separated generics
+                        // Note: This simple split fails for Map<String, Array<Int>>.
+                        // But since TejX relies on spaces or parsing earlier, we'll implement a basic nested parsing.
+                        let mut generics = Vec::new();
+                        let mut current_arg = String::new();
+                        let mut bracket_depth = 0;
+                        for c in inner_args_str.chars() {
+                            if c == '<' {
+                                bracket_depth += 1;
+                            } else if c == '>' {
+                                bracket_depth -= 1;
+                            }
+
+                            if c == ',' && bracket_depth == 0 {
+                                generics.push(TejxType::from_name(current_arg.trim()));
+                                current_arg.clear();
+                            } else {
+                                current_arg.push(c);
+                            }
+                        }
+                        if !current_arg.trim().is_empty() {
+                            generics.push(TejxType::from_name(current_arg.trim()));
+                        }
+                        return TejxType::Class(base_name.to_string(), generics);
+                    }
+                }
+                TejxType::Class(other.to_string(), vec![])
+            }
         }
     }
 
@@ -223,13 +220,18 @@ impl TejxType {
             TejxType::Bool => "boolean".to_string(),
             TejxType::String => "string".to_string(),
             TejxType::Char => "char".to_string(),
-            TejxType::Class(name) => name.clone(),
+            TejxType::Class(name, generics) => {
+                if generics.is_empty() {
+                    name.clone()
+                } else {
+                    let gen_strs: Vec<String> = generics.iter().map(|g| g.to_name()).collect();
+                    format!("{}<{}>", name, gen_strs.join(", "))
+                }
+            }
             TejxType::FixedArray(inner, size) => format!("{}[{}]", inner.to_name(), size),
             TejxType::DynamicArray(inner) => format!("{}[]", inner.to_name()),
             TejxType::Slice(inner) => format!("slice<{}>", inner.to_name()),
             TejxType::Void => "void".to_string(),
-            TejxType::Ref(inner) => format!("ref {}", inner.to_name()),
-            TejxType::Weak(inner) => format!("weak {}", inner.to_name()),
             TejxType::Function(params, ret) => {
                 let p_names: Vec<String> = params.iter().map(|p| p.to_name()).collect();
                 format!("({}) => {}", p_names.join(", "), ret.to_name())

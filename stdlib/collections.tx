@@ -94,8 +94,8 @@ extern function rt_Set_size<T>(_this: Set<T>): int;
 export class Map<K, V> {
     private _size: int64;
     private _capacity: int64;
-    private _keys: any;
-    private _vals: any;
+    private _keys: K[];
+    private _vals: V[];
     private _db: int64;
 
     constructor() {
@@ -151,8 +151,8 @@ export class Map<K, V> {
 export class Set<T> {
     private _size: int64;
     private _capacity: int64;
-    private _keys: any;
-    private _vals: any;
+    private _keys: T[];
+    private _vals: T[];
     private _db: int64;
 
     constructor() {

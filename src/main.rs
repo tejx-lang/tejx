@@ -208,7 +208,7 @@ fn main() {
 
     let mut mir_functions = Vec::new();
     for hir_func in &lowering_result.functions {
-        let name = match hir_func {
+        let _name = match hir_func {
             crate::hir::HIRStatement::Function { name, .. } => name.clone(),
             _ => "unknown".to_string(),
         };

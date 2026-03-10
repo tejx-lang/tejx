@@ -1,7 +1,7 @@
 
 // Resource Pool Pattern - Strict Ownership
 // ==========================================
-
+import {assert_true, assert_eq_int} from "../positive/utils.tx";
 class Resource {
     id: int32;
     active: bool;

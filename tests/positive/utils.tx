@@ -41,6 +41,14 @@ export function assert_true(cond: bool, msg: string) {
     }
 }
 
+export function assert(cond: bool, msg: string) {
+    if (cond) {
+        print("✅ PASS: " + msg);
+    } else {
+        print("❌ FAIL: " + msg);
+    }
+}
+
 export function assert_false(cond: bool, msg: string) {
     if (!cond) {
         print("✅ PASS: " + msg + " - Expected: false, Actual: false");

@@ -48,8 +48,6 @@ pub enum TokenType {
     Del,
     Interface,
     TypeAlias, // Property accessors
-    Ref,       // Borrow references
-    Weak,      // Weak cycles
     // Primitives
     TypeString,
     TypeBoolean,

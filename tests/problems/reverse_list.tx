@@ -1,4 +1,4 @@
-import {assert_eq_int} from "../utils.tx"
+import {assert_eq_int} from "../positive/utils.tx";
 class Node {
   data: int;
   next: Node | None;
@@ -57,10 +57,10 @@ function main(): void {
 
            if (second != None) {
              let third = second.next;
-                              assert_eq_int(third.data, 1, "Third data is not 1");
+             assert_eq_int(third.data, 1, "Third data is not 1");
 
              if (third != None) { 
-                                   assert_eq_none(third.next, "Tail Next is NOT None!");
+               assert_true(third.next == None, "Tail Next is NOT None!");
 
                  if (third.next == None) {
                   print("Tail Correct");

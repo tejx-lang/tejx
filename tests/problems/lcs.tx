@@ -1,38 +1,31 @@
+import { assert } from "../positive/utils.tx";
+
 function lcs(text1: string, text2: string): int {
   let m = text1.length;
   let n = text2.length;
-  // Create a 2D Array: dp[m+1][n+1]
-  let dp = new Array(m + 1);
-  for (let i = 0; i <= m; i++) dp[i] = new Array(n + 1).fill(0);
+  let dp:int[m+1][n+1] =[];
+  for (let i = 0; i <= m; i++) {
+    let tempArr:int[n+1]=[];
+    dp[i] = tempArr.fill(0);
+  }
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      let c1 = "" + text1[i - 1];
-      let c2 = "" + text2[j - 1];
-      if (c1 == c2) {
+      if (text1[i - 1] == text2[j - 1]) {
         dp[i][j] = dp[i - 1][j - 1] + 1;
       } else {
-        let val1 = dp[i - 1][j];
-        let val2 = dp[i][j - 1];
-        dp[i][j] = val1 > val2 ? val1 : val2;
+        let a = dp[i - 1][j];
+        let b = dp[i][j - 1];
+        if (a > b) dp[i][j] = a;
+        else dp[i][j] = b;
       }
     }
   }
   return dp[m][n];
 }
 
-function assert(condition: bool, message: string) {
-  if (!condition) {
-    print("❌ ASSERT FAILED: " + message);
-    let x: int = 0;
-    x = 1 / 0; // Force crash
-  } else {
-    print("✅ PASS: " + message);
-  }
-}
-
-function main() {
+function main(): void {
   let res = lcs("abcde", "ace");
-  print("LCS('abcde', 'ace'): Expected: 3, Actual: ", res);
-  assert(res == 3, "LCS should be 3");
+  print("LCS Result: ", res);
+  assert(res == 3, "LCS of abcde and ace should be 3");
 }

@@ -215,7 +215,7 @@ pub unsafe extern "C" fn rt_array_get_data_ptr_nocache(id: i64) -> i64 {
 pub unsafe extern "C" fn rt_array_join(arr: i64, sep: i64) -> i64 {
     let arr_len = rt_len(arr);
     if arr_len == 0 {
-        return rt_box_string("\0".as_ptr() as *const _);
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
     // Get separator string
     let (sep_data, sep_len) = get_str_parts(sep).unwrap_or(("\0".as_ptr(), 0));
@@ -519,60 +519,6 @@ pub unsafe extern "C" fn rt_free(val: i64) {
 // --- Tagging Primitives ---
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_box_number(n: f64) -> i64 {
-    let body_ptr = gc_allocate(8);
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_FLOAT as u16;
-    (*header).length = 0;
-
-    let ptr = body_ptr as *mut f64;
-    *ptr = n;
-
-    (body_ptr as i64) + HEAP_OFFSET
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_box_int(n: i64) -> i64 {
-    let body_ptr = gc_allocate(8);
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_INT as u16;
-    (*header).length = 0;
-
-    let ptr = body_ptr as *mut i64;
-    *ptr = n;
-
-    fflush(std::ptr::null_mut());
-
-    (body_ptr as i64) + HEAP_OFFSET
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_box_char(c: i64) -> i64 {
-    let body_ptr = gc_allocate(8);
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_CHAR as u16;
-    (*header).length = 0;
-
-    let ptr = body_ptr as *mut i64;
-    *ptr = c;
-
-    (body_ptr as i64) + HEAP_OFFSET
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_box_boolean(b: i64) -> i64 {
-    let body_ptr = gc_allocate(8);
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_BOOLEAN as u16;
-    (*header).length = 0;
-
-    let ptr = body_ptr as *mut i64;
-    *ptr = if b != 0 { 1 } else { 0 };
-
-    (body_ptr as i64) + HEAP_OFFSET
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
     if val < HEAP_OFFSET {
         return val;
@@ -621,23 +567,23 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_at(id: i64, index: i64) -> i64 {
     if (id as u64) < (HEAP_OFFSET as u64) {
-        return rt_box_string("\0".as_ptr() as *const _);
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
     let body = (id - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
     let len = (*header).length as i64;
     if index < 0 || index >= len {
-        return rt_box_string("\0".as_ptr() as *const _);
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
     let c = *body.offset(index as isize);
     let mut buf = [0u8; 2];
     buf[0] = c;
     buf[1] = 0;
-    rt_box_string(buf.as_ptr() as *const _)
+    rt_string_from_c_str(buf.as_ptr() as *const _)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_box_string(s: *const std::ffi::c_char) -> i64 {
+pub unsafe extern "C" fn rt_string_from_c_str(s: *const std::ffi::c_char) -> i64 {
     if s.is_null() {
         return 0;
     }
@@ -701,8 +647,23 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
 
     if !is_gc {
         let mut buf = [0u8; 64];
-        sprintf(buf.as_mut_ptr() as *mut _, "%lld\0".as_ptr() as *const _, v);
-        res_id = rt_box_string(buf.as_ptr() as *const _);
+        if v == 1 {
+            res_id = rt_string_from_c_str("true\0".as_ptr() as *const _);
+        } else if v == 0 {
+            res_id = rt_string_from_c_str("false\0".as_ptr() as *const _);
+        } else {
+            let n = f64::from_bits(v as u64);
+            if n.fract() == 0.0 && n.abs() < 9007199254740992.0 {
+                sprintf(
+                    buf.as_mut_ptr() as *mut _,
+                    "%lld\0".as_ptr() as *const _,
+                    n as i64,
+                );
+            } else {
+                sprintf(buf.as_mut_ptr() as *mut _, "%g\0".as_ptr() as *const _, n);
+            }
+            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
+        }
     } else {
         let body_ptr = (v - HEAP_OFFSET) as *mut u8;
         let header = rt_get_header(body_ptr);
@@ -715,23 +676,23 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
             let mut buf = [0u8; 64];
             let n = *(body_ptr as *const f64);
             sprintf(buf.as_mut_ptr() as *mut _, "%g\0".as_ptr() as *const _, n);
-            res_id = rt_box_string(buf.as_ptr() as *const _);
+            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
         } else if tag == TAG_INT {
             let mut buf = [0u8; 64];
             let n = *ptr;
             sprintf(buf.as_mut_ptr() as *mut _, "%lld\0".as_ptr() as *const _, n);
-            res_id = rt_box_string(buf.as_ptr() as *const _);
+            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
         } else if tag == TAG_CHAR {
             let mut buf = [0u8; 2];
             buf[0] = *body_ptr as u8;
             buf[1] = 0;
-            res_id = rt_box_string(buf.as_ptr() as *const _);
+            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
         } else if tag == TAG_BOOLEAN {
             let b = *body_ptr;
             let s = if b == 0 { "false\0" } else { "true\0" };
-            res_id = rt_box_string(s.as_ptr() as *const _);
+            res_id = rt_string_from_c_str(s.as_ptr() as *const _);
         } else if tag == TAG_ARRAY {
-            res_id = rt_box_string("[\0".as_ptr() as *const _);
+            res_id = rt_string_from_c_str("[\0".as_ptr() as *const _);
             let len = rt_len(v);
             for i in 0..len {
                 let mut item = rt_array_get_fast(v, i);
@@ -743,18 +704,18 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
                 rt_pop_roots(1); // item
 
                 if i < len - 1 {
-                    let mut comma = rt_box_string(", \0".as_ptr() as *const _);
+                    let mut comma = rt_string_from_c_str(", \0".as_ptr() as *const _);
                     rt_push_root(&mut comma);
                     res_id = rt_str_concat_v2(res_id, comma);
                     rt_pop_roots(1);
                 }
             }
-            let mut bracket = rt_box_string("]\0".as_ptr() as *const _);
+            let mut bracket = rt_string_from_c_str("]\0".as_ptr() as *const _);
             rt_push_root(&mut bracket);
             res_id = rt_str_concat_v2(res_id, bracket);
             rt_pop_roots(1);
         } else if tag == TAG_OBJECT {
-            let mut brace_open = rt_box_string("{\0".as_ptr() as *const _);
+            let mut brace_open = rt_string_from_c_str("{\0".as_ptr() as *const _);
             rt_push_root(&mut brace_open);
             res_id = rt_str_concat_v2(res_id, brace_open);
             rt_pop_roots(1);
@@ -779,7 +740,7 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
                 let k_str = rt_to_string(k);
                 res_id = rt_str_concat_v2(res_id, k_str);
 
-                let mut colon = rt_box_string(": \0".as_ptr() as *const _);
+                let mut colon = rt_string_from_c_str(": \0".as_ptr() as *const _);
                 rt_push_root(&mut colon);
                 res_id = rt_str_concat_v2(res_id, colon);
                 rt_pop_roots(1);
@@ -792,7 +753,7 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
                 let latest_size = *latest_ptr.offset(0);
 
                 if i < latest_size - 1 {
-                    let mut comma = rt_box_string(", \0".as_ptr() as *const _);
+                    let mut comma = rt_string_from_c_str(", \0".as_ptr() as *const _);
                     rt_push_root(&mut comma);
                     res_id = rt_str_concat_v2(res_id, comma);
                     rt_pop_roots(1);
@@ -801,16 +762,16 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
                 rt_pop_roots(2); // k, v_val
                 i += 1;
             }
-            let mut brace_close = rt_box_string("}\0".as_ptr() as *const _);
+            let mut brace_close = rt_string_from_c_str("}\0".as_ptr() as *const _);
             rt_push_root(&mut brace_close);
             res_id = rt_str_concat_v2(res_id, brace_close);
             rt_pop_roots(1);
         } else if tag == TAG_FUNCTION {
-            res_id = rt_box_string("[function]\0".as_ptr() as *const _);
+            res_id = rt_string_from_c_str("[function]\0".as_ptr() as *const _);
         } else if tag == TAG_PROMISE {
-            res_id = rt_box_string("[Promise]\0".as_ptr() as *const _);
+            res_id = rt_string_from_c_str("[Promise]\0".as_ptr() as *const _);
         } else {
-            res_id = rt_box_string("[object]\0".as_ptr() as *const _);
+            res_id = rt_string_from_c_str("[object]\0".as_ptr() as *const _);
         }
     }
 
@@ -1427,11 +1388,10 @@ pub unsafe extern "C" fn rt_closure_from_ptr(ptr: i64) -> i64 {
     let mut c = closure;
     rt_push_root(&mut c);
 
-    let key_ptr = rt_box_string("ptr\0".as_ptr() as *const _);
-    let boxed_ptr = rt_box_int(ptr);
-    rt_Map_set(c, key_ptr, boxed_ptr);
+    let key_ptr = rt_string_from_c_str("ptr\0".as_ptr() as *const _);
+    rt_Map_set(c, key_ptr, ptr);
 
-    let key_env = rt_box_string("env\0".as_ptr() as *const _);
+    let key_env = rt_string_from_c_str("env\0".as_ptr() as *const _);
     rt_Map_set(c, key_env, 0); // null env
 
     rt_pop_roots(1);
@@ -1840,10 +1800,10 @@ pub unsafe extern "C" fn rt_fs_read_sync(path: i64) -> i64 {
     if let Some(p) = i64_to_rust_str(path) {
         if let Ok(content) = std::fs::read_to_string(&p) {
             let c_str = std::ffi::CString::new(content).unwrap_or_default();
-            return rt_box_string(c_str.as_ptr());
+            return rt_string_from_c_str(c_str.as_ptr());
         }
     }
-    rt_box_string("\0".as_ptr() as *const _)
+    rt_string_from_c_str("\0".as_ptr() as *const _)
 }
 
 #[no_mangle]
@@ -1921,7 +1881,7 @@ pub unsafe extern "C" fn rt_fs_readdir_sync(path: i64) -> i64 {
         if let Ok(entries) = std::fs::read_dir(p) {
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
-                    let mut name_id = rt_box_string(name.as_ptr() as *const _);
+                    let mut name_id = rt_string_from_c_str(name.as_ptr() as *const _);
                     rt_push_root(&mut name_id);
                     result = rt_array_push(result, name_id);
                     rt_pop_roots(1);
@@ -1960,7 +1920,7 @@ pub unsafe extern "C" fn rt_args() -> i64 {
     rt_push_root(&mut result);
     let args: Vec<String> = std::env::args().collect();
     for arg in args {
-        let mut arg_id = rt_box_string(arg.as_ptr() as *const _);
+        let mut arg_id = rt_string_from_c_str(arg.as_ptr() as *const _);
         rt_push_root(&mut arg_id);
         result = rt_array_push(result, arg_id);
         rt_pop_roots(1);
@@ -2133,7 +2093,7 @@ pub unsafe extern "C" fn rt_String_substring(arg_s: i64, start: i64, end: i64) -
 // Internal helper to create a string from parts of another, safe for GC moves
 unsafe fn new_string_from_parts(source_s: i64, offset: i64, len: i64) -> i64 {
     if len <= 0 {
-        return rt_box_string("\0".as_ptr() as *const _);
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
 
     let mut s = source_s;
@@ -2310,7 +2270,7 @@ pub unsafe extern "C" fn rt_String_padStart(s: i64, len: i64, pad: i64) -> i64 {
             new_str.push(*s_data.offset(i as isize));
         }
         new_str.push(0);
-        rt_box_string(new_str.as_ptr() as *const _)
+        rt_string_from_c_str(new_str.as_ptr() as *const _)
     } else {
         s
     }
@@ -2335,7 +2295,7 @@ pub unsafe extern "C" fn rt_String_padEnd(s: i64, len: i64, pad: i64) -> i64 {
             p_idx = (p_idx + 1) % (pad_len as usize);
         }
         new_str.push(0);
-        rt_box_string(new_str.as_ptr() as *const _)
+        rt_string_from_c_str(new_str.as_ptr() as *const _)
     } else {
         s
     }
@@ -2344,7 +2304,7 @@ pub unsafe extern "C" fn rt_String_padEnd(s: i64, len: i64, pad: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_String_repeat(s: i64, count: i64) -> i64 {
     if count <= 0 {
-        return rt_box_string("\0".as_ptr() as *const _);
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
     if let Some((s_data, s_len)) = get_str_parts(s) {
         if s_len == 0 {
@@ -2358,7 +2318,7 @@ pub unsafe extern "C" fn rt_String_repeat(s: i64, count: i64) -> i64 {
             }
         }
         new_str.push(0);
-        rt_box_string(new_str.as_ptr() as *const _)
+        rt_string_from_c_str(new_str.as_ptr() as *const _)
     } else {
         s
     }
@@ -2382,7 +2342,7 @@ pub unsafe extern "C" fn rt_String_replace(s: i64, search: i64, replace: i64) ->
             new_str.extend_from_slice(std::slice::from_raw_parts(r_data, r_len as usize));
             new_str.extend_from_slice(&s_slice[pos + sh_len as usize..]);
             new_str.push(0);
-            rt_box_string(new_str.as_ptr() as *const _)
+            rt_string_from_c_str(new_str.as_ptr() as *const _)
         } else {
             s
         }
@@ -2400,10 +2360,10 @@ pub unsafe extern "C" fn rt_getenv(key: i64) -> i64 {
     if let Some(k) = i64_to_rust_str(key) {
         if let Ok(val) = std::env::var(&k) {
             let c_str = std::ffi::CString::new(val).unwrap_or_default();
-            return rt_box_string(c_str.as_ptr());
+            return rt_string_from_c_str(c_str.as_ptr());
         }
     }
-    rt_box_string("\0".as_ptr() as *const _)
+    rt_string_from_c_str("\0".as_ptr() as *const _)
 }
 
 #[no_mangle]
@@ -2656,7 +2616,7 @@ pub unsafe extern "C" fn rt_net_send(stream: i64, data: i64) -> i64 {
 pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
     let pid = rt_promise_new();
     if stream <= 0 {
-        let empty_str = rt_box_string("\0".as_ptr() as *const _);
+        let empty_str = rt_string_from_c_str("\0".as_ptr() as *const _);
         rt_promise_resolve(pid, empty_str);
         return pid;
     }
@@ -2713,10 +2673,10 @@ pub unsafe extern "C" fn rt_net_receive_resolver_worker(args: i64) {
     let vec_ptr = rt_array_get_fast(args, 1);
 
     let res_str = if vec_ptr == 0 {
-        rt_box_string("\0".as_ptr() as *const _)
+        rt_string_from_c_str("\0".as_ptr() as *const _)
     } else {
         let boxed_vec = Box::from_raw(vec_ptr as *mut Vec<u8>);
-        rt_box_string(boxed_vec.as_ptr() as *const _)
+        rt_string_from_c_str(boxed_vec.as_ptr() as *const _)
     };
 
     rt_promise_resolve(pid, res_str);
@@ -2816,7 +2776,7 @@ pub unsafe extern "C" fn rt_http_request_resolver_worker(args: i64) {
     } else {
         let boxed_str = Box::from_raw(str_ptr as *mut String);
         let c_str = std::ffi::CString::new(boxed_str.as_str()).unwrap_or_default();
-        rt_box_string(c_str.as_ptr())
+        rt_string_from_c_str(c_str.as_ptr())
     };
 
     rt_promise_resolve(pid, res_str);
@@ -2954,7 +2914,7 @@ pub unsafe extern "C" fn a_new() -> i64 {
 pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
     let mut c = closure;
     rt_push_root(&mut c);
-    let key = rt_box_string("ptr\0".as_ptr() as *const _);
+    let key = rt_string_from_c_str("ptr\0".as_ptr() as *const _);
     let mut res = rt_Map_get(c, key);
     if res >= HEAP_OFFSET {
         let body = (res - HEAP_OFFSET) as *mut u8;
@@ -2974,7 +2934,7 @@ pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
 pub unsafe extern "C" fn rt_get_closure_env(closure: i64) -> i64 {
     let mut c = closure;
     rt_push_root(&mut c);
-    let key = rt_box_string("env\0".as_ptr() as *const _);
+    let key = rt_string_from_c_str("env\0".as_ptr() as *const _);
     let res = rt_Map_get(c, key);
     // env can also be boxed? usually not, but let's be safe if it's an object ID
     rt_pop_roots(1);
@@ -3179,7 +3139,7 @@ pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
     } else if parts_b.is_some() {
         rt_clone(val_b)
     } else {
-        rt_box_string("\0".as_ptr() as *const _)
+        rt_string_from_c_str("\0".as_ptr() as *const _)
     };
 
     rt_pop_roots(2);
@@ -4037,34 +3997,34 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
 
     if !is_gc {
         if val >= BOOL_FALSE && val <= BOOL_TRUE {
-            return rt_box_string("bool\0".as_ptr() as *const _);
+            return rt_string_from_c_str("bool\0".as_ptr() as *const _);
         } else {
-            return rt_box_string("int\0".as_ptr() as *const _);
+            return rt_string_from_c_str("int\0".as_ptr() as *const _);
         }
     } else {
         let body = (val - HEAP_OFFSET) as *mut u8;
         let header = rt_get_header(body);
         let tag = (*header).type_id as i64;
         if tag == TAG_STRING {
-            return rt_box_string("string\0".as_ptr() as *const _);
+            return rt_string_from_c_str("string\0".as_ptr() as *const _);
         } else if tag == TAG_FUNCTION {
-            return rt_box_string("function\0".as_ptr() as *const _);
+            return rt_string_from_c_str("function\0".as_ptr() as *const _);
         } else if tag == TAG_ARRAY {
-            return rt_box_string("array\0".as_ptr() as *const _);
+            return rt_string_from_c_str("array\0".as_ptr() as *const _);
         } else if tag == TAG_OBJECT {
-            return rt_box_string("object\0".as_ptr() as *const _);
+            return rt_string_from_c_str("object\0".as_ptr() as *const _);
         } else if tag == TAG_BOOLEAN {
-            return rt_box_string("bool\0".as_ptr() as *const _);
+            return rt_string_from_c_str("bool\0".as_ptr() as *const _);
         } else if tag == TAG_FLOAT {
-            return rt_box_string("float\0".as_ptr() as *const _);
+            return rt_string_from_c_str("float\0".as_ptr() as *const _);
         } else if tag == TAG_INT {
-            return rt_box_string("int\0".as_ptr() as *const _);
+            return rt_string_from_c_str("int\0".as_ptr() as *const _);
         } else if tag == TAG_CHAR {
-            return rt_box_string("char\0".as_ptr() as *const _);
+            return rt_string_from_c_str("char\0".as_ptr() as *const _);
         } else if tag == TAG_PROMISE {
-            return rt_box_string("promise\0".as_ptr() as *const _);
+            return rt_string_from_c_str("promise\0".as_ptr() as *const _);
         } else {
-            return rt_box_string("object\0".as_ptr() as *const _);
+            return rt_string_from_c_str("object\0".as_ptr() as *const _);
         }
     }
 }
