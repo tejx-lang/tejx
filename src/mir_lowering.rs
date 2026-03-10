@@ -40,7 +40,7 @@ impl MIRLowering {
         class_fields: HashMap<String, Vec<(String, TejxType)>>,
     ) -> Self {
         Self {
-            current_function: MIRFunction::new("".to_string()),
+            current_function: MIRFunction::new("".to_string(), TejxType::Void),
             current_block: 0,
             temp_counter: 0,
             block_counter: 0,
@@ -147,7 +147,7 @@ impl MIRLowering {
         is_extern: bool,
         async_params: Option<Vec<(String, TejxType)>>,
     ) -> MIRFunction {
-        self.current_function = MIRFunction::new(name.clone());
+        self.current_function = MIRFunction::new(name.clone(), return_type.clone());
         self.current_return_type = return_type.clone();
         self.temp_counter = 0;
         self.block_counter = 0;
@@ -256,9 +256,10 @@ impl MIRLowering {
             if is_async_worker {
                 let ctx_val = MIRValue::Variable {
                     name: "ctx".to_string(),
-                    ty: TejxType::Class("Object[]".to_string(), vec![]),
+                    ty: TejxType::Class("Int64[]".to_string(), vec![]),
                 };
-                let promise_id = self.new_async_temp(TejxType::Class("any".to_string(), vec![]));
+                let promise_id =
+                    self.new_async_temp(TejxType::Class("Promise".to_string(), vec![]));
                 self.emit(MIRInstruction::Call {
                     line: 0,
                     dst: promise_id.clone(),
@@ -280,7 +281,7 @@ impl MIRLowering {
                     args: vec![
                         MIRValue::Variable {
                             name: promise_id,
-                            ty: TejxType::Class("any".to_string(), vec![]),
+                            ty: TejxType::Class("Promise".to_string(), vec![]),
                         },
                         MIRValue::Constant {
                             value: "0".to_string(),
@@ -313,7 +314,7 @@ impl MIRLowering {
             // Restore async state from ctx
             let ctx_val = MIRValue::Variable {
                 name: "ctx".to_string(),
-                ty: TejxType::Class("Object[]".to_string(), vec![]),
+                ty: TejxType::Class("Int64[]".to_string(), vec![]),
             };
 
             let mut restoration_instrs = Vec::new();
@@ -337,52 +338,18 @@ impl MIRLowering {
             // They are stored at ctx[2...] as unified in collect_async_locals
             for (i, name) in self.async_locals.iter().enumerate() {
                 let ix = 2 + i;
-                let ty = self
-                    .current_function
-                    .variables
-                    .get(name)
-                    .expect("Variable not found in async worker")
-                    .clone();
-                if ty == TejxType::Class("any".to_string(), vec![]) {
-                    restoration_instrs.push(MIRInstruction::Call {
-                        line: 0,
-                        dst: name.clone(),
-                        callee: "rt_array_get_fast".to_string(),
-                        args: vec![
-                            ctx_val.clone(),
-                            MIRValue::Constant {
-                                value: ix.to_string(),
-                                ty: TejxType::Int32,
-                            },
-                        ],
-                    });
-                } else {
-                    let temp = format!("_restore_local_{}", i);
-                    self.current_function
-                        .variables
-                        .insert(temp.clone(), TejxType::Class("any".to_string(), vec![]));
-                    restoration_instrs.push(MIRInstruction::Call {
-                        line: 0,
-                        dst: temp.clone(),
-                        callee: "rt_array_get_fast".to_string(),
-                        args: vec![
-                            ctx_val.clone(),
-                            MIRValue::Constant {
-                                value: ix.to_string(),
-                                ty: TejxType::Int32,
-                            },
-                        ],
-                    });
-                    restoration_instrs.push(MIRInstruction::Cast {
-                        line: 0,
-                        dst: name.clone(),
-                        src: MIRValue::Variable {
-                            name: temp,
-                            ty: TejxType::Class("any".to_string(), vec![]),
+                restoration_instrs.push(MIRInstruction::Call {
+                    line: 0,
+                    dst: name.clone(),
+                    callee: "rt_array_get_fast".to_string(),
+                    args: vec![
+                        ctx_val.clone(),
+                        MIRValue::Constant {
+                            value: ix.to_string(),
+                            ty: TejxType::Int32,
                         },
-                        ty: ty.clone(),
-                    });
-                }
+                    ],
+                });
             }
 
             // Restore promise_id_local at index 0
@@ -402,10 +369,10 @@ impl MIRLowering {
             }
 
             // Extract state and build switch
-            let state_any_temp = self.new_async_temp(TejxType::Class("any".to_string(), vec![]));
+            let state_temp = self.new_async_temp(TejxType::Int32);
             restoration_instrs.push(MIRInstruction::Call {
                 line: 0,
-                dst: state_any_temp.clone(),
+                dst: state_temp.clone(),
                 callee: "rt_array_get_fast".to_string(),
                 args: vec![
                     ctx_val.clone(),
@@ -414,17 +381,6 @@ impl MIRLowering {
                         ty: TejxType::Int32,
                     },
                 ],
-            });
-
-            let state_temp = self.new_async_temp(TejxType::Int32);
-            restoration_instrs.push(MIRInstruction::Cast {
-                line: 0,
-                dst: state_temp.clone(),
-                src: MIRValue::Variable {
-                    name: state_any_temp,
-                    ty: TejxType::Class("any".to_string(), vec![]),
-                },
-                ty: TejxType::Int32,
             });
 
             let state_val = MIRValue::Variable {
@@ -534,7 +490,7 @@ impl MIRLowering {
                 if let Some(var) = catch_var {
                     self.current_function
                         .variables
-                        .insert(var.clone(), TejxType::Class("any".to_string(), vec![]));
+                        .insert(var.clone(), TejxType::Class("Error".to_string(), vec![]));
                 }
                 self.pre_collect_variables(try_block);
                 self.pre_collect_variables(catch_block);
@@ -705,8 +661,7 @@ impl MIRLowering {
         // Implicit Casting for Primitives or downcasting from any/Object
         if *src_ty != *target_ty {
             let is_primitive_cast = src_ty.is_numeric() && target_ty.is_numeric();
-            let is_downcast = (src_ty == &TejxType::Class("any".to_string(), vec![])
-                || src_ty == &TejxType::Class("Object".to_string(), vec![]))
+            let is_downcast = (src_ty == &TejxType::Int64)
                 && (target_ty.is_numeric()
                     || matches!(target_ty, TejxType::Bool | TejxType::String));
 
@@ -925,10 +880,9 @@ impl MIRLowering {
                 if is_async_worker {
                     let ctx_val = MIRValue::Variable {
                         name: "ctx".to_string(),
-                        ty: TejxType::Class("Object[]".to_string(), vec![]),
+                        ty: TejxType::Class("Int64[]".to_string(), vec![]),
                     };
-                    let promise_id =
-                        self.new_async_temp(TejxType::Class("any".to_string(), vec![]));
+                    let promise_id = self.new_async_temp(TejxType::Int64);
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: promise_id.clone(),
@@ -955,7 +909,7 @@ impl MIRLowering {
                         args: vec![
                             MIRValue::Variable {
                                 name: promise_id,
-                                ty: TejxType::Class("any".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             },
                             resolve_val,
                         ],
@@ -1109,7 +1063,7 @@ impl MIRLowering {
 
                 // Variables to track unwinding state across finally block
                 let is_unwinding_var = self.new_temp(TejxType::Bool);
-                let saved_ex_var = self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                let saved_ex_var = self.new_temp(TejxType::Int64);
 
                 let finally_handler_idx = if finally_block.is_some() {
                     Some(self.new_block("finally_unwind"))
@@ -1186,7 +1140,7 @@ impl MIRLowering {
                 self.current_block = catch_block_idx;
                 if let Some(var) = catch_var {
                     // Extract exception into variable
-                    let temp = self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                    let temp = self.new_temp(TejxType::Int64);
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: temp.clone(),
@@ -1198,7 +1152,7 @@ impl MIRLowering {
                         dst: var.clone(),
                         src: MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Class("any".to_string(), vec![]),
+                            ty: TejxType::Int64,
                         },
                     });
                 }
@@ -1248,7 +1202,7 @@ impl MIRLowering {
                     });
 
                     // Save exception
-                    let temp = self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                    let temp = self.new_temp(TejxType::Int64);
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: temp.clone(),
@@ -1260,7 +1214,7 @@ impl MIRLowering {
                         dst: saved_ex_var.clone(),
                         src: MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Class("any".to_string(), vec![]),
+                            ty: TejxType::Int64,
                         },
                     });
 
@@ -1298,7 +1252,7 @@ impl MIRLowering {
                             line: 0,
                             value: MIRValue::Variable {
                                 name: saved_ex_var,
-                                ty: TejxType::Class("any".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             },
                         });
                     }
@@ -1352,7 +1306,7 @@ impl MIRLowering {
                 let unique_name = self.resolve_variable(name);
                 if let TejxType::Function(_, _) = ty {
                     if name.starts_with("f_") {
-                        let temp = self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                        let temp = self.new_temp(TejxType::Int64);
                         let raw_ptr = MIRValue::Variable {
                             name: unique_name,
                             ty: ty.clone(),
@@ -1365,7 +1319,7 @@ impl MIRLowering {
                         });
                         return MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Class("any".to_string(), vec![]),
+                            ty: TejxType::Int64,
                         };
                     }
                 }
@@ -1876,24 +1830,6 @@ impl MIRLowering {
                     args: mir_args,
                 });
 
-                // REALLOCATION FIX: If this was a UFCS call like push/pop,
-                // and the first argument was an identifier (variable),
-                // we MUST update that variable with the return value because it might have reallocated.
-                if is_ufcs && !args.is_empty() {
-                    if let HIRExpression::Variable { name, ty, .. } = &args[0] {
-                        let res_ty = ty.clone();
-                        let unique_name = self.resolve_variable(name);
-                        self.emit(MIRInstruction::Move {
-                            line: 0,
-                            dst: unique_name,
-                            src: MIRValue::Variable {
-                                name: raw_temp.clone(),
-                                ty: res_ty,
-                            },
-                        });
-                    }
-                }
-
                 let result_val = MIRValue::Variable {
                     name: raw_temp.clone(),
                     ty: ty.clone(),
@@ -1921,8 +1857,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp =
-                                    self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                                let temp = self.new_temp(TejxType::Int64);
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1931,7 +1866,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Class("any".to_string(), vec![]),
+                                    ty: TejxType::Int64,
                                 };
                             }
                         }
@@ -1967,7 +1902,7 @@ impl MIRLowering {
 
                     let ctx_val = MIRValue::Variable {
                         name: "ctx".to_string(),
-                        ty: TejxType::Class("Object[]".to_string(), vec![]),
+                        ty: TejxType::Class("Int64[]".to_string(), vec![]),
                     };
 
                     // --- SAVE LOCALS TO CTX ---
@@ -1984,29 +1919,9 @@ impl MIRLowering {
                         ap_len = ap.len();
 
                         for (i, (name, ty)) in ap.iter().enumerate() {
-                            let src_val = if ty.is_numeric()
-                                || matches!(ty, TejxType::Bool | TejxType::Char)
-                            {
-                                let temp =
-                                    self.new_async_temp(TejxType::Class("any".to_string(), vec![]));
-                                self.emit(MIRInstruction::Cast {
-                                    line: *line,
-                                    dst: temp.clone(),
-                                    src: MIRValue::Variable {
-                                        name: name.clone(),
-                                        ty: ty.clone(),
-                                    },
-                                    ty: TejxType::Class("any".to_string(), vec![]),
-                                });
-                                MIRValue::Variable {
-                                    name: temp,
-                                    ty: TejxType::Class("any".to_string(), vec![]),
-                                }
-                            } else {
-                                MIRValue::Variable {
-                                    name: name.clone(),
-                                    ty: ty.clone(),
-                                }
+                            let src_val = MIRValue::Variable {
+                                name: name.clone(),
+                                ty: ty.clone(),
                             };
 
                             let unused = self.new_async_temp(TejxType::Void);
@@ -2028,28 +1943,9 @@ impl MIRLowering {
 
                     if let Some(ref p_var) = promise_id_var {
                         let ty = self.current_function.variables.get(p_var).unwrap().clone();
-                        let src_val = if ty.is_numeric()
-                            || matches!(ty, TejxType::Bool | TejxType::Char)
-                        {
-                            let temp = self.new_temp(TejxType::Class("any".to_string(), vec![]));
-                            self.emit(MIRInstruction::Cast {
-                                line: *line,
-                                dst: temp.clone(),
-                                src: MIRValue::Variable {
-                                    name: p_var.clone(),
-                                    ty: ty.clone(),
-                                },
-                                ty: TejxType::Class("any".to_string(), vec![]),
-                            });
-                            MIRValue::Variable {
-                                name: temp,
-                                ty: TejxType::Class("any".to_string(), vec![]),
-                            }
-                        } else {
-                            MIRValue::Variable {
-                                name: p_var.clone(),
-                                ty: ty.clone(),
-                            }
+                        let src_val = MIRValue::Variable {
+                            name: p_var.clone(),
+                            ty: ty.clone(),
                         };
 
                         let unused = self.new_async_temp(TejxType::Void);
@@ -2071,29 +1967,10 @@ impl MIRLowering {
                     for (i, name) in other_vars.iter().enumerate() {
                         let ix = 2 + ap_len + i;
                         let ty = self.current_function.variables.get(name).unwrap().clone();
-                        let src_val =
-                            if ty.is_numeric() || matches!(ty, TejxType::Bool | TejxType::Char) {
-                                let temp =
-                                    self.new_async_temp(TejxType::Class("any".to_string(), vec![]));
-                                self.emit(MIRInstruction::Cast {
-                                    line: *line,
-                                    dst: temp.clone(),
-                                    src: MIRValue::Variable {
-                                        name: name.clone(),
-                                        ty: ty.clone(),
-                                    },
-                                    ty: TejxType::Class("any".to_string(), vec![]),
-                                });
-                                MIRValue::Variable {
-                                    name: temp,
-                                    ty: TejxType::Class("any".to_string(), vec![]),
-                                }
-                            } else {
-                                MIRValue::Variable {
-                                    name: name.clone(),
-                                    ty: ty.clone(),
-                                }
-                            };
+                        let src_val = MIRValue::Variable {
+                            name: name.clone(),
+                            ty: ty.clone(),
+                        };
 
                         let unused = self.new_async_temp(TejxType::Void);
                         self.emit(MIRInstruction::Call {
@@ -2111,17 +1988,10 @@ impl MIRLowering {
                         });
                     }
 
-                    // Update ctx[1] = next_state_id (boxed) before yielding
-                    let next_state_any = self.new_temp(TejxType::Class("any".to_string(), vec![]));
-                    self.emit(MIRInstruction::Cast {
-                        line: *line,
-                        dst: next_state_any.clone(),
-                        src: MIRValue::Constant {
-                            value: next_state_id.to_string(),
-                            ty: TejxType::Int32,
-                        },
-                        ty: TejxType::Class("any".to_string(), vec![]),
-                    });
+                    let next_state_any = MIRValue::Constant {
+                        value: next_state_id.to_string(),
+                        ty: TejxType::Int32,
+                    };
 
                     let unused = self.new_temp(TejxType::Void);
                     self.emit(MIRInstruction::Call {
@@ -2134,10 +2004,7 @@ impl MIRLowering {
                                 value: "1".to_string(),
                                 ty: TejxType::Int32,
                             },
-                            MIRValue::Variable {
-                                name: next_state_any,
-                                ty: TejxType::Class("any".to_string(), vec![]),
-                            },
+                            next_state_any,
                         ],
                     });
 
@@ -2253,9 +2120,8 @@ impl MIRLowering {
 
                 // Only load as 'any' if the array actually stores tagged values.
                 // Otherwise use the actual element type (int, float, etc.)
-                let load_ty = if matches!(elem_ty, TejxType::Class(ref n, _) if n == "any" || n == "object")
-                {
-                    TejxType::Class("any".to_string(), vec![])
+                let load_ty = if matches!(elem_ty, TejxType::Int64) {
+                    TejxType::Int64
                 } else {
                     elem_ty.clone()
                 };
@@ -2335,7 +2201,7 @@ impl MIRLowering {
                             _ => None,
                         };
                         if let Some(f) = box_func {
-                            let temp = self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                            let temp = self.new_temp(TejxType::Int64);
                             self.emit(MIRInstruction::Call {
                                 line: 0,
                                 dst: temp.clone(),
@@ -2344,7 +2210,7 @@ impl MIRLowering {
                             });
                             val = MIRValue::Variable {
                                 name: temp,
-                                ty: TejxType::Class("any".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             };
                         }
                     }
@@ -2436,8 +2302,7 @@ impl MIRLowering {
                     let elem_ty = ty.get_array_element_type();
                     let should_box = (val.get_type().is_numeric()
                         || matches!(val.get_type(), TejxType::Bool | TejxType::Char))
-                        && (elem_ty == TejxType::Class("any".to_string(), vec![])
-                            || elem_ty == TejxType::Class("object".to_string(), vec![]));
+                        && (elem_ty == TejxType::Int64);
 
                     if should_box {
                         let src_ty = val.get_type();
@@ -2449,7 +2314,7 @@ impl MIRLowering {
                             _ => None,
                         };
                         if let Some(f) = box_func {
-                            let temp = self.new_temp(TejxType::Class("any".to_string(), vec![]));
+                            let temp = self.new_temp(TejxType::Int64);
                             self.emit(MIRInstruction::Call {
                                 line: 0,
                                 dst: temp.clone(),
@@ -2458,7 +2323,7 @@ impl MIRLowering {
                             });
                             val = MIRValue::Variable {
                                 name: temp,
-                                ty: TejxType::Class("any".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             };
                         }
                     }
@@ -2553,7 +2418,7 @@ impl MIRLowering {
             }
             HIRExpression::NoneLiteral { .. } => MIRValue::Constant {
                 value: "0".to_string(),
-                ty: TejxType::Class("any".to_string(), vec![]),
+                ty: TejxType::Int64,
             },
             HIRExpression::SomeExpr { value, .. } => self.lower_expression(value),
         }

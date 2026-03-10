@@ -6,8 +6,48 @@ pub struct Program {
     pub statements: Vec<Statement>, // In C++ this was vector<shared_ptr<ASTNode>>, but mostly statements
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeNode {
+    Named(String),
+    Generic(String, Vec<TypeNode>),
+    Array(Box<TypeNode>),
+    Function(Vec<TypeNode>, Box<TypeNode>),
+    Object(Vec<(String, bool, TypeNode)>), // key, is_optional, value_type
+    Union(Vec<TypeNode>),
+    Intersection(Vec<TypeNode>),
+    Any,
+}
+
+impl TypeNode {
+    pub fn to_string(&self) -> String {
+        match self {
+            TypeNode::Named(n) => n.clone(),
+            TypeNode::Generic(n, args) => {
+                let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                format!("{}<{}>", n, args_str)
+            }
+            TypeNode::Array(t) => format!("{}[]", t.to_string()),
+            TypeNode::Function(args, ret) => {
+                let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                format!("({}) => {}", args_str, ret.to_string())
+            }
+            TypeNode::Object(members) => {
+                let m_str = members.iter().map(|(k, opt, t)| {
+                    let o = if *opt { "?" } else { "" };
+                    format!("{}{}: {}", k, o, t.to_string())
+                }).collect::<Vec<_>>().join("; ");
+                format!("{{ {} }}", m_str)
+            }
+            TypeNode::Union(types) => types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" | "),
+            TypeNode::Intersection(types) => types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" & "),
+            TypeNode::Any => "any".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeAnnotation {
+    pub node: TypeNode,
     pub raw_name: String,
     pub size_expr: Option<Box<Expression>>,
 }
@@ -29,7 +69,16 @@ impl std::hash::Hash for TypeAnnotation {
 impl TypeAnnotation {
     pub fn from_name(name: String) -> Self {
         TypeAnnotation {
+            node: TypeNode::Named(name.clone()),
             raw_name: name,
+            size_expr: None,
+        }
+    }
+
+    pub fn from_node(node: TypeNode) -> Self {
+        TypeAnnotation {
+            raw_name: node.to_string(),
+            node,
             size_expr: None,
         }
     }
@@ -339,6 +388,12 @@ pub enum Expression {
 }
 
 #[derive(Debug, Clone)]
+pub struct GenericParam {
+    pub name: String,
+    pub bound: Option<TypeAnnotation>,
+}
+
+#[derive(Debug, Clone)]
 pub struct FunctionDeclaration {
     pub name: String,
     pub params: Vec<Parameter>,
@@ -346,7 +401,7 @@ pub struct FunctionDeclaration {
     pub body: Box<Statement>, // BlockStmt
     pub _is_async: bool,
     pub is_extern: bool,
-    pub generic_params: Vec<String>,
+    pub generic_params: Vec<GenericParam>,
     pub _line: usize,
     pub _col: usize,
 }
@@ -363,7 +418,7 @@ pub struct Parameter {
 pub struct ClassDeclaration {
     pub name: String,
     pub _parent_name: String,
-    pub generic_params: Vec<String>,
+    pub generic_params: Vec<GenericParam>,
     pub _is_abstract: bool,
     pub _implemented_protocols: Vec<String>,
     pub _members: Vec<ClassMember>,

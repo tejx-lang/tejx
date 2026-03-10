@@ -183,17 +183,19 @@ pub struct MIRFunction {
     pub name: String,
     pub params: Vec<String>, // parameter names
     pub variables: std::collections::HashMap<String, TejxType>, // variable types
+    pub return_type: TejxType,
     pub blocks: Vec<BasicBlock>,
     pub entry_block: usize, // index into blocks
     pub is_extern: bool,
 }
 
 impl MIRFunction {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, return_type: TejxType) -> Self {
         Self {
             name,
             params: Vec::new(),
             variables: std::collections::HashMap::new(),
+            return_type,
             blocks: Vec::new(),
             entry_block: 0,
             is_extern: false,

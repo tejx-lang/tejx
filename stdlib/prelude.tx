@@ -18,10 +18,10 @@ extern function rt_array_fill<T>(arr: T[], val: T): T[];
 extern function rt_array_sort<T>(arr: T[]): void;
 extern function rt_is_array<T>(val: T): bool;
 extern function rt_to_string<T>(val: T): string;
-extern function rt_promise_new<T>(): any;
-extern function rt_promise_resolve<T>(p: any, val: T): void;
-extern function rt_promise_reject<T>(p: any, err: Error): void;
-extern function rt_promise_then<T, U>(p: any, onResolve: (v: T) => U, onReject: (e: any) => U): any;
+extern function rt_promise_new<T>(): Promise<T>;
+extern function rt_promise_resolve<T>(p: Promise<T>, val: T): void;
+extern function rt_promise_reject<T>(p: Promise<T>, err: Error): void;
+extern function rt_promise_then<T, U>(p: Promise<T>, onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U>;
 extern function rt_str_equals(a: string, b: string): bool;
 extern function rt_str_concat_v2(a: string, b: string): string;
 extern function rt_String_toUpperCase(s: string): string;
@@ -221,11 +221,11 @@ export class Promise<T> {
     }
 
     then<U>(onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U> {
-        return rt_promise_then(this, onResolve, onReject) as Promise<U>;
+        return rt_promise_then(this, onResolve, onReject);
     }
 
-    catchError<U>(onReject: (e: any) => U): Promise<U> {
-        return rt_promise_then(this, 0 as (v: T) => U, onReject) as Promise<U>;
+    catchError<U>(onReject: (e: Error) => U): Promise<U> {
+        return rt_promise_then(this, 0 as (v: T) => U, onReject);
     }
 
     static resolve<T>(v: T): Promise<T> {
@@ -253,19 +253,17 @@ export class Promise<T> {
         for (let i = 0; i < total; i++) {
             let callback = (index: int) => {
                 promises[index].then((v) => {
-                    if (state.rejected) return v;
+                    if (state.rejected) return;
                     results[index] = v;
                     state.count = state.count + 1;
                     if (state.count == total) {
                         rt_promise_resolve(p, results);
                     }
-                    return v;
                 }, (e) => {
                     if (!state.rejected) {
                         state.rejected = true;
                         rt_promise_reject(p, e);
                     }
-                    return e;
                 });
             };
             callback(i);
@@ -275,7 +273,7 @@ export class Promise<T> {
 }
 
 
-export function print<T>(...args: T[]): void {
+export function print(...args: any[]): void {
     let out = "";
     for (let i = 0; i < rt_len(args); i++) {
         out = out + rt_to_string(args[i]);
@@ -291,7 +289,7 @@ export function panic(msg: string): void {
     rt_panic(msg);
 }
 
-export function eprint<T>(...args: T[]): void {
+export function eprint(...args: any[]): void {
     let out = "";
     for (let i = 0; i < rt_len(args); i++) {
         out = out + rt_to_string(args[i]);

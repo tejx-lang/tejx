@@ -21,6 +21,7 @@ pub enum TejxType {
     Slice(Box<TejxType>),
     Void,
     Function(Vec<TejxType>, Box<TejxType>), // (Params, Return)
+    Any,
 }
 
 impl TejxType {
@@ -79,8 +80,9 @@ impl TejxType {
                     let inner = &name[6..name.len() - 1];
                     TejxType::from_name(inner)
                 } else {
-                    TejxType::Void
+                    TejxType::Any
                 }
+
             }
             TejxType::Class(name, _) if name.ends_with("[]") => {
                 let inner = &name[0..name.len() - 2];
@@ -100,8 +102,9 @@ impl TejxType {
             }
             TejxType::String => TejxType::String,
             TejxType::Function(_, _) => TejxType::Void,
-            _ => TejxType::Void,
+            _ => TejxType::Any,
         }
+
     }
 
     pub fn size(&self) -> usize {
@@ -118,7 +121,45 @@ impl TejxType {
             | TejxType::Function(_, _) => 8, // Pointers/Boxed/Borrows/Function pointers
             TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
             TejxType::FixedArray(inner, count) => inner.size() * count,
+            TejxType::Any => 8, // Boxed value ptr
             TejxType::Void => 0,
+        }
+    }
+
+    pub fn from_node(node: &crate::ast::TypeNode) -> TejxType {
+        match node {
+            crate::ast::TypeNode::Named(name) => TejxType::from_name(name),
+            crate::ast::TypeNode::Generic(name, args) => {
+                let parsed_args = args.iter().map(|a| TejxType::from_node(a)).collect();
+                TejxType::Class(name.clone(), parsed_args)
+            }
+            crate::ast::TypeNode::Array(inner) => {
+                TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
+            }
+            crate::ast::TypeNode::Function(params, ret) => {
+                let parsed_params = params.iter().map(|p| TejxType::from_node(p)).collect();
+                TejxType::Function(parsed_params, Box::new(TejxType::from_node(ret)))
+            }
+            crate::ast::TypeNode::Object(_) => TejxType::Any, // Anonymous object types map to Any
+            crate::ast::TypeNode::Union(types) => {
+                let non_nulls: Vec<_> = types.iter().filter(|t| {
+                    if let crate::ast::TypeNode::Named(n) = t {
+                        n != "None" && n != "null"
+                    } else {
+                        true
+                    }
+                }).collect();
+                
+                if non_nulls.len() == 1 {
+                    TejxType::from_node(non_nulls[0])
+                } else if non_nulls.is_empty() {
+                    TejxType::Void
+                } else {
+                    TejxType::Any // Complex unions not fully supported, map to Any
+                }
+            }
+            crate::ast::TypeNode::Intersection(_) => TejxType::Any,
+            crate::ast::TypeNode::Any => TejxType::Any,
         }
     }
 
@@ -228,6 +269,7 @@ impl TejxType {
                     format!("{}<{}>", name, gen_strs.join(", "))
                 }
             }
+            TejxType::Any => "any".to_string(),
             TejxType::FixedArray(inner, size) => format!("{}[{}]", inner.to_name(), size),
             TejxType::DynamicArray(inner) => format!("{}[]", inner.to_name()),
             TejxType::Slice(inner) => format!("slice<{}>", inner.to_name()),

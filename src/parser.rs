@@ -348,11 +348,18 @@ impl Parser {
         let mut generic_params = Vec::new();
         if self.match_token(TokenType::Less) {
             loop {
-                let param = self
+                let param_name = self
                     .consume(TokenType::Identifier, "Expected type parameter")
                     .value
                     .clone();
-                generic_params.push(param);
+                let mut bound = None;
+                if self.match_token(TokenType::Colon) {
+                    bound = Some(self.parse_type_annotation());
+                }
+                generic_params.push(crate::ast::GenericParam {
+                    name: param_name,
+                    bound,
+                });
                 if !self.match_token(TokenType::Comma) {
                     break;
                 }
@@ -428,16 +435,22 @@ impl Parser {
         let start = self.consume(TokenType::Class, "Expected 'class'").clone();
         let name = self.consume_identifier("Expected class name").value.clone();
 
-        // Support generic class: class Node<T>
         let mut generic_params = Vec::new();
         if self.match_token(TokenType::Less) {
             loop {
                 // consume returns &Token, so .value.clone() works
-                let param = self
+                let param_name = self
                     .consume(TokenType::Identifier, "Expected type parameter")
                     .value
                     .clone();
-                generic_params.push(param);
+                let mut bound = None;
+                if self.match_token(TokenType::Colon) {
+                    bound = Some(self.parse_type_annotation());
+                }
+                generic_params.push(crate::ast::GenericParam {
+                    name: param_name,
+                    bound,
+                });
                 if !self.match_token(TokenType::Comma) {
                     break;
                 }
@@ -541,7 +554,7 @@ impl Parser {
                     body: Box::new(body),
                     _is_async: false,
                     is_extern: false,
-                    generic_params: vec![],
+                    generic_params: Vec::new(),
                     _line: start.line,
                     _col: start.column,
                 });
@@ -624,11 +637,18 @@ impl Parser {
                 if is_generic {
                     self.advance(); // consume <
                     loop {
-                        let param = self
+                        let param_name = self
                             .consume(TokenType::Identifier, "Expected type parameter")
                             .value
                             .clone();
-                        method_generic_params.push(param);
+                        let mut bound = None;
+                        if self.match_token(TokenType::Colon) {
+                            bound = Some(self.parse_type_annotation());
+                        }
+                        method_generic_params.push(crate::ast::GenericParam {
+                            name: param_name,
+                            bound,
+                        });
                         if !self.match_token(TokenType::Comma) {
                             break;
                         }
@@ -742,7 +762,7 @@ impl Parser {
                 }),
                 _is_async: false,
                 is_extern: false,
-                generic_params: vec![],
+                generic_params: Vec::new(),
                 _line: start.line,
                 _col: start.column,
             });
@@ -842,7 +862,7 @@ impl Parser {
                 body: Box::new(body),
                 _is_async: false,
                 is_extern: false,
-                generic_params: vec![],
+                generic_params: Vec::new(),
                 _line: 0,
                 _col: 0,
             });
@@ -1088,10 +1108,20 @@ impl Parser {
         let mut base_type = self.parse_base_type();
 
         // Union Type: A | B
+        let mut union_types = Vec::new();
         while self.match_token(TokenType::Pipe) {
             let next_type = self.parse_single_type();
+            if union_types.is_empty() {
+                union_types.push(base_type.node.clone());
+            }
+            union_types.push(next_type.node.clone());
+            
             base_type.raw_name.push_str(" | ");
             base_type.raw_name.push_str(&next_type.to_string());
+        }
+        
+        if !union_types.is_empty() {
+            base_type.node = TypeNode::Union(union_types);
         }
 
         base_type
@@ -1105,6 +1135,7 @@ impl Parser {
         // Function type: (params) => returnType
         if self.match_token(TokenType::OpenParen) {
             let mut params_str = String::new();
+            let mut param_nodes = Vec::new();
             params_str.push('(');
             if !self.check(TokenType::CloseParen) {
                 loop {
@@ -1116,9 +1147,11 @@ impl Parser {
                         self.consume(TokenType::Colon, "Expected ':'");
                         let p_type = self.parse_type_annotation();
                         params_str.push_str(&format!("{}: {}", name, p_type));
+                        param_nodes.push(p_type.node);
                     } else {
                         let p_type = self.parse_type_annotation();
                         params_str.push_str(&p_type.to_string());
+                        param_nodes.push(p_type.node);
                     }
 
                     if self.match_token(TokenType::Comma) {
@@ -1132,24 +1165,32 @@ impl Parser {
             params_str.push(')');
             self.consume(TokenType::Arrow, "Expected '=>'");
             let ret_type = self.parse_type_annotation();
-            return TypeAnnotation::from_name(format!("{} => {}", params_str, ret_type));
+            
+            let mut ann = TypeAnnotation::from_name(format!("{} => {}", params_str, ret_type));
+            ann.node = TypeNode::Function(param_nodes, Box::new(ret_type.node));
+            return ann;
         }
 
         // Object Type: { x: number, y: string }
         if self.match_token(TokenType::OpenBrace) {
             let mut members = Vec::new();
+            let mut member_nodes = Vec::new();
             while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
                 let key = self
                     .consume_identifier("Expected property name")
                     .value
                     .clone();
                 let mut optional = "";
-                if self.match_token(TokenType::Question) {
+                let is_opt = if self.match_token(TokenType::Question) {
                     optional = "?";
-                }
+                    true
+                } else {
+                    false
+                };
                 self.consume(TokenType::Colon, "Expected ':'");
                 let val_type = self.parse_type_annotation();
                 members.push(format!("{}{}: {}", key, optional, val_type));
+                member_nodes.push((key, is_opt, val_type.node.clone()));
 
                 if self.match_token(TokenType::Comma) || self.match_token(TokenType::Semicolon) {
                     // continue
@@ -1160,8 +1201,11 @@ impl Parser {
             self.consume(TokenType::CloseBrace, "Expected '}'");
             let mut base_ty = format!("{{ {} }}", members.join("; "));
             let mut size_expr = None;
+            let mut node = TypeNode::Object(member_nodes);
+            
             while self.match_token(TokenType::OpenBracket) {
                 base_ty.push_str("[]"); // Always add [] to the name
+                node = TypeNode::Array(Box::new(node));
                 if !self.match_token(TokenType::CloseBracket) {
                     let expr = self.parse_expression();
                     self.consume(TokenType::CloseBracket, "Expected ']'");
@@ -1171,6 +1215,7 @@ impl Parser {
                 }
             }
             return TypeAnnotation {
+                node,
                 raw_name: base_ty,
                 size_expr,
             };
@@ -1178,14 +1223,21 @@ impl Parser {
 
         // Array Type: number[]
         let mut base_type_name = String::new();
+        let mut base_node = TypeNode::Any;
         if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
-            base_type_name = self.consume_identifier("Expected type name").value.clone();
+            let ident_name = self.consume_identifier("Expected type name").value.clone();
+            base_type_name = ident_name.clone();
+            base_node = TypeNode::Named(ident_name.clone());
 
             // Generics: Array<T> or Option<T>
             if self.match_token(TokenType::Less) {
+                let mut generic_args = Vec::new();
                 base_type_name.push('<');
                 loop {
-                    base_type_name.push_str(&self.parse_type_annotation().to_string());
+                    let type_ann = self.parse_type_annotation();
+                    base_type_name.push_str(&type_ann.to_string());
+                    generic_args.push(type_ann.node);
+                    
                     if self.match_token(TokenType::Comma) {
                         base_type_name.push_str(", ");
                     } else {
@@ -1209,6 +1261,7 @@ impl Parser {
                     self.consume(TokenType::Greater, "Expected '>'");
                 }
                 base_type_name.push('>');
+                base_node = TypeNode::Generic(ident_name, generic_args);
             }
         }
 
@@ -1246,11 +1299,13 @@ impl Parser {
                 self.advance();
                 return TypeAnnotation::from_name("{unknown}".to_string());
             }
+            base_node = TypeNode::Named(base_type_name.clone());
         }
 
         let mut size_expr = None;
         while self.match_token(TokenType::OpenBracket) {
             base_type_name.push_str("[]"); // Always add [] to the name
+            base_node = TypeNode::Array(Box::new(base_node));
             if !self.match_token(TokenType::CloseBracket) {
                 // Sized array: Type[expr]
                 let expr = self.parse_expression();
@@ -1263,12 +1318,22 @@ impl Parser {
         }
 
         // Parse intersection types (A & B & C)
+        let mut intersection_types = Vec::new();
         while self.match_token(TokenType::Ampersand) {
             let next_type = self.parse_base_type();
+            if intersection_types.is_empty() {
+                intersection_types.push(base_node.clone());
+            }
+            intersection_types.push(next_type.node.clone());
             base_type_name = format!("{} & {}", base_type_name, next_type.to_string());
+        }
+        
+        if !intersection_types.is_empty() {
+            base_node = TypeNode::Intersection(intersection_types);
         }
 
         TypeAnnotation {
+            node: base_node,
             raw_name: base_type_name,
             size_expr,
         }
@@ -2721,7 +2786,7 @@ impl Parser {
         Statement::ClassDeclaration(ClassDeclaration {
             name,
             _parent_name: "".to_string(),
-            generic_params: vec![],
+            generic_params: Vec::new(),
             _is_abstract: false,
             _implemented_protocols: vec![],
             _members: members,
@@ -2739,7 +2804,7 @@ impl Parser {
                 }),
                 _is_async: false,
                 is_extern: false,
-                generic_params: vec![],
+                generic_params: Vec::new(),
                 _line: start.line,
                 _col: start.column,
             }),

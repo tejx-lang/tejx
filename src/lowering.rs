@@ -37,6 +37,8 @@ pub struct Lowering {
     pub stdlib_path: RefCell<std::path::PathBuf>,
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<String>>,
     current_return_type: RefCell<Option<TejxType>>,
+    pub generic_instantiations: HashMap<String, std::collections::HashSet<Vec<String>>>,
+    pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<String>>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -80,6 +82,8 @@ impl Lowering {
             stdlib_path: RefCell::new(std::path::PathBuf::from("stdlib")),
             lambda_inferred_types: HashMap::new(),
             current_return_type: RefCell::new(None),
+            generic_instantiations: HashMap::new(),
+            function_instantiations: HashMap::new(),
         }
     }
 
@@ -152,7 +156,7 @@ impl Lowering {
         let line = 0; // Top level
         let mut functions = Vec::new();
         let mut main_stmts = Vec::new();
-        let merged_statements = program.statements.clone();
+        let mut merged_statements = program.statements.clone();
 
         // Pass 0.5: Scan for Variadic Functions
         for stmt in &merged_statements {
@@ -237,6 +241,112 @@ impl Lowering {
             }
         }
 
+        // Pass 1.5: Monomorphize generic classes
+        let mut monomorphized_stmts = Vec::new();
+        for (base_name, instantiations) in &self.generic_instantiations {
+            for concrete_args in instantiations {
+                let mut original_class_decl = None;
+                for stmt in &merged_statements {
+                    match stmt {
+                        Statement::ClassDeclaration(c) if &c.name == base_name => {
+                            original_class_decl = Some(c.clone());
+                            break;
+                        }
+                        Statement::ExportDecl { declaration, .. } => {
+                            if let Statement::ClassDeclaration(c) = &**declaration {
+                                if &c.name == base_name {
+                                    original_class_decl = Some(c.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(mut c) = original_class_decl {
+                    if c.generic_params.len() == concrete_args.len() {
+                        let mut substitutions = HashMap::new();
+                        let mut mangled_suffix = String::new();
+                        for (i, param) in c.generic_params.iter().enumerate() {
+                            substitutions.insert(param.name.clone(), concrete_args[i].clone());
+                            mangled_suffix.push('_');
+                            let safe_arg = concrete_args[i]
+                                .replace("[]", "_arr")
+                                .replace("<", "_")
+                                .replace(">", "_")
+                                .replace(", ", "_");
+                            mangled_suffix.push_str(&safe_arg);
+                        }
+
+                        let mangled_name = format!("{}{}", base_name, mangled_suffix);
+                        c.name = mangled_name.clone();
+                        c.generic_params.clear();
+
+                        let transformer =
+                            crate::ast_transformer::TypeSubstitutor::new(&substitutions);
+                        transformer.transform_class(&mut c);
+
+                        self.register_class(&c);
+                        monomorphized_stmts.push(Statement::ClassDeclaration(c));
+                    }
+                }
+            }
+        }
+
+        for (func_name, instantiations) in &self.function_instantiations {
+            for concrete_args in instantiations {
+                let mut original_func_decl = None;
+                for stmt in &merged_statements {
+                    match stmt {
+                        Statement::FunctionDeclaration(f) if &f.name == func_name => {
+                            original_func_decl = Some(f.clone());
+                            break;
+                        }
+                        Statement::ExportDecl { declaration, .. } => {
+                            if let Statement::FunctionDeclaration(f) = &**declaration {
+                                if &f.name == func_name {
+                                    original_func_decl = Some(f.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(mut f) = original_func_decl {
+                    if f.generic_params.len() == concrete_args.len() {
+                        let mut substitutions = HashMap::new();
+                        let mut mangled_suffix = String::new();
+                        for (i, param) in f.generic_params.iter().enumerate() {
+                            substitutions.insert(param.name.clone(), concrete_args[i].clone());
+                            mangled_suffix.push('_');
+                            let safe_arg = concrete_args[i]
+                                .replace("[]", "_arr")
+                                .replace("<", "_")
+                                .replace(">", "_")
+                                .replace(", ", "_");
+                            mangled_suffix.push_str(&safe_arg);
+                        }
+
+                        let mangled_name = format!("{}{}", func_name, mangled_suffix);
+                        f.name = mangled_name.clone();
+                        f.generic_params.clear();
+
+                        let transformer =
+                            crate::ast_transformer::TypeSubstitutor::new(&substitutions);
+                        transformer.transform_function(&mut f);
+
+                        self.register_function(&f);
+                        monomorphized_stmts.push(Statement::FunctionDeclaration(f));
+                    }
+                }
+            }
+        }
+
+        merged_statements.extend(monomorphized_stmts);
+
         // Pass 2: Lower
         for stmt in &merged_statements {
             match stmt {
@@ -317,13 +427,19 @@ impl Lowering {
 
         if let Some(_) = main_func_idx {
             // Call the main function (f_main)
+            let main_ret_ty = self
+                .user_functions
+                .borrow()
+                .get("f_main")
+                .cloned()
+                .unwrap_or(TejxType::Void);
             entry_body_stmts.push(HIRStatement::ExpressionStmt {
                 line: 0,
                 expr: HIRExpression::Call {
                     line: 0,
                     callee: "f_main".to_string(),
                     args: vec![],
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: main_ret_ty,
                 },
             });
         }
@@ -346,7 +462,7 @@ impl Lowering {
                 ("a".to_string(), TejxType::Int32),
                 ("b".to_string(), TejxType::Int32),
             ],
-            _return_type: TejxType::Class("Object".to_string(), vec![]),
+            _return_type: TejxType::Int64,
             body: Box::new(HIRStatement::Block {
                 line: 0,
                 statements: vec![],
@@ -358,7 +474,7 @@ impl Lowering {
             name: "rt_main_async_worker".to_string(),
             params: vec![(
                 "ctx".to_string(),
-                TejxType::Class("Object[]".to_string(), vec![]),
+                TejxType::Class("Int64[]".to_string(), vec![]),
             )],
             _return_type: TejxType::Void,
             body: Box::new(HIRStatement::Block {
@@ -384,31 +500,18 @@ impl Lowering {
 
         let mut signatures = HashMap::new();
         // Add built-in runtime signatures for proper auto-boxing in MIR
-        signatures.insert(
-            "rt_len".to_string(),
-            vec![TejxType::Class("Object".to_string(), vec![])],
-        );
+        signatures.insert("rt_len".to_string(), vec![TejxType::Int64]);
         signatures.insert(
             "rt_promise_resolve".to_string(),
-            vec![
-                TejxType::Class("Object".to_string(), vec![]),
-                TejxType::Class("Object".to_string(), vec![]),
-            ],
+            vec![TejxType::Int64, TejxType::Int64],
         );
         signatures.insert(
             "rt_promise_reject".to_string(),
-            vec![
-                TejxType::Class("Object".to_string(), vec![]),
-                TejxType::Class("Object".to_string(), vec![]),
-            ],
+            vec![TejxType::Int64, TejxType::Int64],
         );
         signatures.insert(
             "Thread_new".to_string(),
-            vec![
-                TejxType::Class("Object".to_string(), vec![]),
-                TejxType::Class("Object".to_string(), vec![]),
-                TejxType::Class("Object".to_string(), vec![]),
-            ],
+            vec![TejxType::Int64, TejxType::Int64, TejxType::Int64],
         );
         signatures.insert(
             RT_MOVE_MEMBER.to_string(),
@@ -421,32 +524,17 @@ impl Lowering {
         signatures.insert(TEJX_INC_ASYNC_OPS.to_string(), vec![]);
         signatures.insert(TEJX_DEC_ASYNC_OPS.to_string(), vec![]);
         signatures.insert(TEJX_RUN_EVENT_LOOP.to_string(), vec![]);
-        signatures.insert(
-            "rt_sleep".to_string(),
-            vec![TejxType::Class("Object".to_string(), vec![])],
-        );
+        signatures.insert("rt_sleep".to_string(), vec![TejxType::Int64]);
         signatures.insert(
             "__optional_chain".to_string(),
-            vec![
-                TejxType::Class("Object".to_string(), vec![]),
-                TejxType::Class("Object".to_string(), vec![]),
-            ],
+            vec![TejxType::Int64, TejxType::Int64],
         );
         signatures.insert(
             "rt_object_merge".to_string(),
-            vec![
-                TejxType::Class("Object".to_string(), vec![]),
-                TejxType::Class("Object".to_string(), vec![]),
-            ],
+            vec![TejxType::Int64, TejxType::Int64],
         );
-        signatures.insert(
-            "rt_len".to_string(),
-            vec![TejxType::Class("Object".to_string(), vec![])],
-        );
-        signatures.insert(
-            "rt_typeof".to_string(),
-            vec![TejxType::Class("Object".to_string(), vec![])],
-        );
+        signatures.insert("rt_len".to_string(), vec![TejxType::Int64]);
+        signatures.insert("rt_typeof".to_string(), vec![TejxType::Int64]);
 
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
@@ -516,7 +604,7 @@ impl Lowering {
         if !func.generic_params.is_empty() {
             self.function_generic_params
                 .borrow_mut()
-                .insert(name.clone(), func.generic_params.clone());
+                .insert(name.clone(), func.generic_params.iter().map(|gp| gp.name.clone()).collect());
         }
 
         self.user_functions.borrow_mut().insert(
@@ -660,7 +748,7 @@ impl Lowering {
         if !class_decl.generic_params.is_empty() {
             self.class_generic_params
                 .borrow_mut()
-                .insert(class_decl.name.clone(), class_decl.generic_params.clone());
+                .insert(class_decl.name.clone(), class_decl.generic_params.iter().map(|gp| gp.name.clone()).collect());
         }
 
         let mut i_fields = Vec::new();
@@ -809,7 +897,7 @@ impl Lowering {
             line: line,
             name: format!("f_{}", func.name),
             params: mangled_params,
-            _return_type: TejxType::Class("Object".to_string(), vec![]),
+            _return_type: TejxType::Int64,
             body: Box::new(wrapper_body),
             is_extern: false,
         });
@@ -840,20 +928,17 @@ impl Lowering {
         // any f_worker(any[] ctx) { ... }
         self.enter_scope();
         let ctx_name = "ctx".to_string();
-        let ctx_ty = TejxType::Class("any[]".to_string(), vec![]);
+        let ctx_ty = TejxType::Class("Int64[]".to_string(), vec![]);
         self.define(ctx_name.clone(), ctx_ty.clone());
 
         // unpack_promise_expr used to be here, now mir_lowering handles it
-        let promise_id_var = self.define(
-            "promise_id_local".to_string(),
-            TejxType::Class("Object".to_string(), vec![]),
-        );
+        let promise_id_var = self.define("promise_id_local".to_string(), TejxType::Int64);
 
         let mut worker_stmts = Vec::new();
         worker_stmts.push(HIRStatement::VarDecl {
             name: promise_id_var.clone(),
             initializer: None,
-            ty: TejxType::Class("Object".to_string(), vec![]),
+            ty: TejxType::Int64,
             _is_const: false,
             line: line,
         });
@@ -879,12 +964,12 @@ impl Lowering {
                             HIRExpression::Variable {
                                 line: line,
                                 name: promise_id_var.clone(),
-                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             },
                             HIRExpression::Literal {
                                 line: line,
                                 value: "0".to_string(),
-                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             },
                         ],
                         ty: TejxType::Void,
@@ -914,12 +999,12 @@ impl Lowering {
                             HIRExpression::Variable {
                                 line: line,
                                 name: promise_id_var.clone(),
-                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             },
                             HIRExpression::Variable {
                                 line: line,
                                 name: "err".to_string(),
-                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                ty: TejxType::Class("Error".to_string(), vec![]),
                             },
                         ],
                         ty: TejxType::Void,
@@ -957,7 +1042,7 @@ impl Lowering {
             name: worker_name.clone(),
             params: vec![(
                 "ctx".to_string(),
-                TejxType::Class("any[]".to_string(), vec![]),
+                TejxType::Class("Int64[]".to_string(), vec![]),
             )],
             _return_type: TejxType::Void,
             body: Box::new(final_body),
@@ -978,9 +1063,9 @@ impl Lowering {
                 line: line,
                 callee: RT_PROMISE_NEW.to_string(),
                 args: vec![],
-                ty: TejxType::Class("Object".to_string(), vec![]),
+                ty: TejxType::Int64,
             }),
-            ty: TejxType::Class("Object".to_string(), vec![]),
+            ty: TejxType::Int64,
             _is_const: false,
         });
 
@@ -992,9 +1077,9 @@ impl Lowering {
                 args: vec![HIRExpression::Variable {
                     line: line,
                     name: p_var.clone(),
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: TejxType::Int64,
                 }],
-                ty: TejxType::Class("Object".to_string(), vec![]),
+                ty: TejxType::Int64,
             },
             HIRExpression::Literal {
                 line: line,
@@ -1022,7 +1107,7 @@ impl Lowering {
         }
 
         let ctx_var = format!("__ctx_{}", line);
-        let ctx_ty = TejxType::Class("any[]".to_string(), vec![]);
+        let ctx_ty = TejxType::Class("Int64[]".to_string(), vec![]);
         wrapper_stmts.push(HIRStatement::VarDecl {
             line: line,
             name: ctx_var.clone(),
@@ -1075,7 +1160,7 @@ impl Lowering {
             value: Some(HIRExpression::Variable {
                 line: line,
                 name: p_var,
-                ty: TejxType::Class("Object".to_string(), vec![]),
+                ty: TejxType::Int64,
             }),
         });
 
@@ -1202,7 +1287,7 @@ impl Lowering {
                                             ty: f_ty.clone(),
                                         }),
                                         value: Box::new(hir_init),
-                                        ty: TejxType::Class("Object".to_string(), vec![]),
+                                        ty: f_ty.clone(),
                                     },
                                 },
                             );
@@ -1238,7 +1323,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: mangled_func,
-                                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                                ty: TejxType::Int64,
                                             },
                                         ],
                                         ty: TejxType::Void,
@@ -1277,7 +1362,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: mangled_func,
-                                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                                ty: TejxType::Int64,
                                             },
                                         ],
                                         ty: TejxType::Void,
@@ -1316,7 +1401,7 @@ impl Lowering {
                                             HIRExpression::Variable {
                                                 line: line,
                                                 name: mangled_func,
-                                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                                ty: TejxType::Int64,
                                             },
                                         ],
                                         ty: TejxType::Void,
@@ -1460,7 +1545,7 @@ impl Lowering {
                     line: line,
                     name: mangled_name,
                     params: mangled_params,
-                    _return_type: TejxType::Class("Object".to_string(), vec![]),
+                    _return_type: TejxType::Int64,
                     body: Box::new(wrapper_body),
                     is_extern: false,
                 });
@@ -1585,7 +1670,7 @@ impl Lowering {
                             ty: f_ty.clone(),
                         }),
                         value: Box::new(hir_init),
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     },
                 });
             }
@@ -1671,7 +1756,10 @@ impl Lowering {
                         if let Some((scope, _)) = self.scopes.borrow_mut().last_mut() {
                             scope.insert(
                                 func.name.clone(),
-                                (name.clone(), TejxType::Class("Object".to_string(), vec![])),
+                                (
+                                    name.clone(),
+                                    TejxType::from_name(&func.return_type.raw_name),
+                                ),
                             );
                         }
                         self.user_functions.borrow_mut().insert(
@@ -1707,7 +1795,7 @@ impl Lowering {
                 let ty = if type_annotation.is_empty() {
                     init.as_ref()
                         .map(|e| e.get_type())
-                        .unwrap_or(TejxType::Class("Object".to_string(), vec![]))
+                        .unwrap_or(TejxType::Int64)
                 } else {
                     TejxType::from_name(&type_annotation.raw_name)
                 };
@@ -1862,11 +1950,10 @@ impl Lowering {
                     stmts.push(HIRStatement::VarDecl {
                         line: line,
                         name: idx_name.clone(),
-                        initializer: Some(HIRExpression::ArrayLiteral {
-                            elements: vec![],
-                            sized_allocation: None,
-                            ty: TejxType::Class("Object".to_string(), vec![]),
+                        initializer: Some(HIRExpression::Literal {
                             line: 0,
+                            value: "0".to_string(),
+                            ty: TejxType::Int32,
                         }),
                         ty: TejxType::Int32,
                         _is_const: false,
@@ -2033,7 +2120,7 @@ impl Lowering {
                     let resolved_expr =
                         if let Some(target_ty) = self.current_return_type.borrow().as_ref() {
                             if val.is_some()
-                                && *target_ty != TejxType::Class("Object".to_string(), vec![])
+                                && *target_ty != TejxType::Int64
                                 && *target_ty != TejxType::Void
                             {
                                 let mut counter = self.lambda_counter.borrow_mut();
@@ -2070,12 +2157,12 @@ impl Lowering {
                                 HIRExpression::Variable {
                                     line: line,
                                     name: p_id.clone(),
-                                    ty: TejxType::Class("Object".to_string(), vec![]),
+                                    ty: TejxType::Int64,
                                 },
                                 resolved_expr.unwrap_or(HIRExpression::Literal {
                                     line: line,
                                     value: "0".to_string(),
-                                    ty: TejxType::Class("Object".to_string(), vec![]),
+                                    ty: TejxType::Int64,
                                 }),
                             ],
                             ty: TejxType::Void,
@@ -2154,7 +2241,7 @@ impl Lowering {
                     if !_catch_var.is_empty() {
                         catch_var_mangled = Some(self.define(
                             _catch_var.clone(),
-                            TejxType::Class("Object".to_string(), vec![]),
+                            TejxType::Class("Error".to_string(), vec![]),
                         ));
                     }
                     let res = self
@@ -2282,7 +2369,7 @@ impl Lowering {
 
                 let base_obj = HIRExpression::ObjectLiteral {
                     entries: hir_entries,
-                    ty: TejxType::Class("Object".to_string(), vec![]), // Map
+                    ty: TejxType::Int64, // Map
                     line,
                 };
 
@@ -2296,7 +2383,7 @@ impl Lowering {
                         expr = HIRExpression::Call {
                             callee: "rt_object_merge".to_string(),
                             args: vec![expr, spread_val],
-                            ty: TejxType::Class("Object".to_string(), vec![]),
+                            ty: TejxType::Int64,
                             line,
                         };
                     }
@@ -2335,12 +2422,9 @@ impl Lowering {
                 ty: TejxType::Bool,
             },
             Expression::ThisExpr { .. } => {
-                let (name, ty) = self.lookup("this").unwrap_or_else(|| {
-                    (
-                        "this".to_string(),
-                        TejxType::Class("Object".to_string(), vec![]),
-                    )
-                });
+                let (name, ty) = self
+                    .lookup("this")
+                    .unwrap_or_else(|| ("this".to_string(), TejxType::Int64));
                 HIRExpression::Variable {
                     line: line,
                     name,
@@ -2348,12 +2432,9 @@ impl Lowering {
                 }
             }
             Expression::SuperExpr { .. } => {
-                let (name, ty) = self.lookup("super").unwrap_or_else(|| {
-                    (
-                        "super".to_string(),
-                        TejxType::Class("Object".to_string(), vec![]),
-                    )
-                });
+                let (name, ty) = self
+                    .lookup("super")
+                    .unwrap_or_else(|| ("super".to_string(), TejxType::Int64));
                 HIRExpression::Variable {
                     line: line,
                     name,
@@ -2361,9 +2442,9 @@ impl Lowering {
                 }
             }
             Expression::Identifier { name, .. } => {
-                let (resolved_name, mut ty) = self.lookup(name).unwrap_or_else(|| {
-                    (name.clone(), TejxType::Class("Object".to_string(), vec![]))
-                });
+                let (resolved_name, mut ty) = self
+                    .lookup(name)
+                    .unwrap_or_else(|| (name.clone(), TejxType::Int64));
                 let f_name = format!("f_{}", name);
                 let final_name = if (self.user_functions.borrow().contains_key(name)
                     || self.user_functions.borrow().contains_key(&f_name))
@@ -2399,7 +2480,7 @@ impl Lowering {
                     op: TokenType::PipePipe,
                     left: Box::new(left_hir),
                     right: Box::new(right_hir),
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: TejxType::Int64,
                 }
             }
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
@@ -2423,14 +2504,14 @@ impl Lowering {
                         line: line,
                         target: Box::new(target_hir),
                         index: Box::new(index_hir),
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     }),
                     else_branch: Box::new(HIRExpression::Literal {
                         line: line,
                         value: "0".to_string(),
                         ty: TejxType::Int32,
                     }),
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: TejxType::Int64,
                 }
             }
             Expression::NoneLiteral { .. } => HIRExpression::NoneLiteral { line },
@@ -2691,7 +2772,7 @@ impl Lowering {
                     .replace("::", "_")
                     .replace(":", "_");
                 let mut final_callee = normalized.clone();
-                let mut hir_args = hir_args;
+                let hir_args = hir_args;
                 if callee_str == "typeof" {
                     if let Some(arg) = hir_args.get(0) {
                         let arg_ty = arg.get_type();
@@ -2707,7 +2788,8 @@ impl Lowering {
                                 TejxType::Bool => "boolean",
                                 TejxType::String => "string",
                                 TejxType::Char => "char",
-                                _ => "unknown",
+                                TejxType::Class(_, _) => "object",
+                                _ => "void",
                             };
                             return HIRExpression::Literal {
                                 line,
@@ -2724,7 +2806,7 @@ impl Lowering {
                     }
                 }
                 let mut final_args = hir_args.clone();
-                let mut ty = TejxType::Class("Object".to_string(), vec![]);
+                let mut ty = TejxType::Int64;
 
                 // Indirect call check: if name is a variable holding a function
                 if !callee_str.is_empty() && !callee_str.contains('.') {
@@ -2738,7 +2820,7 @@ impl Lowering {
                             let ret_ty = if let TejxType::Function(_, ret) = &var_ty {
                                 (**ret).clone()
                             } else {
-                                TejxType::Class("Object".to_string(), vec![])
+                                TejxType::Int64
                             };
                             return HIRExpression::IndirectCall {
                                 line,
@@ -2761,16 +2843,13 @@ impl Lowering {
                 if callee_str == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {
                         final_callee = format!("f_{}_constructor", parent);
-                        let (mangled_this, _) = self.lookup("this").unwrap_or_else(|| {
-                            (
-                                "this".to_string(),
-                                TejxType::Class("Object".to_string(), vec![]),
-                            )
-                        });
+                        let (mangled_this, _) = self
+                            .lookup("this")
+                            .unwrap_or_else(|| ("this".to_string(), TejxType::Int64));
                         final_args = vec![HIRExpression::Variable {
                             line,
                             name: mangled_this,
-                            ty: TejxType::Class("Object".to_string(), vec![]),
+                            ty: TejxType::Int64,
                         }];
                         final_args.extend(hir_args);
                         ty = TejxType::Void;
@@ -2780,16 +2859,13 @@ impl Lowering {
                     if let Expression::SuperExpr { .. } = object.as_ref() {
                         if let Some(parent) = &*self.parent_class.borrow() {
                             final_callee = format!("f_{}_{}", parent, member);
-                            let (mangled_this, _) = self.lookup("this").unwrap_or_else(|| {
-                                (
-                                    "this".to_string(),
-                                    TejxType::Class("Object".to_string(), vec![]),
-                                )
-                            });
+                            let (mangled_this, _) = self
+                                .lookup("this")
+                                .unwrap_or_else(|| ("this".to_string(), TejxType::Int64));
                             final_args = vec![HIRExpression::Variable {
                                 line,
                                 name: mangled_this,
-                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             }];
                             final_args.extend(final_args.clone()); // Still wrong.
 
@@ -3036,7 +3112,7 @@ impl Lowering {
                         new_var_args.push(HIRExpression::ArrayLiteral {
                             line: line,
                             elements: rest.to_vec(),
-                            ty: TejxType::Class("Object".to_string(), vec![]),
+                            ty: TejxType::Int64,
                             sized_allocation: None,
                         });
                         final_args = new_var_args;
@@ -3096,7 +3172,7 @@ impl Lowering {
                                 line: line,
                                 callee: format!("f_{}_get_{}", class_name, member),
                                 args: vec![self.lower_expression(object)],
-                                ty: TejxType::Class("Object".to_string(), vec![]),
+                                ty: TejxType::Int64,
                             };
                         }
                     }
@@ -3136,14 +3212,14 @@ impl Lowering {
                     HIRExpression::Variable {
                         line: line,
                         name: f_combined,
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     }
                 } else {
                     HIRExpression::MemberAccess {
                         line: line,
                         target: Box::new(lowered_object),
                         member: member.clone(),
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     }
                 }
             }
@@ -3180,7 +3256,7 @@ impl Lowering {
             Expression::ArrayLiteral { elements, ty, .. } => {
                 let inferred_ty = match &*ty.borrow() {
                     Some(t) => TejxType::from_name(t),
-                    None => TejxType::Class("any[]".to_string(), vec![]),
+                    None => TejxType::Class("Int64[]".to_string(), vec![]),
                 };
                 // Handle spreads: [a, ...b, c] -> concat(concat([a], b), [c])
                 let mut chunks: Vec<HIRExpression> = Vec::new();
@@ -3230,7 +3306,7 @@ impl Lowering {
                             line: line,
                             callee: "rt_array_concat".to_string(),
                             args: vec![expr, next_chunk],
-                            ty: TejxType::Class("any[]".to_string(), vec![]),
+                            ty: TejxType::Class("Int64[]".to_string(), vec![]),
                         };
                     }
                     expr
@@ -3278,12 +3354,12 @@ impl Lowering {
                                 if i < inf.len() {
                                     TejxType::from_name(&inf[i])
                                 } else if p.type_name.is_empty() {
-                                    TejxType::Class("Object".to_string(), vec![])
+                                    TejxType::Int64
                                 } else {
                                     TejxType::from_name(&p.type_name.raw_name)
                                 }
                             } else if p.type_name.is_empty() {
-                                TejxType::Class("Object".to_string(), vec![])
+                                TejxType::Int64
                             } else {
                                 TejxType::from_name(&p.type_name.raw_name)
                             },
@@ -3302,9 +3378,9 @@ impl Lowering {
                     mangled_params.push((
                         self.define(
                             format!("__dummy_pad_{}", mangled_params.len()),
-                            TejxType::Class("Object".to_string(), vec![]),
+                            TejxType::Int64,
                         ),
-                        TejxType::Class("Object".to_string(), vec![]),
+                        TejxType::Int64,
                     ));
                 }
 
@@ -3312,11 +3388,8 @@ impl Lowering {
                 mangled_params.insert(
                     0,
                     (
-                        self.define(
-                            "__env".to_string(),
-                            TejxType::Class("Object".to_string(), vec![]),
-                        ),
-                        TejxType::Class("Object".to_string(), vec![]),
+                        self.define("__env".to_string(), TejxType::Int64),
+                        TejxType::Int64,
                     ),
                 );
 
@@ -3334,7 +3407,7 @@ impl Lowering {
                         line: line,
                         name: lambda_name.clone(),
                         params: mangled_params,
-                        _return_type: TejxType::Class("Object".to_string(), vec![]),
+                        _return_type: TejxType::Int64,
                         body: Box::new(hir_body),
                         is_extern: false,
                     });
@@ -3342,20 +3415,20 @@ impl Lowering {
                 HIRExpression::Literal {
                     line: line,
                     value: lambda_name,
-                    ty: TejxType::Class("Object".to_string(), vec![]), // Actually function type
+                    ty: TejxType::Int64, // Actually function type
                 }
             }
             Expression::AwaitExpr { expr, .. } => HIRExpression::Await {
                 line: line,
                 expr: Box::new(self.lower_expression(expr)),
-                ty: TejxType::Class("Object".to_string(), vec![]),
+                ty: TejxType::Int64,
             },
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
                 HIRExpression::OptionalChain {
                     line: line,
                     target: Box::new(self.lower_expression(object)),
                     operation: format!(".{}", member),
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: TejxType::Int64,
                 }
             }
             Expression::NewExpr {
@@ -3379,7 +3452,7 @@ impl Lowering {
                             line: line,
                             elements: rest.to_vec(),
                             sized_allocation: None,
-                            ty: TejxType::Class("Object".to_string(), vec![]),
+                            ty: TejxType::Int64,
                         });
                         hir_args = new_var_args;
                     }
@@ -3403,7 +3476,7 @@ impl Lowering {
                     line: line,
                     target: Box::new(callee_expr),
                     operation: "()".to_string(), // In HIR/MIR, OptionalChain "()" means call
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: TejxType::Int64,
                 }
             }
             Expression::TernaryExpr {
@@ -3420,14 +3493,14 @@ impl Lowering {
                     condition: Box::new(cond),
                     then_branch: Box::new(t_branch),
                     else_branch: Box::new(f_branch),
-                    ty: TejxType::Class("Object".to_string(), vec![]),
+                    ty: TejxType::Int64,
                 }
             }
 
             _ => HIRExpression::Literal {
                 line: line,
                 value: "0".to_string(),
-                ty: TejxType::Class("Object".to_string(), vec![]),
+                ty: TejxType::Int64,
             },
         }
     }
@@ -3483,7 +3556,7 @@ impl Lowering {
                             value: i.to_string(),
                             ty: TejxType::Int32,
                         }),
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     };
                     self.lower_binding_pattern(el, Some(el_init), &TejxType::Void, is_const, stmts);
                 }
@@ -3506,7 +3579,7 @@ impl Lowering {
                                 ty: TejxType::Int32,
                             },
                         ],
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     };
                     self.lower_binding_pattern(
                         r,
@@ -3538,7 +3611,7 @@ impl Lowering {
                             ty: ty.clone(),
                         }),
                         member: key.clone(),
-                        ty: TejxType::Class("Object".to_string(), vec![]),
+                        ty: TejxType::Int64,
                     };
                     self.lower_binding_pattern(
                         target,
@@ -3601,7 +3674,7 @@ impl Lowering {
             return TejxType::Int32; // Default promotion
         }
 
-        TejxType::Class("Object".to_string(), vec![])
+        TejxType::Int64
     }
 
     pub fn resolve_imports(

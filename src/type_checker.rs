@@ -27,6 +27,7 @@ pub struct Symbol {
     pub min_params: Option<usize>, // Minimum required params (excluding defaulted ones)
     pub is_variadic: bool,
     pub aliased_type: Option<String>,
+    pub generic_params: Vec<crate::ast::GenericParam>,
 }
 
 pub struct TypeChecker {
@@ -47,6 +48,8 @@ pub struct TypeChecker {
     lambda_context_params: Option<Vec<String>>,
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<String>>,
     current_expected_type: Option<String>,
+    pub generic_instantiations: HashMap<String, std::collections::HashSet<Vec<String>>>,
+    pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<String>>>,
 }
 
 impl TypeChecker {
@@ -62,7 +65,7 @@ impl TypeChecker {
             current_function_is_async: false,
             loop_depth: 0,
             diagnostics: Vec::new(),
-            current_file: "unknown".to_string(),
+            current_file: "<inferred>".to_string(),
             class_hierarchy,
             interfaces: HashMap::new(),
             class_members,
@@ -72,6 +75,8 @@ impl TypeChecker {
             lambda_context_params: None,
             lambda_inferred_types: HashMap::new(),
             current_expected_type: None,
+            generic_instantiations: HashMap::new(),
+            function_instantiations: HashMap::new(),
         };
         checker
     }
@@ -133,11 +138,20 @@ impl TypeChecker {
     fn collect_declarations(&mut self, stmt: &Statement) {
         match stmt {
             Statement::ClassDeclaration(class_decl) => {
-                self.define_with_params(
-                    class_decl.name.clone(),
-                    "class".to_string(),
-                    class_decl.generic_params.clone(),
-                );
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.insert(
+                        class_decl.name.clone(),
+                        Symbol {
+                            type_name: "class".to_string(),
+                            is_const: false,
+                            params: Vec::new(),
+                            min_params: None,
+                            is_variadic: false,
+                            aliased_type: None,
+                            generic_params: class_decl.generic_params.clone(),
+                        },
+                    );
+                }
                 if class_decl._is_abstract {
                     self.abstract_classes.insert(class_decl.name.clone());
                 }
@@ -275,6 +289,7 @@ impl TypeChecker {
                             },
                             is_variadic,
                             aliased_type: None,
+                            generic_params: func.generic_params.clone(),
                         },
                     );
                 }
@@ -294,6 +309,7 @@ impl TypeChecker {
                             min_params: None,
                             is_variadic: false,
                             aliased_type: Some(_type_def.to_string()),
+                            generic_params: Vec::new(),
                         },
                     );
                 }
@@ -426,7 +442,7 @@ impl TypeChecker {
                         if let Some(colon) = p.find(':') {
                             final_params.push(p[colon + 1..].trim().to_string());
                         } else if !p.is_empty() {
-                            final_params.push("any".to_string());
+                            final_params.push("<inferred>".to_string());
                         }
                     }
                     if let Some(arrow) = type_name.rfind("=>") {
@@ -451,6 +467,7 @@ impl TypeChecker {
                     min_params: None,
                     is_variadic,
                     aliased_type: None,
+                    generic_params: Vec::new(),
                 },
             );
         }
@@ -477,6 +494,7 @@ impl TypeChecker {
                     min_params: None,
                     is_variadic,
                     aliased_type: None,
+                    generic_params: Vec::new(),
                 },
             );
         }
@@ -514,6 +532,7 @@ impl TypeChecker {
                     min_params: None,
                     is_variadic,
                     aliased_type: None,
+                    generic_params: Vec::new(),
                 },
             );
         }
@@ -554,8 +573,6 @@ impl TypeChecker {
     fn is_valid_type(&self, type_name: &str) -> bool {
         if type_name == ""
             || type_name == "void"
-            || type_name == "object"
-            || type_name == "any"
             || type_name == "boolean"
             || type_name == "bool"
             || type_name == "string"
@@ -563,6 +580,11 @@ impl TypeChecker {
             || type_name == "float"
             || type_name == "char"
             || type_name == "None"
+            || type_name == "bigInt"
+            || type_name == "bigfloat"
+            || type_name == "function"
+            || type_name == "Iterator"
+            || type_name == "Iterable"
         {
             return true;
         }
@@ -651,7 +673,7 @@ impl TypeChecker {
         // Primitives
         let primitives = [
             "int", "int16", "int32", "int64", "int128", "float", "float16", "float32", "float64",
-            "bool", "string", "char", "bigInt", "bigfloat", "object",
+            "bool", "string", "char", "bigInt", "bigfloat",
         ];
         if primitives.contains(&type_name) {
             return true;
@@ -694,10 +716,10 @@ impl TypeChecker {
         if is_any_int(t1) && is_any_int(t2) {
             return "int32".to_string(); // Default to int32 for mixed int arrays
         }
-        if t1 == "unknown" {
+        if t1 == "<inferred>" {
             return t2.to_string();
         }
-        if t2 == "unknown" {
+        if t2 == "<inferred>" {
             return t1.to_string();
         }
         let mut t1_ancestors = std::collections::HashSet::new();
@@ -718,16 +740,79 @@ impl TypeChecker {
             }
             curr = parent.clone();
         }
-        "Object".to_string()
+        "<inferred>".to_string()
+    }
+
+    pub fn register_instantiation(&mut self, type_name: &str, line: usize, col: usize) {
+        if let Some(open) = type_name.find('<') {
+            if type_name.ends_with('>') {
+                let base = &type_name[..open];
+                let inner = &type_name[open + 1..type_name.len() - 1];
+
+                let mut args = Vec::new();
+                let mut depth_level = 0;
+                let mut start = 0;
+                for (i, c) in inner.char_indices() {
+                    match c {
+                        '<' => depth_level += 1,
+                        '>' => depth_level -= 1,
+                        ',' if depth_level == 0 => {
+                            let arg_ty = inner[start..i].trim();
+                            args.push(arg_ty.to_string());
+                            start = i + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                args.push(inner[start..].trim().to_string());
+
+                self.generic_instantiations
+                    .entry(base.to_string())
+                    .or_default()
+                    .insert(args.clone());
+
+                if let Some(s) = self.lookup(base) {
+                    if s.generic_params.len() == args.len() {
+                        for (i, gp) in s.generic_params.iter().enumerate() {
+                            if let Some(bound) = &gp.bound {
+                                let bound_str = bound.to_string();
+                                let concrete = &args[i];
+                                if !self.is_assignable(&bound_str, concrete) {
+                                    self.report_error_detailed(
+                                        format!("Type '{}' does not satisfy constraint '{}' for generic parameter '{}'", concrete, bound_str, gp.name),
+                                        line,
+                                        col,
+                                        "E0120",
+                                        Some(&format!("Provide a type that satisfies the constraint '{}'", bound_str))
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for arg in args {
+                    self.register_instantiation(&arg, line, col);
+                }
+            }
+        } else if type_name.ends_with("[]") {
+            let base = &type_name[..type_name.len() - 2];
+            self.register_instantiation(base, line, col);
+        }
     }
 
     fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
         // Fast path: exact match (handles T==T, Array<T>==Array<T>, etc.)
-        if expected == actual || expected == "Object" {
+        if expected == actual {
             return true;
         }
-        let is_object = |t: &str| t == "object" || t.ends_with(":Object") || t.ends_with(":any");
-        if expected.is_empty() || actual.is_empty() || is_object(expected) {
+        if expected == "<inferred>" || actual == "<inferred>" {
+            return true;
+        }
+        if expected == "any" || actual == "any" || expected == "Any" || actual == "Any" {
+            return true;
+        }
+        if expected.is_empty() || actual.is_empty() {
             return true;
         }
 
@@ -767,7 +852,7 @@ impl TypeChecker {
             return true;
         }
 
-        // Generic type param wildcard: single uppercase letter (or short like K,V) defined as 'any'
+        // Generic type param wildcard: single uppercase letter (or short like K,V) defined as 'unknown'
         let is_generic_wildcard = |t: &str| -> bool {
             t.len() <= 2
                 && t.chars().next().map_or(false, |c| c.is_uppercase())
@@ -803,26 +888,8 @@ impl TypeChecker {
             }
         }
 
-        let expected_base = expected;
-        let actual_base = actual;
-
-        let (e_norm, _, _) = self.parse_signature(expected_base.to_string());
-        let (a_norm, _, _) = self.parse_signature(actual_base.to_string());
-
-        let mut e_str = e_norm;
-        let mut a_str = a_norm;
-
-        // Normalize generics for compatibility check
-        // Normalize generics for compatibility check - REMOVED to support generics
-        // if e_str.contains('<') {
-        //     e_str = e_str.split('<').next().unwrap_or(&e_str).to_string();
-        // }
-        // if a_str.contains('<') {
-        //     a_str = a_str.split('<').next().unwrap_or(&a_str).to_string();
-        // }
-
-        let mut expected = e_str.as_str();
-        let mut actual = a_str.as_str();
+        let mut expected = expected;
+        let mut actual = actual;
 
         // Resolve aliases
         let mut resolved_expected = String::new();
@@ -859,6 +926,8 @@ impl TypeChecker {
         }
 
         // Re-check recursive aliases (simple loop)
+        let mut e_str = String::new();
+        let mut a_str = String::new();
         let mut loops = 0;
         while loops < 10 {
             let mut changed = false;
@@ -886,20 +955,15 @@ impl TypeChecker {
             return true;
         }
 
-        if expected == "{unknown}"
-            || actual == "{unknown}"
-            || expected == ""
-            || actual == ""
-            || actual == "object"
-        {
+        if expected == "{unknown}" || actual == "{unknown}" || expected == "" || actual == "" {
             return true;
         }
         if expected == actual {
             return true;
         }
 
-        // `any` is compatible with all types
-        if expected == "any" || actual == "any" {
+        // `unknown` is compatible with all types
+        if expected == "<inferred>" || actual == "<inferred>" {
             return true;
         }
 
@@ -916,8 +980,8 @@ impl TypeChecker {
             return true;
         }
 
-        if expected == "object" && (actual.starts_with('{') || actual.starts_with("Map<")) {
-            return true;
+        if expected.starts_with('{') && actual.starts_with('{') {
+            // Fall through to structural object type check
         }
 
         // char is compatible with string
@@ -991,7 +1055,7 @@ impl TypeChecker {
             return true;
         }
 
-        if expected == "object" && actual.starts_with('{') {
+        if expected == "Map" && actual.starts_with('{') {
             return true;
         }
 
@@ -1022,16 +1086,103 @@ impl TypeChecker {
         }
 
         // Function type compatibility
+        let e_norm = if expected.contains("=>") {
+            let (ret, params, _) = self.parse_signature(expected.to_string());
+            if params.is_empty() {
+                ret
+            } else {
+                format!("{}:{}", ret, params.join(","))
+            }
+        } else {
+            expected.to_string()
+        };
+
+        let a_norm = if actual.contains("=>") {
+            let (ret, params, _) = self.parse_signature(actual.to_string());
+            if params.is_empty() {
+                ret
+            } else {
+                format!("{}:{}", ret, params.join(","))
+            }
+        } else {
+            actual.to_string()
+        };
+
         if expected == "function" && (actual == "function" || actual.starts_with("function:")) {
             return true;
         }
 
-        if expected.starts_with("function:") && actual.starts_with("function:") {
-            // For now, allow loosely (missing param types in lambda like 'function:any')
-            if actual.contains(":Object") || actual.ends_with(":") {
+        if e_norm.starts_with("function:") && a_norm.starts_with("function:") {
+            // Special loose fallback for completely typed-erased closures
+            if a_norm.contains(":Object")
+                || a_norm.contains(":any")
+                || a_norm.ends_with(":")
+                || e_norm.ends_with(":")
+            {
                 return true;
             }
-            // More strict check could be added here
+
+            // Structural matching: function:RET:P1,P2
+            let e_parts: Vec<&str> = e_norm.splitn(3, ':').collect();
+            let a_parts: Vec<&str> = a_norm.splitn(3, ':').collect();
+
+            if e_parts.len() == 3 && a_parts.len() == 3 {
+                let e_ret = e_parts[1];
+                let a_ret = a_parts[1];
+
+                // Allow generic 'U' to be mapped to 'void' if actual returns void
+                let ret_ok = if is_generic_wildcard(e_ret) && a_ret == "void" {
+                    true
+                } else if is_generic_wildcard(a_ret) && e_ret == "void" {
+                    true
+                } else {
+                    self.are_types_compatible(e_ret, a_ret)
+                };
+
+                if ret_ok {
+                    let e_params: Vec<&str> = e_parts[2].split(',').collect();
+                    let a_params: Vec<&str> = a_parts[2].split(',').collect();
+
+                    if e_params.len() == a_params.len() {
+                        let mut all_params_ok = true;
+                        for (ep, ap) in e_params.iter().zip(a_params.iter()) {
+                            let ep = ep.trim();
+                            let ap = ap.trim();
+                            if !self.are_types_compatible(ep, ap) && ep != "any" && ap != "any" {
+                                println!("FUNC PARAM MISMATCH: expected '{}' actual '{}'", ep, ap);
+                                all_params_ok = false;
+                                break;
+                            }
+                        }
+                        if all_params_ok {
+                            return true;
+                        } else {
+                            println!(
+                                "FUNC ALL_PARAMS NOT OK! e_norm={} a_norm={}",
+                                e_norm, a_norm
+                            );
+                        }
+                    } else {
+                        println!(
+                            "FUNC PARAM COUNT MISMATCH: e_norm={} a_norm={}",
+                            e_norm, a_norm
+                        );
+                    }
+                } else {
+                    println!(
+                        "FUNC RET MISMATCH: e_ret='{}' a_ret='{}' e_norm={} a_norm={}",
+                        e_ret, a_ret, e_norm, a_norm
+                    );
+                }
+            } else {
+                println!(
+                    "FUNC PARTS MISMATCH: e_len={} a_len={} e_norm={} a_norm={}",
+                    e_parts.len(),
+                    a_parts.len(),
+                    e_norm,
+                    a_norm
+                );
+            }
         }
 
         // Alias check: int == int32 and float == float32
@@ -1408,12 +1559,12 @@ impl TypeChecker {
                             "E0106",
                             Some("Please provide an explicit type annotation (e.g., 'let arr: int[] = []')"),
                         );
-                        init_type = "unknown".to_string(); // prevent cascading errors
+                        init_type = "<inferred>".to_string(); // prevent cascading errors
                     }
 
                     if !type_annotation.is_empty() {
                         self.check_numeric_bounds(expr, &type_annotation.to_string(), *line, *_col);
-                    } else if init_type != "any" && init_type != "unknown" {
+                    } else if init_type != "<inferred>" {
                         self.check_numeric_bounds(expr, &init_type, *line, *_col);
                     }
 
@@ -1683,6 +1834,7 @@ impl TypeChecker {
                             params,
                             is_variadic,
                             aliased_type: None,
+                            generic_params: func.generic_params.clone(),
                         },
                     );
                 }
@@ -1692,7 +1844,7 @@ impl TypeChecker {
                 self.enter_scope();
                 // Register function-level generic params as valid types
                 for gp in &func.generic_params {
-                    self.define(gp.clone(), "any".to_string());
+                    self.define(gp.name.clone(), gp.name.clone());
                 }
                 for param in &func.params {
                     self.define_with_params(
@@ -1709,7 +1861,7 @@ impl TypeChecker {
             }
             Statement::ClassDeclaration(class_decl) => {
                 self.current_class = Some(class_decl.name.clone());
-                self.define(class_decl.name.clone(), "class".to_string());
+                // Removed self.define(...) because collect_declarations already inserted the symbol WITH correctly parsed generic parameters.
 
                 // Verify parent exists
                 if !class_decl._parent_name.is_empty() {
@@ -1748,7 +1900,7 @@ impl TypeChecker {
                 self.define("this".to_string(), class_decl.name.clone());
                 // Register class-level generic params as valid types
                 for gp in &class_decl.generic_params {
-                    self.define(gp.clone(), "any".to_string());
+                    self.define(gp.name.clone(), gp.name.clone());
                 }
                 if !class_decl._parent_name.is_empty() {
                     self.define("super".to_string(), class_decl._parent_name.clone());
@@ -1758,7 +1910,7 @@ impl TypeChecker {
                     self.enter_scope();
                     // Register method-level generic params as valid types
                     for gp in &method.func.generic_params {
-                        self.define(gp.clone(), "any".to_string());
+                        self.define(gp.name.clone(), gp.name.clone());
                     }
                     for param in &method.func.params {
                         if !self.is_valid_type(&param.type_name.to_string()) {
@@ -1833,6 +1985,11 @@ impl TypeChecker {
                     } else {
                         "void".to_string()
                     };
+
+                    if expected_original == "<inferred>" {
+                        self.current_function_return = Some(got.clone());
+                        return Ok(());
+                    }
 
                     let expected_type = expected_original.clone();
                     // If async, expected_type is Promise<T>, but we allow returning T
@@ -1922,13 +2079,13 @@ impl TypeChecker {
                             .unwrap_or_default()
                     };
                     if !module_name.is_empty() {
-                        self.define(module_name, "any".to_string());
+                        self.define(module_name, "<inferred>".to_string());
                     }
                 } else {
                     // Named imports: `import { parse, stringify } from "std:json"`
                     for item in _names {
                         if self.lookup(&item.name).is_none() {
-                            self.define(item.name.clone(), "any".to_string());
+                            self.define(item.name.clone(), "<inferred>".to_string());
                         }
                     }
                 }
@@ -2047,15 +2204,19 @@ impl TypeChecker {
         result
     }
 
-    fn parameterize_generics(&self, type_name: &str, params: &Vec<String>) -> String {
+    fn parameterize_generics(
+        &self,
+        type_name: &str,
+        params: &Vec<crate::ast::GenericParam>,
+    ) -> String {
         let mut result = type_name.to_string();
         for (i, param) in params.iter().enumerate() {
             let placeholder = format!("${}", i);
             let mut new_res = String::new();
             let mut last_pos = 0;
-            let p_len = param.len();
+            let p_len = param.name.len();
 
-            while let Some(idx) = result[last_pos..].find(param) {
+            while let Some(idx) = result[last_pos..].find(&param.name) {
                 let abs_idx = last_pos + idx;
                 // Fix indexing: operate on byte slices
                 let before_char = if abs_idx > 0 {
@@ -2079,7 +2240,7 @@ impl TypeChecker {
                 if is_word_start && is_word_end {
                     new_res.push_str(&placeholder);
                 } else {
-                    new_res.push_str(param);
+                    new_res.push_str(&param.name);
                 }
                 last_pos = abs_idx + p_len;
             }
@@ -2130,7 +2291,7 @@ impl TypeChecker {
             }
         }
 
-        while !current_type.is_empty() && current_type != "any" {
+        while !current_type.is_empty() && current_type != "<inferred>" {
             if let Some(members) = self.class_members.get(&current_type) {
                 if let Some(info) = members.get(member).cloned() {
                     return Some(info);
@@ -2253,7 +2414,7 @@ impl TypeChecker {
                                     | "float64"
                             )
                         };
-                        if is_numeric(&right_type) || right_type == "any" {
+                        if is_numeric(&right_type) || right_type == "<inferred>" {
                             Ok(right_type)
                         } else {
                             self.report_error_detailed(
@@ -2263,7 +2424,7 @@ impl TypeChecker {
                                 "E0100",
                                 Some("Unary negation only works on numeric types (int, float)"),
                             );
-                            Ok("any".to_string())
+                            Ok("<inferred>".to_string())
                         }
                     }
                     TokenType::PlusPlus | TokenType::MinusMinus => Ok(right_type),
@@ -2281,7 +2442,7 @@ impl TypeChecker {
                         "E0115",
                         Some("'this' can only be used inside class methods or constructors"),
                     );
-                    Ok("any".to_string())
+                    Ok("<inferred>".to_string())
                 }
             }
             Expression::LambdaExpr {
@@ -2302,7 +2463,7 @@ impl TypeChecker {
 
                 for (i, p) in params.iter().enumerate() {
                     let mut p_type = p.type_name.to_string();
-                    if p_type.is_empty() || p_type == "any" {
+                    if p_type.is_empty() || p_type == "<inferred>" {
                         if let Some(ctx_types) = &context_types {
                             if i < ctx_types.len() {
                                 p_type = ctx_types[i].clone();
@@ -2318,18 +2479,41 @@ impl TypeChecker {
                     .insert((*_line, *_col), actual_param_types.clone());
 
                 let prev_return = self.current_function_return.take();
-                self.current_function_return = Some("any".to_string());
+                self.current_function_return = Some("<inferred>".to_string());
 
                 self.check_statement(body)?;
+
+                let inferred_ret = self
+                    .current_function_return
+                    .take()
+                    .unwrap_or("void".to_string());
+                let final_ret = if inferred_ret == "<inferred>" {
+                    "void".to_string()
+                } else {
+                    inferred_ret
+                };
 
                 self.current_function_return = prev_return;
                 self.exit_scope();
 
-                Ok(format!("function:Object:{}", actual_param_types.join(",")))
+                Ok(format!(
+                    "function:{}:{}",
+                    final_ret,
+                    actual_param_types.join(",")
+                ))
             }
             Expression::Identifier { name, _line, _col } => {
                 if let Some(s) = self.lookup(name) {
-                    Ok(s.type_name)
+                    if s.type_name.starts_with("function:") && !s.params.is_empty() {
+                        let mut params = s.params.clone();
+                        if s.is_variadic && !params.is_empty() {
+                            let last = params.len() - 1;
+                            params[last] = format!("{}...", params[last]);
+                        }
+                        let params_str = params.join(",");
+                        return Ok(format!("{}:{}", s.type_name, params_str));
+                    }
+                    Ok(s.type_name.clone())
                 } else {
                     if name == "console" {
                         return Ok("Console".to_string());
@@ -2341,7 +2525,7 @@ impl TypeChecker {
                         "E0102",
                         Some("Check the spelling or ensure the variable is declared before use"),
                     );
-                    Ok("any".to_string())
+                    Ok("<inferred>".to_string())
                 }
             }
             Expression::CastExpr {
@@ -2397,7 +2581,7 @@ impl TypeChecker {
                             "Use string methods for comparison, or convert to a numeric type first",
                         ),
                     );
-                    return Ok("any".to_string());
+                    return Ok("<inferred>".to_string());
                 }
 
                 if self.is_numeric(&left_type) && self.is_numeric(&right_type) {
@@ -2517,7 +2701,7 @@ impl TypeChecker {
                     }
                 }
 
-                if !obj_type.is_empty() && obj_type != "object" && !obj_type.starts_with("{") {
+                if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
                     // Fallback for enums: default to int32 if known enum
                     if obj_type == "enum"
                         || self
@@ -2545,11 +2729,7 @@ impl TypeChecker {
                     }
                 }
 
-                if !obj_type.is_empty()
-                    && obj_type != "object"
-                    && obj_type != "any"
-                    && !obj_type.starts_with("{")
-                {
+                if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
                     self.report_error_detailed(
                         format!(
                             "Property '{}' does not exist on type '{}'",
@@ -2561,10 +2741,10 @@ impl TypeChecker {
                         Some("Check the property name or define it in the class"),
                     );
                 }
-                Ok("any".to_string())
+                Ok("<inferred>".to_string())
             }
             Expression::SequenceExpr { expressions, .. } => {
-                let mut last_type = "any".to_string();
+                let mut last_type = "<inferred>".to_string();
                 for expr in expressions {
                     last_type = self.check_expression(expr)?;
                 }
@@ -2605,7 +2785,7 @@ impl TypeChecker {
                 if unwrapped_type == "string" {
                     return Ok("string".to_string());
                 }
-                Ok("Object".to_string())
+                Ok("<inferred>".to_string())
             }
             Expression::AssignmentExpr {
                 target,
@@ -2620,7 +2800,7 @@ impl TypeChecker {
                             Ok(s.type_name.clone())
                         } else {
                             self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some("Check the spelling or ensure the variable is declared before use"));
-                            Ok("any".to_string())
+                            Ok("<inferred>".to_string())
                         }
                     }
                     _ => self.check_expression(target),
@@ -2677,7 +2857,7 @@ impl TypeChecker {
                 self.current_expected_type = Some(target_type.clone());
                 let value_type = self.check_expression(value)?;
                 self.current_expected_type = prev_expected;
-                if target_type != "any" && value_type != "any" && target_type != "unknown" {
+                if target_type != "<inferred>" && value_type != "<inferred>" {
                     self.check_numeric_bounds(value, &target_type, *_line, *_col);
                     if !self.is_assignable(&target_type, &value_type) {
                         if value_type == "[]" {
@@ -2746,12 +2926,12 @@ impl TypeChecker {
                         return Ok("void".to_string());
                     } else {
                         self.report_error_detailed("Cannot use 'super' here".to_string(), *_line, *_col, "E0115", Some("'super' can only be used inside a class that extends another class"));
-                        return Ok("any".to_string());
+                        return Ok("<inferred>".to_string());
                     }
                 }
 
                 let callee_type = self.check_expression(callee)?;
-                let mut return_type = "any".to_string();
+                let mut return_type = "<inferred>".to_string();
                 let mut s_params = Vec::new();
                 let mut is_variadic = false;
 
@@ -2773,10 +2953,11 @@ impl TypeChecker {
                     is_variadic = parsed_variadic;
                     signature_found = true;
                 }
-                // Always try lookup to fill s_params if not yet populated from type string
-                if !signature_found {
+                // Always try symbol lookup to fill s_params when type string didn't provide them.
+                // `function:int32` only tells us return type, not param types — those come from Symbol.params.
+                if s_params.is_empty() {
                     if let Some(s) = self.lookup(&callee_str) {
-                        if return_type == "any" && s.type_name.starts_with("function:") {
+                        if return_type == "<inferred>" && s.type_name.starts_with("function:") {
                             let parts: Vec<&str> = s.type_name.split(':').collect();
                             if parts.len() >= 2 {
                                 let mut ret = parts[1].to_string();
@@ -2817,13 +2998,13 @@ impl TypeChecker {
                     let adjusted_i = i + param_offset;
                     let mut target_type = if is_variadic {
                         if s_params.is_empty() {
-                            "any".to_string()
+                            "<inferred>".to_string()
                         } else if adjusted_i >= s_params.len() - 1 {
                             let last_param = &s_params[s_params.len() - 1];
                             if last_param.ends_with("[]") {
                                 last_param[..last_param.len() - 2].to_string()
                             } else {
-                                "any".to_string()
+                                "<inferred>".to_string()
                             }
                         } else {
                             s_params[adjusted_i].clone()
@@ -2831,7 +3012,7 @@ impl TypeChecker {
                     } else if adjusted_i < s_params.len() {
                         s_params[adjusted_i].clone()
                     } else {
-                        "any".to_string()
+                        "<inferred>".to_string()
                     };
                     // For Array methods, transform `T` and `T[]` parameters based on instance context
                     // If UFCS, the method receiver is actually the object of the MemberAccessExpr
@@ -2902,19 +3083,18 @@ impl TypeChecker {
                     self.current_expected_type = prev_expected;
                     self.lambda_context_params = None;
 
-                    let is_object_check =
-                        |t: &str| t == "object" || t.ends_with(":Object") || t.ends_with(":any");
+                    let is_unknown_check = |t: &str| t == "<inferred>" || t.ends_with(":unknown");
                     if !target_type.is_empty()
-                        && !is_object_check(&target_type)
+                        && !is_unknown_check(&target_type)
                         && !self.are_types_compatible(&target_type, &arg_type)
                     {
-                        // Skip error if either side is a generic type param (defined as 'any' in scope)
+                        // Skip error if either side is a generic type param (defined as 'unknown' in scope)
                         let is_generic_param = |t: &str| {
                             if t.starts_with("$MISSING_GENERIC_") {
                                 return true;
                             }
                             if let Some(sym) = self.lookup(t) {
-                                sym.type_name == "any"
+                                sym.type_name == "<inferred>"
                                     && t.len() <= 2
                                     && t.chars().next().map_or(false, |c| c.is_uppercase())
                             } else {
@@ -2963,8 +3143,40 @@ impl TypeChecker {
                             && t.chars().next().map_or(false, |c| c.is_uppercase())
                             && t.chars().all(|c| c.is_alphanumeric())
                     };
-                    if is_generic_param_check(&target_type) && arg_type != "any" {
+                    if is_generic_param_check(&target_type) && arg_type != "<inferred>" {
                         generic_map.insert(target_type.clone(), arg_type.clone());
+                    }
+                }
+
+                if !generic_map.is_empty() {
+                    let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                    if let Some(s) = self.lookup(func_name) {
+                        if !s.generic_params.is_empty() {
+                            let mut concrete_args = Vec::new();
+                            for gp in &s.generic_params {
+                                if let Some(concrete) = generic_map.get(&gp.name) {
+                                    if let Some(bound) = &gp.bound {
+                                        let bound_str = bound.to_string();
+                                        if !self.is_assignable(&bound_str, concrete) {
+                                            self.report_error_detailed(
+                                                format!("Type '{}' does not satisfy constraint '{}' for generic parameter '{}'", concrete, bound_str, gp.name),
+                                                *_line,
+                                                *_col,
+                                                "E0120",
+                                                Some(&format!("Provide a type that satisfies the constraint '{}'", bound_str))
+                                            );
+                                        }
+                                    }
+                                    concrete_args.push(concrete.clone());
+                                } else {
+                                    concrete_args.push("<inferred>".to_string());
+                                }
+                            }
+                            self.function_instantiations
+                                .entry(func_name.to_string())
+                                .or_default()
+                                .insert(concrete_args);
+                        }
                     }
                 }
 
@@ -3019,13 +3231,8 @@ impl TypeChecker {
                     }
                 }
 
-                if callee_type == "any" && return_type == "any" {
-                    // Possible dynamic call or lookup failed but we used any
-                    if !callee_str.contains('.') {
-                        if self.lookup(&callee_str).is_none() {
-                            // self.report_error(format!("Undefined function '{}'", callee_str), *_line, *_col);
-                        }
-                    }
+                if callee_type == "<inferred>" && return_type == "<inferred>" {
+                    return Ok("<inferred>".to_string());
                 }
 
                 let mut final_ret = return_type.clone();
@@ -3048,7 +3255,7 @@ impl TypeChecker {
                 let mut type_str = String::from("{");
                 let mut is_first = true;
                 for (key, val_expr) in entries {
-                    let mut val_ty = self.check_expression(val_expr)?;
+                    let val_ty = self.check_expression(val_expr)?;
                     if !is_first {
                         type_str.push_str(", ");
                     }
@@ -3111,9 +3318,9 @@ impl TypeChecker {
                         }
 
                         if let Some(first_type) = &first_type_opt {
-                            if &elem_ty != first_type && first_type != "unknown" {
+                            if &elem_ty != first_type && first_type != "<inferred>" {
                                 let common = self.get_common_ancestor(first_type, &elem_ty);
-                                if common == "unknown" {
+                                if common == "<inferred>" {
                                     self.report_error_detailed(
                                         format!("Array elements have incompatible types: '{}' and '{}'", first_type, elem_ty),
                                         *_line,
@@ -3121,7 +3328,7 @@ impl TypeChecker {
                                         "E0100",
                                         Some("All elements in an array literal must have the same type")
                                     );
-                                    first_type_opt = Some("unknown".to_string());
+                                    first_type_opt = Some("<inferred>".to_string());
                                 } else {
                                     first_type_opt = Some(common);
                                 }
@@ -3130,7 +3337,7 @@ impl TypeChecker {
                             first_type_opt = Some(elem_ty);
                         }
                     }
-                    let t = first_type_opt.unwrap_or_else(|| "unknown".to_string()) + "[]";
+                    let t = first_type_opt.unwrap_or_else(|| "<inferred>".to_string()) + "[]";
                     *ty.borrow_mut() = Some(t.clone());
                     Ok(t)
                 } else {
@@ -3186,7 +3393,7 @@ impl TypeChecker {
                     let inner = &unwrapped_type[6..unwrapped_type.len() - 1];
                     return Ok(inner.to_string());
                 }
-                Ok("any".to_string())
+                Ok("<inferred>".to_string())
             }
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
                 let mut obj_type = self.check_expression(object)?;
@@ -3214,13 +3421,13 @@ impl TypeChecker {
                     return Ok(self.substitute_generics(&info.type_name, &obj_type));
                 }
 
-                Ok("any".to_string())
+                Ok("<inferred>".to_string())
             }
             Expression::NullishCoalescingExpr { _left, _right, .. } => {
                 let left_ty = self.check_expression(_left)?;
                 let right_ty = self.check_expression(_right)?;
-                // Strip "Option<>" or "| None" from left_ty ideally, but for now just return the non-Object type
-                if left_ty != "any" && left_ty != "unknown" {
+                // Strip "Option<>" or "| None" from left_ty ideally, but
+                if left_ty != "<inferred>" {
                     if left_ty.starts_with("Option<") {
                         Ok(left_ty[7..left_ty.len() - 1].to_string())
                     } else if left_ty.ends_with(" | None") {
@@ -3245,7 +3452,7 @@ impl TypeChecker {
                 let false_ty = self.check_expression(_false_branch)?;
                 if true_ty == false_ty {
                     Ok(true_ty)
-                } else if true_ty != "any" && true_ty != "unknown" {
+                } else if true_ty != "<inferred>" {
                     Ok(true_ty)
                 } else {
                     Ok(false_ty)
@@ -3272,6 +3479,7 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
+                self.register_instantiation(class_name, *_line, *_col);
                 // Generic type parameters are inferred from the variable declaration's
                 // type annotation (e.g., `let m: Map<string, int> = new Map()`),
                 // so we don't require explicit type args on the constructor call.
@@ -3303,7 +3511,7 @@ impl TypeChecker {
                         "E0115",
                         Some("'super' can only be used inside methods of a class that extends another class"),
                     );
-                    Ok("any".to_string())
+                    Ok("<inferred>".to_string())
                 }
             }
         }
@@ -3327,7 +3535,7 @@ impl TypeChecker {
                 } else if type_name.starts_with("Array<") && type_name.ends_with(">") {
                     type_name[6..type_name.len() - 1].to_string()
                 } else {
-                    "any".to_string()
+                    "<inferred>".to_string()
                 };
 
                 for el in elements {
@@ -3346,13 +3554,13 @@ impl TypeChecker {
             BindingNode::ObjectBinding { entries } => {
                 // Determine property types if type_name is a known class or object literal
                 for (key, target) in entries {
-                    let mut prop_ty = "any".to_string();
+                    let mut prop_ty = "<inferred>".to_string();
                     if type_name.starts_with("{") {
                         let props = self.parse_struct_props(&type_name);
                         if let Some(t) = props.get(key) {
                             prop_ty = t.clone();
                         }
-                    } else if type_name != "any" && type_name != "any" && !type_name.is_empty() {
+                    } else if type_name != "<inferred>" && !type_name.is_empty() {
                         if let Some(info) = self.resolve_instance_member(&type_name, key) {
                             prop_ty = self.substitute_generics(&info.type_name, &type_name);
                         }

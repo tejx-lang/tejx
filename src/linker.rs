@@ -116,7 +116,8 @@ impl Linker {
 
         // Step 2: Link objects and libraries into final executable
         let mut cmd = Command::new(&compiler);
-        cmd.arg("-O0"); // Linker optimizations (disabled for faster debug/test builds)
+        cmd.arg("-O2"); // Enable linker optimizations for smaller, faster binaries
+        cmd.arg("-flto"); // Enable Link-Time Optimization (LTO) for cross-module inlining
 
         for obj in &final_objects {
             cmd.arg(obj);

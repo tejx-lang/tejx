@@ -1374,8 +1374,8 @@ pub unsafe extern "C" fn rt_Array_keys(id: i64) -> i64 {
 // data_base: number of method-slot entries (set before user data)
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_closure_new(capacity: i64) -> i64 {
-    let raw = rt_Map_constructor(0);
+pub unsafe extern "C" fn rt_closure_new(_capacity: i64) -> i64 {
+    let raw = rt_Array_new_fixed(2, 8);
     let body = (raw - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
     (*header).type_id = TAG_FUNCTION as u16;
@@ -1385,17 +1385,10 @@ pub unsafe extern "C" fn rt_closure_new(capacity: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_closure_from_ptr(ptr: i64) -> i64 {
     let closure = rt_closure_new(0);
-    let mut c = closure;
-    rt_push_root(&mut c);
-
-    let key_ptr = rt_string_from_c_str("ptr\0".as_ptr() as *const _);
-    rt_Map_set(c, key_ptr, ptr);
-
-    let key_env = rt_string_from_c_str("env\0".as_ptr() as *const _);
-    rt_Map_set(c, key_env, 0); // null env
-
-    rt_pop_roots(1);
-    c
+    // index 0: fn_ptr, index 1: env_ptr (null)
+    rt_array_set_fast(closure, 0, ptr);
+    rt_array_set_fast(closure, 1, 0);
+    closure
 }
 
 #[no_mangle]
@@ -1774,7 +1767,7 @@ pub unsafe extern "C" fn rt_Set_values(this: i64) -> i64 {
     if (this as u64) >= (HEAP_OFFSET as u64) {
         let body = (this - HEAP_OFFSET) as *mut u8;
         let header = rt_get_header(body);
-        if (*header).type_id == TAG_OBJECT as u16 {
+        if (*header).type_id >= TAG_OBJECT as u16 {
             return rt_Map_keys(this); // Set stores values as keys
         }
     }
@@ -2912,10 +2905,7 @@ pub unsafe extern "C" fn a_new() -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
-    let mut c = closure;
-    rt_push_root(&mut c);
-    let key = rt_string_from_c_str("ptr\0".as_ptr() as *const _);
-    let mut res = rt_Map_get(c, key);
+    let mut res = rt_array_get_fast(closure, 0);
     if res >= HEAP_OFFSET {
         let body = (res - HEAP_OFFSET) as *mut u8;
         let h = rt_get_header(body);
@@ -2924,21 +2914,14 @@ pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
         }
     }
     if res == 0 {
-        //printf("Runtime Error: Closure function pointer is NULL\n\0".as_ptr() as *const _);
+        // printf("Runtime Error: Closure function pointer is NULL\n\0".as_ptr() as *const _);
     }
-    rt_pop_roots(1);
     res
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_closure_env(closure: i64) -> i64 {
-    let mut c = closure;
-    rt_push_root(&mut c);
-    let key = rt_string_from_c_str("env\0".as_ptr() as *const _);
-    let res = rt_Map_get(c, key);
-    // env can also be boxed? usually not, but let's be safe if it's an object ID
-    rt_pop_roots(1);
-    res
+    rt_array_get_fast(closure, 1)
 }
 
 #[no_mangle]

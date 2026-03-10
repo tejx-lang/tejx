@@ -1,5 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 mod ast;
+mod ast_transformer;
 mod codegen;
 mod diagnostics;
 mod hir;
@@ -9,6 +10,7 @@ mod linker;
 mod lowering;
 mod mir;
 mod mir_lowering;
+mod mir_opt;
 mod parser;
 mod token;
 mod type_checker;
@@ -166,6 +168,7 @@ fn main() {
         &mut import_stack,
         initial_file_path.as_deref(),
     );
+
     let merged_program = ast::Program {
         statements: resolved_statements,
     };
@@ -192,6 +195,8 @@ fn main() {
     }
 
     lowering.lambda_inferred_types = type_checker.lambda_inferred_types;
+    lowering.generic_instantiations = type_checker.generic_instantiations;
+    lowering.function_instantiations = type_checker.function_instantiations;
 
     let lowering_result = lowering.lower(&merged_program, base_path);
 
@@ -207,6 +212,8 @@ fn main() {
     }
 
     let mut mir_functions = Vec::new();
+    let mir_optimizer = mir_opt::MIROptimizer::new();
+    
     for hir_func in &lowering_result.functions {
         let _name = match hir_func {
             crate::hir::HIRStatement::Function { name, .. } => name.clone(),
@@ -216,7 +223,8 @@ fn main() {
             lowering_result.signatures.clone(),
             lowering_result.class_fields.clone(),
         );
-        let mir_func = mir_lowering.lower(hir_func);
+        let mut mir_func = mir_lowering.lower(hir_func);
+        mir_optimizer.optimize(&mut mir_func);
         mir_functions.push(mir_func);
     }
 

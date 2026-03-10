@@ -18,9 +18,9 @@ pub struct CodeGen {
     function_param_counts: HashMap<String, usize>,
     declared_globals: HashSet<String>,
     current_function_params: HashSet<String>,
-    local_vars: HashSet<String>,
+    pub local_vars: HashSet<String>,
 
-    captured_vars: HashSet<String>,
+    captured_vars: Vec<String>,
     current_env: Option<String>,
     alloca_buffer: String,
     stack_arrays: HashSet<String>,
@@ -51,11 +51,14 @@ impl CodeGen {
 
     fn get_llvm_type(ty: &TejxType) -> &str {
         match ty {
-            // We use i64 for almost everything to maintain ABI consistency
-            // with our bitcasting and boxing strategy.
-            // Specialized types like Float32/Int32 are also stored in i64 registers/allocas
-            // for uniform handling in function calls and collections.
-            _ => "i64",
+            TejxType::Bool => "i1",
+            TejxType::Int16 => "i16",
+            TejxType::Int32 | TejxType::Char => "i32",
+            TejxType::Int64 => "i64",
+            TejxType::Float32 => "float",
+            TejxType::Float64 => "double",
+            TejxType::Void => "void",
+            _ => "i64", // Pointers to GC objects, arrays, closures, strings
         }
     }
 
@@ -135,69 +138,18 @@ impl CodeGen {
 
     fn store_ptr(&mut self, ptr: &str, src_val: &str) {
         let llvm_ty = self.ptr_types.get(ptr).map(|s| s.as_str()).unwrap_or("i64");
-        let mut final_src = src_val.to_string();
-        if llvm_ty != "i64" {
-            self.temp_counter += 1;
-            let cast_reg = format!("%cast_{}", self.temp_counter);
-            if llvm_ty == "float" {
-                // i64 -> i32 -> float
-                let trunc_reg = format!("%trunc_to_i32_{}", self.temp_counter);
-                self.buffer.push_str(&format!(
-                    "  {} = trunc i64 {} to i32\n",
-                    trunc_reg, final_src
-                ));
-                self.buffer.push_str(&format!(
-                    "  {} = bitcast i32 {} to float\n",
-                    cast_reg, trunc_reg
-                ));
-            } else if llvm_ty == "double" {
-                self.buffer.push_str(&format!(
-                    "  {} = bitcast i64 {} to double\n",
-                    cast_reg, final_src
-                ));
-            } else {
-                self.buffer.push_str(&format!(
-                    "  {} = trunc i64 {} to {}\n",
-                    cast_reg, final_src, llvm_ty
-                ));
-            }
-            final_src = cast_reg;
-        }
         self.buffer.push_str(&format!(
             "  store {} {}, {}* {}\n",
-            llvm_ty, final_src, llvm_ty, ptr
+            llvm_ty, src_val, llvm_ty, ptr
         ));
     }
 
     fn load_ptr(&mut self, ptr: &str, dest_reg: &str) {
         let llvm_ty = self.ptr_types.get(ptr).map(|s| s.as_str()).unwrap_or("i64");
-        if llvm_ty != "i64" {
-            self.temp_counter += 1;
-            let val_reg = format!("%ld_{}", self.temp_counter);
-            self.buffer.push_str(&format!(
-                "  {} = load {}, {}* {}\n",
-                val_reg, llvm_ty, llvm_ty, ptr
-            ));
-            // Extend back to i64
-            let cast_code = if llvm_ty == "float" {
-                self.temp_counter += 1;
-                let i32_reg = format!("%bits_i32_{}", self.temp_counter);
-                self.buffer.push_str(&format!(
-                    "  {} = bitcast float {} to i32\n",
-                    i32_reg, val_reg
-                ));
-                format!("zext i32 {} to i64", i32_reg)
-            } else if llvm_ty == "double" {
-                format!("bitcast double {} to i64", val_reg)
-            } else {
-                format!("sext {} {} to i64", llvm_ty, val_reg)
-            };
-            self.buffer
-                .push_str(&format!("  {} = {}\n", dest_reg, cast_code));
-        } else {
-            self.buffer
-                .push_str(&format!("  {} = load i64, i64* {}\n", dest_reg, ptr));
-        }
+        self.buffer.push_str(&format!(
+            "  {} = load {}, {}* {}\n",
+            dest_reg, llvm_ty, llvm_ty, ptr
+        ));
     }
 
     pub fn new() -> Self {
@@ -215,7 +167,7 @@ impl CodeGen {
             current_function_params: HashSet::new(),
             local_vars: HashSet::new(),
 
-            captured_vars: HashSet::new(),
+            captured_vars: Vec::new(),
             current_env: None,
             alloca_buffer: String::new(),
             stack_arrays: HashSet::new(),
@@ -234,29 +186,175 @@ impl CodeGen {
         self.buffer.push_str(code);
     }
 
-    fn get_captured_key(&self, name: &str) -> Option<String> {
-        if self.captured_vars.contains(name) {
-            return Some(name.to_string());
+    /// Get LLVM target triple and datalayout based on the host platform.
+    fn get_target_info() -> (&'static str, String) {
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else {
+            "x86_64" // fallback
+        };
+
+        if cfg!(target_os = "macos") {
+            (
+                "e-m:o-i64:64-i128:128-n32:64-S128-Fn32",
+                format!("{}-apple-macosx14.0.0", arch),
+            )
+        } else if cfg!(target_os = "linux") {
+            (
+                "e-m:e-i64:64-i128:128-n32:64-S128",
+                format!("{}-unknown-linux-gnu", arch),
+            )
+        } else {
+            (
+                "e-m:e-i64:64-i128:128-n32:64-S128",
+                format!("{}-unknown-unknown", arch),
+            )
+        }
+    }
+
+    /// Declare an external runtime function if not already declared.
+    /// `signature` is the full LLVM signature, e.g. "i64 @rt_len(i64)".
+    fn declare_runtime_fn(&mut self, name: &str, signature: &str) {
+        if !self.declared_functions.contains(name) {
+            self.global_buffer
+                .push_str(&format!("declare {}\n", signature));
+            self.declared_functions.insert(name.to_string());
+        }
+    }
+
+    fn get_captured_index(&self, name: &str) -> Option<usize> {
+        if let Some(pos) = self.captured_vars.iter().position(|c| c == name) {
+            return Some(pos);
         }
         // Handle MIR mangling suffixes like _123
-        for cap in &self.captured_vars {
+        for (i, cap) in self.captured_vars.iter().enumerate() {
             if name.starts_with(cap)
                 && (name.len() == cap.len() || name[cap.len()..].starts_with('_'))
             {
-                return Some(cap.clone());
+                return Some(i);
             }
         }
         None
     }
 
     fn is_captured(&self, name: &str) -> bool {
-        self.get_captured_key(name).is_some()
+        self.get_captured_index(name).is_some()
     }
 
     fn emit_line(&mut self, code: &str) {
         self.buffer.push_str("  ");
         self.buffer.push_str(code);
         self.buffer.push('\n');
+    }
+
+    fn emit_abi_cast(&mut self, val_name: &str, src_ty: &TejxType, dst_ty: &TejxType) -> String {
+        let src_llvm = Self::get_llvm_type(src_ty);
+        let dst_llvm = Self::get_llvm_type(dst_ty);
+
+        // Cannot cast to/from void — just pass through
+        if src_llvm == "void" || dst_llvm == "void" {
+            return val_name.to_string();
+        }
+
+        if src_llvm == dst_llvm {
+            return val_name.to_string();
+        }
+
+        self.temp_counter += 1;
+        let cast_reg = format!("%cast_{}", self.temp_counter);
+
+        match (src_llvm, dst_llvm) {
+            ("i64", "i32")
+            | ("i64", "i16")
+            | ("i64", "i1")
+            | ("i32", "i16")
+            | ("i32", "i1")
+            | ("i16", "i1") => {
+                self.emit_line(&format!(
+                    "{} = trunc {} {} to {}",
+                    cast_reg, src_llvm, val_name, dst_llvm
+                ));
+            }
+            ("i1", "i16") | ("i1", "i32") | ("i1", "i64") => {
+                self.emit_line(&format!(
+                    "{} = zext {} {} to {}",
+                    cast_reg, src_llvm, val_name, dst_llvm
+                ));
+            }
+            ("i16", "i32") | ("i16", "i64") | ("i32", "i64") => {
+                self.emit_line(&format!(
+                    "{} = sext {} {} to {}",
+                    cast_reg, src_llvm, val_name, dst_llvm
+                ));
+            }
+            ("double", "i64") => {
+                self.emit_line(&format!(
+                    "{} = bitcast double {} to i64",
+                    cast_reg, val_name
+                ));
+            }
+            ("i64", "double") => {
+                self.emit_line(&format!(
+                    "{} = bitcast i64 {} to double",
+                    cast_reg, val_name
+                ));
+            }
+            ("float", "double") => {
+                self.emit_line(&format!(
+                    "{} = fpext float {} to double",
+                    cast_reg, val_name
+                ));
+            }
+            ("double", "float") => {
+                self.emit_line(&format!(
+                    "{} = fptrunc double {} to float",
+                    cast_reg, val_name
+                ));
+            }
+            ("i32", "double")
+            | ("i16", "double")
+            | ("i1", "double")
+            | ("i32", "float")
+            | ("i16", "float")
+            | ("i1", "float") => {
+                self.emit_line(&format!(
+                    "{} = sitofp {} {} to {}",
+                    cast_reg, src_llvm, val_name, dst_llvm
+                ));
+            }
+            ("double", "i32")
+            | ("double", "i16")
+            | ("double", "i1")
+            | ("float", "i32")
+            | ("float", "i16")
+            | ("float", "i1") => {
+                self.emit_line(&format!(
+                    "{} = fptosi {} {} to {}",
+                    cast_reg, src_llvm, val_name, dst_llvm
+                ));
+            }
+            _ => {
+                if src_llvm.contains('*') && dst_llvm == "i64" {
+                    self.emit_line(&format!(
+                        "{} = ptrtoint {} {} to i64",
+                        cast_reg, src_llvm, val_name
+                    ));
+                } else if src_llvm == "i64" && dst_llvm.contains('*') {
+                    self.emit_line(&format!(
+                        "{} = inttoptr i64 {} to {}",
+                        cast_reg, val_name, dst_llvm
+                    ));
+                } else {
+                    self.emit_line(&format!(
+                        "{} = bitcast {} {} to {}",
+                        cast_reg, src_llvm, val_name, dst_llvm
+                    ));
+                }
+            }
+        }
+        cast_reg
     }
 
     fn does_escape(&self, func: &MIRFunction, var_name: &str) -> bool {
@@ -385,26 +483,37 @@ impl CodeGen {
             }
         }
 
-        // Fallback: resolve normal (i64) and convert based on type
+        // Fallback: resolve normal value and convert based on type
         let normal_val = self.resolve_value(val);
         let ty = val.get_type();
 
         self.temp_counter += 1;
         let float_val = format!("%float_conv_{}", self.temp_counter);
 
-        if ty.is_float() {
-            self.emit_line(&format!(
-                "{} = bitcast i64 {} to double",
-                float_val, normal_val
-            ));
-            return float_val;
-        } else {
-            self.emit_line(&format!(
-                "{} = sitofp i64 {} to double",
-                float_val, normal_val
-            ));
-            return float_val;
+        match ty {
+            TejxType::Float32 => {
+                // Float32 -> double via fpext
+                self.emit_line(&format!(
+                    "{} = fpext float {} to double",
+                    float_val, normal_val
+                ));
+            }
+            _ if ty.is_float() => {
+                // Float64 -> double via bitcast from i64 representation
+                self.emit_line(&format!(
+                    "{} = bitcast i64 {} to double",
+                    float_val, normal_val
+                ));
+            }
+            _ => {
+                // Integer -> double via sitofp
+                self.emit_line(&format!(
+                    "{} = sitofp i64 {} to double",
+                    float_val, normal_val
+                ));
+            }
         }
+        float_val
     }
 
     fn resolve_value(&mut self, val: &MIRValue) -> String {
@@ -422,63 +531,41 @@ impl CodeGen {
                     let args = vec!["i64"; count].join(", ");
                     let fn_ptr = format!("ptrtoint (i64 ({})* @{} to i64)", args, value);
 
-                    // Always Box as closure Map { "ptr": fn_ptr, "env": env }
-                    if !self.declared_functions.contains("rt_closure_new") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_closure_new(i64) nounwind\n");
-                        self.declared_functions.insert("rt_closure_new".to_string());
-                    }
-                    if !self.declared_functions.contains("rt_string_from_c_str") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                        self.declared_functions
-                            .insert("rt_string_from_c_str".to_string());
-                    }
+                    // Wrap function pointer into a closure object using rt_closure_from_ptr
+                    self.declare_runtime_fn("rt_closure_from_ptr", "i64 @rt_closure_from_ptr(i64) nounwind");
+                    self.declare_runtime_fn(
+                        "rt_array_set_fast",
+                        "void @rt_array_set_fast(i64, i64, i64)",
+                    );
 
                     self.temp_counter += 1;
                     let closure_id = format!("%closure{}", self.temp_counter);
-                    self.emit_line(&format!("{} = call i64 @rt_closure_new(i64 0)", closure_id));
-
-                    // Set "ptr"
-                    let ptr_key = "@str_key_ptr";
-                    if !self.declared_globals.contains(ptr_key) {
-                        self.global_buffer.push_str(
-                            "@str_key_ptr = private unnamed_addr constant [4 x i8] c\"ptr\\00\"\n",
-                        );
-                        self.declared_globals.insert(ptr_key.to_string());
-                    }
-                    self.temp_counter += 1;
-                    let ptr_key_id = format!("%ptr_key{}", self.temp_counter);
-                    self.emit_line(&format!("{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([4 x i8]* @str_key_ptr to i64))", ptr_key_id));
                     self.emit_line(&format!(
-                        "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
-                        closure_id, ptr_key_id, fn_ptr
+                        "{} = call i64 @rt_closure_from_ptr(i64 {})",
+                        closure_id, fn_ptr
                     ));
 
-                    // Set "env"
+                    // Set env (slot 1) — rt_closure_from_ptr already sets fn_ptr at slot 0
                     let env_to_pass = if let Some(env) = self.current_env.clone() {
                         env
                     } else {
-                        // Create a fresh empty environment if the parent doesn't have one
+                        // Create a fresh empty environment (array) if the parent doesn't have one
+                        self.declare_runtime_fn(
+                            "rt_Array_new_fixed",
+                            "i64 @rt_Array_new_fixed(i64, i64)",
+                        );
                         self.temp_counter += 1;
                         let fresh_env = format!("%fresh_env{}", self.temp_counter);
-                        self.emit_line(&format!("{} = call i64 @rt_map_new(i64 0)", fresh_env));
+                        self.emit_line(&format!(
+                            "{} = call i64 @rt_Array_new_fixed(i64 0, i64 8)",
+                            fresh_env
+                        ));
                         fresh_env
                     };
 
-                    let env_key = "@str_key_env";
-                    if !self.declared_globals.contains(env_key) {
-                        self.global_buffer.push_str(
-                            "@str_key_env = private unnamed_addr constant [4 x i8] c\"env\\00\"\n",
-                        );
-                        self.declared_globals.insert(env_key.to_string());
-                    }
-                    self.temp_counter += 1;
-                    let env_key_id = format!("%env_key{}", self.temp_counter);
-                    self.emit_line(&format!("{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([4 x i8]* @str_key_env to i64))", env_key_id));
                     self.emit_line(&format!(
-                        "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
-                        closure_id, env_key_id, env_to_pass
+                        "call void @rt_array_set_fast(i64 {}, i64 1, i64 {})",
+                        closure_id, env_to_pass
                     ));
 
                     return closure_id;
@@ -506,10 +593,9 @@ impl CodeGen {
 
                 if is_float_type {
                     if let Ok(d) = value.parse::<f64>() {
-                        // Variables of type Number ALWAYS store bitcasted doubles
-                        return format!("{}", d.to_bits());
+                        return format!("0x{:016X}", d.to_bits());
                     }
-                    return "0".to_string();
+                    return "0.0".to_string();
                 }
 
                 if value == "null" || (value == "0" && Self::is_gc_managed(ty)) {
@@ -521,12 +607,7 @@ impl CodeGen {
                 }
 
                 let raw_ptr = self.emit_string_constant(value);
-                if !self.declared_functions.contains("rt_string_from_c_str") {
-                    self.global_buffer
-                        .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                    self.declared_functions
-                        .insert("rt_string_from_c_str".to_string());
-                }
+                self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
                 self.emit_box_string(&raw_ptr)
             }
             MIRValue::Variable { name, ty } => {
@@ -546,85 +627,33 @@ impl CodeGen {
                 if name.starts_with("%") || name.starts_with("@") {
                     return name.to_string();
                 }
-
-                if let Some(cap_key) = self.get_captured_key(name) {
+                if let Some(cap_idx) = self.get_captured_index(name) {
                     if let Some(env) = self.current_env.clone() {
-                        if !self.declared_functions.contains("rt_Map_get") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_Map_get(i64, i64)\n");
-                            self.declared_functions.insert("rt_Map_get".to_string());
-                        }
-                        if !self.declared_functions.contains("rt_string_from_c_str") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                            self.declared_functions
-                                .insert("rt_string_from_c_str".to_string());
-                        }
-
-                        // Get/Create key string - use base captured name for consistent keys
-                        let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
-                        if !self.declared_globals.contains(&key_global) {
-                            self.global_buffer.push_str(&format!(
-                                "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
-                                key_global,
-                                cap_key.len() + 1,
-                                cap_key
-                            ));
-                            self.declared_globals.insert(key_global.clone());
-                        }
+                        self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
 
                         self.temp_counter += 1;
-                        let key_id = format!("%key_id{}", self.temp_counter);
+                        let val_tmp = format!("%val_tmp_{}", self.temp_counter);
                         self.emit_line(&format!(
-                            "{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([{} x i8]* {} to i64))",
-                            key_id,
-                            cap_key.len() + 1,
-                            key_global
+                            "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
+                            val_tmp, env, cap_idx
                         ));
 
-                        self.temp_counter += 1;
-                        let val_reg = format!("%cap_val{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_Map_get(i64 {}, i64 {})",
-                            val_reg, env, key_id
-                        ));
-
-                        // Unbox if necessary - retrieved values from Map are TaggedValues
-                        if ty.is_numeric() || matches!(ty, TejxType::Bool) {
-                            if !self.declared_functions.contains("rt_to_number") {
-                                self.global_buffer
-                                    .push_str("declare double @rt_to_number(i64)\n");
-                                self.declared_functions.insert("rt_to_number".to_string());
-                            }
+                        // Unbox float if needed
+                        if ty.is_float() {
                             self.temp_counter += 1;
-                            let d_tmp = format!("%d_tmp{}", self.temp_counter);
-                            self.emit_line(&format!(
-                                "{} = call double @rt_to_number(i64 {})",
-                                d_tmp, val_reg
-                            ));
-
-                            if ty.is_float() {
-                                self.temp_counter += 1;
-                                let i_tmp = format!("%bit_tmp{}", self.temp_counter);
-                                self.emit_line(&format!(
-                                    "{} = bitcast double {} to i64",
-                                    i_tmp, d_tmp
-                                ));
-                                return i_tmp;
-                            } else {
-                                // int or bool
-                                self.temp_counter += 1;
-                                let i_tmp = format!("%i_tmp{}", self.temp_counter);
-                                self.emit_line(&format!(
-                                    "{} = fptosi double {} to i64",
-                                    i_tmp, d_tmp
-                                ));
-                                return i_tmp;
-                            }
+                            let f_tmp = format!("%f_tmp_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = bitcast i64 {} to double", f_tmp, val_tmp));
+                            return f_tmp;
                         }
 
-                        return val_reg;
+                        // Cast back to correct primitive type
+                        if ty.is_numeric() || matches!(ty, TejxType::Bool | TejxType::Char) {
+                            return self.emit_abi_cast(&val_tmp, &TejxType::Int64, ty);
+                        }
+                        
+                        return val_tmp;
                     }
+                    return "0".to_string();
                 }
 
                 if let Some(reg_ref) = self.value_map.get(name) {
@@ -732,61 +761,57 @@ impl CodeGen {
     }
 
     fn emit_store_variable(&mut self, name: &str, val: &str, ty: &TejxType) {
-        if let Some(cap_key) = self.get_captured_key(name) {
+        if let Some(cap_idx) = self.get_captured_index(name) {
             if let Some(env) = self.current_env.clone() {
-                if !self.declared_functions.contains("rt_Map_set") {
-                    self.global_buffer
-                        .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
-                    self.declared_functions.insert("rt_Map_set".to_string());
-                }
-                if !self.declared_functions.contains("rt_string_from_c_str") {
-                    self.global_buffer
-                        .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                    self.declared_functions
-                        .insert("rt_string_from_c_str".to_string());
-                }
-
-                // Get/Create key string - use base captured name
-                let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
-                if !self.declared_globals.contains(&key_global) {
-                    self.global_buffer.push_str(&format!(
-                        "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
-                        key_global,
-                        cap_key.len() + 1,
-                        cap_key
-                    ));
-                    self.declared_globals.insert(key_global.clone());
-                }
-
-                self.temp_counter += 1;
-                let key_id = format!("%key_id{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([{} x i8]* {} to i64))",
-                    key_id,
-                    cap_key.len() + 1,
-                    key_global
-                ));
+                self.declare_runtime_fn("rt_array_set_fast", "void @rt_array_set_fast(i64, i64, i64)");
 
                 let val_to_store = if ty.is_float()
-                    || ty.is_numeric()
+                {
+                    self.temp_counter += 1;
+                    let bits = format!("%fbits_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast double {} to i64", bits, val));
+                    bits
+                } else if ty.is_numeric()
                     || *ty == TejxType::Bool
                     || *ty == TejxType::Char
                 {
-                    // Primitives are now bitcasted directly into i64 slots (generic slots)
-                    val.to_string()
+                    let casted = self.emit_abi_cast(val, ty, &TejxType::Int64);
+                    self.temp_counter += 1;
+                    let tmp = format!("%zext_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = or i64 0, {}", tmp, casted));
+                    tmp
                 } else {
                     val.to_string()
                 };
 
                 self.emit_line(&format!(
-                    "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
-                    env, key_id, val_to_store
+                    "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                    env, cap_idx, val_to_store
                 ));
+                return;
             }
-        } else {
+        }
+        {
             // Only store to local ptr if it's NOT a captured variable
             let ptr = self.resolve_ptr(name);
-            self.store_ptr(&ptr, val);
+            // Cast the value to match the alloca's LLVM type if they differ
+            let ptr_llvm_ty = self.ptr_types.get(&ptr).cloned().unwrap_or_else(|| "i64".to_string());
+            let val_llvm_ty = Self::get_llvm_type(ty);
+            let final_val = if val_llvm_ty != ptr_llvm_ty && ptr_llvm_ty != "void" {
+                // Need to cast from the value's type to the alloca's type
+                let ptr_ty_enum = match ptr_llvm_ty.as_str() {
+                    "i1" => TejxType::Bool,
+                    "i16" => TejxType::Int16,
+                    "i32" => TejxType::Int32,
+                    "float" => TejxType::Float32,
+                    "double" => TejxType::Float64,
+                    _ => TejxType::Int64,
+                };
+                self.emit_abi_cast(val, ty, &ptr_ty_enum)
+            } else {
+                val.to_string()
+            };
+            self.store_ptr(&ptr, &final_val);
         }
     }
 }
@@ -798,7 +823,9 @@ impl CodeGen {
         functions: &[MIRFunction],
         captured_vars: HashSet<String>,
     ) -> String {
-        self.captured_vars = captured_vars;
+        let mut sorted_captured: Vec<String> = captured_vars.into_iter().collect();
+        sorted_captured.sort();
+        self.captured_vars = sorted_captured;
         self.buffer.clear();
         self.global_buffer.clear();
         self.declared_functions.clear();
@@ -808,10 +835,11 @@ impl CodeGen {
         self.global_buffer.push_str("; ModuleID = 'tejx_module'\n");
         self.global_buffer
             .push_str("source_filename = \"tejx_module\"\n");
+        let (datalayout, triple) = Self::get_target_info();
         self.global_buffer
-            .push_str("target datalayout = \"e-m:o-i64:64-i128:128-n32:64-S128-Fn32\"\n");
+            .push_str(&format!("target datalayout = \"{}\"\n", datalayout));
         self.global_buffer
-            .push_str("target triple = \"arm64-apple-macosx15.0.0\"\n");
+            .push_str(&format!("target triple = \"{}\"\n", triple));
 
         // Register defined functions and their param counts
         let mut has_tejx_main = false;
@@ -975,12 +1003,37 @@ impl CodeGen {
         init_type_buffer.push_str("  ret void\n}\n");
         self.buffer.push_str(&init_type_buffer);
 
-        if !self.declared_functions.contains("rt_register_type") {
-            self.global_buffer
-                .push_str("declare void @rt_register_type(i32, i64, i64, i64*, i8*)\n");
-            self.declared_functions
-                .insert("rt_register_type".to_string());
-        }
+        self.declare_runtime_fn(
+            "rt_register_type",
+            "void @rt_register_type(i32, i64, i64, i64*, i8*)",
+        );
+
+        // Pre-declare commonly used runtime functions
+        self.declare_runtime_fn("rt_class_new", "i64 @rt_class_new(i8*)");
+        self.declare_runtime_fn("rt_len", "i64 @rt_len(i64)");
+        self.declare_runtime_fn("rt_typeof", "i64 @rt_typeof(i64)");
+        self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
+        self.declare_runtime_fn("rt_str_concat_v2", "i64 @rt_str_concat_v2(i64, i64)");
+        self.declare_runtime_fn("rt_str_equals", "i64 @rt_str_equals(i64, i64)");
+        self.declare_runtime_fn("rt_box_int", "i64 @rt_box_int(i64)");
+        self.declare_runtime_fn("rt_box_number", "i64 @rt_box_number(double)");
+        self.declare_runtime_fn("rt_unbox_int", "i64 @rt_unbox_int(i64)");
+        self.declare_runtime_fn("rt_unbox_number", "double @rt_unbox_number(i64)");
+        self.declare_runtime_fn("rt_array_push", "i64 @rt_array_push(i64, i64)");
+        self.declare_runtime_fn("rt_array_pop", "i64 @rt_array_pop(i64)");
+        self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
+        self.declare_runtime_fn(
+            "rt_array_set_fast",
+            "void @rt_array_set_fast(i64, i64, i64)",
+        );
+        self.declare_runtime_fn("rt_object_get", "i64 @rt_object_get(i64, i8*)");
+        self.declare_runtime_fn("rt_object_set", "void @rt_object_set(i64, i8*, i64)");
+        self.declare_runtime_fn("rt_is_nullish", "i64 @rt_is_nullish(i64)");
+        self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
+        self.declare_runtime_fn("rt_panic", "void @rt_panic(i64)");
+        self.declare_runtime_fn("rt_Arena_create", "i64 @rt_Arena_create()");
+        self.declare_runtime_fn("rt_Arena_destroy", "void @rt_Arena_destroy(i64)");
+        self.declare_runtime_fn("rt_closure_from_ptr", "i64 @rt_closure_from_ptr(i64)");
 
         // Filter functions to remove duplicates, prioritizing non-empty tejx_main
         let mut unique_functions = Vec::new();
@@ -1008,24 +1061,18 @@ impl CodeGen {
         }
 
         // Exception handling runtime functions
-        self.global_buffer
-            .push_str("declare i32 @_setjmp(i8*) returns_twice\n");
-        self.global_buffer
-            .push_str(&format!("declare void @{}(i8*)\n", TEJX_PUSH_HANDLER));
-        self.global_buffer
-            .push_str(&format!("declare void @{}()\n", TEJX_POP_HANDLER));
-        if !self.declared_functions.contains(TEJX_THROW) {
-            self.global_buffer
-                .push_str(&format!("declare void @{}(i64)\n", TEJX_THROW));
-        }
-        if !self.declared_functions.contains(TEJX_GET_EXCEPTION) {
-            self.global_buffer
-                .push_str(&format!("declare i64 @{}()\n", TEJX_GET_EXCEPTION));
-        }
-        if !self.declared_functions.contains("rt_string_from_c_str") {
-            self.global_buffer
-                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-        }
+        self.declare_runtime_fn("_setjmp", "i32 @_setjmp(i8*) returns_twice");
+        self.declare_runtime_fn(
+            TEJX_PUSH_HANDLER,
+            &format!("void @{}(i8*)", TEJX_PUSH_HANDLER),
+        );
+        self.declare_runtime_fn(TEJX_POP_HANDLER, &format!("void @{}()", TEJX_POP_HANDLER));
+        self.declare_runtime_fn(TEJX_THROW, &format!("void @{}(i64)", TEJX_THROW));
+        self.declare_runtime_fn(
+            TEJX_GET_EXCEPTION,
+            &format!("i64 @{}()", TEJX_GET_EXCEPTION),
+        );
+        self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
 
         // Generate main wrapper if tejx_main exists
         if has_tejx_main {
@@ -1059,38 +1106,25 @@ impl CodeGen {
         self.current_arena = None;
         self.num_roots = 0;
 
-        for p in &func.params {
-            self.current_function_params.insert(p.clone());
-        }
-
-        // Function signature with parameters
-        let params_str = if func.params.is_empty() {
-            String::new()
-        } else {
-            func.params
-                .iter()
-                .map(|p| format!("i64 %{}", p))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
 
         if func.is_extern {
-            if !self.declared_functions.contains(&func.name) {
-                let decl_params = if func.params.is_empty() {
-                    String::new()
-                } else {
-                    func.params
-                        .iter()
-                        .map(|_| "i64".to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                self.global_buffer.push_str(&format!(
-                    "declare i64 @\"{}\"({})\n",
-                    func.name, decl_params
-                ));
-                self.declared_functions.insert(func.name.clone());
-            }
+            let decl_params = if func.params.is_empty() {
+                String::new()
+            } else {
+                func.params
+                    .iter()
+                    .map(|p| {
+                        let ty = func.variables.get(p).unwrap_or(&TejxType::Void);
+                        Self::get_llvm_type(ty).to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.declare_runtime_fn(
+                &func.name,
+                &format!("{} @\"{}\"({})", ret_llvm_ty, func.name, decl_params),
+            );
             return;
         }
 
@@ -1100,36 +1134,46 @@ impl CodeGen {
         }
         self.defined_functions.insert(func.name.clone());
 
+        let params_str = if func.params.is_empty() {
+            String::new()
+        } else {
+            func.params
+                .iter()
+                .map(|p| {
+                    let ty = func.variables.get(p).unwrap_or(&TejxType::Void);
+                    format!("{} %{}", Self::get_llvm_type(ty), p)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        // Track function parameter counts for Call/IndirectCall logic
+        self.function_param_counts
+            .insert(func.name.clone(), func.params.len());
+        self.current_function_params = func.params.iter().cloned().collect();
+
         self.emit(&format!(
-            "define i64 @\"{}\"({}) {{\n",
-            func.name, params_str
+            "define {} @\"{}\"({}) {{\n",
+            ret_llvm_ty, func.name, params_str
         ));
 
         // Entry: allocas for all variables used in the function
         self.emit("entry:\n");
         let entry_marker = self.buffer.len();
 
-        if !self.declared_functions.contains("rt_safepoint_poll") {
-            self.global_buffer
-                .push_str("declare void @rt_safepoint_poll() nounwind\n");
-            self.declared_functions
-                .insert("rt_safepoint_poll".to_string());
-        }
+        self.declare_runtime_fn("rt_safepoint_poll", "void @rt_safepoint_poll() nounwind");
 
         // 1. Scan for all local variables
-        for _bb in &func.blocks {
-            if !self.declared_functions.contains(RT_ARENA_CREATE) {
-                self.global_buffer
-                    .push_str(&format!("declare i64 @{}(i64) nounwind\n", RT_ARENA_CREATE));
-                self.declared_functions.insert(RT_ARENA_CREATE.to_string());
-            }
-            if !self.declared_functions.contains(RT_ARENA_DESTROY) {
-                self.global_buffer.push_str(&format!(
-                    "declare void @{}(i64) nounwind\n",
-                    RT_ARENA_DESTROY
-                ));
-                self.declared_functions.insert(RT_ARENA_DESTROY.to_string());
-            }
+        // Create one arena per function (not per basic block)
+        if self.needs_arena(func) {
+            self.declare_runtime_fn(
+                RT_ARENA_CREATE,
+                &format!("i64 @{}(i64) nounwind", RT_ARENA_CREATE),
+            );
+            self.declare_runtime_fn(
+                RT_ARENA_DESTROY,
+                &format!("void @{}(i64) nounwind", RT_ARENA_DESTROY),
+            );
             self.temp_counter += 1;
             let arena_reg = format!("%arena_{}", self.temp_counter);
             self.emit_line(&format!(
@@ -1177,9 +1221,15 @@ impl CodeGen {
 
         // 3. Emit allocas deterministically
         for name in &sorted_alloca_vars {
-            let reg_name = format!("%{}_ptr", name.replace('$', "_"));
             let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
-            let llvm_ty = Self::get_llvm_type(ty);
+            // Void-typed temps (e.g. result of void-returning calls or unresolved types)
+            // still need an alloca as they may be used as call destinations. Default to i64.
+            let llvm_ty = if matches!(ty, TejxType::Void) {
+                "i64"
+            } else {
+                Self::get_llvm_type(ty)
+            };
+            let reg_name = format!("%{}_ptr", name.replace('$', "_"));
             self.alloca_buffer
                 .push_str(&format!("  {} = alloca {}\n", reg_name, llvm_ty));
             self.ptr_types.insert(reg_name.clone(), llvm_ty.to_string());
@@ -1194,16 +1244,8 @@ impl CodeGen {
             if !func.params.is_empty() {
                 // Create a NEW environment map for this lambda call
                 // and COPY all keys from the passed environment (%__env)
-                if !self.declared_functions.contains("rt_map_new") {
-                    self.global_buffer
-                        .push_str("declare i64 @rt_map_new(i64) nounwind\n");
-                    self.declared_functions.insert("rt_map_new".to_string());
-                }
-                if !self.declared_functions.contains("rt_Map_merge") {
-                    self.global_buffer
-                        .push_str("declare void @rt_Map_merge(i64, i64) nounwind\n");
-                    self.declared_functions.insert("rt_Map_merge".to_string());
-                }
+                self.declare_runtime_fn("rt_map_new", "i64 @rt_map_new(i64) nounwind");
+                self.declare_runtime_fn("rt_Map_merge", "void @rt_Map_merge(i64, i64) nounwind");
 
                 self.temp_counter += 1;
                 let env_alloca = format!("%env_alloca_{}", self.temp_counter);
@@ -1226,11 +1268,7 @@ impl CodeGen {
                 self.current_env = Some(new_env);
             }
         } else if has_captures {
-            if !self.declared_functions.contains("rt_map_new") {
-                self.global_buffer
-                    .push_str("declare i64 @rt_map_new(i64) nounwind\n");
-                self.declared_functions.insert("rt_map_new".to_string());
-            }
+            self.declare_runtime_fn("rt_map_new", "i64 @rt_map_new(i64) nounwind");
 
             self.temp_counter += 1;
             let env_alloca = format!("%env_alloca_{}", self.temp_counter);
@@ -1270,11 +1308,7 @@ impl CodeGen {
 
         for name in sorted_managed_vars {
             if let Some(ptr_name) = self.value_map.get(&name).cloned() {
-                if !self.declared_functions.contains("rt_push_root") {
-                    self.global_buffer
-                        .push_str("declare void @rt_push_root(i64*) nounwind\n");
-                    self.declared_functions.insert("rt_push_root".to_string());
-                }
+                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
                 self.emit_line(&format!("call void @rt_push_root(i64* {})", ptr_name));
                 self.num_roots += 1;
             }
@@ -1282,44 +1316,29 @@ impl CodeGen {
 
         // Sync parameters to environment if captured
         for p in &func.params {
-            if let Some(cap_key) = self.get_captured_key(p) {
+            if let Some(cap_idx) = self.get_captured_index(p) {
                 if let Some(env) = self.current_env.clone() {
-                    if !self.declared_functions.contains("rt_Map_set") {
-                        self.global_buffer
-                            .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
-                        self.declared_functions.insert("rt_Map_set".to_string());
-                    }
-                    if !self.declared_functions.contains("rt_string_from_c_str") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                        self.declared_functions
-                            .insert("rt_string_from_c_str".to_string());
-                    }
-
-                    // Create key string - use base captured name
-                    let key_global = format!("@str_key_{}", cap_key.replace("$", "_"));
-                    if !self.declared_globals.contains(&key_global) {
-                        self.global_buffer.push_str(&format!(
-                            "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
-                            key_global,
-                            cap_key.len() + 1,
-                            cap_key
-                        ));
-                        self.declared_globals.insert(key_global.clone());
-                    }
-
-                    self.temp_counter += 1;
-                    let key_id = format!("%key_id{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i64 @rt_string_from_c_str(i64 ptrtoint ([{} x i8]* {} to i64))",
-                        key_id,
-                        cap_key.len() + 1,
-                        key_global
-                    ));
+                    self.declare_runtime_fn("rt_array_set_fast", "void @rt_array_set_fast(i64, i64, i64)");
+                    
+                    let ty = func.variables.get(p).unwrap();
+                    let val_to_store = if ty.is_float() {
+                        self.temp_counter += 1;
+                        let bits = format!("%fbits_param_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = bitcast double %{} to i64", bits, p));
+                        bits
+                    } else if ty.is_numeric() || *ty == TejxType::Bool || *ty == TejxType::Char {
+                        let casted = self.emit_abi_cast(&format!("%{}", p), ty, &TejxType::Int64);
+                        self.temp_counter += 1;
+                        let tmp = format!("%zext_param_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = or i64 0, {}", tmp, casted));
+                        tmp
+                    } else {
+                        format!("%{}", p)
+                    };
 
                     self.emit_line(&format!(
-                        "call void @rt_Map_set(i64 {}, i64 {}, i64 %{})",
-                        env, key_id, p
+                        "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                        env, cap_idx, val_to_store
                     ));
                 }
             }
@@ -1412,8 +1431,8 @@ impl CodeGen {
         match inst {
             MIRInstruction::Move { dst, src, .. } => {
                 let val = self.resolve_value(src);
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &val, dst_ty);
+                let src_ty = src.get_type();
+                self.emit_store_variable(dst, &val, &src_ty);
 
                 // Propagate array data pointer tracking across variable copies
                 if let MIRValue::Variable { name: src_name, .. } = src {
@@ -1464,36 +1483,17 @@ impl CodeGen {
 
                 if is_string_op {
                     let l_val = if l_ty.is_numeric() {
-                        let val_as_double = if !l_ty.is_float() {
-                            self.temp_counter += 1;
-                            let d = format!("%d_l{}", self.temp_counter);
-                            self.emit_line(&format!("{} = sitofp i64 {} to double", d, l));
-                            d
-                        } else {
-                            self.temp_counter += 1;
-                            let d = format!("%d_l{}", self.temp_counter);
-                            self.emit_line(&format!("{} = bitcast i64 {} to double", d, l));
-                            d
-                        };
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_l{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = bitcast double {} to i64",
-                            boxed, val_as_double
-                        ));
-                        boxed
-                    } else if matches!(l_ty, TejxType::Bool) {
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_l{}", self.temp_counter);
-                        self.emit_line(&format!("{} = or i64 0, {}", boxed, l));
-                        boxed
+                        let val_as_double = self.emit_abi_cast(&l, l_ty, &TejxType::Float64);
+                        self.emit_abi_cast(
+                            &val_as_double,
+                            &TejxType::Float64,
+                            &TejxType::Class("Any".to_string(), vec![]),
+                        )
                     } else if matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint") {
-                        if !self.declared_functions.contains("rt_string_from_c_str") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                            self.declared_functions
-                                .insert("rt_string_from_c_str".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "rt_string_from_c_str",
+                            "i64 @rt_string_from_c_str(i64)",
+                        );
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_l{}", self.temp_counter);
                         self.emit_line(&format!(
@@ -1502,40 +1502,21 @@ impl CodeGen {
                         ));
                         boxed
                     } else {
-                        l.to_string()
+                        self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]))
                     };
 
                     let r_val = if r_ty.is_numeric() {
-                        let val_as_double = if !r_ty.is_float() {
-                            self.temp_counter += 1;
-                            let d = format!("%d_r{}", self.temp_counter);
-                            self.emit_line(&format!("{} = sitofp i64 {} to double", d, r));
-                            d
-                        } else {
-                            self.temp_counter += 1;
-                            let d = format!("%d_r{}", self.temp_counter);
-                            self.emit_line(&format!("{} = bitcast i64 {} to double", d, r));
-                            d
-                        };
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_r{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = bitcast double {} to i64",
-                            boxed, val_as_double
-                        ));
-                        boxed
-                    } else if matches!(r_ty, TejxType::Bool) {
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_r{}", self.temp_counter);
-                        self.emit_line(&format!("{} = or i64 0, {}", boxed, r));
-                        boxed
+                        let val_as_double = self.emit_abi_cast(&r, r_ty, &TejxType::Float64);
+                        self.emit_abi_cast(
+                            &val_as_double,
+                            &TejxType::Float64,
+                            &TejxType::Class("Any".to_string(), vec![]),
+                        )
                     } else if matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint") {
-                        if !self.declared_functions.contains("rt_string_from_c_str") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-                            self.declared_functions
-                                .insert("rt_string_from_c_str".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "rt_string_from_c_str",
+                            "i64 @rt_string_from_c_str(i64)",
+                        );
                         self.temp_counter += 1;
                         let boxed = format!("%boxed_r{}", self.temp_counter);
                         self.emit_line(&format!(
@@ -1543,46 +1524,32 @@ impl CodeGen {
                             boxed, r
                         ));
                         boxed
-                    } else if matches!(r_ty, TejxType::Int32 | TejxType::Int64) {
-                        self.temp_counter += 1;
-                        let boxed = format!("%boxed_r{}", self.temp_counter);
-                        self.emit_line(&format!("{} = or i64 0, {}", boxed, r));
-                        boxed
                     } else {
-                        r.to_string()
+                        self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]))
                     };
 
                     if matches!(op, TokenType::Plus) {
-                        if !self.declared_functions.contains("rt_str_concat_v2") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_str_concat_v2(i64, i64) nounwind\n");
-                            self.declared_functions
-                                .insert("rt_str_concat_v2".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "rt_str_concat_v2",
+                            "i64 @rt_str_concat_v2(i64, i64) nounwind",
+                        );
                         self.emit_line(&format!(
                             "{} = call i64 @rt_str_concat_v2(i64 {}, i64 {})",
                             tmp, l_val, r_val
                         ));
-                    } else if matches!(op, TokenType::EqualEqual) {
-                        if !self.declared_functions.contains("rt_str_equals") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_str_equals(i64, i64)\n");
-                            self.declared_functions.insert("rt_str_equals".to_string());
-                        }
+                    } else if matches!(op, TokenType::EqualEqual)
+                        || matches!(op, TokenType::EqualEqualEqual)
+                    {
+                        self.declare_runtime_fn("rt_str_equals", "i64 @rt_str_equals(i64, i64)");
                         self.emit_line(&format!(
                             "{} = call i64 @rt_str_equals(i64 {}, i64 {})",
                             tmp, l_val, r_val
                         ));
-                    } else if matches!(op, TokenType::BangEqual) {
-                        if !self.declared_functions.contains("rt_str_equals") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_str_equals(i64, i64)\n");
-                            self.declared_functions.insert("rt_str_equals".to_string());
-                        }
-                        if !self.declared_functions.contains("rt_not") {
-                            self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
-                            self.declared_functions.insert("rt_not".to_string());
-                        }
+                    } else if matches!(op, TokenType::BangEqual)
+                        || matches!(op, TokenType::BangEqualEqual)
+                    {
+                        self.declare_runtime_fn("rt_str_equals", "i64 @rt_str_equals(i64, i64)");
+                        self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
                         let eq_tmp = format!("%eq{}", self.temp_counter);
                         self.emit_line(&format!(
                             "{} = call i64 @rt_str_equals(i64 {}, i64 {})",
@@ -1591,16 +1558,27 @@ impl CodeGen {
                         self.temp_counter += 1;
                         self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_tmp));
                     } else {
+                        // Fallback numeric addition on strings
                         self.emit_line(&format!("{} = add i64 {}, {}", tmp, l_val, r_val));
                     }
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &tmp);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    let final_tmp = self.emit_abi_cast(
+                        &tmp,
+                        &TejxType::Class("Any".to_string(), vec![]),
+                        dst_ty,
+                    );
+                    self.emit_store_variable(dst, &final_tmp, dst_ty);
                 } else if is_numeric_op {
                     let l_is_raw = l_ty.is_numeric() && !l_ty.is_float();
                     let r_is_raw = r_ty.is_numeric() && !r_ty.is_float();
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
 
                     if l_is_raw && r_is_raw {
-                        // Raw Integer path (Fast path)
+                        let op_ty = if l_ty == r_ty { l_ty } else { &TejxType::Int64 };
+                        let op_llvm = Self::get_llvm_type(op_ty);
+                        let l_cast = self.emit_abi_cast(&l, l_ty, op_ty);
+                        let r_cast = self.emit_abi_cast(&r, r_ty, op_ty);
+
                         let (is_cmp, llvm_op, pred) = match op {
                             TokenType::Plus => (false, "add", ""),
                             TokenType::Minus => (false, "sub", ""),
@@ -1608,8 +1586,8 @@ impl CodeGen {
                             TokenType::Slash => (false, "sdiv", ""),
                             TokenType::Less => (true, "", "slt"),
                             TokenType::Greater => (true, "", "sgt"),
-                            TokenType::EqualEqual => (true, "", "eq"),
-                            TokenType::BangEqual => (true, "", "ne"),
+                            TokenType::EqualEqual | TokenType::EqualEqualEqual => (true, "", "eq"),
+                            TokenType::BangEqual | TokenType::BangEqualEqual => (true, "", "ne"),
                             TokenType::LessEqual => (true, "", "sle"),
                             TokenType::GreaterEqual => (true, "", "sge"),
                             TokenType::Modulo => (false, "srem", ""),
@@ -1624,42 +1602,48 @@ impl CodeGen {
                             self.temp_counter += 1;
                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
                             self.emit_line(&format!(
-                                "{} = icmp {} i64 {}, {}",
-                                cmp_res, pred, l, r
+                                "{} = icmp {} {} {}, {}",
+                                cmp_res, pred, op_llvm, l_cast, r_cast
                             ));
-                            self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
+                            let final_res = self.emit_abi_cast(&cmp_res, &TejxType::Bool, dst_ty);
+                            self.emit_store_variable(dst, &final_res, dst_ty);
                         } else {
                             if llvm_op == "sdiv" || llvm_op == "srem" {
-                                if !self.declared_functions.contains("rt_div_zero_error") {
-                                    self.global_buffer
-                                        .push_str("declare void @rt_div_zero_error() nounwind\n");
-                                    self.declared_functions
-                                        .insert("rt_div_zero_error".to_string());
-                                }
+                                self.declare_runtime_fn(
+                                    "rt_div_zero_error",
+                                    "void @rt_div_zero_error() nounwind",
+                                );
                                 let label_id = self.temp_counter;
                                 self.temp_counter += 1;
                                 let is_zero = format!("%is_zero{}", self.temp_counter);
-                                self.emit_line(&format!("{} = icmp eq i64 {}, 0", is_zero, r));
-
+                                self.emit_line(&format!(
+                                    "{} = icmp eq {} {}, 0",
+                                    is_zero, op_llvm, r_cast
+                                ));
                                 let div_error = format!("div_zero_err{}", label_id);
                                 let div_norm = format!("div_norm{}", label_id);
                                 self.emit_line(&format!(
                                     "br i1 {}, label %{}, label %{}",
                                     is_zero, div_error, div_norm
                                 ));
-
                                 self.emit_line(&format!("{}:", div_error));
                                 self.emit_line("call void @rt_div_zero_error()");
                                 self.emit_line("unreachable");
-
                                 self.emit_line(&format!("{}:", div_norm));
                             }
-                            self.emit_line(&format!("{} = {} i64 {}, {}", tmp, llvm_op, l, r));
+                            self.emit_line(&format!(
+                                "{} = {} {} {}, {}",
+                                tmp, llvm_op, op_llvm, l_cast, r_cast
+                            ));
+                            let final_res = self.emit_abi_cast(&tmp, op_ty, dst_ty);
+                            self.emit_store_variable(dst, &final_res, dst_ty);
                         }
                     } else {
                         // Double precision path (Promotion)
-                        let l_f = self.resolve_float_value(left);
-                        let r_f = self.resolve_float_value(right);
+                        let op_ty = &TejxType::Float64;
+                        let op_llvm = Self::get_llvm_type(op_ty);
+                        let l_cast = self.emit_abi_cast(&l, l_ty, op_ty);
+                        let r_cast = self.emit_abi_cast(&r, r_ty, op_ty);
 
                         let (is_cmp, llvm_op, pred) = match op {
                             TokenType::Plus => (false, "fadd", ""),
@@ -1668,17 +1652,14 @@ impl CodeGen {
                             TokenType::Slash => (false, "fdiv", ""),
                             TokenType::Less => (true, "", "olt"),
                             TokenType::Greater => (true, "", "ogt"),
-                            TokenType::EqualEqual => (true, "", "oeq"),
-                            TokenType::EqualEqualEqual => (true, "", "oeq"),
-                            TokenType::BangEqual => (true, "", "one"),
-                            TokenType::BangEqualEqual => (true, "", "one"),
+                            TokenType::EqualEqual | TokenType::EqualEqualEqual => (true, "", "oeq"),
+                            TokenType::BangEqual | TokenType::BangEqualEqual => (true, "", "one"),
                             TokenType::LessEqual => (true, "", "ole"),
                             TokenType::GreaterEqual => (true, "", "oge"),
                             TokenType::Modulo => (false, "frem", ""),
                             _ => (false, "fadd", ""),
                         };
 
-                        // Specialized path for Any equality to use value comparison
                         let is_equality = matches!(
                             op,
                             TokenType::EqualEqual
@@ -1688,29 +1669,33 @@ impl CodeGen {
                         );
 
                         if is_any_op && is_equality {
-                            let l_eval = self.resolve_value(left);
-                            let r_eval = self.resolve_value(right);
-                            let func = match op {
+                            let l_eval = self.emit_abi_cast(
+                                &l,
+                                l_ty,
+                                &TejxType::Class("Any".to_string(), vec![]),
+                            );
+                            let r_eval = self.emit_abi_cast(
+                                &r,
+                                r_ty,
+                                &TejxType::Class("Any".to_string(), vec![]),
+                            );
+                            let func_name = match op {
                                 TokenType::EqualEqual | TokenType::BangEqual => "rt_eq",
                                 _ => "rt_strict_equal",
                             };
-                            if !self.declared_functions.contains(func) {
-                                self.global_buffer
-                                    .push_str(&format!("declare i64 @{}(i64, i64)\n", func));
-                                self.declared_functions.insert(func.to_string());
-                            }
+                            self.declare_runtime_fn(
+                                func_name,
+                                &format!("i64 @{}(i64, i64)", func_name),
+                            );
                             let eq_res = format!("%eq_res{}", self.temp_counter);
                             self.temp_counter += 1;
                             self.emit_line(&format!(
                                 "{} = call i64 @{}(i64 {}, i64 {})",
-                                eq_res, func, l_eval, r_eval
+                                eq_res, func_name, l_eval, r_eval
                             ));
 
                             if matches!(op, TokenType::BangEqual | TokenType::BangEqualEqual) {
-                                if !self.declared_functions.contains("rt_not") {
-                                    self.global_buffer.push_str("declare i64 @rt_not(i64)\n");
-                                    self.declared_functions.insert("rt_not".to_string());
-                                }
+                                self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
                                 self.emit_line(&format!(
                                     "{} = call i64 @rt_not(i64 {})",
                                     tmp, eq_res
@@ -1718,80 +1703,70 @@ impl CodeGen {
                             } else {
                                 self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, eq_res));
                             }
+                            let final_res = self.emit_abi_cast(
+                                &tmp,
+                                &TejxType::Class("Any".to_string(), vec![]),
+                                dst_ty,
+                            );
+                            self.emit_store_variable(dst, &final_res, dst_ty);
                         } else if is_cmp {
                             self.temp_counter += 1;
                             let cmp_res = format!("%cmp_res{}", self.temp_counter);
                             self.emit_line(&format!(
-                                "{} = fcmp {} double {}, {}",
-                                cmp_res, pred, l_f, r_f
+                                "{} = fcmp {} {} {}, {}",
+                                cmp_res, pred, op_llvm, l_cast, r_cast
                             ));
-                            self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
+                            let final_res = self.emit_abi_cast(&cmp_res, &TejxType::Bool, dst_ty);
+                            self.emit_store_variable(dst, &final_res, dst_ty);
                         } else {
-                            self.temp_counter += 1;
-                            let res_f = format!("%res_f_{}", self.temp_counter);
                             self.emit_line(&format!(
-                                "{} = {} double {}, {}",
-                                res_f, llvm_op, l_f, r_f
+                                "{} = {} {} {}, {}",
+                                tmp, llvm_op, op_llvm, l_cast, r_cast
                             ));
-
-                            // Record float SSA variable for potential reuse
-                            self.float_ssa_vars.insert(dst.clone(), res_f.clone());
-
-                            // Does the destination expect a raw integer or a bitcasted double?
-                            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                            if dst_ty.is_numeric() && !dst_ty.is_float() {
-                                self.emit_line(&format!(
-                                    "{} = fptosi double {} to i64",
-                                    tmp, res_f
-                                ));
-                            } else {
-                                self.emit_line(&format!(
-                                    "{} = bitcast double {} to i64",
-                                    tmp, res_f
-                                ));
-                            }
+                            let final_res = self.emit_abi_cast(&tmp, op_ty, dst_ty);
+                            self.emit_store_variable(dst, &final_res, dst_ty);
                         }
                     }
-                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                    self.emit_store_variable(dst, &tmp, dst_ty);
                 } else {
-                    // Integer / DefaultFallback
+                    // DefaultFallback (e.g. Object comparisons)
                     let (is_cmp, llvm_op, pred) = match op {
                         TokenType::Plus => (false, "add", ""),
                         TokenType::Minus => (false, "sub", ""),
                         TokenType::Star => (false, "mul", ""),
                         TokenType::Slash => (false, "sdiv", ""),
-                        TokenType::Modulo => (false, "srem", ""),
                         TokenType::Less => (true, "", "slt"),
                         TokenType::Greater => (true, "", "sgt"),
                         TokenType::LessEqual => (true, "", "sle"),
                         TokenType::GreaterEqual => (true, "", "sge"),
-                        TokenType::EqualEqual => (true, "", "eq"),
-                        TokenType::BangEqual => (true, "", "ne"),
+                        TokenType::EqualEqual | TokenType::EqualEqualEqual => (true, "", "eq"),
+                        TokenType::BangEqual | TokenType::BangEqualEqual => (true, "", "ne"),
                         _ => (false, "add", ""),
                     };
+
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    let op_ty = if l_ty == r_ty { l_ty } else { &TejxType::Int64 };
+                    let op_llvm = Self::get_llvm_type(op_ty);
+
+                    let l_cast = self.emit_abi_cast(&l, l_ty, op_ty);
+                    let r_cast = self.emit_abi_cast(&r, r_ty, op_ty);
+
                     if is_cmp {
                         self.temp_counter += 1;
                         let cmp_res = format!("%cmp_res{}", self.temp_counter);
-                        self.emit_line(&format!("{} = icmp {} i64 {}, {}", cmp_res, pred, l, r));
-                        self.emit_line(&format!("{} = zext i1 {} to i64", tmp, cmp_res));
+                        self.emit_line(&format!(
+                            "{} = icmp {} {} {}, {}",
+                            cmp_res, pred, op_llvm, l_cast, r_cast
+                        ));
+                        let final_res = self.emit_abi_cast(&cmp_res, &TejxType::Bool, dst_ty);
+                        self.emit_store_variable(dst, &final_res, dst_ty);
                     } else {
-                        self.temp_counter += 1;
-                        let res_i = format!("%res_i{}", self.temp_counter);
-                        self.emit_line(&format!("{} = {} i64 {}, {}", res_i, llvm_op, l, r));
-
-                        if false {
-                            // Inline: convert int result to bitcasted double representation
-                            self.temp_counter += 1;
-                            let res_f = format!("%res_f{}", self.temp_counter);
-                            self.emit_line(&format!("{} = sitofp i64 {} to double", res_f, res_i));
-                            self.emit_line(&format!("{} = bitcast double {} to i64", tmp, res_f));
-                        } else {
-                            self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, res_i));
-                        }
+                        self.emit_line(&format!(
+                            "{} = {} {} {}, {}",
+                            tmp, llvm_op, op_llvm, l_cast, r_cast
+                        ));
+                        let final_res = self.emit_abi_cast(&tmp, op_ty, dst_ty);
+                        self.emit_store_variable(dst, &final_res, dst_ty);
                     }
-                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                    self.emit_store_variable(dst, &tmp, dst_ty);
                 }
             }
 
@@ -1837,26 +1812,23 @@ impl CodeGen {
 
                 let cond_val = self.resolve_value(condition);
 
-                let cond = if true {
-                    if !self.declared_functions.contains("rt_to_boolean") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_to_boolean(i64)\n");
-                        self.declared_functions.insert("rt_to_boolean".to_string());
-                    }
+                let cond = if condition.get_type() == &TejxType::Bool {
+                    cond_val
+                } else {
+                    let casted_cond =
+                        self.emit_abi_cast(&cond_val, condition.get_type(), &TejxType::Int64);
+                    self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
                     self.temp_counter += 1;
                     let bool_val = format!("%bool_val{}", self.temp_counter);
                     self.emit_line(&format!(
                         "{} = call i64 @rt_to_boolean(i64 {})",
-                        bool_val, cond_val
+                        bool_val, casted_cond
                     ));
-                    bool_val
-                } else {
-                    cond_val
+                    self.temp_counter += 1;
+                    let cmp = format!("%cmp{}", self.temp_counter);
+                    self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, bool_val));
+                    cmp
                 };
-
-                self.temp_counter += 1;
-                let cmp = format!("%cmp{}", self.temp_counter);
-                self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, cond));
 
                 // Safepoint poll for backward branches (loops)
                 if *true_target <= current_bb || *false_target <= current_bb {
@@ -1866,16 +1838,16 @@ impl CodeGen {
                 let true_name = if *true_target < func.blocks.len() {
                     func.blocks[*true_target].name.clone()
                 } else {
-                    "unknown".to_string()
+                    "unreachable_block".to_string()
                 };
                 let false_name = if *false_target < func.blocks.len() {
                     func.blocks[*false_target].name.clone()
                 } else {
-                    "unknown".to_string()
+                    "unreachable_block".to_string()
                 };
                 self.emit_line(&format!(
                     "br i1 {}, label %{}, label %{}",
-                    cmp, true_name, false_name
+                    cond, true_name, false_name
                 ));
             }
             MIRInstruction::Return { value, .. } => {
@@ -1888,11 +1860,7 @@ impl CodeGen {
                 }
 
                 if self.num_roots > 0 {
-                    if !self.declared_functions.contains("rt_pop_roots") {
-                        self.global_buffer
-                            .push_str("declare void @rt_pop_roots(i64) nounwind\n");
-                        self.declared_functions.insert("rt_pop_roots".to_string());
-                    }
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
                     self.emit_line(&format!("call void @rt_pop_roots(i64 {})", self.num_roots));
                 }
 
@@ -1900,11 +1868,16 @@ impl CodeGen {
                     self.emit_line(&format!("call void @{}(i64 {})", RT_ARENA_DESTROY, arena));
                 }
 
-                if let Some(val) = value {
-                    let v = self.resolve_value(val);
-                    self.emit_line(&format!("ret i64 {}", v));
+                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
+                if let Some(v) = value {
+                    let val_str = self.resolve_value(v);
+                    self.emit_line(&format!("ret {} {}", ret_llvm_ty, val_str));
                 } else {
-                    self.emit_line("ret i64 0");
+                    if ret_llvm_ty == "void" {
+                        self.emit_line("ret void");
+                    } else {
+                        self.emit_line(&format!("ret {} 0", ret_llvm_ty)); // fallback
+                    }
                 }
             }
             MIRInstruction::Call {
@@ -1913,14 +1886,28 @@ impl CodeGen {
                 if callee == "rt_box_number" {
                     let float_val = self.resolve_float_value(&args[0]);
 
-                    self.temp_counter += 1;
-                    let result_tmp = format!("%boxed_num{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast double {} to i64",
-                        result_tmp, float_val
-                    ));
                     if !dst.is_empty() {
                         let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        let result_tmp = match dst_ty {
+                            TejxType::Float32 => {
+                                self.temp_counter += 1;
+                                let tmp = format!("%boxed_num{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = fptrunc double {} to float",
+                                    tmp, float_val
+                                ));
+                                tmp
+                            }
+                            _ => {
+                                self.temp_counter += 1;
+                                let tmp = format!("%boxed_num{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = bitcast double {} to i64",
+                                    tmp, float_val
+                                ));
+                                tmp
+                            }
+                        };
                         self.emit_store_variable(dst, &result_tmp, dst_ty);
                     }
                     return;
@@ -1931,14 +1918,41 @@ impl CodeGen {
 
                     if !dst.is_empty() {
                         self.float_ssa_vars.insert(dst.clone(), float_val.clone());
-                        self.temp_counter += 1;
-                        let bits_tmp = format!("%bits{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = bitcast double {} to i64",
-                            bits_tmp, float_val
-                        ));
                         let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                        self.emit_store_variable(dst, &bits_tmp, dst_ty);
+                        
+                        let store_val = match dst_ty {
+                            TejxType::Float32 => {
+                                // fptrunc double -> float for Float32 destinations
+                                self.temp_counter += 1;
+                                let trunc = format!("%ftrunc{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = fptrunc double {} to float",
+                                    trunc, float_val
+                                ));
+                                trunc
+                            }
+                            TejxType::Float64 => {
+                                // Store the double directly via bitcast to i64
+                                self.temp_counter += 1;
+                                let bits_tmp = format!("%bits{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = bitcast double {} to i64",
+                                    bits_tmp, float_val
+                                ));
+                                bits_tmp
+                            }
+                            _ => {
+                                // Default: bitcast double -> i64 for integer/general types
+                                self.temp_counter += 1;
+                                let bits_tmp = format!("%bits{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = bitcast double {} to i64",
+                                    bits_tmp, float_val
+                                ));
+                                bits_tmp
+                            }
+                        };
+                        self.emit_store_variable(dst, &store_val, dst_ty);
                     }
                     return;
                 }
@@ -1946,7 +1960,7 @@ impl CodeGen {
                 if callee == RT_CLASS_NEW {
                     let class_name = match &args[0] {
                         MIRValue::Constant { value, .. } => value.trim_matches('"').to_string(),
-                        _ => "any".to_string(),
+                        _ => "UnknownClass".to_string(),
                     };
 
                     let type_id = self.type_id_map.get(&class_name).cloned().unwrap_or(2);
@@ -1970,15 +1984,11 @@ impl CodeGen {
                         && body_size > 1024
                         && self.current_arena.is_some()
                     {
-                        // Arena Allocation
                         let arena = self.current_arena.clone().unwrap();
-                        if !self.declared_functions.contains(RT_ARENA_ALLOC) {
-                            self.global_buffer.push_str(&format!(
-                                "declare i64 @{}(i64, i32, i64) nounwind\n",
-                                RT_ARENA_ALLOC
-                            ));
-                            self.declared_functions.insert(RT_ARENA_ALLOC.to_string());
-                        }
+                        self.declare_runtime_fn(
+                            RT_ARENA_ALLOC,
+                            &format!("i64 @{}(i64, i32, i64) nounwind", RT_ARENA_ALLOC),
+                        );
 
                         self.temp_counter += 1;
                         let result_tmp = format!("%call{}", self.temp_counter);
@@ -1987,8 +1997,8 @@ impl CodeGen {
                             result_tmp, RT_ARENA_ALLOC, arena, type_id, body_size as i64
                         ));
 
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &result_tmp);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &result_tmp, dst_ty);
                         return;
                     }
 
@@ -2023,13 +2033,10 @@ impl CodeGen {
                         ));
 
                         // Zero-initialize entire object (Header + Body) to be GC-safe
-                        if !self.declared_functions.contains("llvm.memset.p0i8.i64") {
-                            self.global_buffer.push_str(
-                                "declare void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)\n",
-                            );
-                            self.declared_functions
-                                .insert("llvm.memset.p0i8.i64".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "llvm.memset.p0i8.i64",
+                            "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
+                        );
                         self.emit_line(&format!(
                             "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
                             obj_alloca, total_size
@@ -2043,13 +2050,10 @@ impl CodeGen {
                         ));
 
                         // Call runtime to finalize setup (age, etc.)
-                        if !self.declared_functions.contains(RT_CLASS_NEW) {
-                            self.global_buffer.push_str(&format!(
-                                "declare i64 @{}(i32, i64, i64, i64*, i64) nounwind\n",
-                                RT_CLASS_NEW
-                            ));
-                            self.declared_functions.insert(RT_CLASS_NEW.to_string());
-                        }
+                        self.declare_runtime_fn(
+                            RT_CLASS_NEW,
+                            &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
+                        );
 
                         self.temp_counter += 1;
                         let result_tmp = format!("%call{}", self.temp_counter);
@@ -2059,8 +2063,8 @@ impl CodeGen {
                             result_tmp, RT_CLASS_NEW, type_id, body_size as i64, body_ptr
                         ));
 
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &result_tmp);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &result_tmp, dst_ty);
 
                         // Register as GC root
                         self.temp_counter += 1;
@@ -2073,13 +2077,10 @@ impl CodeGen {
                         return;
                     } else {
                         // Heap Allocation
-                        if !self.declared_functions.contains(RT_CLASS_NEW) {
-                            self.global_buffer.push_str(&format!(
-                                "declare i64 @{}(i32, i64, i64, i64*, i64) nounwind\n",
-                                RT_CLASS_NEW
-                            ));
-                            self.declared_functions.insert(RT_CLASS_NEW.to_string());
-                        }
+                        self.declare_runtime_fn(
+                            RT_CLASS_NEW,
+                            &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
+                        );
 
                         self.temp_counter += 1;
                         let result_tmp = format!("%call{}", self.temp_counter);
@@ -2088,8 +2089,8 @@ impl CodeGen {
                             result_tmp, RT_CLASS_NEW, type_id, body_size as i64
                         ));
 
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &result_tmp);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &result_tmp, dst_ty);
                         return;
                     }
                 }
@@ -2116,13 +2117,10 @@ impl CodeGen {
                         ));
 
                         // Zero-initialize entire object (Header + Body)
-                        if !self.declared_functions.contains("llvm.memset.p0i8.i64") {
-                            self.global_buffer.push_str(
-                                "declare void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)\n",
-                            );
-                            self.declared_functions
-                                .insert("llvm.memset.p0i8.i64".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "llvm.memset.p0i8.i64",
+                            "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
+                        );
                         self.emit_line(&format!(
                             "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
                             obj_alloca, total_size
@@ -2149,11 +2147,10 @@ impl CodeGen {
                         ));
 
                         // Call constructor with stack address
-                        if !self.declared_functions.contains(RT_MAP_NEW) {
-                            self.global_buffer
-                                .push_str(&format!("declare i64 @{}(i64) nounwind\n", RT_MAP_NEW));
-                            self.declared_functions.insert(RT_MAP_NEW.to_string());
-                        }
+                        self.declare_runtime_fn(
+                            RT_MAP_NEW,
+                            &format!("i64 @{}(i64) nounwind", RT_MAP_NEW),
+                        );
 
                         self.temp_counter += 1;
                         let result_tmp = format!("%call{}", self.temp_counter);
@@ -2162,8 +2159,8 @@ impl CodeGen {
                             result_tmp, RT_MAP_NEW, body_ptr
                         ));
 
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &result_tmp);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &result_tmp, dst_ty);
 
                         // Register as GC root (important if it contains heap pointers)
                         self.temp_counter += 1;
@@ -2177,23 +2174,23 @@ impl CodeGen {
                     }
 
                     // Heap Allocation
-                    if !self.declared_functions.contains(RT_MAP_NEW) {
-                        self.global_buffer
-                            .push_str(&format!("declare i64 @{}(i64) nounwind\n", RT_MAP_NEW));
-                        self.declared_functions.insert(RT_MAP_NEW.to_string());
-                    }
+                    self.declare_runtime_fn(
+                        RT_MAP_NEW,
+                        &format!("i64 @{}(i64) nounwind", RT_MAP_NEW),
+                    );
 
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
                     self.emit_line(&format!("{} = call i64 @{}(i64 0)", result_tmp, RT_MAP_NEW));
 
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &result_tmp);
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    self.emit_store_variable(dst, &result_tmp, dst_ty);
                     return;
                 }
 
                 if callee == "rt_box_int" || callee == "rt_box_boolean" || callee == "rt_box_char" {
-                    let arg_val = self.resolve_value(&args[0]);
+                    let mut arg_val = self.resolve_value(&args[0]);
+                    arg_val = self.emit_abi_cast(&arg_val, args[0].get_type(), &TejxType::Int64);
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
                     // Primitives are now bitcasted directly into i64 slots (generic slots)
@@ -2237,8 +2234,8 @@ impl CodeGen {
                     let res_val = format!("%res{}", self.temp_counter);
                     self.emit_line(&format!("{} = load i64, i64* {}", res_val, ptr_cast));
                     if !dst.is_empty() {
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &res_val);
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &res_val, dst_ty);
                     }
                     return;
                 }
@@ -2329,21 +2326,12 @@ impl CodeGen {
                     };
 
                     if let Some((intrinsic_name, param_count)) = intrinsic {
-                        // Declare the intrinsic
-                        if !self.declared_functions.contains(intrinsic_name) {
-                            if param_count == 1 {
-                                self.global_buffer.push_str(&format!(
-                                    "declare double @{}(double)\n",
-                                    intrinsic_name
-                                ));
-                            } else {
-                                self.global_buffer.push_str(&format!(
-                                    "declare double @{}(double, double)\n",
-                                    intrinsic_name
-                                ));
-                            }
-                            self.declared_functions.insert(intrinsic_name.to_string());
-                        }
+                        let sig = if param_count == 1 {
+                            format!("double @{}(double)", intrinsic_name)
+                        } else {
+                            format!("double @{}(double, double)", intrinsic_name)
+                        };
+                        self.declare_runtime_fn(intrinsic_name, &sig);
 
                         // Convert arg(s) from i64 to double using optimal SSA path
                         let arg1_f = self.resolve_float_value(&args[0]);
@@ -2403,18 +2391,15 @@ impl CodeGen {
                         };
                         let llvm_ret = Self::get_llvm_type(&ret_ty);
 
-                        if !self.declared_functions.contains(callee) {
-                            let decl_args = args
-                                .iter()
-                                .map(|a| Self::get_llvm_type(a.get_type()))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            self.global_buffer.push_str(&format!(
-                                "declare {} @{}({})\n",
-                                llvm_ret, callee, decl_args
-                            ));
-                            self.declared_functions.insert(callee.clone());
-                        }
+                        let decl_args = args
+                            .iter()
+                            .map(|a| Self::get_llvm_type(a.get_type()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.declare_runtime_fn(
+                            callee,
+                            &format!("{} @{}({})", llvm_ret, callee, decl_args),
+                        );
                         self.temp_counter += 1;
                         let result_tmp = format!("%call{}", self.temp_counter);
                         self.emit_line(&format!(
@@ -2547,7 +2532,7 @@ impl CodeGen {
                             call_args_info.push((
                                 MIRValue::Variable {
                                     name: instance_var.clone(),
-                                    ty: TejxType::Class("any".to_string(), vec![]),
+                                    ty: TejxType::Int64,
                                 },
                                 tmp,
                             ));
@@ -2571,63 +2556,83 @@ impl CodeGen {
                         call_args_info.push((arg.clone(), reg));
                     }
 
-                    let callee_expects_double_args = final_callee.starts_with("std_math_");
-                    let callee_returns_double = callee_expects_double_args
-                        || final_callee == "rt_to_number"
-                        || final_callee == "rt_math_random";
+                    let is_math_fn = final_callee.starts_with("std_math_");
+                    let is_runtime_fn = final_callee.starts_with("rt_")
+                        || final_callee.starts_with("tejx_")
+                        || final_callee == "printf"
+                        || final_callee == "malloc"
+                        || final_callee == "free";
 
                     let mut llvm_args = Vec::new();
                     let mut llvm_decl_args = Vec::new();
 
                     for (arg_mir, reg) in call_args_info {
                         let arg_ty = arg_mir.get_type();
-                        let mut final_reg = reg;
+                        let mut final_reg = reg.clone();
 
-                        // Ensure string literals are boxed when passed to functions (unless the function is rt_string_from_c_str)
+                        // Ensure string literals are boxed when passed to runtime functions (except rt_string_from_c_str)
                         if matches!(arg_ty, TejxType::String)
                             && final_reg.starts_with("ptrtoint")
                             && final_callee != "rt_string_from_c_str"
+                            && is_runtime_fn
                         {
                             final_reg = self.emit_box_string(&final_reg);
                         }
 
-                        if callee_expects_double_args {
-                            self.temp_counter += 1;
-                            let f_reg = format!("%f_arg_{}", self.temp_counter);
-                            if arg_ty.is_float() {
-                                self.emit_line(&format!(
-                                    "{} = bitcast i64 {} to double",
-                                    f_reg, final_reg
-                                ));
-                            } else {
-                                self.emit_line(&format!(
-                                    "{} = sitofp i64 {} to double",
-                                    f_reg, final_reg
-                                ));
-                            }
-                            llvm_args.push(format!("double {}", f_reg));
-                            llvm_decl_args.push("double");
+                        let target_llvm_ty = if is_math_fn {
+                            "double".to_string()
+                        } else if is_runtime_fn {
+                            "i64".to_string()
                         } else {
-                            llvm_args.push(format!("i64 {}", final_reg));
-                            llvm_decl_args.push("i64");
-                        }
+                            Self::get_llvm_type(arg_ty).to_string()
+                        };
+
+                        let casted = if is_math_fn {
+                            self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float64)
+                        } else if is_runtime_fn {
+                            self.emit_abi_cast(
+                                &final_reg,
+                                arg_ty,
+                                &TejxType::Class("Any".to_string(), vec![]),
+                            )
+                        } else {
+                            final_reg // Native type is matched!
+                        };
+
+                        llvm_args.push(format!("{} {}", target_llvm_ty, casted));
+                        llvm_decl_args.push(target_llvm_ty);
                     }
 
                     let args_str = llvm_args.join(", ");
                     let decl_args_str = llvm_decl_args.join(", ");
-                    let ret_ty = if callee_returns_double {
-                        "double"
+
+                    let ret_ty = if !dst.is_empty() {
+                        func.variables.get(dst).cloned().unwrap_or(TejxType::Void)
                     } else {
-                        "i64"
+                        TejxType::Void
                     };
 
-                    let use_quotes = !(final_callee.starts_with("rt_")
-                        || final_callee.starts_with("tejx_")
-                        || final_callee.starts_with("std_")
-                        || final_callee == "printf"
-                        || final_callee == "malloc"
-                        || final_callee == "free");
+                    let decl_ret = if is_math_fn
+                        || final_callee == "rt_to_number"
+                        || final_callee == "rt_math_random"
+                    {
+                        "double".to_string()
+                    } else if is_runtime_fn {
+                        if final_callee == "rt_promise_resolve"
+                            || final_callee == "rt_promise_reject"
+                            || final_callee == "rt_promise_await_resume"
+                            || final_callee == "rt_Map_set"
+                            || final_callee == "rt_Map_merge"
+                        {
+                            "void".to_string()
+                        } else {
+                            "i64".to_string()
+                        }
+                    } else {
+                        Self::get_llvm_type(&ret_ty).to_string()
+                    };
 
+                    let use_quotes = !is_runtime_fn;
                     let callee_symbol = if use_quotes
                         || final_callee.starts_with("f_")
                         || final_callee.starts_with("m_")
@@ -2639,62 +2644,32 @@ impl CodeGen {
 
                     self.temp_counter += 1;
                     let result_tmp = format!("%call{}", self.temp_counter);
-                    if !self.declared_functions.contains(&final_callee) {
-                        let pure_attrs = "";
-                        let mut decl_ret = ret_ty;
 
-                        // Fix: rt_promise_resolve/reject and others are void in runtime
-                        if final_callee == "rt_promise_resolve"
-                            || final_callee == "rt_promise_reject"
-                            || final_callee == "rt_promise_await_resume"
-                            || final_callee == "rt_Map_set"
-                            || final_callee == "rt_Map_merge"
-                        {
-                            decl_ret = "void";
-                        }
+                    let sig = format!("{} {}({})", decl_ret, callee_symbol, decl_args_str);
+                    self.declare_runtime_fn(&final_callee, &sig);
 
-                        self.global_buffer.push_str(&format!(
-                            "declare {} {}({}){}\n",
-                            decl_ret, callee_symbol, decl_args_str, pure_attrs
-                        ));
-                        self.declared_functions.insert(final_callee.clone());
-                    }
-
-                    if final_callee == "rt_promise_resolve"
-                        || final_callee == "rt_promise_reject"
-                        || final_callee == "rt_promise_await_resume"
-                        || final_callee == "rt_Map_set"
-                        || final_callee == "rt_Map_merge"
-                    {
+                    if decl_ret == "void" {
                         self.emit_line(&format!("call void {}({})", callee_symbol, args_str));
                     } else {
                         self.emit_line(&format!(
                             "{} = call {} {}({})",
-                            result_tmp, ret_ty, callee_symbol, args_str
+                            result_tmp, decl_ret, callee_symbol, args_str
                         ));
                     }
 
-                    let mut final_result = result_tmp.clone();
-                    // If it was a void call, we still might have a 'dst' that expects a value.
-                    // Store 0 as a dummy if needed, though well-formed MIR shouldn't do this.
-                    if final_callee == "rt_promise_resolve"
-                        || final_callee == "rt_promise_reject"
-                        || final_callee == "rt_promise_await_resume"
-                        || final_callee == "rt_Map_set"
-                        || final_callee == "rt_Map_merge"
-                    {
-                        final_result = "0".to_string();
+                    let mut final_val = result_tmp.clone();
+                    if !dst.is_empty() {
+                        if is_math_fn && decl_ret == "double" {
+                            final_val =
+                                self.emit_abi_cast(&result_tmp, &TejxType::Float64, &ret_ty);
+                        } else if is_runtime_fn && decl_ret == "i64" {
+                            final_val = self.emit_abi_cast(
+                                &result_tmp,
+                                &TejxType::Class("Any".to_string(), vec![]),
+                                &ret_ty,
+                            );
+                        }
                     }
-                    if callee_returns_double {
-                        self.temp_counter += 1;
-                        let i_res = format!("%i_res_{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = bitcast double {} to i64",
-                            i_res, result_tmp
-                        ));
-                        final_result = i_res;
-                    }
-                    let result_tmp = final_result;
 
                     // --- INVALDIATION: Remove cached data pointers if array could reallocate ---
                     // To remain generic without hardcoded arrays of methods, we conservatively
@@ -2720,7 +2695,7 @@ impl CodeGen {
 
                     // --- Ownership Transfer: Mark consumed arguments as Moved ---
                     // Dynamic stdlib detection: functions from prelude/runtime don't consume args
-                    let is_stdlib = final_callee.starts_with("f_")
+                    let is_stdlib = final_callee.starts_with("std_")
                         || final_callee.starts_with("rt_")
                         || final_callee.starts_with("tejx_")
                         || final_callee.starts_with("m_");
@@ -2765,9 +2740,9 @@ impl CodeGen {
 
                         if should_consume {}
                     }
-                    if !dst.is_empty() {
-                        let ptr = self.resolve_ptr(dst);
-                        self.store_ptr(&ptr, &result_tmp);
+                    if !dst.is_empty() && decl_ret != "void" {
+                        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                        self.emit_store_variable(dst, &final_val, dst_ty);
                     }
 
                     // --- ARRAY CONSTRUCTOR: Cache data pointer for direct access ---
@@ -2857,18 +2832,8 @@ impl CodeGen {
 
                 self.emit(&format!("{}:\n", ok_label));
 
-                if !self.declared_functions.contains("rt_get_closure_ptr") {
-                    self.global_buffer
-                        .push_str("declare i64 @rt_get_closure_ptr(i64)\n");
-                    self.declared_functions
-                        .insert("rt_get_closure_ptr".to_string());
-                }
-                if !self.declared_functions.contains("rt_get_closure_env") {
-                    self.global_buffer
-                        .push_str("declare i64 @rt_get_closure_env(i64)\n");
-                    self.declared_functions
-                        .insert("rt_get_closure_env".to_string());
-                }
+                self.declare_runtime_fn("rt_get_closure_ptr", "i64 @rt_get_closure_ptr(i64)");
+                self.declare_runtime_fn("rt_get_closure_env", "i64 @rt_get_closure_env(i64)");
 
                 self.temp_counter += 1;
                 let ptr_reg = format!("%cb_ptr{}", self.temp_counter);
@@ -2937,10 +2902,7 @@ impl CodeGen {
                 let mut used_fast = false;
                 if member == "length" {
                     // Use rt_len for .length access
-                    if !self.declared_functions.contains("rt_len") {
-                        self.global_buffer.push_str("declare i64 @rt_len(i64)\n");
-                        self.declared_functions.insert("rt_len".to_string());
-                    }
+                    self.declare_runtime_fn("rt_len", "i64 @rt_len(i64)");
                     self.emit_line(&format!("{} = call i64 @rt_len(i64 {})", res_tmp, obj_val));
                     used_fast = true;
                 } else {
@@ -3022,12 +2984,10 @@ impl CodeGen {
                             value: format!("\"{}\"", member),
                             ty: TejxType::String,
                         });
-                        if !self.declared_functions.contains("rt_map_get_fast") {
-                            self.global_buffer
-                                .push_str("declare i64 @rt_map_get_fast(i64, i64)\n");
-                            self.declared_functions
-                                .insert("rt_map_get_fast".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "rt_map_get_fast",
+                            "i64 @rt_map_get_fast(i64, i64)",
+                        );
                         self.emit_line(&format!(
                             "{} = call i64 @rt_map_get_fast(i64 {}, i64 {})",
                             res_tmp, obj_val, k_val
@@ -3059,11 +3019,7 @@ impl CodeGen {
                 }
 
                 let final_res = if needs_unboxing && dst_ty.is_numeric() && !dst_ty.is_float() {
-                    if !self.declared_functions.contains("rt_to_number") {
-                        self.global_buffer
-                            .push_str("declare double @rt_to_number(i64)\n");
-                        self.declared_functions.insert("rt_to_number".to_string());
-                    }
+                    self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
                     self.temp_counter += 1;
                     let f_val = format!("%f_val_{}", self.temp_counter);
                     self.emit_line(&format!(
@@ -3075,11 +3031,7 @@ impl CodeGen {
                     self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
                     i_val
                 } else if needs_unboxing && dst_ty.is_float() {
-                    if !self.declared_functions.contains("rt_to_number") {
-                        self.global_buffer
-                            .push_str("declare double @rt_to_number(i64)\n");
-                        self.declared_functions.insert("rt_to_number".to_string());
-                    }
+                    self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
                     self.temp_counter += 1;
                     let f_val = format!("%f_val_{}", self.temp_counter);
                     self.emit_line(&format!(
@@ -3091,18 +3043,14 @@ impl CodeGen {
                     self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
                     bc_val
                 } else if needs_unboxing && matches!(dst_ty, TejxType::Bool) {
-                    if !self.declared_functions.contains("rt_to_boolean") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_to_boolean(i64)\n");
-                        self.declared_functions.insert("rt_to_boolean".to_string());
-                    }
+                    self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
                     self.temp_counter += 1;
                     let b_val = format!("%b_val_{}", self.temp_counter);
                     self.emit_line(&format!(
                         "{} = call i64 @rt_to_boolean(i64 {})",
                         b_val, res_tmp
                     ));
-                    b_val
+                    self.emit_abi_cast(&b_val, &TejxType::Int64, &TejxType::Bool)
                 } else {
                     res_tmp
                 };
@@ -3178,19 +3126,8 @@ impl CodeGen {
                             typed_field_ptr, field_ptr, llvm_ty
                         ));
 
-                        let truncated_val = format!("%trunc_val_store_{}", self.temp_counter);
-                        self.temp_counter += 1;
-                        if llvm_ty == "i64" {
-                            self.emit_line(&format!(
-                                "{} = bitcast i64 {} to i64",
-                                truncated_val, v_val
-                            ));
-                        } else {
-                            self.emit_line(&format!(
-                                "{} = trunc i64 {} to {}",
-                                truncated_val, v_val, llvm_ty
-                            ));
-                        }
+                        let casted_val = self.emit_abi_cast(&v_val, &v_ty, &field_ty);
+                        let truncated_val = casted_val;
                         self.emit_line(&format!(
                             "store {} {}, {}* {}",
                             llvm_ty, truncated_val, llvm_ty, typed_field_ptr
@@ -3202,13 +3139,10 @@ impl CodeGen {
                 // If not a static class field, check if it's an array index
                 if !used_fast_store && obj.get_type().is_array() {
                     if let Ok(idx) = member.parse::<i64>() {
-                        if !self.declared_functions.contains("rt_array_set_fast") {
-                            self.global_buffer.push_str(
-                                "declare void @rt_array_set_fast(i64, i64, i64) nounwind\n",
-                            );
-                            self.declared_functions
-                                .insert("rt_array_set_fast".to_string());
-                        }
+                        self.declare_runtime_fn(
+                            "rt_array_set_fast",
+                            "void @rt_array_set_fast(i64, i64, i64) nounwind",
+                        );
                         self.emit_line(&format!(
                             "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
                             obj_val, idx, v_val
@@ -3228,17 +3162,17 @@ impl CodeGen {
                     if v_ty.is_float() {
                         self.emit_line(&format!("{} = bitcast double {} to i64", boxed_reg, v_val));
                     } else {
-                        self.emit_line(&format!("{} = or i64 0, {}", boxed_reg, v_val));
+                        let casted = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
+                        self.emit_line(&format!("{} = or i64 0, {}", boxed_reg, casted));
                     }
                     v_val = boxed_reg;
                 }
 
                 if !used_fast_store {
-                    if !self.declared_functions.contains("rt_Map_set") {
-                        self.global_buffer
-                            .push_str("declare void @rt_Map_set(i64, i64, i64) nounwind\n");
-                        self.declared_functions.insert("rt_Map_set".to_string());
-                    }
+                    self.declare_runtime_fn(
+                        "rt_Map_set",
+                        "void @rt_Map_set(i64, i64, i64) nounwind",
+                    );
                     self.emit_line(&format!(
                         "call void @rt_Map_set(i64 {}, i64 {}, i64 {})",
                         obj_val, k_val, v_val
@@ -3250,35 +3184,37 @@ impl CodeGen {
             } => {
                 let obj_val = self.resolve_value(obj);
                 let idx_val = self.resolve_value(index);
+                let idx_val = self.emit_abi_cast(&idx_val, index.get_type(), &TejxType::Int64);
                 self.temp_counter += 1;
                 let res_tmp = format!("%val{}", self.temp_counter);
 
-                if !self.declared_functions.contains("rt_array_get_fast") {
-                    self.global_buffer
-                        .push_str("declare i64 @rt_array_get_fast(i64, i64) nounwind\n");
-                    self.declared_functions
-                        .insert("rt_array_get_fast".to_string());
-                }
+                self.declare_runtime_fn(
+                    "rt_array_get_fast",
+                    "i64 @rt_array_get_fast(i64, i64) nounwind",
+                );
                 self.emit_line(&format!(
                     "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
                     res_tmp, obj_val, idx_val
                 ));
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &res_tmp, dst_ty);
+                let casted = self.emit_abi_cast(&res_tmp, &TejxType::Int64, dst_ty);
+                self.emit_store_variable(dst, &casted, dst_ty);
             }
             MIRInstruction::StoreIndex {
                 obj, index, src, ..
             } => {
                 let obj_val = self.resolve_value(obj);
                 let idx_val = self.resolve_value(index);
-                let v_val = self.resolve_value(src);
+                let mut v_val = self.resolve_value(src);
 
-                if !self.declared_functions.contains("rt_array_set_fast") {
-                    self.global_buffer
-                        .push_str("declare void @rt_array_set_fast(i64, i64, i64) nounwind\n");
-                    self.declared_functions
-                        .insert("rt_array_set_fast".to_string());
-                }
+                let idx_val = self.emit_abi_cast(&idx_val, index.get_type(), &TejxType::Int64);
+                let src_ty = src.get_type();
+                v_val = self.emit_abi_cast(&v_val, src_ty, &TejxType::Int64);
+
+                self.declare_runtime_fn(
+                    "rt_array_set_fast",
+                    "void @rt_array_set_fast(i64, i64, i64) nounwind",
+                );
                 self.emit_line(&format!(
                     "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
                     obj_val, idx_val, v_val
@@ -3286,11 +3222,7 @@ impl CodeGen {
             }
             MIRInstruction::Throw { value, .. } => {
                 if self.num_roots > 0 {
-                    if !self.declared_functions.contains("rt_pop_roots") {
-                        self.global_buffer
-                            .push_str("declare void @rt_pop_roots(i64) nounwind\n");
-                        self.declared_functions.insert("rt_pop_roots".to_string());
-                    }
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
                     self.emit_line(&format!("call void @rt_pop_roots(i64 {})", self.num_roots));
                 }
                 let val = self.resolve_value(value);
@@ -3322,12 +3254,7 @@ impl CodeGen {
                         self.emit_line(&format!("{} = add i64 {}, 0", tmp, s));
                     }
                 } else if ty.is_numeric() {
-                    if !self.declared_functions.contains("rt_to_number_v2") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_to_number_v2(i64)\n");
-                        self.declared_functions
-                            .insert("rt_to_number_v2".to_string());
-                    }
+                    self.declare_runtime_fn("rt_to_number_v2", "i64 @rt_to_number_v2(i64)");
                     self.temp_counter += 1;
                     let num_val = format!("%num_val{}", self.temp_counter);
                     self.emit_line(&format!(
@@ -3344,21 +3271,24 @@ impl CodeGen {
                         self.emit_line(&format!("{} = fptosi double {} to i64", tmp, f_val));
                     }
                 } else if matches!(ty, TejxType::Bool) {
-                    if !self.declared_functions.contains("rt_to_boolean") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_to_boolean(i64)\n");
-                        self.declared_functions.insert("rt_to_boolean".to_string());
+                    if matches!(src_ty, TejxType::Bool) {
+                        self.emit_line(&format!("{} = add i1 {}, 0", tmp, s));
+                    } else {
+                        let casted_s = self.emit_abi_cast(&s, src_ty, &TejxType::Int64);
+                        self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
+                        self.temp_counter += 1;
+                        let bool_val = format!("%bool_val{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = call i64 @rt_to_boolean(i64 {})",
+                            bool_val, casted_s
+                        ));
+                        self.emit_line(&format!("{} = icmp ne i64 {}, 0", tmp, bool_val));
                     }
-                    self.emit_line(&format!("{} = call i64 @rt_to_boolean(i64 {})", tmp, s));
                 } else if matches!(ty, TejxType::String)
                     && !src_ty.is_numeric()
                     && !matches!(src_ty, TejxType::Bool)
                 {
-                    if !self.declared_functions.contains("rt_to_string") {
-                        self.global_buffer
-                            .push_str("declare i64 @rt_to_string(i64)\n");
-                        self.declared_functions.insert("rt_to_string".to_string());
-                    }
+                    self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
                     self.emit_line(&format!("{} = call i64 @rt_to_string(i64 {})", tmp, s));
                 } else {
                     // Generic bitcast for other types
@@ -3407,12 +3337,7 @@ impl CodeGen {
     }
 
     fn emit_box_string(&mut self, raw_ptr: &str) -> String {
-        if !self.declared_functions.contains("rt_string_from_c_str") {
-            self.global_buffer
-                .push_str("declare i64 @rt_string_from_c_str(i64)\n");
-            self.declared_functions
-                .insert("rt_string_from_c_str".to_string());
-        }
+        self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
         self.temp_counter += 1;
         let boxed = format!("%boxed_str{}", self.temp_counter);
         self.emit_line(&format!(
