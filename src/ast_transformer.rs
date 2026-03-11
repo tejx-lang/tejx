@@ -2,24 +2,31 @@ use crate::ast::*;
 use std::collections::HashMap;
 
 pub struct TypeSubstitutor<'a> {
-    pub substitutions: &'a HashMap<String, String>,
+    pub substitutions: &'a HashMap<String, TypeNode>,
 }
 
 impl<'a> TypeSubstitutor<'a> {
-    pub fn new(substitutions: &'a HashMap<String, String>) -> Self {
+    pub fn new(substitutions: &'a HashMap<String, TypeNode>) -> Self {
         Self { substitutions }
     }
 
     fn substitute_type_node(&self, node: &mut TypeNode) {
-        match node {
-            TypeNode::Named(name) => {
-                if let Some(sub) = self.substitutions.get(name) {
-                    *name = sub.clone();
-                }
+        let mut replacement = None;
+        if let TypeNode::Named(name) = node {
+            if let Some(sub) = self.substitutions.get(name) {
+                replacement = Some(sub.clone());
             }
+        }
+        if let Some(r) = replacement {
+            *node = r;
+            return;
+        }
+
+        match node {
+            TypeNode::Named(_) => {}
             TypeNode::Generic(name, args) => {
                 if let Some(sub) = self.substitutions.get(name) {
-                    *name = sub.clone();
+                    *name = sub.to_string();
                 }
                 for arg in args {
                     self.substitute_type_node(arg);
@@ -46,16 +53,9 @@ impl<'a> TypeSubstitutor<'a> {
         }
     }
 
-    pub fn substitute_type(&self, type_annotation: &mut TypeAnnotation) {
+    pub fn substitute_type(&self, type_node: &mut TypeNode) {
         // Substitute strictly within the structured node AST
-        self.substitute_type_node(&mut type_annotation.node);
-        
-        // Re-sync the raw_name representation using the robust node structure
-        type_annotation.raw_name = type_annotation.node.to_string();
-        
-        if let Some(sz) = &mut type_annotation.size_expr {
-            self.transform_expression(sz);
-        }
+        self.substitute_type_node(type_node);
     }
 
     pub fn transform_statement(&self, stmt: &mut Statement) {
@@ -179,9 +179,9 @@ impl<'a> TypeSubstitutor<'a> {
                 for a in args { self.transform_expression(a); }
                 
                 // transform class_name if it has generic args
-                let mut temp_ty = TypeAnnotation::from_name(class_name.clone());
+                let mut temp_ty = TypeNode::Named(class_name.clone());
                 self.substitute_type(&mut temp_ty);
-                *class_name = temp_ty.raw_name;
+                *class_name = temp_ty.to_string();
             }
             Expression::LambdaExpr { params, body, .. } => {
                 for p in params { self.substitute_type(&mut p.type_name); }

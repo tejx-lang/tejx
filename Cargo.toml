@@ -1,12 +1,22 @@
+[workspace]
+members = [
+    "tejx-runtime"
+]
+
 [package]
 name = "tejxc"
 version = "0.2.0"
-edition = "2024"
+edition = "2021"
 build = "build.rs"
 
 [dependencies]
 colored = "3.1.1"
+reqwest = { version = "0.13.2", features = ["default"] }
+tokio = { version = "1.50.0", features = ["rt", "time", "net", "macros"] }
 wat = "1.222.0"
+
+[build-dependencies]
+cc = "1.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(runtime_build)'] }

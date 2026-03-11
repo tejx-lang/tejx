@@ -502,12 +502,15 @@ unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
     ) as *mut u8;
 
     if ptr as isize == -1 {
-        //printf("FATAL: Failed to allocate large object\n\0".as_ptr() as *const _);
+        eprintln!(
+            "FATAL: Failed to allocate large object of size {} from mmap",
+            size
+        );
         exit(1);
     }
 
     if LOS_COUNT >= MAX_LOS_OBJECTS {
-        //printf("FATAL: LOS Overflow\n\0".as_ptr() as *const _);
+        eprintln!("FATAL: LOS Overflow");
         exit(1);
     }
 
@@ -575,6 +578,10 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                         continue;
                     }
                     //printf("FATAL: Out of memory in Eden after minor_gc\n\0".as_ptr() as *const _);
+                    eprintln!(
+                        "FATAL: Out of memory in Eden after minor_gc (refill_size: {})",
+                        refill_size
+                    );
                     exit(1);
                 }
                 continue;

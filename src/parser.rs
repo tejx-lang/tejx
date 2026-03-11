@@ -153,7 +153,7 @@ impl Parser {
 
         let pattern = self.parse_binding_pattern();
 
-        let mut type_annotation = TypeAnnotation::from_name("".to_string());
+        let mut type_annotation = TypeNode::Any;
         if self.match_token(TokenType::Colon) {
             type_annotation = self.parse_type_annotation();
         }
@@ -175,10 +175,10 @@ impl Parser {
         // Handle multiple declarations: let x = 1, y = 2;
         while self.match_token(TokenType::Comma) {
             let p = self.parse_binding_pattern();
-            let mut ta = TypeAnnotation::from_name("".to_string());
-            if self.match_token(TokenType::Colon) {
-                ta = self.parse_type_annotation();
-            }
+        let mut ta = TypeNode::Any;
+        if self.match_token(TokenType::Colon) {
+            ta = self.parse_type_annotation();
+        }
             let mut init = None;
             if self.match_token(TokenType::Equals) {
                 init = Some(Box::new(self.parse_assignment()));
@@ -376,7 +376,7 @@ impl Parser {
                     .consume(TokenType::Identifier, "Expected param name")
                     .value
                     .clone();
-                let mut p_type = TypeAnnotation::from_name("".to_string());
+                let mut p_type = TypeNode::Any;
                 if self.match_token(TokenType::Colon) {
                     p_type = self.parse_type_annotation();
                 }
@@ -399,7 +399,7 @@ impl Parser {
         }
         self.consume(TokenType::CloseParen, "Expected ')'");
 
-        let mut return_type = TypeAnnotation::from_name("".to_string());
+        let mut return_type = TypeNode::Any;
         if self.match_token(TokenType::Colon) {
             return_type = self.parse_type_annotation();
         }
@@ -526,7 +526,7 @@ impl Parser {
                             .consume(TokenType::Identifier, "Expected param name")
                             .value
                             .clone();
-                        let mut type_name = TypeAnnotation::from_name("".to_string());
+                        let mut type_name = TypeNode::Any;
                         if self.match_token(TokenType::Colon) {
                             type_name = self.parse_type_annotation();
                         }
@@ -550,7 +550,7 @@ impl Parser {
                 constructor = Some(FunctionDeclaration {
                     name: "constructor".to_string(),
                     params,
-                    return_type: TypeAnnotation::from_name("void".to_string()),
+                    return_type: TypeNode::Named("void".to_string()),
                     body: Box::new(body),
                     _is_async: false,
                     is_extern: false,
@@ -570,7 +570,7 @@ impl Parser {
                     .clone();
                 self.consume(TokenType::OpenParen, "Expected '('");
                 self.consume(TokenType::CloseParen, "Expected ')'");
-                let mut return_type = TypeAnnotation::from_name("".to_string());
+                let mut return_type = TypeNode::Any;
                 if self.match_token(TokenType::Colon) {
                     return_type = self.parse_type_annotation();
                 }
@@ -595,7 +595,7 @@ impl Parser {
                     .consume(TokenType::Identifier, "Expected param")
                     .value
                     .clone();
-                let mut p_type = TypeAnnotation::from_name("".to_string());
+                let mut p_type = TypeNode::Any;
                 if self.match_token(TokenType::Colon) {
                     p_type = self.parse_type_annotation();
                 }
@@ -667,7 +667,7 @@ impl Parser {
                             .consume(TokenType::Identifier, "Expected param")
                             .value
                             .clone();
-                        let mut p_type = TypeAnnotation::from_name("".to_string());
+                        let mut p_type = TypeNode::Any;
                         if self.match_token(TokenType::Colon) {
                             p_type = self.parse_type_annotation();
                         }
@@ -683,7 +683,7 @@ impl Parser {
                     }
                 }
                 self.consume(TokenType::CloseParen, "Expected ')'");
-                let mut return_type = TypeAnnotation::from_name("void".to_string());
+                let mut return_type = TypeNode::Named("void".to_string());
                 if self.match_token(TokenType::Colon) {
                     return_type = self.parse_type_annotation();
                 }
@@ -717,7 +717,7 @@ impl Parser {
                 });
             } else {
                 // Field
-                let mut type_name = TypeAnnotation::from_name("".to_string());
+                let mut type_name = TypeNode::Any;
                 if self.match_token(TokenType::Colon) {
                     type_name = self.parse_type_annotation();
                 }
@@ -754,7 +754,7 @@ impl Parser {
             constructor = Some(FunctionDeclaration {
                 name: "constructor".to_string(),
                 params: vec![],
-                return_type: TypeAnnotation::from_name("void".to_string()),
+                return_type: TypeNode::Named("void".to_string()),
                 body: Box::new(Statement::BlockStmt {
                     statements: vec![],
                     _line: start.line,
@@ -831,7 +831,7 @@ impl Parser {
                         .consume(TokenType::Identifier, "Param name")
                         .value
                         .clone();
-                    let mut p_type = TypeAnnotation::from_name("".to_string());
+                    let mut p_type = TypeNode::Any;
                     if self.match_token(TokenType::Colon) {
                         p_type = self.parse_type_annotation();
                     }
@@ -848,7 +848,7 @@ impl Parser {
             }
             self.consume(TokenType::CloseParen, "Expected ')'");
 
-            let mut return_type = TypeAnnotation::from_name("void".to_string());
+            let mut return_type = TypeNode::Named("void".to_string());
             if self.match_token(TokenType::Colon) {
                 return_type = self.parse_type_annotation();
             }
@@ -870,7 +870,7 @@ impl Parser {
         self.consume(TokenType::CloseBrace, "Expected '}'");
 
         Statement::ExtensionDeclaration(ExtensionDeclaration {
-            _target_type: TypeAnnotation::from_name(target_type),
+            _target_type: TypeNode::Named(target_type),
             _methods: methods,
             _line: start.line,
             _col: start.column,
@@ -1104,7 +1104,7 @@ impl Parser {
         }
     }
 
-    fn parse_type_annotation(&mut self) -> TypeAnnotation {
+    fn parse_type_annotation(&mut self) -> TypeNode {
         let mut base_type = self.parse_base_type();
 
         // Union Type: A | B
@@ -1112,26 +1112,23 @@ impl Parser {
         while self.match_token(TokenType::Pipe) {
             let next_type = self.parse_single_type();
             if union_types.is_empty() {
-                union_types.push(base_type.node.clone());
+                union_types.push(base_type.clone());
             }
-            union_types.push(next_type.node.clone());
-            
-            base_type.raw_name.push_str(" | ");
-            base_type.raw_name.push_str(&next_type.to_string());
+            union_types.push(next_type);
         }
         
         if !union_types.is_empty() {
-            base_type.node = TypeNode::Union(union_types);
+            base_type = TypeNode::Union(union_types);
         }
 
         base_type
     }
 
-    fn parse_single_type(&mut self) -> TypeAnnotation {
+    fn parse_single_type(&mut self) -> TypeNode {
         self.parse_base_type()
     }
 
-    fn parse_base_type(&mut self) -> TypeAnnotation {
+    fn parse_base_type(&mut self) -> TypeNode {
         // Function type: (params) => returnType
         if self.match_token(TokenType::OpenParen) {
             let mut params_str = String::new();
@@ -1146,12 +1143,11 @@ impl Parser {
                             .clone();
                         self.consume(TokenType::Colon, "Expected ':'");
                         let p_type = self.parse_type_annotation();
-                        params_str.push_str(&format!("{}: {}", name, p_type));
-                        param_nodes.push(p_type.node);
+                        params_str.push_str(&format!("{}: {}", name, p_type.to_string()));
+                        param_nodes.push(p_type);
                     } else {
                         let p_type = self.parse_type_annotation();
-                        params_str.push_str(&p_type.to_string());
-                        param_nodes.push(p_type.node);
+                        param_nodes.push(p_type);
                     }
 
                     if self.match_token(TokenType::Comma) {
@@ -1166,15 +1162,12 @@ impl Parser {
             self.consume(TokenType::Arrow, "Expected '=>'");
             let ret_type = self.parse_type_annotation();
             
-            let mut ann = TypeAnnotation::from_name(format!("{} => {}", params_str, ret_type));
-            ann.node = TypeNode::Function(param_nodes, Box::new(ret_type.node));
-            return ann;
+            return TypeNode::Function(param_nodes, Box::new(ret_type));
         }
 
         // Object Type: { x: number, y: string }
         if self.match_token(TokenType::OpenBrace) {
-            let mut members = Vec::new();
-            let mut member_nodes = Vec::new();
+            let mut member_nodes: Vec<(String, bool, TypeNode)> = Vec::new();
             while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
                 let key = self
                     .consume_identifier("Expected property name")
@@ -1189,8 +1182,7 @@ impl Parser {
                 };
                 self.consume(TokenType::Colon, "Expected ':'");
                 let val_type = self.parse_type_annotation();
-                members.push(format!("{}{}: {}", key, optional, val_type));
-                member_nodes.push((key, is_opt, val_type.node.clone()));
+                member_nodes.push((key, is_opt, val_type));
 
                 if self.match_token(TokenType::Comma) || self.match_token(TokenType::Semicolon) {
                     // continue
@@ -1199,26 +1191,16 @@ impl Parser {
                 }
             }
             self.consume(TokenType::CloseBrace, "Expected '}'");
-            let mut base_ty = format!("{{ {} }}", members.join("; "));
-            let mut size_expr = None;
             let mut node = TypeNode::Object(member_nodes);
             
             while self.match_token(TokenType::OpenBracket) {
-                base_ty.push_str("[]"); // Always add [] to the name
                 node = TypeNode::Array(Box::new(node));
                 if !self.match_token(TokenType::CloseBracket) {
-                    let expr = self.parse_expression();
+                    let _expr = self.parse_expression();
                     self.consume(TokenType::CloseBracket, "Expected ']'");
-                    if size_expr.is_none() {
-                        size_expr = Some(Box::new(expr));
-                    }
                 }
             }
-            return TypeAnnotation {
-                node,
-                raw_name: base_ty,
-                size_expr,
-            };
+            return node;
         }
 
         // Array Type: number[]
@@ -1235,8 +1217,7 @@ impl Parser {
                 base_type_name.push('<');
                 loop {
                     let type_ann = self.parse_type_annotation();
-                    base_type_name.push_str(&type_ann.to_string());
-                    generic_args.push(type_ann.node);
+                    generic_args.push(type_ann);
                     
                     if self.match_token(TokenType::Comma) {
                         base_type_name.push_str(", ");
@@ -1297,46 +1278,34 @@ impl Parser {
                     self.filename.clone(),
                 ));
                 self.advance();
-                return TypeAnnotation::from_name("{unknown}".to_string());
+                return TypeNode::Named("{unknown}".to_string());
             }
             base_node = TypeNode::Named(base_type_name.clone());
         }
 
-        let mut size_expr = None;
         while self.match_token(TokenType::OpenBracket) {
-            base_type_name.push_str("[]"); // Always add [] to the name
             base_node = TypeNode::Array(Box::new(base_node));
             if !self.match_token(TokenType::CloseBracket) {
                 // Sized array: Type[expr]
-                let expr = self.parse_expression();
+                let _expr = self.parse_expression();
                 self.consume(TokenType::CloseBracket, "Expected ']'");
-
-                if size_expr.is_none() {
-                    size_expr = Some(Box::new(expr));
-                }
             }
         }
 
-        // Parse intersection types (A & B & C)
         let mut intersection_types = Vec::new();
         while self.match_token(TokenType::Ampersand) {
             let next_type = self.parse_base_type();
             if intersection_types.is_empty() {
                 intersection_types.push(base_node.clone());
             }
-            intersection_types.push(next_type.node.clone());
-            base_type_name = format!("{} & {}", base_type_name, next_type.to_string());
+            intersection_types.push(next_type);
         }
         
         if !intersection_types.is_empty() {
             base_node = TypeNode::Intersection(intersection_types);
         }
 
-        TypeAnnotation {
-            node: base_node,
-            raw_name: base_type_name,
-            size_expr,
-        }
+        base_node
     }
 
     // --- Statements ---
@@ -1999,11 +1968,52 @@ impl Parser {
         expr
     }
 
+    fn is_generic_call_lookahead(&self) -> bool {
+        let mut i = self.current;
+        if self.tokens[i].token_type != TokenType::Less {
+            return false;
+        }
+        i += 1;
+        let mut depth = 1;
+        while i < self.tokens.len() && self.tokens[i].token_type != TokenType::EndOfFile {
+            match self.tokens[i].token_type {
+                TokenType::Less => depth += 1,
+                TokenType::Greater => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let next_type = self.tokens[i + 1].token_type;
+                        return next_type == TokenType::OpenParen || next_type == TokenType::QuestionDot;
+                    }
+                }
+                TokenType::Semicolon | TokenType::OpenBrace | TokenType::Equals | TokenType::Let | TokenType::Function => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     fn parse_call(&mut self) -> Expression {
         let start_token = self.peek().clone(); // Capture start for location
         let mut expr = self.parse_primary();
 
         loop {
+            let mut type_args = None;
+            if self.is_generic_call_lookahead() {
+                self.advance(); // consume '<'
+                let mut t_args = Vec::new();
+                if !self.check(TokenType::Greater) {
+                    loop {
+                        t_args.push(self.parse_type_annotation());
+                        if !self.match_token(TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.consume(TokenType::Greater, "Expected '>' after type arguments");
+                type_args = Some(t_args);
+            }
+
             if self.match_token(TokenType::OpenParen) {
                 // Call
                 let mut args = Vec::new();
@@ -2019,6 +2029,7 @@ impl Parser {
 
                 expr = Expression::CallExpr {
                     callee: Box::new(expr),
+                    type_args,
                     args,
                     _line: start_token.line,
                     _col: start_token.column,
@@ -2037,11 +2048,20 @@ impl Parser {
                     let end = self.consume(TokenType::CloseParen, "Expected ')'");
                     expr = Expression::OptionalCallExpr {
                         callee: Box::new(expr),
+                        type_args,
                         args,
                         _line: end.line,
                         _col: end.column,
                     };
                 } else if self.match_token(TokenType::OpenBracket) {
+                    if type_args.is_some() {
+                        self.errors.push(crate::diagnostics::Diagnostic::new(
+                            "Type arguments not allowed before array access".to_string(),
+                            start_token.line,
+                            start_token.column,
+                            self.filename.clone(),
+                        ));
+                    }
                     let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
                                                                               // match_token(QuestionDot) advanced. current is at next token.
                                                                               // if next token is OpenParen -> call.
@@ -2055,6 +2075,14 @@ impl Parser {
                         _col: 0,
                     };
                 } else {
+                    if type_args.is_some() {
+                        self.errors.push(crate::diagnostics::Diagnostic::new(
+                            "Type arguments not allowed before member access".to_string(),
+                            start_token.line,
+                            start_token.column,
+                            self.filename.clone(),
+                        ));
+                    }
                     let member = self
                         .consume_identifier("Expected property name after '?.'")
                         .value
@@ -2067,20 +2095,38 @@ impl Parser {
                     };
                 }
             } else if self.match_token(TokenType::Dot) || self.match_token(TokenType::DoubleColon) {
+                if type_args.is_some() {
+                    self.errors.push(crate::diagnostics::Diagnostic::new(
+                        "Type arguments not allowed before static/member access".to_string(),
+                        start_token.line,
+                        start_token.column,
+                        self.filename.clone(),
+                    ));
+                }
                 let is_double_colon =
                     self.tokens[self.current - 1].token_type == TokenType::DoubleColon;
                 let name = self
                     .consume_identifier("Expected property name after separator")
                     .value
                     .clone();
+                let _line = self.tokens[self.current - 1].line;
+                let _col = self.tokens[self.current - 1].column;
                 expr = Expression::MemberAccessExpr {
                     object: Box::new(expr),
                     member: name,
-                    _line: 0,
-                    _col: 0,
+                    _line,
+                    _col,
                     _is_namespace: is_double_colon,
                 };
             } else if self.match_token(TokenType::OpenBracket) {
+                if type_args.is_some() {
+                    self.errors.push(crate::diagnostics::Diagnostic::new(
+                        "Type arguments not allowed before array access".to_string(),
+                        start_token.line,
+                        start_token.column,
+                        self.filename.clone(),
+                    ));
+                }
                 let index = self.parse_assignment();
                 self.consume(TokenType::CloseBracket, "Expected ']'");
                 expr = Expression::ArrayAccessExpr {
@@ -2098,6 +2144,14 @@ impl Parser {
                     _col: start_token.column,
                 };
             } else {
+                if type_args.is_some() {
+                    self.errors.push(crate::diagnostics::Diagnostic::new(
+                        "Unused type arguments".to_string(),
+                        start_token.line,
+                        start_token.column,
+                        self.filename.clone(),
+                    ));
+                }
                 break;
             }
         }
@@ -2310,7 +2364,7 @@ impl Parser {
                 .clone();
             params.push(Parameter {
                 name,
-                type_name: TypeAnnotation::from_name("".to_string()),
+                type_name: TypeNode::Any,
                 _default_value: None,
                 _is_rest: false,
             });
@@ -2324,7 +2378,7 @@ impl Parser {
                         .consume(TokenType::Identifier, "Expected param name")
                         .value
                         .clone();
-                    let mut type_name = TypeAnnotation::from_name("".to_string());
+                    let mut type_name = TypeNode::Any;
                     if self.match_token(TokenType::Colon) {
                         type_name = self.parse_type_annotation();
                     }
@@ -2796,7 +2850,7 @@ impl Parser {
             _constructor: Some(FunctionDeclaration {
                 name: "constructor".to_string(),
                 params: vec![],
-                return_type: TypeAnnotation::from_name("void".to_string()),
+                return_type: TypeNode::Named("void".to_string()),
                 body: Box::new(Statement::BlockStmt {
                     statements: vec![],
                     _line: start.line,

@@ -21,3 +21,4 @@ libruntime.a
 *.mjs
 
 editors/
+*.bak

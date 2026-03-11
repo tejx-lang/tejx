@@ -421,6 +421,12 @@ impl Lexer {
             }
         }
 
+        if !self.is_at_end() && (self.peek(0).is_alphabetic() || self.peek(0) == '_') {
+            while !self.is_at_end() && (self.peek(0).is_alphanumeric() || self.peek(0) == '_') {
+                value.push(self.advance());
+            }
+        }
+
         Token::new(TokenType::Number, value, self.line, start_col)
     }
 

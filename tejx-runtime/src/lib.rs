@@ -2891,8 +2891,11 @@ extern "C" {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *mut *mut u8) -> i32 {
+    eprintln!("INITIALIZING TEJX RUNTIME!");
     rt_init_gc();
+    eprintln!("EDEN_START = {:?}", crate::gc::EDEN_START);
     rt_init_types();
+    eprintln!("CALLING tejx_main()...");
     tejx_main();
     tejx_run_event_loop();
     0
@@ -3871,7 +3874,7 @@ pub unsafe extern "C" fn rt_move_member(id: i64, index: i32) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_instanceof(obj: i64, _class_name: i64) -> i32 {
+pub unsafe extern "C" fn rt_instanceof(obj: i64, _class_name: i64) -> i64 {
     if obj < HEAP_OFFSET {
         return 0;
     }
