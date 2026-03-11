@@ -779,7 +779,7 @@ impl Lowering {
                         new_var_args.push(HIRExpression::ArrayLiteral {
                             line: line,
                             elements: rest.to_vec(),
-                            ty: TejxType::Int64,
+                            ty: TejxType::DynamicArray(Box::new(TejxType::Any)),
                             sized_allocation: None,
                         });
                         final_args = new_var_args;
@@ -1119,7 +1119,7 @@ impl Lowering {
                             line: line,
                             elements: rest.to_vec(),
                             sized_allocation: None,
-                            ty: TejxType::Int64,
+                            ty: TejxType::DynamicArray(Box::new(TejxType::Any)),
                         });
                         hir_args = new_var_args;
                     }

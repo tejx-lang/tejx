@@ -907,16 +907,23 @@ pub unsafe extern "C" fn rt_Array_constructor(_this: i64, size: i64, elem_size: 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Array_constructor_v2(
     _this: i64,
-    size: i64,
+    size_or_arr: i64,
     elem_size: i64,
     flags: i64,
 ) -> i64 {
+    let size = if (size_or_arr as u64) >= (HEAP_OFFSET as u64) {
+        rt_len(size_or_arr)
+    } else {
+        size_or_arr
+    };
+
     let cap = if size == 0 { 4 } else { size };
-    let mut elem_size = elem_size;
-    if elem_size == 0 {
-        elem_size = 8; // Default to 8 if unknown
+    let mut actual_elem_size = elem_size;
+    if actual_elem_size == 0 {
+        actual_elem_size = 8; // Default to 8 if unknown
     }
-    let total_size = (cap * elem_size) as usize;
+    
+    let total_size = (cap * actual_elem_size) as usize;
     let body_ptr = gc_allocate(total_size);
 
     fflush(std::ptr::null_mut());
@@ -926,10 +933,26 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     (*header).length = size as u32;
     (*header).capacity = cap as u32;
     // Store elem_size in lower 8 bits of flags
-    (*header).flags = (flags as u16 & 0xFF00) | (elem_size as u16 & 0x00FF);
+    (*header).flags = (flags as u16 & 0xFF00) | (actual_elem_size as u16 & 0x00FF);
+
+    if (size_or_arr as u64) >= (HEAP_OFFSET as u64) {
+        let src_body = (size_or_arr - HEAP_OFFSET) as *mut u8;
+        let src_header = rt_get_header(src_body);
+        let src_elem_size = ((*src_header).flags & 0xFF) as i64;
+
+        if src_elem_size == actual_elem_size {
+            let data_size = (size * actual_elem_size) as usize;
+            memcpy(body_ptr as *mut _, src_body as *const _, data_size);
+        } else {
+            // Slower element-by-element copy if sizes don't match (todo if needed)
+            std::ptr::write_bytes(body_ptr, 0, total_size);
+        }
+    } else {
+        std::ptr::write_bytes(body_ptr, 0, total_size);
+    }
 
     let id = (body_ptr as i64) + HEAP_OFFSET;
-    rt_update_array_cache(id, body_ptr, size, elem_size);
+    rt_update_array_cache(id, body_ptr, size, actual_elem_size);
     id
 }
 

@@ -42,6 +42,12 @@ impl Lowering {
                     _is_const: true,
                 });
 
+                let element_ty = match ty {
+                    TejxType::DynamicArray(inner) | TejxType::FixedArray(inner, _) | TejxType::Slice(inner) => *inner.clone(),
+                    TejxType::Class(n, generics) if n == "Array" && generics.len() == 1 => generics[0].clone(),
+                    _ => TejxType::Any,
+                };
+
                 for (i, el) in elements.iter().enumerate() {
                     let el_init = HIRExpression::IndexAccess {
                         line: line,
@@ -55,9 +61,9 @@ impl Lowering {
                             value: i.to_string(),
                             ty: TejxType::Int32,
                         }),
-                        ty: TejxType::Int64,
+                        ty: element_ty.clone(),
                     };
-                    self.lower_binding_pattern(el, Some(el_init), &TejxType::Void, is_const, stmts);
+                    self.lower_binding_pattern(el, Some(el_init), &element_ty, is_const, stmts);
                 }
 
                 if let Some(r) = rest {
@@ -78,12 +84,12 @@ impl Lowering {
                                 ty: TejxType::Int32,
                             },
                         ],
-                        ty: TejxType::Int64,
+                        ty: ty.clone(),
                     };
                     self.lower_binding_pattern(
                         r,
                         Some(slice_init),
-                        &TejxType::Void,
+                        ty,
                         is_const,
                         stmts,
                     );
@@ -102,6 +108,25 @@ impl Lowering {
                 });
 
                 for (key, target) in entries {
+                    let mut prop_ty = TejxType::Any;
+                    if let TejxType::Object(props) = ty {
+                        for (k, _, t) in props {
+                            if k == key {
+                                prop_ty = t.clone();
+                                break;
+                            }
+                        }
+                    } else if let TejxType::Class(name, _) = ty {
+                        if let Some(fields) = self.class_instance_fields.borrow().get(name) {
+                            for (k, t, _) in fields {
+                                if k == key {
+                                    prop_ty = t.clone();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     let el_init = HIRExpression::MemberAccess {
                         line: line,
                         target: Box::new(HIRExpression::Variable {
@@ -110,12 +135,12 @@ impl Lowering {
                             ty: ty.clone(),
                         }),
                         member: key.clone(),
-                        ty: TejxType::Int64,
+                        ty: prop_ty.clone(),
                     };
                     self.lower_binding_pattern(
                         target,
                         Some(el_init),
-                        &TejxType::Void,
+                        &prop_ty,
                         is_const,
                         stmts,
                     );

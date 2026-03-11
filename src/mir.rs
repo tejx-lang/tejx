@@ -30,6 +30,7 @@ pub enum MIRInstruction {
         left: MIRValue,
         op: TokenType,
         right: MIRValue,
+        op_width: TejxType,
         line: usize,
     },
     Branch {
@@ -74,12 +75,14 @@ pub enum MIRInstruction {
         dst: String,
         obj: MIRValue,
         index: MIRValue,
+        element_ty: TejxType,
         line: usize,
     },
     StoreIndex {
         obj: MIRValue,
         index: MIRValue,
         src: MIRValue,
+        element_ty: TejxType,
         line: usize,
     },
     Throw {

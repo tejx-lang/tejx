@@ -419,6 +419,7 @@ impl MIRLowering {
                             value: state_id.to_string(),
                             ty: TejxType::Int32,
                         },
+                        op_width: TejxType::Int32,
                     });
 
                     self.emit(MIRInstruction::Branch {
@@ -987,7 +988,8 @@ impl MIRLowering {
                             dst: cmp_res.clone(),
                             left: switch_val.clone(),
                             op: TokenType::EqualEqual,
-                            right: case_val,
+                            right: case_val.clone(),
+                            op_width: switch_val.get_type().clone(),
                         });
                         self.emit(MIRInstruction::Branch {
                             line: 0,
@@ -1500,6 +1502,7 @@ impl MIRLowering {
                                 value: "0".to_string(),
                                 ty: TejxType::Int64,
                             },
+                            op_width: TejxType::Int64,
                         });
                         // is_null_bool is True if is_null != 0 (i.e. is null).
 
@@ -1642,15 +1645,14 @@ impl MIRLowering {
                     _ => {
                         let l = self.lower_expression(left);
                         let r = self.lower_expression(right);
-                        let _l_ty = l.get_type();
-                        let _r_ty = r.get_type();
                         let temp = self.new_temp(ty.clone());
                         self.emit(MIRInstruction::BinaryOp {
                             line: 0,
                             dst: temp.clone(),
-                            left: l,
+                            left: l.clone(),
                             op: op.clone(),
                             right: r,
+                            op_width: ty.clone(),
                         });
                         MIRValue::Variable {
                             name: temp,
@@ -1716,6 +1718,7 @@ impl MIRLowering {
                             obj: obj_val,
                             index: idx_val,
                             src: val.clone(),
+                            element_ty: ty.clone(),
                         });
                     }
                     _ => {}
@@ -2132,6 +2135,7 @@ impl MIRLowering {
                     dst: temp.clone(),
                     obj: obj.clone(),
                     index: idx.clone(),
+                    element_ty: load_ty.clone(),
                 });
 
                 let val = MIRValue::Variable {
@@ -2183,7 +2187,7 @@ impl MIRLowering {
                 let map_temp = self.new_temp(ty.clone());
                 self.emit(MIRInstruction::Call {
                     line: 0,
-                    callee: RT_MAP_NEW.to_string(),
+                    callee: "rt_Map_constructor".to_string(),
                     args: vec![],
                     dst: map_temp.clone(),
                 });

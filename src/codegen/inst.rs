@@ -33,9 +33,10 @@ impl CodeGen {
                 left,
                 op,
                 right,
+                op_width,
                 ..
             } => {
-                self.emit_binary_op(func, dst, left, op, right);
+                self.emit_binary_op(func, dst, left, op, right, op_width);
             }
 
             MIRInstruction::Jump { target, .. } => {
@@ -170,14 +171,14 @@ impl CodeGen {
                 self.emit_store_member(func, obj, member, src);
             }
             MIRInstruction::LoadIndex {
-                dst, obj, index, ..
+                dst, obj, index, element_ty, ..
             } => {
-                self.emit_load_index(func, dst, obj, index);
+                self.emit_load_index(func, dst, obj, index, element_ty);
             }
             MIRInstruction::StoreIndex {
-                obj, index, src, ..
+                obj, index, src, element_ty, ..
             } => {
-                self.emit_store_index(func, obj, index, src);
+                self.emit_store_index(func, obj, index, src, element_ty);
             }
             MIRInstruction::Throw { value, .. } => {
                 self.emit_throw(value);
@@ -195,6 +196,7 @@ impl CodeGen {
         left: &MIRValue,
         op: &TokenType,
         right: &MIRValue,
+        op_width: &TejxType,
     ) {
         let l = self.resolve_value(left);
         let r = self.resolve_value(right);
@@ -212,19 +214,16 @@ impl CodeGen {
 
         let unwrap_ty = |ty: &TejxType| -> TejxType { ty.clone() };
 
-        // Check types
-        let is_string_op = matches!(unwrap_ty(l_ty), TejxType::String)
-            || matches!(unwrap_ty(r_ty), TejxType::String);
-        let is_float_op = unwrap_ty(l_ty).is_float() || unwrap_ty(r_ty).is_float();
+        // Use op_width to determine the type of the operation
+        let is_string_op = matches!(op_width, TejxType::String);
+        let is_float_op = op_width.is_float();
         let is_any_op = false || false;
 
         let is_numeric_op = !is_string_op
             && (is_float_op
                 || is_any_op
-                || l_ty.is_numeric()
-                || r_ty.is_numeric()
-                || matches!(l_ty, TejxType::Bool)
-                || matches!(r_ty, TejxType::Bool));
+                || op_width.is_numeric()
+                || matches!(op_width, TejxType::Bool));
 
         if is_string_op {
             let l_val = if l_ty.is_numeric() {
@@ -738,13 +737,13 @@ impl CodeGen {
                 ));
 
                 // Call constructor with stack address
-                self.declare_runtime_fn(RT_MAP_NEW, &format!("i64 @{}(i64) nounwind", RT_MAP_NEW));
+                self.declare_runtime_fn("rt_Map_constructor", "i64 @rt_Map_constructor(i64) nounwind");
 
                 self.temp_counter += 1;
                 let result_tmp = format!("%call{}", self.temp_counter);
                 self.emit_line(&format!(
-                    "{} = call i64 @{}(i64 {})",
-                    result_tmp, RT_MAP_NEW, body_ptr
+                    "{} = call i64 @rt_Map_constructor(i64 {})",
+                    result_tmp, body_ptr
                 ));
 
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
@@ -754,11 +753,11 @@ impl CodeGen {
             }
 
             // Heap Allocation
-            self.declare_runtime_fn(RT_MAP_NEW, &format!("i64 @{}(i64) nounwind", RT_MAP_NEW));
+            self.declare_runtime_fn("rt_Map_constructor", "i64 @rt_Map_constructor(i64) nounwind");
 
             self.temp_counter += 1;
             let result_tmp = format!("%call{}", self.temp_counter);
-            self.emit_line(&format!("{} = call i64 @{}(i64 0)", result_tmp, RT_MAP_NEW));
+            self.emit_line(&format!("{} = call i64 @rt_Map_constructor(i64 0)", result_tmp));
 
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
             self.emit_store_variable(dst, &result_tmp, dst_ty);

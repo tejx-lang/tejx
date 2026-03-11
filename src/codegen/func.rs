@@ -100,7 +100,7 @@ impl CodeGen {
                     callee, args, dst, ..
                 } = inst
                 {
-                    if callee == RT_MAP_NEW
+                    if callee == "rt_Map_constructor"
                         || callee == "f_Array_constructor"
                         || callee == "rt_Array_new_fixed"
                         || callee == "f_Function_constructor"
@@ -199,7 +199,7 @@ impl CodeGen {
                             }
                         }
                         MIRInstruction::BinaryOp {
-                            dst, left, right, ..
+                            dst, left, right, op_width: _, ..
                         } => {
                             if dst.starts_with("g_") {
                                 globals.insert(dst.clone());

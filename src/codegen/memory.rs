@@ -43,7 +43,7 @@ impl CodeGen {
 
                 if let Some((offset, field_ty)) = field_info {
                     let llvm_ty = match field_ty {
-                        TejxType::Bool => "i8",
+                        TejxType::Bool => "i1",
                         TejxType::Int16 | TejxType::Float16 => "i16",
                         TejxType::Int32 | TejxType::Float32 => "i32",
                         _ => "i64",
@@ -202,7 +202,7 @@ impl CodeGen {
                 needs_boxing = false;
 
                 let llvm_ty = match field_ty {
-                    TejxType::Bool => "i8",
+                    TejxType::Bool => "i1",
                     TejxType::Int16 | TejxType::Float16 => "i16",
                     TejxType::Int32 | TejxType::Float32 => "i32",
                     _ => "i64",
@@ -284,6 +284,7 @@ impl CodeGen {
         dst: &String,
         obj: &MIRValue,
         index: &MIRValue,
+        element_ty: &TejxType,
     ) {
         let obj_val = self.resolve_value(obj);
         let idx_val = self.resolve_value(index);
@@ -306,10 +307,11 @@ impl CodeGen {
 
     pub(crate) fn emit_store_index(
         &mut self,
-        func: &MIRFunction,
+        _func: &MIRFunction,
         obj: &MIRValue,
         index: &MIRValue,
         src: &MIRValue,
+        element_ty: &TejxType,
     ) {
         let obj_val = self.resolve_value(obj);
         let idx_val = self.resolve_value(index);

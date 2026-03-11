@@ -70,7 +70,10 @@ impl CodeGen {
             | TejxType::FixedArray(_, _)
             | TejxType::DynamicArray(_)
             | TejxType::Function(_, _)
-            | TejxType::String => true,
+            | TejxType::String
+            | TejxType::Any
+            | TejxType::Slice(_)
+            | TejxType::Object(_) => true,
             _ => false,
         }
     }

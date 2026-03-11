@@ -23,7 +23,7 @@ impl MIROptimizer {
         
         for block in &mut func.blocks {
             for i in 0..block.instructions.len() {
-                if let MIRInstruction::BinaryOp { dst, left, op, right, line } = &block.instructions[i] {
+                if let MIRInstruction::BinaryOp { dst, left, op, right, op_width: _, line } = &block.instructions[i] {
                     if let (MIRValue::Constant { value: l_val, ty: l_ty }, MIRValue::Constant { value: r_val, .. }) = (left, right) {
                         if l_ty.is_numeric() {
                             if let (Ok(l_num), Ok(r_num)) = (l_val.parse::<i64>(), r_val.parse::<i64>()) {
@@ -120,7 +120,7 @@ impl MIROptimizer {
                             used_vars.insert(name.clone());
                         }
                     }
-                    MIRInstruction::BinaryOp { left, right, .. } => {
+                    MIRInstruction::BinaryOp { left, right, op_width: _, .. } => {
                         if let MIRValue::Variable { name, .. } = left {
                             used_vars.insert(name.clone());
                         }
@@ -161,7 +161,7 @@ impl MIROptimizer {
                             used_vars.insert(name.clone());
                         }
                     }
-                    MIRInstruction::LoadIndex { obj, index, .. } => {
+                    MIRInstruction::LoadIndex { obj, index, element_ty: _, .. } => {
                         if let MIRValue::Variable { name, .. } = obj {
                             used_vars.insert(name.clone());
                         }
@@ -169,7 +169,7 @@ impl MIROptimizer {
                             used_vars.insert(name.clone());
                         }
                     }
-                    MIRInstruction::StoreIndex { obj, index, src, .. } => {
+                    MIRInstruction::StoreIndex { obj, index, src, element_ty: _, .. } => {
                         if let MIRValue::Variable { name, .. } = obj {
                             used_vars.insert(name.clone());
                         }
@@ -215,7 +215,7 @@ impl MIROptimizer {
                             }
                         }
                     }
-                    MIRInstruction::Call { dst, .. } | MIRInstruction::IndirectCall { dst, .. } => {
+                    MIRInstruction::Call { dst: _, .. } | MIRInstruction::IndirectCall { dst: _, .. } => {
                         // We CANNOT remove calls because they might have side effects, 
                         // even if the result `dst` is unused. Just let it be.
                     }

@@ -307,7 +307,7 @@ impl TypeChecker {
                     println!("DEBUG UFCS LOOKUP: looking up '{}' for object type '{}'", member, obj_type);
                     if let Some(s) = self.lookup(member) {
                         println!("DEBUG UFCS FOUND: ty={:?}", s.ty);
-                        if let TejxType::Function(_, ref ret) = s.ty {
+                        if let TejxType::Function(_, ref _ret) = s.ty {
                             if !s.params.is_empty() {
                                 let first_param = &s.params[0];
                                 let is_compat = self.are_types_compatible(first_param, &TejxType::from_name(&obj_type));
@@ -542,7 +542,7 @@ impl TypeChecker {
                 let mut s_params = Vec::new();
                 let mut is_variadic = false;
 
-                let mut signature_found = false;
+                let mut _signature_found = false;
 
                 // Always try symbol lookup to fill s_params and is_variadic exactly.
                 if let Some(s) = self.lookup(&callee_str) {
@@ -561,10 +561,10 @@ impl TypeChecker {
                     }
                     s_params = s.params.iter().map(|p| p.to_name()).collect();
                     is_variadic = s.is_variadic;
-                    signature_found = true;
+                    _signature_found = true;
                 }
 
-                if !signature_found && (callee_type.starts_with("function:") || callee_type.contains("=>")) {
+                if !_signature_found && (callee_type.starts_with("function:") || callee_type.contains("=>")) {
                     let (parsed_ret, parsed_params, parsed_variadic) =
                         self.parse_signature(callee_type.clone());
                     // The returned final_type from parse_signature is "function:ret", so we strip it.
@@ -578,19 +578,19 @@ impl TypeChecker {
                     }
                     s_params = parsed_params;
                     is_variadic = parsed_variadic;
-                    signature_found = true;
+                    _signature_found = true;
                 }
 
                 let mut generic_map: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
 
                 // If `s_params` is still empty, fallback to looking up just the method name
-                if !signature_found {
+                if !_signature_found {
                     let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
                     if let Some(s) = self.lookup(func_name) {
                         s_params = s.params.iter().map(|p| p.to_name()).collect();
                         is_variadic = s.is_variadic;
-                        signature_found = true;
+                        _signature_found = true;
                     }
                 }
 
@@ -1115,7 +1115,7 @@ impl TypeChecker {
             Expression::OptionalCallExpr {
                 callee,
                 type_args: _,
-                args,
+                args: _,
                 _line,
                 _col,
             } => {
