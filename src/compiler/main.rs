@@ -105,8 +105,11 @@ fn main() {
                     target_wasm = true;
                 }
             }
-            _ if arg.starts_with("--") => {
-                eprintln!("Unknown option: {}", arg);
+            _ if arg.starts_with("-") => {
+                eprintln!(
+                    "Unknown option: {}. Run 'tejxc --help' for all options.",
+                    arg
+                );
                 process::exit(1);
             }
             _ => {
@@ -365,5 +368,5 @@ fn print_help() {
 }
 
 fn print_version() {
-    println!("tejxc version 0.2.0");
+    println!("tejxc version {}", crate::common::version::VERSION);
 }
