@@ -8,6 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEJXC_BIN="$SCRIPT_DIR/target/release/tejxc"
 BUILD_DIR="$SCRIPT_DIR/build/tests"
 
+# Common paths (resolved locally, but passed to compiler for clarity)
+STDLIB_PATH="$SCRIPT_DIR/src/library"
+RUNTIME_PATH="$SCRIPT_DIR/target/release/tejx_rt.a"
+[ ! -f "$RUNTIME_PATH" ] && RUNTIME_PATH="$SCRIPT_DIR/target/debug/tejx_rt.a"
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -71,7 +76,7 @@ run_test_file() {
         echo -e "  Description: $description"
         echo -e "  Expected:    ${CYAN}$expected_type${NC}"
         
-        run_with_timeout 5 "$TEJXC_BIN" "$file" > "$out_file" 2>&1
+        run_with_timeout 5 "$TEJXC_BIN" --stdlib-path "$STDLIB_PATH" --runtime-path "$RUNTIME_PATH" "$file" > "$out_file" 2>&1
         local compile_exit=$?
         
         local actual=""
@@ -143,7 +148,7 @@ run_test_file() {
         local ll_file="${file%.*}.ll"
         rm -f "$binary" "$ll_file"
 
-        "$TEJXC_BIN" "$file" 2>&1
+        "$TEJXC_BIN" --stdlib-path "$STDLIB_PATH" --runtime-path "$RUNTIME_PATH" "$file" 2>&1
         local compile_exit=$?
         
         if [ $compile_exit -eq 0 ]; then
@@ -193,6 +198,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # --- Execution ---
+# (Environment variables are no longer used)
 ./build.sh || exit 1
 
 if [ ${#SPECIFIC_PATHS[@]} -gt 0 ]; then

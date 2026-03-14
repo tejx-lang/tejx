@@ -17,11 +17,11 @@ This is where you write the language. It is a Rust Cargo workspace.
 ```
 /tejx-lang
 ├── Cargo.toml <-- Manages the Rust workspace
-├── /compiler <-- RUST: The Brain
-│ ├── src/lexer.rs <-- Converts text to tokens
-│ ├── src/parser.rs <-- Builds the Abstract Syntax Tree (AST)
-│ ├── src/semantic.rs <-- The Symbol Table (Type Checker)
-│ └── src/codegen.rs <-- Emits machine code
+├── /src <-- RUST: The Brain
+│ ├── lexer.rs <-- Converts text to tokens
+│ ├── parser.rs <-- Builds the Abstract Syntax Tree (AST)
+│ ├── semantic.rs <-- The Symbol Table (Type Checker)
+│ └── codegen.rs <-- Emits machine code
 ├── /runtime <-- C/RUST: The Engine
 │ ├── memory.c <-- Memory allocator (prevents Segfaults)
 │ └── simd_array.c <-- High-speed CPU instructions
@@ -38,10 +38,10 @@ When a developer downloads Tejx (e.g., to `/usr/local/tejx`), they get a compile
 ```
 /usr/local/tejx
 ├── /bin/tejxc <-- Your compiled Rust compiler executable
-├── /lib/libtejx_rt.a <-- Your pre-compiled C/Rust runtime
-└── /src <-- The `.tx` Standard Library files
-├── core/array.tx
- └── std/math.tx
+├── /runtime/tejx_rt.a <-- Your pre-compiled C/Rust runtime
+└── /lib <-- The `.tx` Standard Library files
+    ├── core/array.tx
+    └── std/math.tx
 ```
 
 #### C. The End-User's Device

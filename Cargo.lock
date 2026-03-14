@@ -1295,7 +1295,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tejx-runtime"
+name = "tejx-rt"
 version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
@@ -1304,11 +1304,12 @@ dependencies = [
 
 [[package]]
 name = "tejxc"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "cc",
  "colored",
  "reqwest 0.13.2",
+ "tejx-rt",
  "tokio",
  "wat",
 ]

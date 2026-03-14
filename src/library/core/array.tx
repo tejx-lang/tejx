@@ -1,0 +1,132 @@
+export function push<T>(arr: T[], val: T): int { return rt_array_push(arr, val); }
+export function pop<T>(arr: T[]): T { return rt_array_pop(arr); }
+export function shift<T>(arr: T[]): T { return rt_array_shift(arr); }
+export function unshift<T>(arr: T[], val: T): int { return rt_array_unshift(arr, val); }
+export function indexOf<T>(arr: T[], val: T): int { return rt_array_indexOf(arr, val); }
+export function concat<T>(a: T[], b: T[]): T[] { return rt_array_concat(a, b); }
+export function join<T>(arr: T[], sep: string): string { return rt_array_join(arr, sep); }
+export function slice<T>(arr: T[], start: int, end: int): T[] { return rt_array_slice(arr, start, end); }
+export function reverse<T>(arr: T[]): T[] { return rt_array_reverse(arr); }
+export function fill<T>(arr: T[], val: T): T[] { return rt_array_fill(arr, val); }
+export function sort<T>(arr: T[]): void { rt_array_sort(arr); }
+
+export function forEach<T>(arr: T[], callback: (val: T, index: int) => void): void {
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        callback(arr[i], i);
+    }
+}
+
+export function map<T, U>(arr: T[], callback: (val: T, index: int) => U): U[] {
+    let l = arr.length();
+    let result: U[] = [];
+    for (let i = 0; i < l; i++) {
+        result.push(callback(arr[i], i));
+    }
+    return result;
+}
+
+export function filter<T>(arr: T[], predicate: (val: T, index: int) => bool): T[] {
+    let result: T[] = [];
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        let val = arr[i];
+        if (predicate(val, i)) {
+            rt_array_push(result, val);
+        }
+    }
+    return result;
+}
+
+export function reduce<T, U>(arr: T[], cb: (acc: U, item: T, index: int) => U, initial: U): U {
+    let acc = initial;
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        acc = cb(acc, arr[i], i);
+    }
+    return acc;
+}
+
+export function find<T>(arr: T[], cb: (item: T, index: int) => bool): T {
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        if (cb(arr[i], i)) {
+            return arr[i];
+        }
+    }
+    return 0 as T;
+}
+
+export function findIndex<T>(arr: T[], cb: (item: T, index: int) => bool): int {
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        if (cb(arr[i], i)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+export function includes<T>(obj: T, val: T): bool {
+    if (rt_is_array(obj)) {
+        let arr = obj as T[];
+        let l = arr.length();
+        for (let i = 0; i < l; i++) {
+            if (arr[i] == val) return true;
+        }
+        return false;
+    }
+    if (typeof(obj) == "string") {
+        return rt_String_includes(obj as string, val as string);
+    }
+    return false;
+}
+
+export function every<T>(arr: T[], cb: (item: T, index: int) => bool): bool {
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        if (!cb(arr[i], i)) return false;
+    }
+    return true;
+}
+
+export function some<T>(arr: T[], cb: (item: T, index: int) => bool): bool {
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        if (cb(arr[i], i)) return true;
+    }
+    return false;
+}
+
+export function isArray<U>(val: U): bool {
+    return rt_is_array(val);
+}
+
+export function RT_Array_isArray<T>(val: T): bool {
+    return rt_is_array(val);
+}
+
+export function RT_Array_sliceRest<T>(arr: T[], start: int): T[] {
+    let res: T[] = [];
+    for (let i = start; i < arr.length(); i++) {
+        rt_array_push(res, arr[i]);
+    }
+    return res;
+}
+
+export function flat<T>(arr: T[], depth: int = 1): T[] {
+    let result: T[] = [];
+    let l = arr.length();
+    for (let i = 0; i < l; i++) {
+        if (depth > 0 && rt_is_array(arr[i])) {
+            let inner = flat(arr[i] as T[], depth - 1);
+            let inner_l = inner.length();
+            for (let j = 0; j < inner_l; j++) {
+                rt_array_push(result, inner[j]);
+            }
+        } else {
+            rt_array_push(result, arr[i]);
+        }
+    }
+    return result;
+}

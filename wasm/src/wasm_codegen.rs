@@ -1,6 +1,6 @@
-use crate::mir::*;
-use crate::token::TokenType;
-use crate::types::TejxType;
+use crate::middle::mir::*;
+use crate::frontend::token::TokenType;
+use crate::common::types::TejxType;
 
 pub struct WasmCodeGen {
     buffer: String,
