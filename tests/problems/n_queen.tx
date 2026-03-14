@@ -1,6 +1,6 @@
 import { assert } from "../positive/utils.tx";
 
-function f_Solver_isSafe(board: string[][], n: int, row: int, col: int): bool {
+function isSafe(board: string[][], n: int, row: int, col: int): bool {
     for (let i = 0; i < col; i++) {
         if (board[row][i] == "Q") return false;
     }
@@ -13,13 +13,13 @@ function f_Solver_isSafe(board: string[][], n: int, row: int, col: int): bool {
     return true;
 }
 
-function f_Solver_backtrack(board: string[][], n: int, col: int): bool {
+function backtrack(board: string[][], n: int, col: int): bool {
     if (col >= n) return true;
 
     for (let i = 0; i < n; i++) {
-      if (f_Solver_isSafe(board, n, i, col)) {
+      if (isSafe(board, n, i, col)) {
         board[i][col] = "Q";
-        if (f_Solver_backtrack(board, n, col + 1)) return true;
+        if (backtrack(board, n, col + 1)) return true;
         board[i][col] = ".";
       }
     }
@@ -36,7 +36,7 @@ function solveNQueens(n: int): void {
   }
 
   print("Starting backtrack...");
-  let found = f_Solver_backtrack(board, n, 0);
+  let found = backtrack(board, n, 0);
   assert(found == true, "N-Queens Solution should be found for n=4");
 }
 

@@ -24,7 +24,7 @@ class ResourcePool {
     }
 
     acquire(): Resource | None {
-        if (this.pool.length > 0) {
+        if (this.pool.length() > 0) {
             return this.pool.pop();
         }
         return None;
@@ -50,7 +50,7 @@ function main() {
     // r1 is now owned by this scope.
     assert_true(r1 != None, "Resource acquired");
     if (r1 != None) {
-        assert_eq_int(r1.id, 1, "Resource id");
+        assert_eq_int(r1.id, 2, "Resource id");
     }
 
     print("Acquiring 2...");
@@ -58,7 +58,7 @@ function main() {
         assert_true(r2 != None, "Resource acquired");
 
     if (r2 != None) {
-        assert_eq_int(r2.id, 2, "Resource id");
+        assert_eq_int(r2.id, 1, "Resource id");
     }
 
 

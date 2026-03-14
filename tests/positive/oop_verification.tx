@@ -1,0 +1,69 @@
+class Parent {
+    p_val: int32;
+    
+    constructor(v: int32) {
+        this.p_val = v;
+        print("Parent constructor\n");
+    }
+    
+    show(): void {
+        print("Parent p_val: ");
+        print(this.p_val);
+        print("\n");
+    }
+}
+
+class Child extends Parent {
+    c_val: int32;
+    
+    constructor(v1: int32, v2: int32) {
+        super(v1);
+        this.c_val = v2;
+        print("Child constructor\n");
+    }
+    
+    show(): void {
+        super.show();
+        print("Child c_val: ");
+        print(this.c_val);
+        print("\n");
+    }
+}
+
+function test_inheritance(): void {
+    print("--- Testing Inheritance ---\n");
+    let c = new Child(10, 20);
+    c.show();
+    
+    if (c.p_val == 10) {
+        if (c.c_val == 20) {
+            print("✅ PASS: Inheritance field values correct\n");
+        } else {
+            print("❌ FAIL: Field values incorrect\n");
+        }
+    } else {
+        print("❌ FAIL: Field values incorrect\n");
+    }
+}
+
+function test_structural_access(): void {
+    print("--- Testing Map Property Access ---\n");
+    let obj: any = {}; // Use Map literal to test structural fallback
+    obj.prop = "Hello Map";
+    
+    print("Map property: ");
+    print(obj.prop);
+    
+    
+    if (obj.prop == "Hello Map") {
+        print("✅ PASS: Map access correct\n");
+    } else {
+        print("❌ FAIL: Map values incorrect\n");
+    }
+}
+
+function main(): void {
+    test_inheritance();
+    test_structural_access();
+    print("OOP Verification Complete\n");
+}

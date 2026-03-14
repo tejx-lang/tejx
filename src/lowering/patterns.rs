@@ -43,8 +43,9 @@ impl Lowering {
                 });
 
                 let element_ty = match ty {
-                    TejxType::DynamicArray(inner) | TejxType::FixedArray(inner, _) | TejxType::Slice(inner) => *inner.clone(),
-                    TejxType::Class(n, generics) if n == "Array" && generics.len() == 1 => generics[0].clone(),
+                    TejxType::DynamicArray(inner)
+                    | TejxType::FixedArray(inner, _)
+                    | TejxType::Slice(inner) => *inner.clone(),
                     _ => TejxType::Any,
                 };
 
@@ -68,10 +69,10 @@ impl Lowering {
 
                 if let Some(r) = rest {
                     // handle rest ...tail
-                    // let tail = Array_sliceRest(tmp, elements.len());
+                    // let tail = rt_array_slice(tmp, elements.len(), tmp.length())
                     let slice_init = HIRExpression::Call {
                         line: line,
-                        callee: "f_RT_Array_sliceRest".to_string(),
+                        callee: "rt_array_slice".to_string(),
                         args: vec![
                             HIRExpression::Variable {
                                 line: line,
@@ -81,6 +82,16 @@ impl Lowering {
                             HIRExpression::Literal {
                                 line: line,
                                 value: elements.len().to_string(),
+                                ty: TejxType::Int32,
+                            },
+                            HIRExpression::Call {
+                                line,
+                                callee: "rt_len".to_string(),
+                                args: vec![HIRExpression::Variable {
+                                    line,
+                                    name: tmp_id.clone(),
+                                    ty: ty.clone(),
+                                }],
                                 ty: TejxType::Int32,
                             },
                         ],

@@ -21,7 +21,7 @@ function main() {
     // assert_eq(undefined/0, obj?.missing); // Value check harder without undefined constant
 
     // Nullish Coalescing
-    let nothing = None;
+    let nothing: string | None = None;
     let val = nothing ?? "Default";
     assert_eq_string("Default", val, "Nullish default");
     
@@ -48,7 +48,7 @@ function main() {
     let squares = evens.map(n => n * n);
 
     let sumSquares = 0;
-    for (let i = 0; i < len(squares); i = i + 1) {
+    for (let i = 0; i < squares.length(); i = i + 1) {
         sumSquares = sumSquares + squares[i];
     }
     assert_eq_int(220, sumSquares, "Even squares sum (2^2 + 4^2 + 6^2 + 8^2 + 10^2)");

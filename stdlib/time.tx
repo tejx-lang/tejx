@@ -1,40 +1,30 @@
-extern function rt_to_string<T>(val: T): string;
-extern function rt_time_now(): float;
-extern function rt_time_now_ms(): int;
-extern function rt_sleep(ms: int): void;
-extern function rt_delay(ms: int): Promise<void>;
-extern function rt_setTimeout(callback: () => void, ms: int): int;
-extern function rt_setInterval(callback: () => void, ms: int): int;
-extern function rt_clearTimeout(id: int): void;
-extern function rt_clearInterval(id: int): void;
-
-// Returns current time in seconds since Unix epoch (as float)
-export function now(): float {
-    return rt_time_now();
+// Returns current time in milliseconds since Unix epoch
+export function now(): int64 {
+    return rt_time_now_ms();
 }
 
 // Returns current time in milliseconds since Unix epoch (as int)
-export function nowMs(): int {
+export function nowMs(): int64 {
     return rt_time_now_ms();
 }
 
 // Synchronous sleep for given milliseconds
-export function sleep(ms: int): void {
+export function sleep(ms: int64): void {
     rt_sleep(ms);
 }
 
 // Async delay — returns a Promise that resolves after ms milliseconds
-export async function delay(ms: int): Promise<void> {
+export async function delay(ms: int64): Promise<void> {
     return rt_delay(ms);
 }
 
 // Schedule a callback to run after ms milliseconds (returns timer ID)
-export function setTimeout(callback: () => void, ms: int): int {
+export function setTimeout(callback: () => void, ms: int64): int {
     return rt_setTimeout(callback, ms);
 }
 
 // Schedule a callback to run repeatedly every ms milliseconds (returns timer ID)
-export function setInterval(callback: () => void, ms: int): int {
+export function setInterval(callback: () => void, ms: int64): int {
     return rt_setInterval(callback, ms);
 }
 
@@ -50,17 +40,17 @@ export function clearInterval(id: int): void {
 
 // --- Date class (JS-like API backed by runtime time functions) ---
 export class Date {
-    private timestamp: int;
+    private timestamp: int64;
 
     constructor() {
         this.timestamp = rt_time_now_ms();
     }
 
-    static now(): int {
+    static now(): int64 {
         return rt_time_now_ms();
     }
 
-    getTime(): int {
+    getTime(): int64 {
         return this.timestamp;
     }
 
@@ -69,4 +59,3 @@ export class Date {
         return "Date(" + rt_to_string(this.timestamp) + ")";
     }
 }
-

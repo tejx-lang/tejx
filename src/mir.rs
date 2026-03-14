@@ -174,6 +174,7 @@ impl BasicBlock {
                 MIRInstruction::Return { .. }
                     | MIRInstruction::Jump { .. }
                     | MIRInstruction::Branch { .. }
+                    | MIRInstruction::Throw { .. }
             )
         } else {
             false

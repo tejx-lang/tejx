@@ -28,12 +28,12 @@ function main() {
         assert_eq_int(10, (parsed as any).x, "Parsed x (property)");
         assert_eq_string("hello", (parsed as any).y, "Parsed y (property)");
         
-        assert_eq_int(3, parsed["z"].length, "Parsed z length");
+        assert_eq_int(3, parsed["z"].length(), "Parsed z length");
         
         // Nested access
         print("Parsed w.nested: ", parsed["w"]["nested"]);
 
     } catch(e) {
-        print("❌ FAIL: Caught error: " + e);
+        print("❌ FAIL: Caught error: ", e);
     }
 }

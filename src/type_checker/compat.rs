@@ -12,26 +12,59 @@ impl TypeChecker {
 
     pub(crate) fn is_valid_type(&self, type_name: &TejxType) -> bool {
         match type_name {
-            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128 |
-            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 |
-            TejxType::Bool | TejxType::String | TejxType::Char |
-            TejxType::Void | TejxType::Any => true,
-            
+            TejxType::Int16
+            | TejxType::Int32
+            | TejxType::Int64
+            | TejxType::Int128
+            | TejxType::Float16
+            | TejxType::Float32
+            | TejxType::Float64
+            | TejxType::Bool
+            | TejxType::String
+            | TejxType::Char
+            | TejxType::Void
+            | TejxType::Any => true,
+
             TejxType::Union(types) => types.iter().all(|t| self.is_valid_type(t)),
             TejxType::Class(name, generics) if generics.is_empty() => {
                 let name_str = name.as_str();
-                if name_str == "Option" || name_str == "Promise" || name_str == "Ref" || name_str == "Weak" || name_str == "Array" || name_str == "Map" || name_str == "Dict" || name_str == "Pair" || name_str == "Result" {
+                if name_str == "Option"
+                    || name_str == "Promise"
+                    || name_str == "Ref"
+                    || name_str == "Weak"
+                    || name_str == "Dict"
+                    || name_str == "Pair"
+                    || name_str == "Result"
+                {
                     return false; // These built-ins always require generics
                 }
-                name_str == "function" || name_str == "Iterator" || name_str == "Iterable" || name_str == "None" || name_str.contains("=>") || name_str.starts_with("function:") || self.lookup(name).is_some()
-            },
+                if let Some(sym) = self.lookup(name) {
+                    if !sym.generic_params.is_empty() {
+                        return false;
+                    }
+                }
+                name_str == "function"
+                    || name_str == "Iterator"
+                    || name_str == "Iterable"
+                    || name_str == "None"
+                    || name_str.contains("=>")
+                    || name_str.starts_with("function:")
+                    || self.lookup(name).is_some()
+            }
             TejxType::Class(name, generics) => {
                 let name_str = name.as_str();
-                if name_str == "Option" || name_str == "Promise" || name_str == "Ref" || name_str == "Weak" || name_str == "Array" {
-                    if generics.len() != 1 { return false; }
-                } else if name_str == "Map" || name_str == "Dict" || name_str == "Pair" || name_str == "Result" {
-                    if generics.len() != 2 { return false; }
+                if name_str == "Option"
+                    || name_str == "Promise"
+                    || name_str == "Ref"
+                    || name_str == "Weak"
+                {
+                    if generics.len() != 1 {
+                        return false;
+                    }
                 } else if let Some(sym) = self.lookup(name) {
+                    if sym.generic_params.is_empty() && !generics.is_empty() {
+                        return false;
+                    }
                     if sym.generic_params.len() != generics.len() && sym.generic_params.len() > 0 {
                         // We enforce generic counts only if the class actually declared some.
                         return false;
@@ -48,16 +81,19 @@ impl TypeChecker {
                             }
                         }
                     }
+                } else {
+                    // Generic class must be declared (Array<T> is invalid unless user-defined)
+                    return false;
                 }
                 generics.iter().all(|g| self.is_valid_type(g))
-            },
-            TejxType::FixedArray(inner, _) | TejxType::DynamicArray(inner) | TejxType::Slice(inner) => self.is_valid_type(inner),
+            }
+            TejxType::FixedArray(inner, _)
+            | TejxType::DynamicArray(inner)
+            | TejxType::Slice(inner) => self.is_valid_type(inner),
             TejxType::Function(params, ret) => {
                 params.iter().all(|p| self.is_valid_type(p)) && self.is_valid_type(ret)
             }
-            TejxType::Object(props) => {
-                props.iter().all(|(_, _, t)| self.is_valid_type(t))
-            }
+            TejxType::Object(props) => props.iter().all(|(_, _, t)| self.is_valid_type(t)),
         }
     }
 
@@ -69,19 +105,23 @@ impl TypeChecker {
         if t1 == t2 {
             return t1.clone();
         }
-        
+
         if self.is_numeric(t1) && self.is_numeric(t2) {
             // Default to int32 for mixed ints, or generic logic
             if !t1.is_float() && !t2.is_float() {
                 return TejxType::Int32;
             }
         }
-        
+
         let t1_name = t1.to_name();
         let t2_name = t2.to_name();
-        if t1_name == "<inferred>" { return t2.clone(); }
-        if t2_name == "<inferred>" { return t1.clone(); }
-        
+        if t1_name == "<inferred>" {
+            return t2.clone();
+        }
+        if t2_name == "<inferred>" {
+            return t1.clone();
+        }
+
         let mut t1_ancestors = std::collections::HashSet::new();
         let mut curr = t1_name.clone();
         t1_ancestors.insert(curr.clone());
@@ -133,7 +173,10 @@ impl TypeChecker {
         // Generic wildcard: single uppercase letter mapped via Class
         let is_generic_wildcard = |t: &TejxType| -> bool {
             if let TejxType::Class(name, gen) = t {
-                if gen.is_empty() && name.len() <= 2 && name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                if gen.is_empty()
+                    && name.len() <= 2
+                    && name.chars().next().map_or(false, |c| c.is_uppercase())
+                {
                     return true;
                 }
             }
@@ -173,7 +216,9 @@ impl TypeChecker {
                         }
                     }
                 }
-                if !changed { break; }
+                if !changed {
+                    break;
+                }
                 loops += 1;
             }
             current
@@ -181,30 +226,33 @@ impl TypeChecker {
 
         let resolved_expected = resolve_type(expected);
         let resolved_actual = resolve_type(actual);
-        
+
         if resolved_expected != *expected || resolved_actual != *actual {
-            if resolved_expected == resolved_actual { return true; }
+            if resolved_expected == resolved_actual {
+                return true;
+            }
             // Let's re-eval with resolved if they are different
             // But to avoid recursion, we just check structurally below on the resolved types
         }
-        
+
         let expected = &resolved_expected;
         let actual = &resolved_actual;
 
-        if e_name == "Node" {
-            println!("DEBUG NODE CHECK: expr expected={:?}, resolved expected={:?}, actual={:?}", expected, resolved_expected, actual);
-        }
-
         if let TejxType::Class(name, _) = expected {
-            if name.starts_with("$MISSING_GENERIC_") { return true; }
+            if name.starts_with("$MISSING_GENERIC_") {
+                return true;
+            }
         }
         if let TejxType::Class(name, _) = actual {
-            if name.starts_with("$MISSING_GENERIC_") { return true; }
+            if name.starts_with("$MISSING_GENERIC_") {
+                return true;
+            }
         }
 
         // char is compatible with string
-        if (expected == &TejxType::String && actual == &TejxType::Char) || 
-           (expected == &TejxType::Char && actual == &TejxType::String) {
+        if (expected == &TejxType::String && actual == &TejxType::Char)
+            || (expected == &TejxType::Char && actual == &TejxType::String)
+        {
             return true;
         }
 
@@ -220,88 +268,75 @@ impl TypeChecker {
             }
         }
 
-        // Maps and Objects
-        if let TejxType::Class(name, _) = expected {
-            if name == "Map" && actual.to_name().starts_with("{") {
-                return true;
-            }
-        }
-
         // Array compat
         match (expected, actual) {
             (TejxType::DynamicArray(e_in), TejxType::DynamicArray(a_in)) => {
-                if self.are_types_compatible(e_in, a_in) { return true; }
+                if self.are_types_compatible(e_in, a_in) {
+                    return true;
+                }
             }
             (TejxType::DynamicArray(e_in), TejxType::FixedArray(a_in, _)) => {
-                if self.are_types_compatible(e_in, a_in) { return true; }
+                if self.are_types_compatible(e_in, a_in) {
+                    return true;
+                }
             }
             (TejxType::FixedArray(e_in, _), TejxType::DynamicArray(a_in)) => {
-                if self.are_types_compatible(e_in, a_in) { return true; }
+                if self.are_types_compatible(e_in, a_in) {
+                    return true;
+                }
             }
             (TejxType::FixedArray(e_in, e_n), TejxType::FixedArray(a_in, a_n)) => {
-                if e_n == a_n && self.are_types_compatible(e_in, a_in) { return true; }
+                if e_n == a_n && self.are_types_compatible(e_in, a_in) {
+                    return true;
+                }
             }
             (TejxType::Slice(e_in), TejxType::Slice(a_in)) => {
-                if self.are_types_compatible(e_in, a_in) { return true; }
+                if self.are_types_compatible(e_in, a_in) {
+                    return true;
+                }
             }
-            (TejxType::Slice(e_in), TejxType::DynamicArray(a_in)) |
-            (TejxType::Slice(e_in), TejxType::FixedArray(a_in, _)) => {
-                if self.are_types_compatible(e_in, a_in) { return true; }
+            (TejxType::Slice(e_in), TejxType::DynamicArray(a_in))
+            | (TejxType::Slice(e_in), TejxType::FixedArray(a_in, _)) => {
+                if self.are_types_compatible(e_in, a_in) {
+                    return true;
+                }
             }
             (TejxType::Slice(e_in), TejxType::String) => {
-                if e_in.as_ref() == &TejxType::Char || e_in.as_ref() == &TejxType::Int32 { return true; }
-            }
-            (TejxType::Class(name, e_gen), _) if name == "Array" && e_gen.len() == 1 => {
-                match actual {
-                    TejxType::DynamicArray(a_in) | TejxType::FixedArray(a_in, _) | TejxType::Slice(a_in) => {
-                        if self.are_types_compatible(&e_gen[0], a_in) { return true; }
-                    }
-                    TejxType::Class(a_name, a_gen) if a_name == "Array" && a_gen.len() == 1 => {
-                        if self.are_types_compatible(&e_gen[0], &a_gen[0]) { return true; }
-                    }
-                    _ => {}
-                }
-            }
-            (_, TejxType::Class(name, a_gen)) if name == "Array" && a_gen.len() == 1 => {
-                match expected {
-                    TejxType::DynamicArray(e_in) | TejxType::FixedArray(e_in, _) | TejxType::Slice(e_in) => {
-                        if self.are_types_compatible(e_in, &a_gen[0]) { return true; }
-                    }
-                    _ => {}
-                }
-            }
-            (TejxType::DynamicArray(e_in), TejxType::Class(n, _)) => {
-                if n.ends_with("[]") {
-                    let a_inner = TejxType::from_name(&n[0..n.len() - 2]);
-                    if self.are_types_compatible(e_in, &a_inner) { return true; }
-                } else if n.ends_with(']') && n.contains('[') {
-                    let base = &n[..n.rfind('[').unwrap()];
-                    let a_inner = TejxType::from_name(base);
-                    if self.are_types_compatible(e_in, &a_inner) { return true; }
-                }
-            }
-            (TejxType::Class(n, _), TejxType::DynamicArray(a_in)) => {
-                if n.ends_with("[]") {
-                    let e_inner = TejxType::from_name(&n[0..n.len() - 2]);
-                    if self.are_types_compatible(&e_inner, a_in) { return true; }
-                } else if n.ends_with(']') && n.contains('[') {
-                    let base = &n[..n.rfind('[').unwrap()];
-                    let e_inner = TejxType::from_name(base);
-                    if self.are_types_compatible(&e_inner, a_in) { return true; }
+                if e_in.as_ref() == &TejxType::Char || e_in.as_ref() == &TejxType::Int32 {
+                    return true;
                 }
             }
             _ => {}
         }
-        
+
+        if let (TejxType::Class(e_name, e_gen), TejxType::Class(a_name, a_gen)) =
+            (expected, actual)
+        {
+            if e_name == a_name && e_gen.len() == a_gen.len() {
+                let mut all_ok = true;
+                for (e_arg, a_arg) in e_gen.iter().zip(a_gen.iter()) {
+                    if !self.are_types_compatible(e_arg, a_arg) {
+                        all_ok = false;
+                        break;
+                    }
+                }
+                if all_ok {
+                    return true;
+                }
+            }
+        }
+
         let a_str = actual.to_name();
         let e_str = expected.to_name();
 
         if let TejxType::Class(n, g) = actual {
             if n == "[]" && g.is_empty() {
-                if matches!(expected, TejxType::DynamicArray(_) | TejxType::FixedArray(_, _) | TejxType::Slice(_)) {
+                if matches!(
+                    expected,
+                    TejxType::DynamicArray(_) | TejxType::FixedArray(_, _) | TejxType::Slice(_)
+                ) {
                     return true;
                 }
-                if let TejxType::Class(en, _) = expected { if en == "Array" { return true; } }
             }
         }
 
@@ -322,7 +357,9 @@ impl TypeChecker {
                         break;
                     }
                 }
-                if all_match { return true; }
+                if all_match {
+                    return true;
+                }
             }
         }
 
@@ -333,7 +370,7 @@ impl TypeChecker {
                     return true;
                 }
             }
-            
+
             if let TejxType::Function(a_params, a_ret) = actual {
                 let ret_ok = if is_generic_wildcard(e_ret) && a_ret.as_ref() == &TejxType::Void {
                     true
@@ -343,15 +380,14 @@ impl TypeChecker {
                     self.are_types_compatible(e_ret, a_ret)
                 };
 
-                if e_str.contains("=> U") {
-                    println!("DEBUG fcompat: expected={}, actual={}, ret_ok={}, e_params={:?}, a_params={:?}", e_str, a_str, ret_ok, e_params, a_params);
-                }
-
                 if ret_ok {
                     if e_params.len() == a_params.len() {
                         let mut all_params_ok = true;
                         for (ep, ap) in e_params.iter().zip(a_params.iter()) {
-                            if !self.are_types_compatible(ep, ap) && ep != &TejxType::Any && ap != &TejxType::Any {
+                            if !self.are_types_compatible(ep, ap)
+                                && ep != &TejxType::Any
+                                && ap != &TejxType::Any
+                            {
                                 all_params_ok = false;
                                 break;
                             }
@@ -363,7 +399,7 @@ impl TypeChecker {
                 }
             }
         }
-        
+
         if let TejxType::Class(name, _) = expected {
             if name == "function" {
                 if let TejxType::Function(_, _) = actual {
@@ -375,6 +411,13 @@ impl TypeChecker {
         // Structural Object Type check
         if let TejxType::Object(e_props) = expected {
             if let TejxType::Object(a_props) = actual {
+                let is_optional_type = |ty: &TejxType| -> bool {
+                    match ty {
+                        TejxType::Class(name, gen) if name == "Option" && gen.len() == 1 => true,
+                        TejxType::Union(types) => types.iter().any(|t| t.to_name() == "None"),
+                        _ => false,
+                    }
+                };
                 for (a_key, _, _) in a_props {
                     if !e_props.iter().any(|(e_k, _, _)| e_k == a_key) {
                         return false;
@@ -392,7 +435,7 @@ impl TypeChecker {
                             break;
                         }
                     }
-                    if !found && !*e_opt {
+                    if !found && !*e_opt && !is_optional_type(e_type) {
                         return false;
                     }
                 }
@@ -403,15 +446,16 @@ impl TypeChecker {
         if let TejxType::Class(e_name, _) = expected {
             if let TejxType::Object(a_props) = actual {
                 let is_inline_struct = e_name.starts_with('{') && e_name.ends_with('}');
-                
+
                 if is_inline_struct {
-                    println!("DEBUG compat inline struct: starting check... e_name: {}", e_name);
                     // Extract "value: int; next: Node | None" from "{ value: int; next: Node | None }"
                     let inner = e_name[1..e_name.len() - 1].trim();
                     let mut expected_props = Vec::new();
                     for part in inner.split(';') {
                         let p = part.trim();
-                        if p.is_empty() { continue; }
+                        if p.is_empty() {
+                            continue;
+                        }
                         if let Some(colon) = p.find(':') {
                             let mut k = p[..colon].trim().to_string();
                             let is_opt = if k.ends_with('?') {
@@ -429,7 +473,6 @@ impl TypeChecker {
                     }
                     for (a_key, _, _) in a_props {
                         if !expected_props.iter().any(|(e_k, _)| e_k == a_key) {
-                            println!("DEBUG SILENT FAILURE: Property {} not in expected {:?}", a_key, expected_props);
                             return false;
                         }
                     }
@@ -442,25 +485,26 @@ impl TypeChecker {
                                 let mut exp_ty = TejxType::from_name(&e_ty_str);
                                 let mut act_ty = a_type.clone();
                                 if let TejxType::Class(n, g) = &exp_ty {
-                                    if n == "Option" && g.len() == 1 { exp_ty = g[0].clone(); }
+                                    if n == "Option" && g.len() == 1 {
+                                        exp_ty = g[0].clone();
+                                    }
                                 }
                                 if let TejxType::Class(n, g) = a_type {
-                                    if n == "Option" && g.len() == 1 { act_ty = g[0].clone(); }
+                                    if n == "Option" && g.len() == 1 {
+                                        act_ty = g[0].clone();
+                                    }
                                 }
                                 let is_compat = self.are_types_compatible(&exp_ty, &act_ty);
                                 if !is_compat {
-                                    println!("DEBUG compat inline struct: key '{}' failed match. exp_ty: {:?}, act_ty: {:?}", e_key, exp_ty, act_ty);
                                     return false;
                                 }
                                 break;
                             }
                         }
                         if !found && !is_optional {
-                            println!("DEBUG compat inline struct: key '{}' missing", e_key);
                             return false;
                         }
                     }
-                    println!("DEBUG compat success!");
                     return true;
                 } else if let Some(expected_members) = self.class_members.get(e_name) {
                     for (a_key, _, _) in a_props {
@@ -480,7 +524,8 @@ impl TypeChecker {
                                 break;
                             }
                         }
-                        let is_method = e_info.ty.to_name().starts_with("function:") || matches!(e_info.ty, TejxType::Function(_, _));
+                        let is_method = e_info.ty.to_name().starts_with("function:")
+                            || matches!(e_info.ty, TejxType::Function(_, _));
                         if !found && !is_optional && !is_method {
                             return false;
                         }
@@ -522,7 +567,12 @@ impl TypeChecker {
         let mut val_to_check = None;
         if let Expression::NumberLiteral { value, .. } = expr {
             val_to_check = Some(*value);
-        } else if let Expression::UnaryExpr { op: TokenType::Minus, right, .. } = expr {
+        } else if let Expression::UnaryExpr {
+            op: TokenType::Minus,
+            right,
+            ..
+        } = expr
+        {
             if let Expression::NumberLiteral { value, .. } = &**right {
                 val_to_check = Some(-*value);
             }
@@ -533,18 +583,40 @@ impl TypeChecker {
             let mut max = None;
             let t_name = target_type.to_name();
             match t_name.as_str() {
-                "int8" => { min = Some(-128.0); max = Some(127.0); }
-                "uint8" => { min = Some(0.0); max = Some(255.0); }
-                "int16" => { min = Some(-32768.0); max = Some(32767.0); }
-                "uint16" => { min = Some(0.0); max = Some(65535.0); }
+                "int8" => {
+                    min = Some(-128.0);
+                    max = Some(127.0);
+                }
+                "uint8" => {
+                    min = Some(0.0);
+                    max = Some(255.0);
+                }
+                "int16" => {
+                    min = Some(-32768.0);
+                    max = Some(32767.0);
+                }
+                "uint16" => {
+                    min = Some(0.0);
+                    max = Some(65535.0);
+                }
                 _ => {}
             }
-            
+
             if min.is_some() && max.is_some() {
                 if v < min.unwrap() || v > max.unwrap() {
                     self.report_error_detailed(
-                        format!("Numeric literal '{}' is out of bounds for type '{}'", v, t_name),
-                        line, col, "E0111", Some(&format!("Ensure the value is between {} and {}", min.unwrap(), max.unwrap()))
+                        format!(
+                            "Numeric literal '{}' is out of bounds for type '{}'",
+                            v, t_name
+                        ),
+                        line,
+                        col,
+                        "E0111",
+                        Some(&format!(
+                            "Ensure the value is between {} and {}",
+                            min.unwrap(),
+                            max.unwrap()
+                        )),
                     );
                 }
             }

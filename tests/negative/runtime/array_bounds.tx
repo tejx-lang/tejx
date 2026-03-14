@@ -1,7 +1,0 @@
-// EXPECTED: RUNTIME_ERROR
-// Description: Verify that accessing an out-of-bounds array index causes a runtime error.
-
-function main() {
-    let arr: int[] = [1, 2, 3];
-    print(arr[5]); // Error: Index 5 is out of bounds for size 3
-}

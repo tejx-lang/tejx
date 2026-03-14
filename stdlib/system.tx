@@ -1,7 +1,3 @@
-extern function rt_exit(code: int): void;
-extern function rt_getenv(key: string): string;
-extern function rt_args(): string[];
-
 export function exit(code: int): void {
     rt_exit(code);
 }

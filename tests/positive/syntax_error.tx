@@ -3,8 +3,8 @@ import { assert_eq_string } from "./utils.tx";
 function main() {
     let s = "Escape \"quote\" test";
     let s2 = 'Single \'quote\' test';
-    assert_eq_string(s, 'Escape "quote" test');
-    assert_eq_string(s2, "Single 'quote' test");
+    assert_eq_string(s, 'Escape "quote" test', "Escape quote");
+    assert_eq_string(s2, "Single 'quote' test", "Single quote");
 
     let err = "unclosed multi-line";
     print("Recovered?");

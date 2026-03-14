@@ -43,7 +43,7 @@ function test_stdlib_wrappers() {
     
     // OS
     let argv = args();
-    assert_eq_int(1, len(argv), "args count");
+    assert_eq_int(1, argv.length(), "args count");
 }
 
 function main() {

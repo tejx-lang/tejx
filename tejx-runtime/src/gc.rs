@@ -160,25 +160,15 @@ pub unsafe extern "C" fn rt_is_gc_ptr(ptr: *mut u8) -> bool {
         return false;
     }
     let p = ptr as usize;
+    let eden_end = unsafe { EDEN_START.add(YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE) as usize };
+    let old_end = unsafe { OLD_START.add(OLD_GEN_SIZE) as usize };
 
-    let res = if p >= EDEN_START as usize && p < EDEN_START.add(YOUNG_GEN_SIZE) as usize {
-        true
-    } else if p >= FROM_SURVIVOR as usize && p < FROM_SURVIVOR.add(SURVIVOR_SIZE) as usize {
-        true
-    } else if p >= TO_SURVIVOR as usize && p < TO_SURVIVOR.add(SURVIVOR_SIZE) as usize {
-        true
-    } else if p >= OLD_START as usize && p < OLD_START.add(OLD_GEN_SIZE) as usize {
-        true
-    } else {
-        in_los(ptr)
-    };
+    let in_eden = p >= EDEN_START as usize && p < eden_end;
+    let in_old = p >= OLD_START as usize && p < old_end;
+    let in_l = in_los(ptr);
 
-    if ptr as usize == 7 {}
+    let res = in_eden || in_old || in_l;
 
-    /*
-    if !res && p >= 0x10000 {
-    }
-    */
     res
 }
 
@@ -683,6 +673,10 @@ pub unsafe fn mark_object(root: *mut i64) {
     } else if type_id == TAG_OBJECT as u16 {
         mark_object(body_ptr.add(16) as *mut i64); // keys_handle at offset 2 (16 bytes)
         mark_object(body_ptr.add(24) as *mut i64); // values_handle at offset 3 (24 bytes)
+    } else if type_id == TAG_MAP as u16 {
+        mark_object(body_ptr.add(16) as *mut i64); // keys array
+        mark_object(body_ptr.add(24) as *mut i64); // values array
+        mark_object(body_ptr.add(32) as *mut i64); // states array
     } else if type_id == TAG_PROMISE as u16 {
         mark_object(body_ptr.add(8) as *mut i64); // value
         mark_object(body_ptr.add(16) as *mut i64); // callbacks array
@@ -875,6 +869,10 @@ unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mu
     } else if type_id == TAG_OBJECT as u16 {
         updater(body_ptr.add(16) as *mut i64); // keys_handle
         updater(body_ptr.add(24) as *mut i64); // values_handle
+    } else if type_id == TAG_MAP as u16 {
+        updater(body_ptr.add(16) as *mut i64); // keys array
+        updater(body_ptr.add(24) as *mut i64); // values array
+        updater(body_ptr.add(32) as *mut i64); // states array
     } else if type_id == TAG_PROMISE as u16 {
         updater(body_ptr.add(8) as *mut i64); // value
         updater(body_ptr.add(16) as *mut i64); // callbacks array
@@ -895,7 +893,9 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
         let elem_size = ((*header).flags & 0xFF) as usize;
         (*header).capacity as usize * elem_size
     } else if type_id == TAG_OBJECT as u16 {
-        40 // Map layout: [size, capacity, keys_ptr, values_ptr, data_base]
+        40 // Object layout: [size, capacity, keys_ptr, values_ptr, data_base]
+    } else if type_id == TAG_MAP as u16 {
+        40 // Map layout: [size, capacity, keys_ptr, values_ptr, states_ptr]
     } else if type_id == TAG_INT as u16
         || type_id == TAG_FLOAT as u16
         || type_id == TAG_CHAR as u16
@@ -1011,6 +1011,10 @@ unsafe fn scan_object_fields(header: *mut ObjectHeader) {
     } else if type_id == TAG_OBJECT as u16 {
         copy_object(body_ptr.add(16) as *mut i64); // keys_handle
         copy_object(body_ptr.add(24) as *mut i64); // values_handle
+    } else if type_id == TAG_MAP as u16 {
+        copy_object(body_ptr.add(16) as *mut i64); // keys array
+        copy_object(body_ptr.add(24) as *mut i64); // values array
+        copy_object(body_ptr.add(32) as *mut i64); // states array
     } else if type_id == TAG_PROMISE as u16 {
         copy_object(body_ptr.add(8) as *mut i64); // value
         copy_object(body_ptr.add(16) as *mut i64); // callbacks array
@@ -1076,7 +1080,24 @@ unsafe fn resume_safepoint() {
     }
 }
 
+#[inline]
+unsafe fn clear_array_caches() {
+    LAST_ID = 0;
+    LAST_PTR = std::ptr::null_mut();
+    LAST_LEN = 0;
+    LAST_ELEM_SIZE = 0;
+    PREV_ID = 0;
+    PREV_PTR = std::ptr::null_mut();
+    PREV_LEN = 0;
+    PREV_ELEM_SIZE = 0;
+    PREV2_ID = 0;
+    PREV2_PTR = std::ptr::null_mut();
+    PREV2_LEN = 0;
+    PREV2_ELEM_SIZE = 0;
+}
+
 pub unsafe fn minor_gc_locked() {
+    clear_array_caches();
     rt_clear_tlab();
     TO_SURVIVOR_TOP = TO_SURVIVOR;
     let mut scan_ptr = TO_SURVIVOR;

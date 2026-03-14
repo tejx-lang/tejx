@@ -1,9 +1,3 @@
-extern function rt_Object_keys(obj: any): string[];
-extern function rt_Object_values(obj: any): any[];
-extern function rt_Object_entries(obj: any): any[];
-extern function rt_Object_assign(target: any, source: any): any;
-extern function rt_Object_freeze(obj: any): any;
-
 export class Object {
     static keys(obj: any): string[] {
         return rt_Object_keys(obj);

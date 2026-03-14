@@ -15,7 +15,12 @@ impl TypeChecker {
                 _col,
             } => {
                 let ty_str = type_annotation.to_string();
-                if ty_str != "any" && ty_str != "" && !self.is_valid_type(&TejxType::from_name(&ty_str)) {
+                let has_explicit_type = !ty_str.is_empty();
+                let is_explicit_any = ty_str == "any";
+                if !is_explicit_any
+                    && has_explicit_type
+                    && !self.is_valid_type(&TejxType::from_name(&ty_str))
+                {
                     self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                 }
                 if let Some(expr) = initializer {
@@ -31,7 +36,7 @@ impl TypeChecker {
                     let mut init_type = self.check_expression(expr)?.to_name();
                     self.current_expected_type = prev_expected;
                     self.lambda_context_params = prev_lambda_ctx;
-                    if (ty_str == "any" || ty_str == "") && init_type == "[]" {
+                    if !has_explicit_type && init_type == "[]" {
                         self.report_error_detailed(
                             "Cannot infer type for empty array".to_string(),
                             *line,
@@ -41,15 +46,52 @@ impl TypeChecker {
                         );
                         init_type = "<inferred>".to_string(); // prevent cascading errors
                     }
-
-                    if ty_str != "any" && ty_str != "" {
-                        self.check_numeric_bounds(expr, &TejxType::from_name(&ty_str), *line, *_col);
-                    } else if init_type != "<inferred>" {
-                        self.check_numeric_bounds(expr, &TejxType::from_name(&init_type), *line, *_col);
+                    if !has_explicit_type && (init_type == "any" || init_type == "None") {
+                        self.report_error_detailed(
+                            "Type annotation required for variable declaration".to_string(),
+                            *line,
+                            *_col,
+                            "E0101",
+                            Some(
+                                "Type inference resolved to 'any' or 'None'. Provide an explicit type (e.g., 'let x: int = 1') or use 'any' explicitly",
+                            ),
+                        );
+                        init_type = "<inferred>".to_string();
+                    }
+                    if !has_explicit_type && init_type == "<inferred>" {
+                        self.report_error_detailed(
+                            "Type annotation required for variable declaration".to_string(),
+                            *line,
+                            *_col,
+                            "E0101",
+                            Some(
+                                "Provide an explicit type (e.g., 'let x: int = 1') or use 'any' explicitly",
+                            ),
+                        );
                     }
 
-                    if ty_str != "any" && ty_str != ""
-                        && !self.are_types_compatible(&TejxType::from_name(&ty_str), &TejxType::from_name(&init_type))
+                    if ty_str != "any" && ty_str != "" {
+                        self.check_numeric_bounds(
+                            expr,
+                            &TejxType::from_name(&ty_str),
+                            *line,
+                            *_col,
+                        );
+                    } else if init_type != "<inferred>" {
+                        self.check_numeric_bounds(
+                            expr,
+                            &TejxType::from_name(&init_type),
+                            *line,
+                            *_col,
+                        );
+                    }
+
+                    if !is_explicit_any
+                        && has_explicit_type
+                        && !self.are_types_compatible(
+                            &TejxType::from_name(&ty_str),
+                            &TejxType::from_name(&init_type),
+                        )
                     {
                         if init_type == "[]" {
                             self.report_error_detailed(
@@ -82,15 +124,21 @@ impl TypeChecker {
                         }
                     }
 
-                    let _target_type = if ty_str == "any" || ty_str == "" {
-                        init_type
+                    let _target_type = if is_explicit_any {
+                        "any".to_string()
+                    } else if !has_explicit_type {
+                        if init_type == "<inferred>" || init_type == "[]" || init_type == "any" {
+                            "{unknown}".to_string()
+                        } else {
+                            init_type.clone()
+                        }
                     } else {
                         ty_str
                     };
 
                     let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col);
                 } else {
-                    if ty_str == "any" || ty_str == "" {
+                    if !has_explicit_type {
                         self.report_error_detailed(
                             "Type annotation required for uninitialized variable".to_string(),
                             *line,
@@ -275,7 +323,7 @@ impl TypeChecker {
                 Ok(())
             }
             Statement::FunctionDeclaration(func) => {
-                let mut ret_ty = if func.return_type.to_string() == "any" || func.return_type.to_string().is_empty() {
+                let mut ret_ty = if func.return_type.to_string().is_empty() {
                     "void".to_string()
                 } else {
                     func.return_type.to_string()
@@ -289,22 +337,35 @@ impl TypeChecker {
                     .iter()
                     .filter(|p| p._default_value.is_none() && !p._is_rest)
                     .count();
-                let params: Vec<String> = func
-                    .params
-                    .iter()
-                    .map(|p| {
-                        if p._is_rest {
-                            is_variadic = true;
-                        }
-                        p.type_name.to_string()
-                    })
-                    .collect();
+                let mut params: Vec<String> = Vec::new();
+                for p in &func.params {
+                    if p._is_rest {
+                        is_variadic = true;
+                    }
+                    let mut p_ty = p.type_name.to_string();
+                    if p_ty.is_empty() {
+                        self.report_error_detailed(
+                            format!("Type annotation required for parameter '{}'", p.name),
+                            func._line,
+                            func._col,
+                            "E0101",
+                            Some(
+                                "Provide an explicit type (e.g., 'function f(x: int) { ... }') or use 'any' explicitly",
+                            ),
+                        );
+                        p_ty = "<inferred>".to_string();
+                    }
+                    params.push(p_ty);
+                }
                 let has_defaults = min_required < params.len();
                 if let Some(scope) = self.scopes.last_mut() {
                     scope.insert(
                         func.name.clone(),
                         Symbol {
-                            ty: TejxType::Function(params.iter().map(|p| TejxType::from_name(p)).collect(), Box::new(TejxType::from_name(&ret_ty))),
+                            ty: TejxType::Function(
+                                params.iter().map(|p| TejxType::from_name(p)).collect(),
+                                Box::new(TejxType::from_name(&ret_ty)),
+                            ),
                             is_const: false,
                             min_params: if has_defaults {
                                 Some(min_required)
@@ -326,12 +387,12 @@ impl TypeChecker {
                 for gp in &func.generic_params {
                     self.define(gp.name.clone(), gp.name.clone());
                 }
-                for param in &func.params {
-                    self.define_with_params(
-                        param.name.clone(),
-                        param.type_name.to_string(),
-                        Vec::new(),
-                    );
+                for (idx, param) in func.params.iter().enumerate() {
+                    let param_ty = params
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| "<inferred>".to_string());
+                    self.define_with_params(param.name.clone(), param_ty, Vec::new());
                 }
                 self.check_statement(&func.body)?;
                 self.exit_scope();
@@ -379,10 +440,13 @@ impl TypeChecker {
                 self.enter_scope();
                 let mut this_type = class_decl.name.clone();
                 if !class_decl.generic_params.is_empty() {
-                    let gp_names: Vec<String> = class_decl.generic_params.iter().map(|gp| gp.name.clone()).collect();
+                    let gp_names: Vec<String> = class_decl
+                        .generic_params
+                        .iter()
+                        .map(|gp| gp.name.clone())
+                        .collect();
                     this_type = format!("{}<{}>", this_type, gp_names.join(", "));
                 }
-                println!("DEBUG stmt.rs defining this as: {}", this_type);
                 self.define("this".to_string(), this_type.clone());
                 // Register class-level generic params as valid types
                 for gp in &class_decl.generic_params {
@@ -392,6 +456,74 @@ impl TypeChecker {
                     self.define("super".to_string(), class_decl._parent_name.clone());
                 }
 
+                for member in &class_decl._members {
+                    let mut member_ty_str = member._type_name.to_string();
+                    if member_ty_str.is_empty() {
+                        self.report_error_detailed(
+                            format!("Type annotation required for member '{}'", member._name),
+                            class_decl._line,
+                            class_decl._col,
+                            "E0101",
+                            Some(
+                                "Provide an explicit type (e.g., 'field: int;') or use 'any' explicitly",
+                            ),
+                        );
+                        member_ty_str = "<inferred>".to_string();
+                    }
+                    if member_ty_str != "any"
+                        && member_ty_str != ""
+                        && !self.is_valid_type(&TejxType::from_name(&member_ty_str))
+                    {
+                        self.report_error_detailed(
+                            format!("Unknown data type: '{}'", member_ty_str),
+                            class_decl._line,
+                            class_decl._col,
+                            "E0101",
+                            Some(
+                                "Valid types include: int, int32, float, float64, string, bool, or user-defined classes",
+                            ),
+                        );
+                    }
+
+                    if let Some(init) = &member._initializer {
+                        let prev_expected = self.current_expected_type.take();
+                        let prev_lambda_ctx = self.lambda_context_params.take();
+                        if member_ty_str != "any" && member_ty_str != "" {
+                            let expected_ty = TejxType::from_name(&member_ty_str);
+                            self.current_expected_type = Some(expected_ty.clone());
+                            if let TejxType::Function(params, _) = expected_ty {
+                                self.lambda_context_params = Some(params);
+                            }
+                        }
+
+                        let init_type = self.check_expression(init)?.to_name();
+                        self.current_expected_type = prev_expected;
+                        self.lambda_context_params = prev_lambda_ctx;
+
+                        if member_ty_str != "any"
+                            && member_ty_str != ""
+                            && !self.are_types_compatible(
+                                &TejxType::from_name(&member_ty_str),
+                                &TejxType::from_name(&init_type),
+                            )
+                        {
+                            self.report_error_detailed(
+                                format!(
+                                    "Type mismatch: expected '{}', got '{}'",
+                                    member_ty_str, init_type
+                                ),
+                                class_decl._line,
+                                class_decl._col,
+                                "E0100",
+                                Some(&format!(
+                                    "Consider converting with 'as {}' or change the member type",
+                                    member_ty_str
+                                )),
+                            );
+                        }
+                    }
+                }
+
                 for method in &class_decl.methods {
                     self.enter_scope();
                     // Register method-level generic params as valid types
@@ -399,11 +531,24 @@ impl TypeChecker {
                         self.define(gp.name.clone(), gp.name.clone());
                     }
                     for param in &method.func.params {
-                        let param_ty = param.type_name.to_string();
-                        if param_ty.contains("=>") {
-                            println!("DEBUG stmt.rs method {} param {}: {}", method.func.name, param.name, param_ty);
+                        let mut param_ty = param.type_name.to_string();
+                        if param_ty.is_empty() {
+                            self.report_error_detailed(
+                                format!("Type annotation required for parameter '{}'", param.name),
+                                class_decl._line,
+                                class_decl._col,
+                                "E0101",
+                                Some(
+                                    "Provide an explicit type (e.g., 'method(x: int) { ... }') or use 'any' explicitly",
+                                ),
+                            );
+                            param_ty = "<inferred>".to_string();
                         }
-                        if param_ty != "any" && param_ty != "" && !self.is_valid_type(&TejxType::from_name(&param_ty)) {
+
+                        if param_ty != "any"
+                            && param_ty != ""
+                            && !self.is_valid_type(&TejxType::from_name(&param_ty))
+                        {
                             self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                         }
                         self.define(param.name.clone(), param_ty);
@@ -411,7 +556,10 @@ impl TypeChecker {
                     let prev_return = self.current_function_return.take();
                     let prev_async = self.current_function_is_async;
                     let ret_ty = TejxType::from_node(&method.func.return_type);
-                    if ret_ty != TejxType::Any && ret_ty != TejxType::Void && !self.is_valid_type(&ret_ty) {
+                    if ret_ty != TejxType::Any
+                        && ret_ty != TejxType::Void
+                        && !self.is_valid_type(&ret_ty)
+                    {
                         self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
                     }
                     self.current_function_return = Some(ret_ty);
@@ -482,7 +630,7 @@ impl TypeChecker {
                                 }
                             }
                         }
-                        
+
                         let result = self.check_expression(expr)?.to_name();
                         self.current_expected_type = prev_expected;
                         self.lambda_context_params = prev_lambda_ctx;
@@ -525,7 +673,10 @@ impl TypeChecker {
                         }
                     }
 
-                    if !self.is_assignable(&TejxType::from_name(&expected_type), &TejxType::from_name(&got)) {
+                    if !self.is_assignable(
+                        &TejxType::from_name(&expected_type),
+                        &TejxType::from_name(&got),
+                    ) {
                         let is_numeric = |t: &str| -> bool {
                             matches!(
                                 t,
@@ -622,6 +773,7 @@ impl TypeChecker {
                             is_static: false,
                             access: AccessLevel::Public,
                             is_readonly: true,
+                            generic_params: method.generic_params.clone(),
                         },
                     );
 
@@ -677,21 +829,26 @@ impl TypeChecker {
                 self.define_variable(name.clone(), type_name, is_const, line, col);
             }
             BindingNode::ArrayBinding { elements, rest } => {
-                let inner_type = if type_name.ends_with("[]") {
-                    type_name[..type_name.len() - 2].to_string()
-                } else if type_name.starts_with("Array<") && type_name.ends_with(">") {
-                    type_name[6..type_name.len() - 1].to_string()
-                } else {
-                    "<inferred>".to_string()
+                let parsed = TejxType::from_name(&type_name);
+                let inner_type = match parsed {
+                    TejxType::DynamicArray(inner)
+                    | TejxType::FixedArray(inner, _)
+                    | TejxType::Slice(inner) => inner.to_name(),
+                    _ => "<inferred>".to_string(),
                 };
 
                 for el in elements {
                     let _ = self.define_pattern(el, inner_type.clone(), is_const, line, col);
                 }
                 if let Some(rest_pattern) = rest {
+                    let rest_type = if inner_type == "<inferred>" {
+                        "<inferred>".to_string()
+                    } else {
+                        format!("{}[]", inner_type)
+                    };
                     let _ = self.define_pattern(
                         rest_pattern,
-                        format!("{}[]", inner_type),
+                        rest_type,
                         is_const,
                         line,
                         col,
@@ -726,7 +883,11 @@ impl TypeChecker {
         condition: &Expression,
     ) -> Option<(String, String, String)> {
         match condition {
-            Expression::UnaryExpr { op: TokenType::Bang, right, .. } => {
+            Expression::UnaryExpr {
+                op: TokenType::Bang,
+                right,
+                ..
+            } => {
                 if let Some((name, then_ty, else_ty)) = self.get_narrowing_from_condition(right) {
                     return Some((name, else_ty, then_ty));
                 }
@@ -736,7 +897,13 @@ impl TypeChecker {
                 left, op, right, ..
             } => {
                 if *op == TokenType::Instanceof {
-                    if let (Expression::Identifier { name: var_name, .. }, Expression::Identifier { name: type_name, .. }) = (left.as_ref(), right.as_ref()) {
+                    if let (
+                        Expression::Identifier { name: var_name, .. },
+                        Expression::Identifier {
+                            name: type_name, ..
+                        },
+                    ) = (left.as_ref(), right.as_ref())
+                    {
                         if let Some(sym) = self.lookup(var_name) {
                             let original_type = sym.ty.to_name();
                             return Some((var_name.clone(), type_name.clone(), original_type));
@@ -766,7 +933,9 @@ impl TypeChecker {
                 if let Some(sym) = self.lookup(&name) {
                     let original_type = sym.ty.to_name().clone();
                     if original_type.contains('|') {
-                        let non_none = self.strip_none_from_union(&TejxType::from_name(&original_type)).to_name();
+                        let non_none = self
+                            .strip_none_from_union(&TejxType::from_name(&original_type))
+                            .to_name();
                         if is_not_none {
                             // then: non_none, else: None
                             return Some((name, non_none, "None".to_string()));

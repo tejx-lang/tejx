@@ -26,6 +26,106 @@ pub enum TejxType {
     Any,
 }
 
+pub(crate) fn split_top_level<'a>(input: &'a str, sep: char) -> Vec<&'a str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth_angle = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => {
+                if depth_angle > 0 {
+                    depth_angle -= 1;
+                }
+            }
+            '{' => depth_brace += 1,
+            '}' => {
+                if depth_brace > 0 {
+                    depth_brace -= 1;
+                }
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                }
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren > 0 {
+                    depth_paren -= 1;
+                }
+            }
+            _ => {}
+        }
+
+        if ch == sep && depth_angle == 0 && depth_brace == 0 && depth_bracket == 0 && depth_paren == 0 {
+            parts.push(input[start..i].trim());
+            start = i + ch.len_utf8();
+        }
+    }
+
+    if start <= input.len() {
+        parts.push(input[start..].trim());
+    }
+
+    parts
+}
+
+pub(crate) fn find_top_level_generic_bounds(input: &str) -> Option<(usize, usize)> {
+    let mut depth_angle = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+    let mut open = None;
+
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '{' => depth_brace += 1,
+            '}' => {
+                if depth_brace > 0 {
+                    depth_brace -= 1;
+                }
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                }
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren > 0 {
+                    depth_paren -= 1;
+                }
+            }
+            '<' => {
+                if depth_brace == 0 && depth_bracket == 0 && depth_paren == 0 && depth_angle == 0 {
+                    open = Some(i);
+                }
+                depth_angle += 1;
+            }
+            '>' => {
+                if depth_angle > 0 {
+                    depth_angle -= 1;
+                    if depth_angle == 0 {
+                        if let Some(open_idx) = open {
+                            return Some((open_idx, i));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 impl TejxType {
     pub fn is_numeric(&self) -> bool {
         match self {
@@ -50,15 +150,14 @@ impl TejxType {
     }
 
     pub fn is_array(&self) -> bool {
-        match self {
-            TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) | TejxType::Slice(_) => true,
-            TejxType::Class(name, _) => {
-                (name.ends_with("[]") || (name.contains('[') && name.ends_with(']')))
-                    && !name.starts_with("Array<")
-            }
-            TejxType::Function(_, _) | TejxType::Union(_) | TejxType::Object(_) => false,
-            _ => false,
-        }
+        matches!(
+            self,
+            TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) | TejxType::Slice(_)
+        )
+    }
+
+    pub fn is_object(&self) -> bool {
+        matches!(self, TejxType::Class(_, _) | TejxType::Object(_) | TejxType::Any)
     }
 
     pub fn is_slice(&self) -> bool {
@@ -74,35 +173,6 @@ impl TejxType {
             TejxType::FixedArray(inner, _)
             | TejxType::DynamicArray(inner)
             | TejxType::Slice(inner) => (**inner).clone(),
-            TejxType::Class(name, generics) if name == "Array" || name.starts_with("Array<") => {
-                // If it's Array<T>, return T. If it's missing generics, return Void to fail.
-                if let Some(t) = generics.first() {
-                    t.clone()
-                } else if name.starts_with("Array<") {
-                    let inner = &name[6..name.len() - 1];
-                    TejxType::from_name(inner)
-                } else {
-                    TejxType::Any
-                }
-
-            }
-            TejxType::Class(name, _) if name.ends_with("[]") => {
-                let inner = &name[0..name.len() - 2];
-                // Manually map built-in types inside array brackets
-                match inner {
-                    "string" => TejxType::String,
-                    "int" => TejxType::Int32,
-                    "float" => TejxType::Float64,
-                    "bool" | "boolean" => TejxType::Bool,
-                    _ => TejxType::from_name(inner),
-                }
-            }
-            TejxType::Class(name, _) if name == "ByteArray" => TejxType::Bool,
-            TejxType::Class(name, generics) if name == "Array" => {
-                // Return Array as-is; it should fail validation later if missing generics
-                TejxType::Class(name.to_string(), generics.clone())
-            }
-            TejxType::String => TejxType::String,
             TejxType::Function(_, _) => TejxType::Void,
             _ => TejxType::Any,
         }
@@ -120,8 +190,8 @@ impl TejxType {
             TejxType::String
             | TejxType::Class(_, _)
             | TejxType::DynamicArray(_)
-            | TejxType::Function(_, _)
-            | TejxType::Object(_) => 8, // Pointers/Boxed/Borrows/Function pointers
+            | TejxType::Object(_) => 8, // Pointers/Boxed/Borrows
+            TejxType::Function(_, _) => 16, // Pointer + env (fat pointer)
             TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Any => 8, // Boxed value ptr
@@ -200,21 +270,110 @@ impl TejxType {
     pub fn from_name(name: &str) -> TejxType {
         let name = name.trim();
 
-        if name.starts_with('{') && name.ends_with('}') {
-            return TejxType::Class(name.to_string(), vec![]);
-        }
-
-        if name.contains('|') {
-            let parts: Vec<TejxType> = name.split('|').map(|s| TejxType::from_name(s.trim())).collect();
+        let union_parts = split_top_level(name, '|');
+        if union_parts.len() > 1 {
+            let parts: Vec<TejxType> = union_parts
+                .into_iter()
+                .filter(|p| !p.is_empty())
+                .map(|s| TejxType::from_name(s.trim()))
+                .collect();
             if parts.len() == 1 {
                 return parts.into_iter().next().unwrap();
             }
             return TejxType::Union(parts);
         }
 
+        if name.starts_with('{') && name.ends_with('}') {
+            let inner = name[1..name.len() - 1].trim();
+            let mut props = Vec::new();
+            let mut current = String::new();
+            let mut depth_brace = 0usize;
+            let mut depth_angle = 0usize;
+            let mut depth_bracket = 0usize;
+            let mut depth_paren = 0usize;
+
+            let mut flush_prop = |buf: &str, props: &mut Vec<(String, bool, TejxType)>| {
+                let p = buf.trim();
+                if p.is_empty() {
+                    return;
+                }
+                if let Some(colon) = p.find(':') {
+                    let mut key = p[..colon].trim().to_string();
+                    let mut is_opt = false;
+                    if key.ends_with('?') {
+                        key.pop();
+                        is_opt = true;
+                    }
+                    let ty_str = p[colon + 1..].trim();
+                    let ty = TejxType::from_name(ty_str);
+                    props.push((key, is_opt, ty));
+                }
+            };
+
+            for ch in inner.chars() {
+                match ch {
+                    '{' => {
+                        depth_brace += 1;
+                        current.push(ch);
+                    }
+                    '}' => {
+                        if depth_brace > 0 {
+                            depth_brace -= 1;
+                        }
+                        current.push(ch);
+                    }
+                    '<' => {
+                        depth_angle += 1;
+                        current.push(ch);
+                    }
+                    '>' => {
+                        if depth_angle > 0 {
+                            depth_angle -= 1;
+                        }
+                        current.push(ch);
+                    }
+                    '[' => {
+                        depth_bracket += 1;
+                        current.push(ch);
+                    }
+                    ']' => {
+                        if depth_bracket > 0 {
+                            depth_bracket -= 1;
+                        }
+                        current.push(ch);
+                    }
+                    '(' => {
+                        depth_paren += 1;
+                        current.push(ch);
+                    }
+                    ')' => {
+                        if depth_paren > 0 {
+                            depth_paren -= 1;
+                        }
+                        current.push(ch);
+                    }
+                    ';' | ',' if depth_brace == 0
+                        && depth_angle == 0
+                        && depth_bracket == 0
+                        && depth_paren == 0 =>
+                    {
+                        let buf = current.clone();
+                        flush_prop(&buf, &mut props);
+                        current.clear();
+                    }
+                    _ => current.push(ch),
+                }
+            }
+            if !current.trim().is_empty() {
+                let buf = current.clone();
+                flush_prop(&buf, &mut props);
+            }
+            return TejxType::Object(props);
+        }
+
         if name.ends_with("]") {
             // Handle type[size]
-            if let Some(open) = name.find('[') {
+            if let Some(open) = name.rfind('[') {
                 let base = &name[..open];
                 let size_str = &name[open + 1..name.len() - 1];
                 if size_str.is_empty() {
@@ -248,33 +407,16 @@ impl TejxType {
             "any" => TejxType::Any,
             other => {
                 // Support parsing generic syntax like Map<String, Int>
-                if let Some(open) = other.find('<') {
-                    if other.ends_with('>') {
-                        let base_name = &other[..open];
-                        let inner_args_str = &other[open + 1..other.len() - 1];
-
-                        // Parse comma separated generics
-                        // Note: This simple split fails for Map<String, Array<Int>>.
-                        // But since TejX relies on spaces or parsing earlier, we'll implement a basic nested parsing.
+                if let Some((open, close)) = find_top_level_generic_bounds(other) {
+                    if close + 1 == other.len() {
+                        let base_name = other[..open].trim();
+                        let inner_args_str = &other[open + 1..close];
                         let mut generics = Vec::new();
-                        let mut current_arg = String::new();
-                        let mut bracket_depth = 0;
-                        for c in inner_args_str.chars() {
-                            if c == '<' {
-                                bracket_depth += 1;
-                            } else if c == '>' {
-                                bracket_depth -= 1;
+                        for arg in split_top_level(inner_args_str, ',') {
+                            let arg = arg.trim();
+                            if !arg.is_empty() {
+                                generics.push(TejxType::from_name(arg));
                             }
-
-                            if c == ',' && bracket_depth == 0 {
-                                generics.push(TejxType::from_name(current_arg.trim()));
-                                current_arg.clear();
-                            } else {
-                                current_arg.push(c);
-                            }
-                        }
-                        if !current_arg.trim().is_empty() {
-                            generics.push(TejxType::from_name(current_arg.trim()));
                         }
                         return TejxType::Class(base_name.to_string(), generics);
                     }

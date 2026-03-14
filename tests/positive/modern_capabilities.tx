@@ -34,26 +34,26 @@ class Button extends Element {
 // 3. Data Structures: Stack Implementation
 // ----------------------------------------
 
-class Stack {
-    items: int32[] = [];
+class Stack<T> {
+    items: T[] = [];
     
-    push(item: int32): void {
+    push(item: T): void {
         let list = this.items;
         list.push(item);
     }
     
-    pop(): int32 | None {
+    pop(): T | None {
         let list = this.items;
         return list.pop();
     }
     
-    peek(): int32 | None {
-        if (this.items.length == 0) return None;
-        return this.items[this.items.length - 1];
+    peek(): T | None {
+        if (this.items.length() == 0) return None;
+        return this.items[this.items.length() - 1];
     }
     
     isEmpty(): bool {
-        if (this.items.length == 0) {
+        if (this.items.length() == 0) {
             return true;
         }
         return false;
@@ -65,7 +65,7 @@ class Stack {
 
 function binarySearch(arr: int32[], target: int32): int32 {
     let left = 0;
-    let right = arr.length - 1;
+    let right = arr.length() - 1;
     
     while (left <= right) {
         let mid = floor((left + right) / 2);
@@ -94,7 +94,7 @@ class ValidationResult {
 }
 
 function validate(input: string): ValidationResult {
-    if (input.length == 0) {
+    if (input.length() == 0) {
         return new ValidationResult(false, "Empty string");
     }
     if (input == "error") {
@@ -137,7 +137,7 @@ function main() {
     let squares = evens.map(n => n * n);
 
     let sumSquares = 0;
-    for (let i = 0; i < squares.length; i = i + 1) {
+    for (let i = 0; i < squares.length(); i = i + 1) {
         sumSquares = sumSquares + squares[i];
     }
 

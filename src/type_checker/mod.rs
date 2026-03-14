@@ -24,6 +24,7 @@ pub struct MemberInfo {
     pub is_static: bool,
     pub access: AccessLevel,
     pub is_readonly: bool,
+    pub generic_params: Vec<crate::ast::GenericParam>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +55,7 @@ pub struct TypeChecker {
     remaining_stmts: Vec<Statement>,
     lambda_context_params: Option<Vec<TejxType>>,
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<TejxType>>,
+    pub lambda_inferred_returns: HashMap<(usize, usize), TejxType>,
     pub(crate) current_expected_type: Option<TejxType>,
     pub generic_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
     pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
@@ -81,6 +83,7 @@ impl TypeChecker {
             remaining_stmts: Vec::new(),
             lambda_context_params: None,
             lambda_inferred_types: HashMap::new(),
+            lambda_inferred_returns: HashMap::new(),
             current_expected_type: None,
             generic_instantiations: HashMap::new(),
             function_instantiations: HashMap::new(),
@@ -282,5 +285,27 @@ impl TypeChecker {
             diag = diag.with_hint(h);
         }
         self.diagnostics.push(diag);
+    }
+
+    pub(crate) fn with_expected_type<F, R>(&mut self, ty: Option<TejxType>, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let prev = self.current_expected_type.take();
+        self.current_expected_type = ty;
+        let res = f(self);
+        self.current_expected_type = prev;
+        res
+    }
+
+    pub(crate) fn with_lambda_context<F, R>(&mut self, params: Option<Vec<TejxType>>, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let prev = self.lambda_context_params.take();
+        self.lambda_context_params = params;
+        let res = f(self);
+        self.lambda_context_params = prev;
+        res
     }
 }

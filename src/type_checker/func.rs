@@ -11,6 +11,7 @@ impl TypeChecker {
             let mut current = String::new();
             let mut depth_brace = 0;
             let mut depth_angle = 0;
+            let mut depth_bracket = 0;
             let mut depth_paren = 0;
 
             for ch in params_str.chars() {
@@ -23,9 +24,15 @@ impl TypeChecker {
                             depth_angle -= 1;
                         }
                     }
+                    '[' => depth_bracket += 1,
+                    ']' => {
+                        if depth_bracket > 0 {
+                            depth_bracket -= 1;
+                        }
+                    }
                     '(' => depth_paren += 1,
                     ')' => depth_paren -= 1,
-                    ',' if depth_brace == 0 && depth_angle == 0 && depth_paren == 0 => {
+                    ',' if depth_brace == 0 && depth_angle == 0 && depth_bracket == 0 && depth_paren == 0 => {
                         params.push(current.trim().to_string());
                         current.clear();
                         continue;

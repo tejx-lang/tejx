@@ -69,7 +69,7 @@ impl Lowering {
         // any f_worker(any[] ctx) { ... }
         self.enter_scope();
         let ctx_name = "ctx".to_string();
-        let ctx_ty = TejxType::Class("Int64[]".to_string(), vec![]);
+        let ctx_ty = TejxType::DynamicArray(Box::new(TejxType::Int64));
         self.define(ctx_name.clone(), ctx_ty.clone());
 
         // unpack_promise_expr used to be here, now mir_lowering handles it
@@ -183,7 +183,7 @@ impl Lowering {
             name: worker_name.clone(),
             params: vec![(
                 "ctx".to_string(),
-                TejxType::Class("Int64[]".to_string(), vec![]),
+                TejxType::DynamicArray(Box::new(TejxType::Int64)),
             )],
             _return_type: TejxType::Void,
             body: Box::new(final_body),
@@ -239,7 +239,8 @@ impl Lowering {
         }
 
         // Add safety padding for local variables crossing await points
-        for _ in 0..128 {
+        // Large async functions can generate many temps; keep this generous.
+        for _ in 0..512 {
             args_elems.push(HIRExpression::Literal {
                 line: line,
                 value: "0".to_string(),
@@ -248,7 +249,7 @@ impl Lowering {
         }
 
         let ctx_var = format!("__ctx_{}", line);
-        let ctx_ty = TejxType::Class("Int64[]".to_string(), vec![]);
+        let ctx_ty = TejxType::DynamicArray(Box::new(TejxType::Int64));
         wrapper_stmts.push(HIRStatement::VarDecl {
             line: line,
             name: ctx_var.clone(),

@@ -1,6 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 mod ast;
 mod ast_transformer;
+mod builtins;
 mod codegen;
 mod diagnostics;
 mod hir;
@@ -195,7 +196,8 @@ fn main() {
     }
 
     lowering.lambda_inferred_types = type_checker.lambda_inferred_types;
-    lowering.generic_instantiations = type_checker.generic_instantiations;
+    lowering.lambda_inferred_returns = type_checker.lambda_inferred_returns;
+    *lowering.generic_instantiations.borrow_mut() = type_checker.generic_instantiations;
     lowering.function_instantiations = type_checker.function_instantiations;
 
     let lowering_result = lowering.lower(&merged_program, base_path);

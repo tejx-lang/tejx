@@ -21,7 +21,6 @@ pub enum TokenType {
     Constructor,
     Extends,
     Implements,
-    Extension,
     Abstract,
     Switch,
     Case,
@@ -43,8 +42,6 @@ pub enum TokenType {
     Some,
     None,
     Option, // Option types
-    Get,
-    Set,
     Del,
     Interface,
     TypeAlias, // Property accessors
@@ -88,10 +85,8 @@ pub enum TokenType {
     CloseBracket,
     // Logic & Comparison
     EqualEqual,
-    EqualEqualEqual,
     Bang,
     BangEqual,
-    BangEqualEqual,
     Less,
     LessEqual,
     Greater,
@@ -128,7 +123,6 @@ pub enum TokenType {
     Of,
     // OOP
     EndOfFile,
-    Unknown,
     Hash, // #
 }
 

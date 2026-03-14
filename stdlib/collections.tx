@@ -16,16 +16,16 @@ export class Stack<T> {
     }
 
     peek(): T {
-        if (len(this.items) == 0) return None;
-        return this.items[len(this.items) - 1];
+        if (this.items.length() == 0) return None;
+        return this.items[this.items.length() - 1];
     }
 
     size(): int {
-        return len(this.items);
+        return this.items.length();
     }
 
     isEmpty(): bool {
-        return len(this.items) == 0;
+        return this.items.length() == 0;
     }
 
     clear(): void {
@@ -45,11 +45,11 @@ export class Queue<T> {
     }
 
     dequeue(): T {
-        if (len(this.items) == 0) return None;
+        if (this.items.length() == 0) return None;
         // Simple shift implementation in TejX
         let val = this.items[0];
         let newItems: T[] = [];
-        for (let i = 1; i < len(this.items); i++) {
+        for (let i = 1; i < this.items.length(); i++) {
             newItems.push(this.items[i]);
         }
         this.items = newItems;
@@ -57,16 +57,16 @@ export class Queue<T> {
     }
 
     peek(): T {
-        if (len(this.items) == 0) return None;
+        if (this.items.length() == 0) return None;
         return this.items[0];
     }
 
     size(): int {
-        return len(this.items);
+        return this.items.length();
     }
 
     isEmpty(): bool {
-        return len(this.items) == 0;
+        return this.items.length() == 0;
     }
 
     clear(): void {
@@ -74,45 +74,25 @@ export class Queue<T> {
     }
 }
 
-extern function rt_Map_constructor<K, V>(_this: Map<K, V>): void;
-extern function rt_Map_set<K, V>(_this: Map<K, V>, key: K, val: V): void;
-extern function rt_Map_get<K, V>(_this: Map<K, V>, key: K): V;
-extern function rt_Map_has<K, V>(_this: Map<K, V>, key: K): bool;
-extern function rt_Map_delete<K, V>(_this: Map<K, V>, key: K): bool;
-extern function rt_Map_keys<K, V>(_this: Map<K, V>): K[];
-extern function rt_Map_values<K, V>(_this: Map<K, V>): V[];
-extern function rt_Map_clear<K, V>(_this: Map<K, V>): void;
-extern function rt_Map_size<K, V>(_this: Map<K, V>): int;
-
-extern function rt_Set_constructor<T>(_this: Set<T>): void;
-extern function rt_Set_add<T>(_this: Set<T>, val: T): void;
-extern function rt_Set_has<T>(_this: Set<T>, val: T): bool;
-extern function rt_Set_delete<T>(_this: Set<T>, val: T): bool;
-extern function rt_Set_values<T>(_this: Set<T>): T[];
-extern function rt_Set_size<T>(_this: Set<T>): int;
-
+// Map implementation is pure TejX now.
 export class Map<K, V> {
-    private _size: int64;
-    private _capacity: int64;
-    private _keys: K[];
-    private _vals: V[];
-    private _db: int64;
+    private _id: any;
 
     constructor() {
-        rt_Map_constructor(this);
+        this._id = rt_map_new();
     }
 
     set(key: K, val: V): void {
-        rt_Map_set(this, key, val);
+        rt_map_set(this._id, key, val);
     }
 
     get(key: K): V {
-        return rt_Map_get(this, key);
+        let v: V = rt_map_get(this._id, key);
+        return v;
     }
 
-    // Aliases for backward compatibility
     put(key: K, val: V): void {
-        rt_Map_set(this, key, val);
+        this.set(key, val);
     }
 
     at(key: K): V {
@@ -120,67 +100,70 @@ export class Map<K, V> {
     }
 
     has(key: K): bool {
-        return rt_Map_has(this, key);
+        return rt_map_has(this._id, key);
     }
 
     delete(key: K): bool {
-        return rt_Map_delete(this, key);
+        return rt_map_delete(this._id, key);
     }
 
     keys(): K[] {
-        return rt_Map_keys(this);
+        let k: K[] = rt_map_keys(this._id);
+        return k;
     }
 
     values(): V[] {
-        return rt_Map_values(this);
+        let v: V[] = rt_map_values(this._id);
+        return v;
     }
 
     size(): int {
-        return rt_Map_size(this);
+        return rt_map_size(this._id);
     }
 
     isEmpty(): bool {
-        return rt_Map_size(this) == 0;
+        return this.size() == 0;
     }
 
     clear(): void {
-        rt_Map_clear(this);
+        this._id = rt_map_new();
     }
 }
 
 export class Set<T> {
-    private _size: int64;
-    private _capacity: int64;
-    private _keys: T[];
-    private _vals: T[];
-    private _db: int64;
+    private _id: any;
 
     constructor() {
-        rt_Set_constructor(this);
+        this._id = rt_map_new();
     }
 
     add(val: T): void {
-        rt_Set_add(this, val);
+        rt_map_set(this._id, val, 1);
     }
 
     has(val: T): bool {
-        return rt_Set_has(this, val);
+        return rt_map_has(this._id, val);
     }
 
     delete(val: T): bool {
-        return rt_Set_delete(this, val);
+        return rt_map_delete(this._id, val);
     }
 
     values(): T[] {
-        return rt_Set_values(this);
+        let k: T[] = rt_map_keys(this._id);
+        return k;
     }
 
     size(): int {
-        return rt_Set_size(this);
+        return rt_map_size(this._id);
     }
 
     isEmpty(): bool {
-        return rt_Set_size(this) == 0;
+        return this.size() == 0;
+    }
+
+    clear(): void {
+        this._id = rt_map_new();
     }
 }
 
@@ -194,12 +177,12 @@ export class MinHeap<T> {
 
     insert(val: T): void {
         this.items.push(val);
-        this.bubbleUp(len(this.items) - 1);
+        this.bubbleUp(this.items.length() - 1);
     }
 
     extractMin(): T {
-        if (len(this.items) == 0) return None;
-        if (len(this.items) == 1) return this.items.pop();
+        if (this.items.length() == 0) return None;
+        if (this.items.length() == 1) return this.items.pop();
 
         let min = this.items[0];
         this.items[0] = this.items.pop();
@@ -235,10 +218,10 @@ export class MinHeap<T> {
             let right = 2 * index + 2;
             let smallest = index;
 
-            if (left < len(this.items) && this.items[left] < this.items[smallest]) {
+            if (left < this.items.length() && this.items[left] < this.items[smallest]) {
                 smallest = left;
             }
-            if (right < len(this.items) && this.items[right] < this.items[smallest]) {
+            if (right < this.items.length() && this.items[right] < this.items[smallest]) {
                 smallest = right;
             }
 
@@ -253,8 +236,8 @@ export class MinHeap<T> {
         }
     }
 
-    size(): int { return len(this.items); }
-    isEmpty(): bool { return len(this.items) == 0; }
+    size(): int { return this.items.length(); }
+    isEmpty(): bool { return this.items.length() == 0; }
 }
 
 export class MaxHeap<T> {
@@ -266,18 +249,18 @@ export class MaxHeap<T> {
 
     insert(val: T): void {
         this.items.push(val);
-        this.bubbleUp(len(this.items) - 1);
+        this.bubbleUp(this.items.length() - 1);
     }
 
     // Alias for test compatibility
     insertMax(val: T): void {
         this.items.push(val);
-        this.bubbleUp(len(this.items) - 1);
+        this.bubbleUp(this.items.length() - 1);
     }
 
     extractMax(): T {
-        if (len(this.items) == 0) return None;
-        if (len(this.items) == 1) return this.items.pop();
+        if (this.items.length() == 0) return None;
+        if (this.items.length() == 1) return this.items.pop();
 
         let max = this.items[0];
         this.items[0] = this.items.pop();
@@ -305,10 +288,10 @@ export class MaxHeap<T> {
             let right = 2 * index + 2;
             let largest = index;
 
-            if (left < len(this.items) && this.items[left] > this.items[largest]) {
+            if (left < this.items.length() && this.items[left] > this.items[largest]) {
                 largest = left;
             }
-            if (right < len(this.items) && this.items[right] > this.items[largest]) {
+            if (right < this.items.length() && this.items[right] > this.items[largest]) {
                 largest = right;
             }
 
@@ -323,13 +306,23 @@ export class MaxHeap<T> {
         }
     }
 
-    size(): int { return len(this.items); }
-    isEmpty(): bool { return len(this.items) == 0; }
+    size(): int { return this.items.length(); }
+    isEmpty(): bool { return this.items.length() == 0; }
 }
 
-export class PriorityQueue<T> extends MinHeap {
-    enqueue(val: T): void { this.insert(val); }
-    dequeue(): T { return this.extractMin(); }
+export class PriorityQueue<T> {
+    private heap: MinHeap<T>;
+
+    constructor() {
+        this.heap = new MinHeap<T>();
+    }
+
+    insert(val: T): void { this.heap.insert(val); }
+    extractMin(): T { return this.heap.extractMin(); }
+    enqueue(val: T): void { this.heap.insert(val); }
+    dequeue(): T { return this.heap.extractMin(); }
+    size(): int { return this.heap.size(); }
+    isEmpty(): bool { return this.heap.isEmpty(); }
 }
 
 // --- OrderedMap: Map that preserves insertion order ---
@@ -343,7 +336,7 @@ export class OrderedMap<K, V> {
     }
 
     put(key: K, val: V): void {
-        for (let i = 0; i < len(this._keys); i++) {
+        for (let i = 0; i < this._keys.length(); i++) {
             if (this._keys[i] == key) {
                 this._vals[i] = val;
                 return;
@@ -358,7 +351,7 @@ export class OrderedMap<K, V> {
     }
 
     at(key: K): V {
-        for (let i = 0; i < len(this._keys); i++) {
+        for (let i = 0; i < this._keys.length(); i++) {
             if (this._keys[i] == key) {
                 return this._vals[i];
             }
@@ -371,19 +364,19 @@ export class OrderedMap<K, V> {
     }
 
     has(key: K): bool {
-        for (let i = 0; i < len(this._keys); i++) {
+        for (let i = 0; i < this._keys.length(); i++) {
             if (this._keys[i] == key) return true;
         }
         return false;
     }
 
     delete(key: K): bool {
-        for (let i = 0; i < len(this._keys); i++) {
+        for (let i = 0; i < this._keys.length(); i++) {
             if (this._keys[i] == key) {
                 // Shift remaining elements
                 let newKeys: K[] = [];
                 let newVals: V[] = [];
-                for (let j = 0; j < len(this._keys); j++) {
+                for (let j = 0; j < this._keys.length(); j++) {
                     if (j != i) {
                         newKeys.push(this._keys[j]);
                         newVals.push(this._vals[j]);
@@ -406,11 +399,11 @@ export class OrderedMap<K, V> {
     }
 
     size(): int {
-        return len(this._keys);
+        return this._keys.length();
     }
 
     isEmpty(): bool {
-        return len(this._keys) == 0;
+        return this._keys.length() == 0;
     }
 
     clear(): void {
@@ -428,14 +421,14 @@ export class OrderedSet<T> {
     }
 
     add(val: T): void {
-        for (let i = 0; i < len(this._items); i++) {
+        for (let i = 0; i < this._items.length(); i++) {
             if (this._items[i] == val) return;
         }
         this._items.push(val);
     }
 
     has(val: T): bool {
-        for (let i = 0; i < len(this._items); i++) {
+        for (let i = 0; i < this._items.length(); i++) {
             if (this._items[i] == val) return true;
         }
         return false;
@@ -444,7 +437,7 @@ export class OrderedSet<T> {
     delete(val: T): bool {
         let newItems: T[] = [];
         let found = false;
-        for (let i = 0; i < len(this._items); i++) {
+        for (let i = 0; i < this._items.length(); i++) {
             if (this._items[i] == val) {
                 found = true;
             } else {
@@ -460,11 +453,11 @@ export class OrderedSet<T> {
     }
 
     size(): int {
-        return len(this._items);
+        return this._items.length();
     }
 
     isEmpty(): bool {
-        return len(this._items) == 0;
+        return this._items.length() == 0;
     }
 
     clear(): void {
@@ -489,7 +482,7 @@ export class BloomFilter {
 
     private hash1(val: string): int {
         let h = 0;
-        for (let i = 0; i < len(val); i++) {
+        for (let i = 0; i < val.length(); i++) {
             h = h * 31 + i + 1;
         }
         if (h < 0) h = 0 - h;
@@ -498,7 +491,7 @@ export class BloomFilter {
 
     private hash2(val: string): int {
         let h = 0;
-        for (let i = 0; i < len(val); i++) {
+        for (let i = 0; i < val.length(); i++) {
             h = h * 37 + i + 7;
         }
         if (h < 0) h = 0 - h;
@@ -539,7 +532,7 @@ export class Trie {
     }
 
     addPath(key: string, val: int): void {
-        for (let i = 0; i < len(this.trieKeys); i++) {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
             if (this.trieKeys[i] == key) {
                 this.trieVals[i] = val;
                 return;
@@ -550,7 +543,7 @@ export class Trie {
     }
 
     find(key: string): int {
-        for (let i = 0; i < len(this.trieKeys); i++) {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
             if (this.trieKeys[i] == key) {
                 return this.trieVals[i];
             }
@@ -559,7 +552,7 @@ export class Trie {
     }
 
     has(key: string): bool {
-        for (let i = 0; i < len(this.trieKeys); i++) {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
             if (this.trieKeys[i] == key) return true;
         }
         return false;
@@ -569,7 +562,7 @@ export class Trie {
         let newKeys: string[] = [];
         let newVals: int[] = [];
         let found = false;
-        for (let i = 0; i < len(this.trieKeys); i++) {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
             if (this.trieKeys[i] == key) {
                 found = true;
             } else {
@@ -583,6 +576,6 @@ export class Trie {
     }
 
     size(): int {
-        return len(this.trieKeys);
+        return this.trieKeys.length();
     }
 }

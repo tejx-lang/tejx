@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::types::TejxType;
 use std::collections::HashMap;
 
 pub struct TypeSubstitutor<'a> {
@@ -177,11 +178,14 @@ impl<'a> TypeSubstitutor<'a> {
             }
             Expression::NewExpr { args, class_name, .. } => {
                 for a in args { self.transform_expression(a); }
-                
-                // transform class_name if it has generic args
-                let mut temp_ty = TypeNode::Named(class_name.clone());
-                self.substitute_type(&mut temp_ty);
-                *class_name = temp_ty.to_string();
+
+                let mut bindings = HashMap::new();
+                for (k, v) in self.substitutions.iter() {
+                    bindings.insert(k.clone(), TejxType::from_node(v));
+                }
+                let class_ty = TejxType::from_name(class_name);
+                let substituted = class_ty.substitute_generics(&bindings);
+                *class_name = substituted.to_name();
             }
             Expression::LambdaExpr { params, body, .. } => {
                 for p in params { self.substitute_type(&mut p.type_name); }

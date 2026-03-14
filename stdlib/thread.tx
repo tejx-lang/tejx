@@ -1,29 +1,11 @@
-extern function rt_Mutex_constructor(_this: Mutex): void;
-extern function rt_Mutex_acquire(_this: Mutex): void;
-extern function rt_Mutex_release(_this: Mutex): void;
-extern function rt_SharedQueue_constructor<T>(_this: SharedQueue<T>): void;
-extern function rt_SharedQueue_enqueue<T>(_this: SharedQueue<T>, val: T): void;
-extern function rt_SharedQueue_dequeue<T>(_this: SharedQueue<T>): T;
-extern function rt_SharedQueue_size<T>(_this: SharedQueue<T>): int;
-extern function rt_Atomic_add(_this: Atomic, val: int): int;
-extern function rt_Atomic_sub(_this: Atomic, val: int): int;
-extern function rt_Atomic_load(_this: Atomic): int;
-extern function rt_Atomic_store(_this: Atomic, val: int): void;
-extern function rt_Atomic_exchange(_this: Atomic, val: int): int;
-extern function rt_Atomic_compareExchange(_this: Atomic, expected: int, desired: int): int;
+export class Thread {
+    private _data: int64;
+    private _cb: any;
+    private _args: any[];
 
-extern function rt_Condition_constructor(_this: Condition): void;
-extern function rt_Condition_wait(_this: Condition, mutex: Mutex): void;
-extern function rt_Condition_notify(_this: Condition): void;
-extern function rt_Condition_notifyAll(_this: Condition): void;
-
-extern function rt_Thread_constructor<T>(_this: Thread<T>, cb: (arg: T) => void, arg: T): void;
-extern function rt_Thread_start<T>(_this: Thread<T>): void;
-extern function rt_Thread_join<T>(_this: Thread<T>): void;
-
-export class Thread<T> {
-    constructor(cb: (arg: T) => void, arg: T) {
-        rt_Thread_constructor(this, cb, arg);
+    constructor(cb: any, args: any[]) {
+        rt_Thread_constructor(this, cb, args);
+        rt_Thread_start(this);
     }
 
     start(): void {
@@ -36,9 +18,9 @@ export class Thread<T> {
 }
 
 export class Atomic {
-    private value: int;
+    private _data: int64;
     constructor(val: int) {
-        this.value = val;
+        rt_Atomic_constructor(this, val);
     }
 
     add(val: int): int { return rt_Atomic_add(this, val); }
@@ -52,6 +34,7 @@ export class Atomic {
 }
 
 export class Condition {
+    private _data: int64;
     constructor() {
         rt_Condition_constructor(this);
     }
@@ -61,6 +44,7 @@ export class Condition {
 }
 
 export class Mutex {
+    private _data: int64;
     constructor() {
         rt_Mutex_constructor(this);
     }
@@ -75,6 +59,7 @@ export class Mutex {
 }
 
 export class SharedQueue<T> {
+    private _data: T[];
     constructor() {
         rt_SharedQueue_constructor(this);
     }

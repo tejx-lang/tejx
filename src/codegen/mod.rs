@@ -30,6 +30,7 @@ pub struct CodeGen {
     pub unsafe_arrays: bool,
     float_ssa_vars: HashMap<String, String>, // var_name -> LLVM double SSA variable
     num_roots: usize,
+    volatile_locals: bool,
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
     pub type_id_map: HashMap<String, u32>,
@@ -53,7 +54,20 @@ impl CodeGen {
 
     pub(crate) fn get_llvm_type(ty: &TejxType) -> &str {
         match ty {
-            TejxType::Bool => "i1",
+            TejxType::Bool => "i8",
+            TejxType::Int16 => "i16",
+            TejxType::Int32 | TejxType::Char => "i32",
+            TejxType::Int64 => "i64",
+            TejxType::Float32 => "float",
+            TejxType::Float64 => "double",
+            TejxType::Void => "void",
+            _ => "i64", // Pointers to GC objects, arrays, closures, strings
+        }
+    }
+
+    pub(crate) fn get_llvm_storage_type(ty: &TejxType) -> &str {
+        match ty {
+            TejxType::Bool => "i8", // 1-byte storage
             TejxType::Int16 => "i16",
             TejxType::Int32 | TejxType::Char => "i32",
             TejxType::Int64 => "i64",
@@ -101,6 +115,7 @@ impl CodeGen {
             unsafe_arrays: false,
             float_ssa_vars: HashMap::new(),
             num_roots: 0,
+            volatile_locals: false,
             class_fields: HashMap::new(),
             class_methods: HashMap::new(),
             type_id_map: HashMap::new(),

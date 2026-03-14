@@ -2,10 +2,10 @@ import { Map } from "std:collections";
 import {assert_eq_int} from "../positive/utils.tx";
 function findTwoSum(nums: int[], target: int): int[] | None {
   // Map stores: Value -> Index
-  let prevMap: Map<int, int> = new Map();
+  let prevMap: Map<int, int> = new Map<int, int>();
   print("Type of prevMap");
   
-  for (let i = 0; i < nums.length; i++) {
+  for (let i = 0; i < nums.length(); i++) {
     let diff = target - nums[i];
     
     if (prevMap.has(diff)) {

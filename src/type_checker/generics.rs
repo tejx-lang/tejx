@@ -1,28 +1,18 @@
 use super::*;
+use crate::types::{find_top_level_generic_bounds, split_top_level};
 
 impl TypeChecker {
     pub fn register_instantiation(&mut self, type_name: &str, line: usize, col: usize) {
-        if let Some(open) = type_name.find('<') {
-            if type_name.ends_with('>') {
-                let base = &type_name[..open];
-                let inner = &type_name[open + 1..type_name.len() - 1];
+        if let Some((open, close)) = find_top_level_generic_bounds(type_name) {
+            if close + 1 == type_name.len() {
+                let base = type_name[..open].trim();
+                let inner = &type_name[open + 1..close];
 
-                let mut args = Vec::new();
-                let mut depth_level = 0;
-                let mut start = 0;
-                for (i, c) in inner.char_indices() {
-                    match c {
-                        '<' => depth_level += 1,
-                        '>' => depth_level -= 1,
-                        ',' if depth_level == 0 => {
-                            let arg_ty = inner[start..i].trim();
-                            args.push(TejxType::from_name(arg_ty));
-                            start = i + 1;
-                        }
-                        _ => {}
-                    }
-                }
-                args.push(TejxType::from_name(inner[start..].trim()));
+                let args: Vec<TejxType> = split_top_level(inner, ',')
+                    .into_iter()
+                    .filter(|a| !a.is_empty())
+                    .map(|arg_ty| TejxType::from_name(arg_ty))
+                    .collect();
 
                 self.generic_instantiations
                     .entry(base.to_string())
@@ -61,27 +51,12 @@ impl TypeChecker {
 
     pub(crate) fn substitute_generics(&self, member_type: &str, obj_type: &str) -> String {
         let mut parts = Vec::new();
-        if let Some(open) = obj_type.find('<') {
-            if let Some(close) = obj_type.rfind('>') {
-                let inner = &obj_type[open + 1..close];
-                // Split inner by comma, respecting nested generics and object literals
-                let mut start = 0;
-                let mut depth = 0;
-                let mut depth_brace = 0;
-                for (i, c) in inner.char_indices() {
-                    match c {
-                        '<' => depth += 1,
-                        '>' => depth -= 1,
-                        '{' => depth_brace += 1,
-                        '}' => depth_brace -= 1,
-                        ',' if depth == 0 && depth_brace == 0 => {
-                            parts.push(inner[start..i].trim());
-                            start = i + 1;
-                        }
-                        _ => {}
-                    }
+        if let Some((open, close)) = find_top_level_generic_bounds(obj_type) {
+            let inner = &obj_type[open + 1..close];
+            for part in split_top_level(inner, ',') {
+                if !part.is_empty() {
+                    parts.push(part);
                 }
-                parts.push(inner[start..].trim());
             }
         } else if obj_type.ends_with("[]") {
             parts.push(&obj_type[..obj_type.len() - 2]);

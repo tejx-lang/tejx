@@ -1,4 +1,5 @@
 pub mod async_desugar;
+pub mod builtins;
 pub mod class;
 pub mod expr;
 pub mod func;
@@ -36,6 +37,9 @@ pub struct Lowering {
     class_parents: RefCell<HashMap<String, String>>,
     class_generic_params: RefCell<HashMap<String, Vec<String>>>,
     function_generic_params: RefCell<HashMap<String, Vec<String>>>,
+    erased_generic_functions: RefCell<HashSet<String>>,
+    discovered_function_instantiations: RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
+    type_aliases: RefCell<HashMap<String, TejxType>>,
     pub async_enabled: bool,
     current_async_promise_id: RefCell<Option<String>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
@@ -43,8 +47,10 @@ pub struct Lowering {
     pub captured_vars: RefCell<HashSet<String>>,
     pub stdlib_path: RefCell<std::path::PathBuf>,
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<TejxType>>,
+    pub lambda_inferred_returns: HashMap<(usize, usize), TejxType>,
     current_return_type: RefCell<Option<TejxType>>,
-    pub generic_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
+    current_expected_type: RefCell<Option<TejxType>>,
+    pub generic_instantiations: RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
 }
 
@@ -81,6 +87,9 @@ impl Lowering {
             class_parents: RefCell::new(HashMap::new()),
             class_generic_params: RefCell::new(HashMap::new()),
             function_generic_params: RefCell::new(HashMap::new()),
+            erased_generic_functions: RefCell::new(HashSet::new()),
+            discovered_function_instantiations: RefCell::new(HashMap::new()),
+            type_aliases: RefCell::new(HashMap::new()),
             async_enabled: false,
             current_async_promise_id: RefCell::new(None),
             diagnostics: RefCell::new(Vec::new()),
@@ -88,8 +97,10 @@ impl Lowering {
             captured_vars: RefCell::new(HashSet::new()),
             stdlib_path: RefCell::new(std::path::PathBuf::from("stdlib")),
             lambda_inferred_types: HashMap::new(),
+            lambda_inferred_returns: HashMap::new(),
             current_return_type: RefCell::new(None),
-            generic_instantiations: HashMap::new(),
+            current_expected_type: RefCell::new(None),
+            generic_instantiations: RefCell::new(HashMap::new()),
             function_instantiations: HashMap::new(),
         }
     }
@@ -134,7 +145,8 @@ impl Lowering {
         };
 
         if let Some((scope, _)) = self.scopes.borrow_mut().last_mut() {
-            scope.insert(name, (mangled.clone(), ty));
+            let resolved = self.resolve_alias_type(&ty);
+            scope.insert(name, (mangled.clone(), resolved));
         }
         mangled
     }
@@ -142,9 +154,82 @@ impl Lowering {
     pub(crate) fn narrow_type(&self, name: String, ty: TejxType) {
         if let Some((mangled, _)) = self.lookup(&name) {
             if let Some((scope, _)) = self.scopes.borrow_mut().last_mut() {
-                scope.insert(name, (mangled, ty));
+                let resolved = self.resolve_alias_type(&ty);
+                scope.insert(name, (mangled, resolved));
             }
         }
+    }
+
+    pub(crate) fn register_type_alias(&self, name: &str, ty: TejxType) {
+        self.type_aliases
+            .borrow_mut()
+            .insert(name.to_string(), ty);
+    }
+
+    pub(crate) fn resolve_alias_type(&self, ty: &TejxType) -> TejxType {
+        fn resolve_inner(
+            ctx: &Lowering,
+            ty: &TejxType,
+            depth: usize,
+        ) -> TejxType {
+            if depth > 20 {
+                return ty.clone();
+            }
+            match ty {
+                TejxType::Class(name, generics) => {
+                    if let Some(alias) = ctx.type_aliases.borrow().get(name).cloned() {
+                        return resolve_inner(ctx, &alias, depth + 1);
+                    }
+                    if generics.is_empty() {
+                        TejxType::Class(name.clone(), vec![])
+                    } else {
+                        TejxType::Class(
+                            name.clone(),
+                            generics
+                                .iter()
+                                .map(|g| resolve_inner(ctx, g, depth + 1))
+                                .collect(),
+                        )
+                    }
+                }
+                TejxType::FixedArray(inner, size) => TejxType::FixedArray(
+                    Box::new(resolve_inner(ctx, inner, depth + 1)),
+                    *size,
+                ),
+                TejxType::DynamicArray(inner) => TejxType::DynamicArray(Box::new(resolve_inner(
+                    ctx,
+                    inner,
+                    depth + 1,
+                ))),
+                TejxType::Slice(inner) => TejxType::Slice(Box::new(resolve_inner(
+                    ctx,
+                    inner,
+                    depth + 1,
+                ))),
+                TejxType::Function(params, ret) => TejxType::Function(
+                    params
+                        .iter()
+                        .map(|p| resolve_inner(ctx, p, depth + 1))
+                        .collect(),
+                    Box::new(resolve_inner(ctx, ret, depth + 1)),
+                ),
+                TejxType::Union(types) => TejxType::Union(
+                    types
+                        .iter()
+                        .map(|t| resolve_inner(ctx, t, depth + 1))
+                        .collect(),
+                ),
+                TejxType::Object(props) => TejxType::Object(
+                    props
+                        .iter()
+                        .map(|(k, o, t)| (k.clone(), *o, resolve_inner(ctx, t, depth + 1)))
+                        .collect(),
+                ),
+                _ => ty.clone(),
+            }
+        }
+
+        resolve_inner(self, ty, 0)
     }
 
     pub(crate) fn lookup(&self, name: &str) -> Option<(String, TejxType)> {
@@ -162,6 +247,201 @@ impl Lowering {
             }
         }
         None
+    }
+
+    fn find_class_template(
+        &self,
+        statements: &[Statement],
+        base_name: &str,
+    ) -> Option<ClassDeclaration> {
+        for stmt in statements {
+            match stmt {
+                Statement::ClassDeclaration(class_decl) if class_decl.name == base_name => {
+                    return Some(class_decl.clone());
+                }
+                Statement::ExportDecl { declaration, .. } => {
+                    if let Statement::ClassDeclaration(class_decl) = declaration.as_ref() {
+                        if class_decl.name == base_name {
+                            return Some(class_decl.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn find_function_template(
+        &self,
+        statements: &[Statement],
+        base_name: &str,
+    ) -> Option<FunctionDeclaration> {
+        for stmt in statements {
+            match stmt {
+                Statement::FunctionDeclaration(func) if func.name == base_name => {
+                    return Some(func.clone());
+                }
+                Statement::ExportDecl { declaration, .. } => {
+                    if let Statement::FunctionDeclaration(func) = declaration.as_ref() {
+                        if func.name == base_name {
+                            return Some(func.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn discover_nested_monomorphs(&self, stmt: &Statement) {
+        let lambda_len = self.lambda_functions.borrow().len();
+        let nested_len = self.nested_functions.borrow().len();
+        let mut functions = Vec::new();
+        let mut main_stmts = Vec::new();
+
+        match stmt {
+            Statement::FunctionDeclaration(func) => {
+                if self.should_lower_function(func) {
+                    self.lower_function_declaration(func, &mut functions);
+                }
+            }
+            Statement::ClassDeclaration(class_decl) => {
+                if self.should_lower_class(class_decl) {
+                    self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                }
+            }
+            Statement::ExportDecl { declaration, .. } => match declaration.as_ref() {
+                Statement::FunctionDeclaration(func) => {
+                    if self.should_lower_function(func) {
+                        self.lower_function_declaration(func, &mut functions);
+                    }
+                }
+                Statement::ClassDeclaration(class_decl) => {
+                    if self.should_lower_class(class_decl) {
+                        self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+
+        self.lambda_functions.borrow_mut().truncate(lambda_len);
+        self.nested_functions.borrow_mut().truncate(nested_len);
+    }
+
+    fn monomorphize_to_fixed_point(&self, merged_statements: &mut Vec<Statement>) {
+        let mut emitted_class_instantiations = HashSet::new();
+        let mut emitted_function_instantiations = HashSet::new();
+
+        loop {
+            let mut new_statements = Vec::new();
+
+            let class_instantiations: Vec<(String, Vec<TejxType>)> = self
+                .generic_instantiations
+                .borrow()
+                .iter()
+                .flat_map(|(base_name, instantiations)| {
+                    instantiations
+                        .iter()
+                        .cloned()
+                        .map(|args| (base_name.clone(), args))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+            for (base_name, concrete_args) in class_instantiations {
+                if concrete_args.iter().any(|arg| !self.is_concrete_type(arg)) {
+                    continue;
+                }
+
+                let instantiation_key = self.instantiation_key(&base_name, &concrete_args);
+                if !emitted_class_instantiations.insert(instantiation_key) {
+                    continue;
+                }
+
+                let Some(mut class_decl) = self.find_class_template(merged_statements, &base_name) else {
+                    continue;
+                };
+
+                if class_decl.generic_params.len() != concrete_args.len() {
+                    continue;
+                }
+
+                let mut substitutions = HashMap::new();
+                let mangled_name = self.monomorphized_name(&base_name, &concrete_args);
+                for (param, arg_type) in class_decl.generic_params.iter().zip(concrete_args.iter()) {
+                    substitutions.insert(param.name.clone(), arg_type.to_type_node());
+                }
+
+                class_decl.name = mangled_name;
+                class_decl.generic_params.clear();
+
+                let transformer = crate::ast_transformer::TypeSubstitutor::new(&substitutions);
+                transformer.transform_class(&mut class_decl);
+
+                self.register_class(&class_decl);
+                new_statements.push(Statement::ClassDeclaration(class_decl));
+            }
+
+            let mut function_instantiations = Vec::new();
+            for (base_name, instantiations) in &self.function_instantiations {
+                for args in instantiations {
+                    function_instantiations.push((base_name.clone(), args.clone()));
+                }
+            }
+            for (base_name, instantiations) in self.discovered_function_instantiations.borrow().iter() {
+                for args in instantiations {
+                    function_instantiations.push((base_name.clone(), args.clone()));
+                }
+            }
+
+            for (base_name, concrete_args) in function_instantiations {
+                if concrete_args.iter().any(|arg| !self.is_concrete_type(arg)) {
+                    continue;
+                }
+
+                let instantiation_key = self.instantiation_key(&base_name, &concrete_args);
+                if !emitted_function_instantiations.insert(instantiation_key) {
+                    continue;
+                }
+
+                let Some(mut func_decl) = self.find_function_template(merged_statements, &base_name) else {
+                    continue;
+                };
+
+                if func_decl.generic_params.len() != concrete_args.len() {
+                    continue;
+                }
+
+                let mut substitutions = HashMap::new();
+                let mangled_name = self.monomorphized_name(&base_name, &concrete_args);
+                for (param, arg_type) in func_decl.generic_params.iter().zip(concrete_args.iter()) {
+                    substitutions.insert(param.name.clone(), arg_type.to_type_node());
+                }
+
+                func_decl.name = mangled_name;
+                func_decl.generic_params.clear();
+
+                let transformer = crate::ast_transformer::TypeSubstitutor::new(&substitutions);
+                transformer.transform_function(&mut func_decl);
+
+                self.register_function(&func_decl);
+                new_statements.push(Statement::FunctionDeclaration(func_decl));
+            }
+
+            if new_statements.is_empty() {
+                break;
+            }
+
+            for stmt in &new_statements {
+                self.discover_nested_monomorphs(stmt);
+            }
+
+            merged_statements.extend(new_statements);
+        }
     }
 
     pub fn lower(&self, program: &Program, _base_path: &std::path::Path) -> LoweringResult {
@@ -253,131 +533,56 @@ impl Lowering {
             }
         }
 
-        // Pass 1.5: Monomorphize generic classes
-        let mut monomorphized_stmts = Vec::new();
-        for (base_name, instantiations) in &self.generic_instantiations {
-            for concrete_args in instantiations {
-                let mut original_class_decl = None;
-                for stmt in &merged_statements {
-                    match stmt {
-                        Statement::ClassDeclaration(c) if &c.name == base_name => {
-                            original_class_decl = Some(c.clone());
-                            break;
-                        }
-                        Statement::ExportDecl { declaration, .. } => {
-                            if let Statement::ClassDeclaration(c) = &**declaration {
-                                if &c.name == base_name {
-                                    original_class_decl = Some(c.clone());
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+        // Pass 1.5: Monomorphize generic declarations to a fixed point before HIR/MIR lowering.
+        self.monomorphize_to_fixed_point(&mut merged_statements);
+
+        // Pass 1.6: Register monomorphized functions/classes (and any new variants).
+        for stmt in &merged_statements {
+            match stmt {
+                Statement::FunctionDeclaration(func) => {
+                    self.register_function(func);
                 }
-
-                if let Some(mut c) = original_class_decl {
-                    if c.generic_params.len() == concrete_args.len() {
-                        let mut substitutions = HashMap::new();
-                        let mut mangled_suffix = String::new();
-                        for (i, param) in c.generic_params.iter().enumerate() {
-                            let arg_type = &concrete_args[i];
-                            let arg_name = arg_type.to_name();
-                            substitutions.insert(param.name.clone(), arg_type.to_type_node());
-                            mangled_suffix.push('_');
-                            let safe_arg = arg_name
-                                .replace("[]", "_arr")
-                                .replace("<", "_")
-                                .replace(">", "_")
-                                .replace(", ", "_");
-                            mangled_suffix.push_str(&safe_arg);
-                        }
-
-                        let mangled_name = format!("{}{}", base_name, mangled_suffix);
-                        c.name = mangled_name.clone();
-                        c.generic_params.clear();
-
-                        let transformer =
-                            crate::ast_transformer::TypeSubstitutor::new(&substitutions);
-                        transformer.transform_class(&mut c);
-
-                        self.register_class(&c);
-                        monomorphized_stmts.push(Statement::ClassDeclaration(c));
-                    }
+                Statement::ClassDeclaration(class_decl) => {
+                    self.register_class(class_decl);
+                    self.scan_variadic_class(class_decl);
                 }
+                Statement::ExportDecl { declaration, .. } => match declaration.as_ref() {
+                    Statement::FunctionDeclaration(func) => {
+                        self.register_function(func);
+                    }
+                    Statement::ClassDeclaration(class_decl) => {
+                        self.register_class(class_decl);
+                        self.scan_variadic_class(class_decl);
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
-
-        for (func_name, instantiations) in &self.function_instantiations {
-            for concrete_args in instantiations {
-                let mut original_func_decl = None;
-                for stmt in &merged_statements {
-                    match stmt {
-                        Statement::FunctionDeclaration(f) if &f.name == func_name => {
-                            original_func_decl = Some(f.clone());
-                            break;
-                        }
-                        Statement::ExportDecl { declaration, .. } => {
-                            if let Statement::FunctionDeclaration(f) = &**declaration {
-                                if &f.name == func_name {
-                                    original_func_decl = Some(f.clone());
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let Some(mut f) = original_func_decl {
-                    if f.generic_params.len() == concrete_args.len() {
-                        let mut substitutions = HashMap::new();
-                        let mut mangled_suffix = String::new();
-                        for (i, param) in f.generic_params.iter().enumerate() {
-                            let arg_type = &concrete_args[i];
-                            let arg_name = arg_type.to_name();
-                            substitutions.insert(param.name.clone(), arg_type.to_type_node());
-                            mangled_suffix.push('_');
-                            let safe_arg = arg_name
-                                .replace("[]", "_arr")
-                                .replace("<", "_")
-                                .replace(">", "_")
-                                .replace(", ", "_");
-                            mangled_suffix.push_str(&safe_arg);
-                        }
-
-                        let mangled_name = format!("{}{}", func_name, mangled_suffix);
-                        f.name = mangled_name.clone();
-                        f.generic_params.clear();
-
-                        let transformer =
-                            crate::ast_transformer::TypeSubstitutor::new(&substitutions);
-                        transformer.transform_function(&mut f);
-
-                        self.register_function(&f);
-                        monomorphized_stmts.push(Statement::FunctionDeclaration(f));
-                    }
-                }
-            }
-        }
-
-        merged_statements.extend(monomorphized_stmts);
 
         // Pass 2: Lower
         for stmt in &merged_statements {
             match stmt {
                 Statement::FunctionDeclaration(func) => {
-                    self.lower_function_declaration(func, &mut functions);
+                    if self.should_lower_function(func) {
+                        self.lower_function_declaration(func, &mut functions);
+                    }
                 }
                 Statement::ClassDeclaration(class_decl) => {
-                    self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                    if self.should_lower_class(class_decl) {
+                        self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                    }
                 }
                 Statement::ExportDecl { declaration, .. } => match &**declaration {
                     Statement::FunctionDeclaration(func) => {
-                        self.lower_function_declaration(func, &mut functions);
+                        if self.should_lower_function(func) {
+                            self.lower_function_declaration(func, &mut functions);
+                        }
                     }
                     Statement::ClassDeclaration(class_decl) => {
-                        self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                        if self.should_lower_class(class_decl) {
+                            self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                        }
                     }
                     Statement::ExtensionDeclaration(ext_decl) => {
                         self.lower_extension_declaration(ext_decl, &mut functions);
@@ -490,7 +695,7 @@ impl Lowering {
             name: "rt_main_async_worker".to_string(),
             params: vec![(
                 "ctx".to_string(),
-                TejxType::Class("Int64[]".to_string(), vec![]),
+                TejxType::DynamicArray(Box::new(TejxType::Int64)),
             )],
             _return_type: TejxType::Void,
             body: Box::new(HIRStatement::Block {
@@ -560,12 +765,32 @@ impl Lowering {
         }
 
         let mut class_fields = HashMap::new();
-        for (class_name, fields) in self.class_instance_fields.borrow().iter() {
-            let mut field_names = Vec::new();
-            for (name, ty, _) in fields {
-                field_names.push((name.clone(), ty.clone()));
+        let parents = self.class_parents.borrow();
+        let i_fields = self.class_instance_fields.borrow();
+        
+        for (class_name, _) in i_fields.iter() {
+            let mut all_fields = Vec::new();
+            let mut current = Some(class_name.clone());
+            let mut chain = Vec::new();
+            
+            // Walk up to collect inheritance chain
+            while let Some(c) = current {
+                chain.push(c.clone());
+                current = parents.get(&c).cloned();
             }
-            class_fields.insert(class_name.clone(), field_names);
+            
+            // Collect fields from top of hierarchy down
+            for c in chain.into_iter().rev() {
+                if let Some(fields) = i_fields.get(&c) {
+                    for (name, ty, _) in fields {
+                        // Avoid duplicates if a class redeclares (though parser usually catches)
+                        if !all_fields.iter().any(|(n, _): &(String, _)| n == name) {
+                            all_fields.push((name.clone(), ty.clone()));
+                        }
+                    }
+                }
+            }
+            class_fields.insert(class_name.clone(), all_fields);
         }
 
         LoweringResult {

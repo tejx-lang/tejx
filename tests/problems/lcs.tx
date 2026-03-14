@@ -1,8 +1,8 @@
-import { assert } from "../positive/utils.tx";
+import { assert_eq_int } from "../positive/utils.tx";
 
 function lcs(text1: string, text2: string): int {
-  let m = text1.length;
-  let n = text2.length;
+  let m = text1.length();
+  let n = text2.length();
   let dp:int[m+1][n+1] =[];
   for (let i = 0; i <= m; i++) {
     let tempArr:int[n+1]=[];
@@ -27,5 +27,5 @@ function lcs(text1: string, text2: string): int {
 function main(): void {
   let res = lcs("abcde", "ace");
   print("LCS Result: ", res);
-  assert(res == 3, "LCS of abcde and ace should be 3");
+  assert_eq_int( 3,res, "LCS of abcde and ace should be 3");
 }

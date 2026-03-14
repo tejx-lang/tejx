@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins;
 use crate::intrinsics::*;
 use crate::mir::*;
 use crate::token::TokenType;
@@ -40,14 +41,6 @@ impl CodeGen {
             }
 
             MIRInstruction::Jump { target, .. } => {
-                let has_handler = func
-                    .blocks
-                    .iter()
-                    .any(|b| b.name == _bb_name && b.exception_handler.is_some());
-                if has_handler {
-                    self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
-                }
-
                 // Safepoint poll for backward jumps (loops)
                 if *target <= current_bb {
                     self.emit_line("call void @rt_safepoint_poll()");
@@ -63,7 +56,7 @@ impl CodeGen {
                 }
             }
             MIRInstruction::PopHandler { .. } => {
-                self.emit_line("call void @tejx_pop_handler()");
+                self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
             }
             MIRInstruction::Branch {
                 condition,
@@ -71,18 +64,13 @@ impl CodeGen {
                 false_target,
                 ..
             } => {
-                let has_handler = func
-                    .blocks
-                    .iter()
-                    .any(|b| b.name == _bb_name && b.exception_handler.is_some());
-                if has_handler {
-                    self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
-                }
-
                 let cond_val = self.resolve_value(condition);
 
                 let cond = if condition.get_type() == &TejxType::Bool {
-                    cond_val
+                    self.temp_counter += 1;
+                    let cond_i1 = format!("%cond_i1{}", self.temp_counter);
+                    self.emit_line(&format!("{} = trunc i8 {} to i1", cond_i1, cond_val));
+                    cond_i1
                 } else {
                     let casted_cond =
                         self.emit_abi_cast(&cond_val, condition.get_type(), &TejxType::Int64);
@@ -145,6 +133,10 @@ impl CodeGen {
                 } else {
                     if ret_llvm_ty == "void" {
                         self.emit_line("ret void");
+                    } else if ret_llvm_ty == "float" || ret_llvm_ty == "double" {
+                        self.emit_line(&format!("ret {} 0.0", ret_llvm_ty));
+                    } else if ret_llvm_ty.ends_with('*') {
+                        self.emit_line(&format!("ret {} null", ret_llvm_ty));
                     } else {
                         self.emit_line(&format!("ret {} 0", ret_llvm_ty)); // fallback
                     }
@@ -171,12 +163,20 @@ impl CodeGen {
                 self.emit_store_member(func, obj, member, src);
             }
             MIRInstruction::LoadIndex {
-                dst, obj, index, element_ty, ..
+                dst,
+                obj,
+                index,
+                element_ty,
+                ..
             } => {
                 self.emit_load_index(func, dst, obj, index, element_ty);
             }
             MIRInstruction::StoreIndex {
-                obj, index, src, element_ty, ..
+                obj,
+                index,
+                src,
+                element_ty,
+                ..
             } => {
                 self.emit_store_index(func, obj, index, src, element_ty);
             }
@@ -215,24 +215,65 @@ impl CodeGen {
         let unwrap_ty = |ty: &TejxType| -> TejxType { ty.clone() };
 
         // Use op_width to determine the type of the operation
-        let is_string_op = matches!(op_width, TejxType::String);
+        let mut is_string_op = matches!(op_width, TejxType::String)
+            || matches!(l_ty, TejxType::String)
+            || matches!(r_ty, TejxType::String);
         let is_float_op = op_width.is_float();
-        let is_any_op = false || false;
+        let is_any_op = matches!(op_width, TejxType::Any)
+            || matches!(l_ty, TejxType::Any)
+            || matches!(r_ty, TejxType::Any);
+
+        // If it's a comparison and either side is String, it's a string op
+        if matches!(
+            op,
+            TokenType::EqualEqual
+                | TokenType::BangEqual
+        ) {
+            if matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String) {
+                is_string_op = true;
+            }
+        }
 
         let is_numeric_op = !is_string_op
-            && (is_float_op
-                || is_any_op
-                || op_width.is_numeric()
-                || matches!(op_width, TejxType::Bool));
+            && !is_any_op
+            && (is_float_op || op_width.is_numeric() || matches!(op_width, TejxType::Bool));
 
         if is_string_op {
             let l_val = if l_ty.is_numeric() {
-                let val_as_double = self.emit_abi_cast(&l, l_ty, &TejxType::Float64);
-                self.emit_abi_cast(
-                    &val_as_double,
-                    &TejxType::Float64,
-                    &TejxType::Class("Any".to_string(), vec![]),
-                )
+                if l_ty.is_float() {
+                    self.declare_runtime_fn(
+                        "rt_to_string_float",
+                        "i64 @rt_to_string_float(double)",
+                    );
+                    let val_as_double = self.emit_abi_cast(&l, l_ty, &TejxType::Float64);
+                    self.temp_counter += 1;
+                    let l_str = format!("%l_str{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_string_float(double {})",
+                        l_str, val_as_double
+                    ));
+                    l_str
+                } else {
+                    self.declare_runtime_fn("rt_to_string_int", "i64 @rt_to_string_int(i64)");
+                    let val_as_int = self.emit_abi_cast(&l, l_ty, &TejxType::Int64);
+                    self.temp_counter += 1;
+                    let l_str = format!("%l_str{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_string_int(i64 {})",
+                        l_str, val_as_int
+                    ));
+                    l_str
+                }
+            } else if matches!(l_ty, TejxType::Bool) {
+                self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
+                let val_as_bool = self.emit_abi_cast(&l, l_ty, &TejxType::Int64);
+                self.temp_counter += 1;
+                let l_str = format!("%l_str{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_boolean(i64 {})",
+                    l_str, val_as_bool
+                ));
+                l_str
             } else if matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint") {
                 self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
                 self.temp_counter += 1;
@@ -247,12 +288,40 @@ impl CodeGen {
             };
 
             let r_val = if r_ty.is_numeric() {
-                let val_as_double = self.emit_abi_cast(&r, r_ty, &TejxType::Float64);
-                self.emit_abi_cast(
-                    &val_as_double,
-                    &TejxType::Float64,
-                    &TejxType::Class("Any".to_string(), vec![]),
-                )
+                if r_ty.is_float() {
+                    self.declare_runtime_fn(
+                        "rt_to_string_float",
+                        "i64 @rt_to_string_float(double)",
+                    );
+                    let val_as_double = self.emit_abi_cast(&r, r_ty, &TejxType::Float64);
+                    self.temp_counter += 1;
+                    let r_str = format!("%r_str{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_string_float(double {})",
+                        r_str, val_as_double
+                    ));
+                    r_str
+                } else {
+                    self.declare_runtime_fn("rt_to_string_int", "i64 @rt_to_string_int(i64)");
+                    let val_as_int = self.emit_abi_cast(&r, r_ty, &TejxType::Int64);
+                    self.temp_counter += 1;
+                    let r_str = format!("%r_str{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_string_int(i64 {})",
+                        r_str, val_as_int
+                    ));
+                    r_str
+                }
+            } else if matches!(r_ty, TejxType::Bool) {
+                self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
+                let val_as_bool = self.emit_abi_cast(&r, r_ty, &TejxType::Int64);
+                self.temp_counter += 1;
+                let r_str = format!("%r_str{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_boolean(i64 {})",
+                    r_str, val_as_bool
+                ));
+                r_str
             } else if matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint") {
                 self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
                 self.temp_counter += 1;
@@ -276,28 +345,60 @@ impl CodeGen {
                     tmp, l_val, r_val
                 ));
             } else if matches!(op, TokenType::EqualEqual)
-                || matches!(op, TokenType::EqualEqualEqual)
             {
-                self.declare_runtime_fn("rt_str_equals", "i64 @rt_str_equals(i64, i64)");
+                self.declare_runtime_fn("rt_str_equals", "i32 @rt_str_equals(i64, i64)");
+                self.temp_counter += 1;
+                let eq_res = format!("%eq_res{}", self.temp_counter);
                 self.emit_line(&format!(
-                    "{} = call i64 @rt_str_equals(i64 {}, i64 {})",
-                    tmp, l_val, r_val
+                    "{} = call i32 @rt_str_equals(i64 {}, i64 {})",
+                    eq_res, l_val, r_val
                 ));
-            } else if matches!(op, TokenType::BangEqual) || matches!(op, TokenType::BangEqualEqual)
+                self.emit_line(&format!("{} = zext i32 {} to i64", tmp, eq_res));
+            } else if matches!(op, TokenType::BangEqual)
             {
-                self.declare_runtime_fn("rt_str_equals", "i64 @rt_str_equals(i64, i64)");
+                self.declare_runtime_fn("rt_str_equals", "i32 @rt_str_equals(i64, i64)");
                 self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
-                let eq_tmp = format!("%eq{}", self.temp_counter);
+                let eq_res_32 = format!("%eq_res32_{}", self.temp_counter);
                 self.emit_line(&format!(
-                    "{} = call i64 @rt_str_equals(i64 {}, i64 {})",
-                    eq_tmp, l_val, r_val
+                    "{} = call i32 @rt_str_equals(i64 {}, i64 {})",
+                    eq_res_32, l_val, r_val
                 ));
+                let eq_tmp = format!("%eq{}", self.temp_counter);
+                self.emit_line(&format!("{} = zext i32 {} to i64", eq_tmp, eq_res_32));
                 self.temp_counter += 1;
                 self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_tmp));
             } else {
                 // Fallback numeric addition on strings
                 self.emit_line(&format!("{} = add i64 {}, {}", tmp, l_val, r_val));
             }
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            let final_tmp =
+                self.emit_abi_cast(&tmp, &TejxType::Class("Any".to_string(), vec![]), dst_ty);
+            self.emit_store_variable(dst, &final_tmp, dst_ty);
+        } else if is_any_op {
+            let l_any = self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]));
+            let r_any = self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]));
+
+            let rt_fn = match op {
+                TokenType::Plus => "rt_add",
+                TokenType::Minus => "rt_sub",
+                TokenType::Star => "rt_mul",
+                TokenType::Slash => "rt_div",
+                TokenType::Less => "rt_lt",
+                TokenType::Greater => "rt_gt",
+                TokenType::EqualEqual => "rt_eq",
+                TokenType::BangEqual => "rt_ne",
+                TokenType::LessEqual => "rt_le",
+                TokenType::GreaterEqual => "rt_ge",
+                _ => "rt_add",
+            };
+
+            self.declare_runtime_fn(rt_fn, &format!("i64 @{}(i64, i64)", rt_fn));
+            self.emit_line(&format!(
+                "{} = call i64 @{}(i64 {}, i64 {})",
+                tmp, rt_fn, l_any, r_any
+            ));
+
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
             let final_tmp =
                 self.emit_abi_cast(&tmp, &TejxType::Class("Any".to_string(), vec![]), dst_ty);
@@ -320,8 +421,8 @@ impl CodeGen {
                     TokenType::Slash => (false, "sdiv", ""),
                     TokenType::Less => (true, "", "slt"),
                     TokenType::Greater => (true, "", "sgt"),
-                    TokenType::EqualEqual | TokenType::EqualEqualEqual => (true, "", "eq"),
-                    TokenType::BangEqual | TokenType::BangEqualEqual => (true, "", "ne"),
+                    TokenType::EqualEqual => (true, "", "eq"),
+                    TokenType::BangEqual => (true, "", "ne"),
                     TokenType::LessEqual => (true, "", "sle"),
                     TokenType::GreaterEqual => (true, "", "sge"),
                     TokenType::Modulo => (false, "srem", ""),
@@ -339,7 +440,13 @@ impl CodeGen {
                         "{} = icmp {} {} {}, {}",
                         cmp_res, pred, op_llvm, l_cast, r_cast
                     ));
-                    let final_res = self.emit_abi_cast(&cmp_res, &TejxType::Bool, dst_ty);
+                    self.temp_counter += 1;
+                    let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = zext i1 {} to i8",
+                        cmp_bool, cmp_res
+                    ));
+                    let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                     self.emit_store_variable(dst, &final_res, dst_ty);
                 } else {
                     if llvm_op == "sdiv" || llvm_op == "srem" {
@@ -383,8 +490,8 @@ impl CodeGen {
                     TokenType::Slash => (false, "fdiv", ""),
                     TokenType::Less => (true, "", "olt"),
                     TokenType::Greater => (true, "", "ogt"),
-                    TokenType::EqualEqual | TokenType::EqualEqualEqual => (true, "", "oeq"),
-                    TokenType::BangEqual | TokenType::BangEqualEqual => (true, "", "one"),
+                    TokenType::EqualEqual => (true, "", "oeq"),
+                    TokenType::BangEqual => (true, "", "one"),
                     TokenType::LessEqual => (true, "", "ole"),
                     TokenType::GreaterEqual => (true, "", "oge"),
                     TokenType::Modulo => (false, "frem", ""),
@@ -395,8 +502,6 @@ impl CodeGen {
                     op,
                     TokenType::EqualEqual
                         | TokenType::BangEqual
-                        | TokenType::EqualEqualEqual
-                        | TokenType::BangEqualEqual
                 );
 
                 if is_any_op && is_equality {
@@ -416,7 +521,7 @@ impl CodeGen {
                         eq_res, func_name, l_eval, r_eval
                     ));
 
-                    if matches!(op, TokenType::BangEqual | TokenType::BangEqualEqual) {
+                    if matches!(op, TokenType::BangEqual) {
                         self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
                         self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_res));
                     } else {
@@ -435,7 +540,13 @@ impl CodeGen {
                         "{} = fcmp {} {} {}, {}",
                         cmp_res, pred, op_llvm, l_cast, r_cast
                     ));
-                    let final_res = self.emit_abi_cast(&cmp_res, &TejxType::Bool, dst_ty);
+                    self.temp_counter += 1;
+                    let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = zext i1 {} to i8",
+                        cmp_bool, cmp_res
+                    ));
+                    let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                     self.emit_store_variable(dst, &final_res, dst_ty);
                 } else {
                     self.emit_line(&format!(
@@ -457,8 +568,8 @@ impl CodeGen {
                 TokenType::Greater => (true, "", "sgt"),
                 TokenType::LessEqual => (true, "", "sle"),
                 TokenType::GreaterEqual => (true, "", "sge"),
-                TokenType::EqualEqual | TokenType::EqualEqualEqual => (true, "", "eq"),
-                TokenType::BangEqual | TokenType::BangEqualEqual => (true, "", "ne"),
+                TokenType::EqualEqual => (true, "", "eq"),
+                TokenType::BangEqual => (true, "", "ne"),
                 _ => (false, "add", ""),
             };
 
@@ -476,7 +587,13 @@ impl CodeGen {
                     "{} = icmp {} {} {}, {}",
                     cmp_res, pred, op_llvm, l_cast, r_cast
                 ));
-                let final_res = self.emit_abi_cast(&cmp_res, &TejxType::Bool, dst_ty);
+                self.temp_counter += 1;
+                let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = zext i1 {} to i8",
+                    cmp_bool, cmp_res
+                ));
+                let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                 self.emit_store_variable(dst, &final_res, dst_ty);
             } else {
                 self.emit_line(&format!(
@@ -566,6 +683,7 @@ impl CodeGen {
             };
 
             let type_id = self.type_id_map.get(&class_name).cloned().unwrap_or(2);
+            let mut ptr_offsets = Vec::new();
             let body_size = self
                 .class_fields
                 .get(&class_name)
@@ -573,6 +691,9 @@ impl CodeGen {
                     let mut offset = 0;
                     for (_, ty) in fields {
                         offset = Self::get_aligned_offset(offset, ty);
+                        if Self::is_gc_managed(ty) {
+                            ptr_offsets.push(offset);
+                        }
                         offset += ty.size();
                     }
                     (offset + 7) & !7
@@ -599,6 +720,16 @@ impl CodeGen {
                 self.emit_store_variable(dst, &result_tmp, dst_ty);
                 return;
             }
+
+            let offsets_ptr = if ptr_offsets.is_empty() {
+                "null".to_string()
+            } else {
+                format!(
+                    "bitcast ([{} x i64]* @type_{}_offsets to i64*)",
+                    ptr_offsets.len(),
+                    type_id
+                )
+            };
 
             if !is_escaped && !dst.is_empty() {
                 // Stack Allocation (24 bytes header + body_size)
@@ -657,8 +788,14 @@ impl CodeGen {
                 let result_tmp = format!("%call{}", self.temp_counter);
                 // call rt_class_new(type_id, body_size, ptr_count, offsets_ptr, stack_ptr)
                 self.emit_line(&format!(
-                    "{} = call i64 @{}(i32 {}, i64 {}, i64 0, i64* null, i64 {})",
-                    result_tmp, RT_CLASS_NEW, type_id, body_size as i64, body_ptr
+                    "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 {})",
+                    result_tmp,
+                    RT_CLASS_NEW,
+                    type_id,
+                    body_size as i64,
+                    ptr_offsets.len(),
+                    offsets_ptr,
+                    body_ptr
                 ));
 
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
@@ -675,93 +812,19 @@ impl CodeGen {
                 self.temp_counter += 1;
                 let result_tmp = format!("%call{}", self.temp_counter);
                 self.emit_line(&format!(
-                    "{} = call i64 @{}(i32 {}, i64 {}, i64 0, i64* null, i64 0)",
-                    result_tmp, RT_CLASS_NEW, type_id, body_size as i64
+                    "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 0)",
+                    result_tmp,
+                    RT_CLASS_NEW,
+                    type_id,
+                    body_size as i64,
+                    ptr_offsets.len(),
+                    offsets_ptr
                 ));
 
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                 self.emit_store_variable(dst, &result_tmp, dst_ty);
                 return;
             }
-        }
-
-        if callee == RT_MAP_NEW {
-            let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
-
-            if !is_escaped && !dst.is_empty() {
-                // Stack Allocate Map (48 bytes for members + 24 bytes for ObjectHeader)
-                // Total 72 bytes
-                let total_size = 48 + 24;
-                let obj_alloca = format!("%stack_obj_{}", dst.replace(".", "_"));
-                self.alloca_buffer.push_str(&format!(
-                    "  {} = alloca i8, i32 {}, align 16\n",
-                    obj_alloca, total_size
-                ));
-
-                // Initialize Header (type_id = TAG_OBJECT, mark_bit = 0)
-                self.temp_counter += 1;
-                let header_ptr = format!("%header_ptr_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast i8* {} to %struct.ObjectHeader*",
-                    header_ptr, obj_alloca
-                ));
-
-                // Zero-initialize entire object (Header + Body)
-                self.declare_runtime_fn(
-                    "llvm.memset.p0i8.i64",
-                    "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
-                );
-                self.emit_line(&format!(
-                    "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
-                    obj_alloca, total_size
-                ));
-
-                // Set type_id = TAG_OBJECT (7)
-                self.temp_counter += 1;
-                let tid_ptr = format!("%tid_ptr_{}", self.temp_counter);
-                self.emit_line(&format!("{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 1", tid_ptr, header_ptr));
-                self.emit_line(&format!("store i16 7, i16* {}", tid_ptr));
-
-                self.temp_counter += 1;
-                let body_ptr_i8 = format!("%body_ptr_i8_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = getelementptr i8, i8* {}, i32 24",
-                    body_ptr_i8, obj_alloca
-                ));
-
-                self.temp_counter += 1;
-                let body_ptr = format!("%body_ptr_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = ptrtoint i8* {} to i64",
-                    body_ptr, body_ptr_i8
-                ));
-
-                // Call constructor with stack address
-                self.declare_runtime_fn("rt_Map_constructor", "i64 @rt_Map_constructor(i64) nounwind");
-
-                self.temp_counter += 1;
-                let result_tmp = format!("%call{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @rt_Map_constructor(i64 {})",
-                    result_tmp, body_ptr
-                ));
-
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &result_tmp, dst_ty);
-
-                return;
-            }
-
-            // Heap Allocation
-            self.declare_runtime_fn("rt_Map_constructor", "i64 @rt_Map_constructor(i64) nounwind");
-
-            self.temp_counter += 1;
-            let result_tmp = format!("%call{}", self.temp_counter);
-            self.emit_line(&format!("{} = call i64 @rt_Map_constructor(i64 0)", result_tmp));
-
-            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-            self.emit_store_variable(dst, &result_tmp, dst_ty);
-            return;
         }
 
         if callee == "rt_box_int" || callee == "rt_box_boolean" || callee == "rt_box_char" {
@@ -773,7 +836,8 @@ impl CodeGen {
             self.emit_line(&format!("{} = or i64 0, {}", result_tmp, arg_val));
             if !dst.is_empty() {
                 let ptr = self.resolve_ptr(dst);
-                self.store_ptr(&ptr, &result_tmp);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Int64);
+                self.store_ptr(&ptr, &result_tmp, Some(dst_ty));
             }
             return;
         }
@@ -789,7 +853,8 @@ impl CodeGen {
             ));
             if !dst.is_empty() {
                 let ptr = self.resolve_ptr(dst);
-                self.store_ptr(&ptr, &result_tmp);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Int64);
+                self.store_ptr(&ptr, &result_tmp, Some(dst_ty));
             }
             return;
         }
@@ -853,11 +918,8 @@ impl CodeGen {
             self.emit_line(&format!("{} = load double, double* {}", res_val, ptr_cast));
             if !dst.is_empty() {
                 self.float_ssa_vars.insert(dst.clone(), res_val.clone());
-                self.temp_counter += 1;
-                let bits_tmp = format!("%bits{}", self.temp_counter);
-                self.emit_line(&format!("{} = bitcast double {} to i64", bits_tmp, res_val));
-                let ptr = self.resolve_ptr(dst);
-                self.store_ptr(&ptr, &bits_tmp);
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Float64);
+                self.emit_store_variable(dst, &res_val, dst_ty);
             }
             return;
         }
@@ -927,22 +989,25 @@ impl CodeGen {
                     ));
                 }
 
-                // Record float SSA variable for potential reuse
                 if !dst.is_empty() {
+                    let mut dst_ty = func.variables.get(dst).cloned().unwrap_or(TejxType::Void);
+                    if matches!(dst_ty, TejxType::Void) {
+                        if let Some(ptr_name) = self.value_map.get(dst) {
+                            if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
+                                dst_ty = match ptr_llvm.as_str() {
+                                    "i1" | "i8" => TejxType::Bool,
+                                    "i16" => TejxType::Int16,
+                                    "i32" => TejxType::Int32,
+                                    "float" => TejxType::Float32,
+                                    "double" => TejxType::Float64,
+                                    _ => TejxType::Int64,
+                                };
+                            }
+                        }
+                    }
+                    let result_val = self.emit_abi_cast(&result_f, &TejxType::Float64, &dst_ty);
                     self.float_ssa_vars.insert(dst.clone(), result_f.clone());
-                }
-
-                // Convert result back to i64 (bitcast double to i64)
-                self.temp_counter += 1;
-                let result_i = format!("%intrinsic_bits_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast double {} to i64",
-                    result_i, result_f
-                ));
-
-                if !dst.is_empty() {
-                    let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &result_i);
+                    self.emit_store_variable(dst, &result_val, &dst_ty);
                 }
             } else {
                 // Fallback to runtime call for unsupported math functions (random, min, max)
@@ -1008,8 +1073,23 @@ impl CodeGen {
                     if ret_ty.is_float() {
                         self.float_ssa_vars.insert(dst.clone(), result_tmp.clone());
                     }
+                    let mut store_ty = ret_ty.clone();
+                    if matches!(store_ty, TejxType::Void) {
+                        if let Some(ptr_name) = self.value_map.get(dst) {
+                            if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
+                                store_ty = match ptr_llvm.as_str() {
+                                    "i1" | "i8" => TejxType::Bool,
+                                    "i16" => TejxType::Int16,
+                                    "i32" => TejxType::Int32,
+                                    "float" => TejxType::Float32,
+                                    "double" => TejxType::Float64,
+                                    _ => TejxType::Int64,
+                                };
+                            }
+                        }
+                    }
                     let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &final_val);
+                    self.store_ptr(&ptr, &final_val, Some(&store_ty));
                 }
             }
         } else {
@@ -1020,6 +1100,7 @@ impl CodeGen {
             }
 
             let mut final_callee = callee.clone();
+            // m_set (Map.set) logic removed.
             let mut is_instance_call = false;
             let mut instance_var = String::new();
 
@@ -1028,48 +1109,60 @@ impl CodeGen {
                 if parts.len() == 2 {
                     let base = parts[0];
                     let method = parts[1];
-                    if self.value_map.contains_key(base) {
+                    if self.value_map.contains_key(base) || func.variables.contains_key(base) {
                         is_instance_call = true;
                         instance_var = base.to_string();
-                        if method == "join" && func.variables.get(base).map(|t| matches!(t, TejxType::Class(n, _) if n == "Thread" || n.starts_with("Thread<"))).unwrap_or(false) {
+
+                        if method == "join"
+                            && func
+                                .variables
+                                .get(base)
+                                .map(|t| {
+                                    matches!(
+                                        t,
+                                        TejxType::Class(n, _) if n == "Thread" || n.starts_with("Thread<")
+                                    )
+                                })
+                                .unwrap_or(false)
+                        {
                             final_callee = "f_Thread_join".to_string();
                         } else {
-                            // Resolve instance type to get class name dynamically
-                            let mut class_name = base.to_string();
                             if let Some(ty) = func.variables.get(base) {
-                                match ty {
-                                    TejxType::Class(name, _) => {
-                                        if name.starts_with("Array<")
-                                            || name.ends_with("[]")
-                                        {
-                                            class_name = "Array".to_string();
-                                        } else if name.contains('<') {
-                                            // Generic class like Map<string, CacheNode>
-                                            // Extract base class name before '<'
-                                            class_name = name.split('<').next().unwrap_or(name).to_string();
-                                        } else {
-                                            class_name = name.clone();
+                                if let Some(builtin_callee) =
+                                    builtins::method_callee(ty, method)
+                                {
+                                    final_callee = builtin_callee;
+                                } else {
+                                    // Resolve instance type to get class name dynamically
+                                    let mut class_name = base.to_string();
+                                    match ty {
+                                        TejxType::Class(name, _) => {
+                                            if name.contains('<') {
+                                                // Generic class like Map<string, CacheNode>
+                                                // Extract base class name before '<'
+                                                class_name = name
+                                                    .split('<')
+                                                    .next()
+                                                    .unwrap_or(name)
+                                                    .to_string();
+                                            } else {
+                                                class_name = name.clone();
+                                            }
                                         }
+                                        TejxType::Any => class_name = "Any".to_string(),
+                                        _ => {}
                                     }
-                                    TejxType::String => class_name = "String".to_string(),
-                                    _ => {
-                                        if ty.is_array() {
-                                            class_name = "Array".to_string();
-                                        }
+                                    if class_name == "Any" {
+                                        // For performance, we could devirtualize, but for now we prioritize
+                                        // correctness with dynamic dispatch for all class methods to support overriding.
+                                        final_callee = format!("virtual_call_{}", method);
                                     }
                                 }
                             }
-                            // Uniform method dispatch for all types: f_{class}_{method}
-                            // Methods are defined in prelude.tx, so new methods added there
-                            // are automatically available without compiler changes.
-                            if class_name == "Array" || class_name == "String" {
-                                final_callee = method.to_string();
-                            } else {
-                                final_callee = format!("f_{}_{}", class_name, method);
-                            }
                         }
                     } else {
-                        final_callee = format!("f_{}_{}", base, method);
+                        // Fallback to virtual call if base type is unknown
+                        final_callee = format!("virtual_call_{}", method);
                     }
                 }
             } else if let Some(ptr) = self.value_map.get(callee) {
@@ -1094,18 +1187,32 @@ impl CodeGen {
 
             let mut call_args_info = Vec::new();
             if is_instance_call {
-                if let Some(ptr) = self.value_map.get(&instance_var) {
-                    let ptr_clone = ptr.clone();
-                    self.temp_counter += 1;
-                    let tmp = format!("%inst{}", self.temp_counter);
-                    self.load_ptr(&ptr_clone, &tmp);
-                    call_args_info.push((
-                        MIRValue::Variable {
-                            name: instance_var.clone(),
-                            ty: TejxType::Int64,
-                        },
-                        tmp,
-                    ));
+                // Peek at the first argument to see if it's already the instance
+                let already_has_this = args
+                    .first()
+                    .map(|arg| {
+                        if let MIRValue::Variable { name, .. } = arg {
+                            name == &instance_var
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if !already_has_this {
+                    if let Some(ptr) = self.value_map.get(&instance_var) {
+                        let ptr_clone = ptr.clone();
+                        self.temp_counter += 1;
+                        let tmp = format!("%inst{}", self.temp_counter);
+                        self.load_ptr(&ptr_clone, &tmp);
+                        call_args_info.push((
+                            MIRValue::Variable {
+                                name: instance_var.clone(),
+                                ty: TejxType::Int64,
+                            },
+                            tmp,
+                        ));
+                    }
                 }
             }
 
@@ -1132,11 +1239,12 @@ impl CodeGen {
                 || final_callee == "printf"
                 || final_callee == "malloc"
                 || final_callee == "free";
+            let is_runtime_any = is_runtime_fn && final_callee != "rt_str_equals";
 
             let mut llvm_args = Vec::new();
             let mut llvm_decl_args = Vec::new();
 
-            for (arg_mir, reg) in call_args_info {
+            for (arg_mir, reg) in &call_args_info {
                 let arg_ty = arg_mir.get_type();
                 let mut final_reg = reg.clone();
 
@@ -1144,7 +1252,6 @@ impl CodeGen {
                 if matches!(arg_ty, TejxType::String)
                     && final_reg.starts_with("ptrtoint")
                     && final_callee != "rt_string_from_c_str"
-                    && is_runtime_fn
                 {
                     final_reg = self.emit_box_string(&final_reg);
                 }
@@ -1159,7 +1266,7 @@ impl CodeGen {
 
                 let casted = if is_math_fn {
                     self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float64)
-                } else if is_runtime_fn {
+                } else if is_runtime_any {
                     self.emit_abi_cast(
                         &final_reg,
                         arg_ty,
@@ -1181,6 +1288,21 @@ impl CodeGen {
             } else {
                 TejxType::Void
             };
+            let mut store_ty = ret_ty.clone();
+            if !dst.is_empty() && matches!(store_ty, TejxType::Void) {
+                if let Some(ptr_name) = self.value_map.get(dst) {
+                    if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
+                        store_ty = match ptr_llvm.as_str() {
+                            "i1" | "i8" => TejxType::Bool,
+                            "i16" => TejxType::Int16,
+                            "i32" => TejxType::Int32,
+                            "float" => TejxType::Float32,
+                            "double" => TejxType::Float64,
+                            _ => TejxType::Int64,
+                        };
+                    }
+                }
+            }
 
             let decl_ret =
                 if is_math_fn || final_callee == "rt_to_number" || final_callee == "rt_math_random"
@@ -1190,8 +1312,6 @@ impl CodeGen {
                     if final_callee == "rt_promise_resolve"
                         || final_callee == "rt_promise_reject"
                         || final_callee == "rt_promise_await_resume"
-                        || final_callee == "rt_Map_set"
-                        || final_callee == "rt_Map_merge"
                     {
                         "void".to_string()
                     } else {
@@ -1202,18 +1322,51 @@ impl CodeGen {
                 };
 
             let use_quotes = !is_runtime_fn;
-            let callee_symbol =
-                if use_quotes || final_callee.starts_with("f_") || final_callee.starts_with("m_") {
-                    format!("@\"{}\"", final_callee)
+            let is_virtual = final_callee.starts_with("virtual_call_");
+
+            let callee_symbol = if is_virtual {
+                // Dynamic dispatch on 'any' types via Map is removed.
+                // In a modern compiler, this would use a vtable or IC.
+                // For now, it fails at runtime or returns null.
+                self.declare_runtime_fn("rt_get_property", "i64 @rt_get_property(i64, i64)");
+
+                let method_name = final_callee.replace("virtual_call_", "");
+                let method_key_raw = self.emit_string_constant(&method_name);
+                let this_ptr = if let Some((_, reg)) = call_args_info.first() {
+                    reg.clone()
                 } else {
-                    format!("@{}", final_callee)
+                    "0".to_string()
                 };
+
+                self.temp_counter += 1;
+                let func_ptr_i64 = format!("%vfunc_i64_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_get_property(i64 {}, i64 {})",
+                    func_ptr_i64, this_ptr, method_key_raw
+                ));
+
+                self.temp_counter += 1;
+                let func_ptr = format!("%vfunc_ptr_{}", self.temp_counter);
+                let arg_tys = vec!["i64"; llvm_args.len()].join(", ");
+                self.emit_line(&format!(
+                    "{} = inttoptr i64 {} to {} ({})*",
+                    func_ptr, func_ptr_i64, decl_ret, arg_tys
+                ));
+                func_ptr
+            } else if use_quotes || final_callee.starts_with("f_") || final_callee.starts_with("m_")
+            {
+                format!("@\"{}\"", final_callee)
+            } else {
+                format!("@{}", final_callee)
+            };
 
             self.temp_counter += 1;
             let result_tmp = format!("%call{}", self.temp_counter);
 
-            let sig = format!("{} {}({})", decl_ret, callee_symbol, decl_args_str);
-            self.declare_runtime_fn(&final_callee, &sig);
+            if !is_virtual {
+                let sig = format!("{} {}({})", decl_ret, callee_symbol, decl_args_str);
+                self.declare_runtime_fn(&final_callee, &sig);
+            }
 
             if decl_ret == "void" {
                 self.emit_line(&format!("call void {}({})", callee_symbol, args_str));
@@ -1226,13 +1379,13 @@ impl CodeGen {
 
             let mut final_val = result_tmp.clone();
             if !dst.is_empty() {
-                if is_math_fn && decl_ret == "double" {
-                    final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float64, &ret_ty);
+                if decl_ret == "double" {
+                    final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float64, &store_ty);
                 } else if is_runtime_fn && decl_ret == "i64" {
                     final_val = self.emit_abi_cast(
                         &result_tmp,
                         &TejxType::Class("Any".to_string(), vec![]),
-                        &ret_ty,
+                        &store_ty,
                     );
                 }
             }
@@ -1307,8 +1460,7 @@ impl CodeGen {
                 if should_consume {}
             }
             if !dst.is_empty() && decl_ret != "void" {
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &final_val, dst_ty);
+                self.emit_store_variable(dst, &final_val, &store_ty);
             }
 
             // --- ARRAY CONSTRUCTOR: Cache data pointer for direct access ---
@@ -1369,6 +1521,7 @@ impl CodeGen {
         args: &[MIRValue],
     ) {
         let callee_val = self.resolve_value(callee);
+        let callee_ty = callee.get_type();
 
         // Add null check for indirect call
         self.temp_counter += 1;
@@ -1416,49 +1569,66 @@ impl CodeGen {
 
         self.temp_counter += 1;
         let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
-        let mut arg_types = vec!["i64"]; // First arg is always env
-        for _ in 0..args.len() {
-            arg_types.push("i64");
+        let mut arg_types = vec!["i64".to_string()]; // First arg is always env
+        let mut param_tys: Vec<TejxType> = Vec::new();
+        let mut ret_ty = TejxType::Int64;
+        if let TejxType::Function(params, ret) = &callee_ty {
+            param_tys = params.clone();
+            ret_ty = (**ret).clone();
         }
-        // Pad to at least 5 total arguments (env + 4)
+        for (idx, _) in args.iter().enumerate() {
+            let ty = param_tys
+                .get(idx)
+                .cloned()
+                .unwrap_or(TejxType::Int64);
+            arg_types.push(Self::get_llvm_type(&ty).to_string());
+        }
         while arg_types.len() < 5 {
-            arg_types.push("i64");
+            arg_types.push("i64".to_string());
         }
         let ptr_args = arg_types.join(", ");
+        let ret_llvm = Self::get_llvm_type(&ret_ty);
         self.emit_line(&format!(
-            "{} = inttoptr i64 {} to i64 ({})*",
-            func_ptr_tmp, ptr_reg, ptr_args
+            "{} = inttoptr i64 {} to {} ({})*",
+            func_ptr_tmp, ptr_reg, ret_llvm, ptr_args
         ));
 
         let mut arg_vals = vec![format!("i64 {}", env_reg)];
-        for arg in args {
+        for (idx, arg) in args.iter().enumerate() {
             let mut val = self.resolve_value(arg);
             let arg_ty = arg.get_type();
+            let param_ty = param_tys
+                .get(idx)
+                .cloned()
+                .unwrap_or(TejxType::Int64);
+
             if matches!(arg_ty, TejxType::String) && val.starts_with("ptrtoint") {
                 val = self.emit_box_string(&val);
             }
-            arg_vals.push(format!("i64 {}", val));
+
+            let casted = self.emit_abi_cast(&val, &arg_ty, &param_ty);
+            arg_vals.push(format!("{} {}", Self::get_llvm_type(&param_ty), casted));
         }
-        // Pad with zeros to reach minimum 5 arguments
         while arg_vals.len() < 5 {
             arg_vals.push("i64 0".to_string());
         }
         let args_str = arg_vals.join(", ");
 
-        self.temp_counter += 1;
-        let result_tmp = format!("%call{}", self.temp_counter);
-        self.emit_line(&format!(
-            "{} = call i64 {}({})",
-            result_tmp, func_ptr_tmp, args_str
-        ));
+        let mut result_tmp = String::new();
+        if ret_llvm == "void" {
+            self.emit_line(&format!("call void {}({})", func_ptr_tmp, args_str));
+        } else {
+            self.temp_counter += 1;
+            result_tmp = format!("%call{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call {} {}({})",
+                result_tmp, ret_llvm, func_ptr_tmp, args_str
+            ));
+        }
 
-        if !dst.is_empty() {
+        if !dst.is_empty() && ret_llvm != "void" {
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-            let final_val = self.emit_abi_cast(
-                &result_tmp,
-                &TejxType::Class("Any".to_string(), vec![]),
-                dst_ty,
-            );
+            let final_val = self.emit_abi_cast(&result_tmp, &ret_ty, dst_ty);
             self.emit_store_variable(dst, &final_val, dst_ty);
         }
     }
@@ -1506,6 +1676,23 @@ impl CodeGen {
                 self.emit_line(&format!("{} = add {} {}, 0", tmp, target_llvm, casted));
             }
         } else if ty.is_numeric() {
+            if matches!(src_ty, TejxType::Bool | TejxType::Char) {
+                let casted = self.emit_abi_cast(&s, src_ty, ty);
+                self.temp_counter += 1;
+                tmp = format!("%cast{}", self.temp_counter);
+                let target_llvm = Self::get_llvm_type(ty);
+                if target_llvm == "double" {
+                    self.emit_line(&format!("{} = fadd double {}, 0.0", tmp, casted));
+                } else if target_llvm == "float" {
+                    self.emit_line(&format!("{} = fadd float {}, 0.0", tmp, casted));
+                } else {
+                    self.emit_line(&format!("{} = add {} {}, 0", tmp, target_llvm, casted));
+                }
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                self.emit_store_variable(dst, &tmp, dst_ty);
+                return;
+            }
+
             self.declare_runtime_fn("rt_to_number_v2", "i64 @rt_to_number_v2(i64)");
             self.temp_counter += 1;
             let num_val = format!("%num_val{}", self.temp_counter);
@@ -1516,19 +1703,36 @@ impl CodeGen {
 
             if ty.is_float() {
                 let target_llvm = Self::get_llvm_type(ty);
-                self.emit_line(&format!(
-                    "{} = bitcast i64 {} to {}",
-                    tmp, num_val, target_llvm
-                ));
+                if target_llvm == "float" {
+                    self.temp_counter += 1;
+                    let d_val = format!("%d_val{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = bitcast i64 {} to double",
+                        d_val, num_val
+                    ));
+                    self.emit_line(&format!(
+                        "{} = fptrunc double {} to float",
+                        tmp, d_val
+                    ));
+                } else {
+                    self.emit_line(&format!(
+                        "{} = bitcast i64 {} to {}",
+                        tmp, num_val, target_llvm
+                    ));
+                }
             } else {
+                let target_llvm = Self::get_llvm_type(ty);
                 self.temp_counter += 1;
                 let f_val = format!("%f_val{}", self.temp_counter);
                 self.emit_line(&format!("{} = bitcast i64 {} to double", f_val, num_val));
-                self.emit_line(&format!("{} = fptosi double {} to i64", tmp, f_val));
+                self.emit_line(&format!(
+                    "{} = fptosi double {} to {}",
+                    tmp, f_val, target_llvm
+                ));
             }
         } else if matches!(ty, TejxType::Bool) {
             if matches!(src_ty, TejxType::Bool) {
-                self.emit_line(&format!("{} = add i1 {}, 0", tmp, s));
+                self.emit_line(&format!("{} = add i8 {}, 0", tmp, s));
             } else {
                 let casted_s = self.emit_abi_cast(&s, src_ty, &TejxType::Int64);
                 self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
@@ -1538,17 +1742,48 @@ impl CodeGen {
                     "{} = call i64 @rt_to_boolean(i64 {})",
                     bool_val, casted_s
                 ));
-                self.emit_line(&format!("{} = icmp ne i64 {}, 0", tmp, bool_val));
+                self.temp_counter += 1;
+                let bool_i1 = format!("%bool_i1{}", self.temp_counter);
+                self.emit_line(&format!("{} = icmp ne i64 {}, 0", bool_i1, bool_val));
+                self.emit_line(&format!("{} = zext i1 {} to i8", tmp, bool_i1));
             }
-        } else if matches!(ty, TejxType::String)
-            && !src_ty.is_numeric()
-            && !matches!(src_ty, TejxType::Bool)
-        {
-            self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
-            self.emit_line(&format!("{} = call i64 @rt_to_string(i64 {})", tmp, s));
+        } else if matches!(ty, TejxType::String) {
+            if src_ty.is_numeric() {
+                if src_ty.is_float() {
+                    self.declare_runtime_fn(
+                        "rt_to_string_float",
+                        "i64 @rt_to_string_float(double)",
+                    );
+                    let val = self.emit_abi_cast(&s, src_ty, &TejxType::Float64);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_string_float(double {})",
+                        tmp, val
+                    ));
+                } else {
+                    self.declare_runtime_fn("rt_to_string_int", "i64 @rt_to_string_int(i64)");
+                    let val = self.emit_abi_cast(&s, src_ty, &TejxType::Int64);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_string_int(i64 {})",
+                        tmp, val
+                    ));
+                }
+            } else if matches!(src_ty, TejxType::Bool) {
+                self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
+                let val = self.emit_abi_cast(&s, src_ty, &TejxType::Int64);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_boolean(i64 {})",
+                    tmp, val
+                ));
+            } else if matches!(src_ty, TejxType::String) {
+                self.emit_line(&format!("{} = add i64 {}, 0", tmp, s));
+            } else {
+                self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
+                // If it's not a primitive, it might need boxing to 'any' before rt_to_string
+                let val = self.emit_abi_cast(&s, src_ty, &TejxType::Any);
+                self.emit_line(&format!("{} = call i64 @rt_to_string(i64 {})", tmp, val));
+            }
         } else {
-            // Generic bitcast for other types
-            self.emit_line(&format!("{} = bitcast i64 {} to i64", tmp, s));
+            tmp = self.emit_abi_cast(&s, src_ty, ty);
         }
         let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
         self.emit_store_variable(dst, &tmp, dst_ty);

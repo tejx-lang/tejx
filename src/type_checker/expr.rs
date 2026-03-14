@@ -4,9 +4,298 @@ use crate::token::TokenType;
 use std::collections::HashMap;
 
 impl TypeChecker {
+    fn is_unresolved_generic_name(name: &str) -> bool {
+        name.starts_with("$MISSING_GENERIC_")
+            || name == "$0"
+            || (name.len() <= 2
+                && name.chars().next().map_or(false, |c| c.is_uppercase())
+                && name.chars().all(|c| c.is_alphanumeric()))
+    }
+
+    fn contains_unresolved_generic_type(ty: &TejxType) -> bool {
+        match ty {
+            TejxType::Class(name, generics) => {
+                Self::is_unresolved_generic_name(name)
+                    || generics.iter().any(Self::contains_unresolved_generic_type)
+            }
+            TejxType::DynamicArray(inner)
+            | TejxType::FixedArray(inner, _)
+            | TejxType::Slice(inner) => Self::contains_unresolved_generic_type(inner),
+            TejxType::Function(params, ret) => {
+                params.iter().any(Self::contains_unresolved_generic_type)
+                    || Self::contains_unresolved_generic_type(ret)
+            }
+            TejxType::Union(types) => types.iter().any(Self::contains_unresolved_generic_type),
+            TejxType::Object(props) => props
+                .iter()
+                .any(|(_, _, ty)| Self::contains_unresolved_generic_type(ty)),
+            _ => false,
+        }
+    }
+
+    fn collect_generic_bindings_from_types(
+        formal: &TejxType,
+        actual: &TejxType,
+        generic_map: &mut HashMap<String, String>,
+    ) {
+        match formal {
+            TejxType::Class(name, generics)
+                if generics.is_empty() && Self::is_unresolved_generic_name(name) =>
+            {
+                generic_map.insert(name.clone(), actual.to_name());
+            }
+            TejxType::Class(formal_name, formal_generics) => {
+                if let TejxType::Class(actual_name, actual_generics) = actual {
+                    if formal_name == actual_name && formal_generics.len() == actual_generics.len()
+                    {
+                        for (formal_arg, actual_arg) in
+                            formal_generics.iter().zip(actual_generics.iter())
+                        {
+                            Self::collect_generic_bindings_from_types(
+                                formal_arg,
+                                actual_arg,
+                                generic_map,
+                            );
+                        }
+                    }
+                }
+            }
+            TejxType::DynamicArray(formal_inner) => {
+                if let TejxType::DynamicArray(actual_inner) = actual {
+                    Self::collect_generic_bindings_from_types(
+                        formal_inner,
+                        actual_inner,
+                        generic_map,
+                    );
+                }
+            }
+            TejxType::FixedArray(formal_inner, _) => match actual {
+                TejxType::FixedArray(actual_inner, _) | TejxType::DynamicArray(actual_inner) => {
+                    Self::collect_generic_bindings_from_types(
+                        formal_inner,
+                        actual_inner,
+                        generic_map,
+                    );
+                }
+                _ => {}
+            },
+            TejxType::Slice(formal_inner) => match actual {
+                TejxType::Slice(actual_inner)
+                | TejxType::DynamicArray(actual_inner)
+                | TejxType::FixedArray(actual_inner, _) => {
+                    Self::collect_generic_bindings_from_types(
+                        formal_inner,
+                        actual_inner,
+                        generic_map,
+                    );
+                }
+                _ => {}
+            },
+            TejxType::Function(formal_params, formal_ret) => {
+                if let TejxType::Function(actual_params, actual_ret) = actual {
+                    for (formal_param, actual_param) in
+                        formal_params.iter().zip(actual_params.iter())
+                    {
+                        Self::collect_generic_bindings_from_types(
+                            formal_param,
+                            actual_param,
+                            generic_map,
+                        );
+                    }
+                    Self::collect_generic_bindings_from_types(formal_ret, actual_ret, generic_map);
+                }
+            }
+            TejxType::Object(formal_props) => {
+                if let TejxType::Object(actual_props) = actual {
+                    for (formal_name, _, formal_ty) in formal_props {
+                        if let Some((_, _, actual_ty)) =
+                            actual_props.iter().find(|(name, _, _)| name == formal_name)
+                        {
+                            Self::collect_generic_bindings_from_types(
+                                formal_ty,
+                                actual_ty,
+                                generic_map,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn builtin_member_function_type(&self, receiver: &TejxType, member: &str) -> Option<TejxType> {
+        if receiver == &TejxType::String {
+            return match member {
+                "length" => Some(TejxType::Function(
+                    vec![TejxType::String],
+                    Box::new(TejxType::Int32),
+                )),
+                "concat" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::String],
+                    Box::new(TejxType::String),
+                )),
+                "includes" | "startsWith" | "endsWith" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::String],
+                    Box::new(TejxType::Bool),
+                )),
+                "indexOf" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::String],
+                    Box::new(TejxType::Int32),
+                )),
+                "toUpperCase" | "toLowerCase" | "trim" | "trimStart" | "trimEnd" => Some(
+                    TejxType::Function(vec![TejxType::String], Box::new(TejxType::String)),
+                ),
+                "substring" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::Int32, TejxType::Int32],
+                    Box::new(TejxType::String),
+                )),
+                "split" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::String],
+                    Box::new(TejxType::DynamicArray(Box::new(TejxType::String))),
+                )),
+                "repeat" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::Int32],
+                    Box::new(TejxType::String),
+                )),
+                "replace" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::String, TejxType::String],
+                    Box::new(TejxType::String),
+                )),
+                "padStart" | "padEnd" => Some(TejxType::Function(
+                    vec![TejxType::String, TejxType::Int32, TejxType::String],
+                    Box::new(TejxType::String),
+                )),
+                _ => None,
+            };
+        }
+
+        if receiver.is_array() || receiver.is_slice() {
+            let t = TejxType::Class("T".to_string(), vec![]);
+            let u = TejxType::Class("U".to_string(), vec![]);
+            return match member {
+                "length" => Some(TejxType::Function(
+                    vec![receiver.clone()],
+                    Box::new(TejxType::Int32),
+                )),
+                "push" => Some(TejxType::Function(
+                    vec![receiver.clone(), t.clone()],
+                    Box::new(TejxType::Int32),
+                )),
+                "pop" | "shift" => Some(TejxType::Function(
+                    vec![receiver.clone()],
+                    Box::new(t.clone()),
+                )),
+                "unshift" => Some(TejxType::Function(
+                    vec![receiver.clone(), t.clone()],
+                    Box::new(TejxType::Int32),
+                )),
+                "indexOf" => Some(TejxType::Function(
+                    vec![receiver.clone(), t.clone()],
+                    Box::new(TejxType::Int32),
+                )),
+                "concat" | "slice" | "reverse" | "fill" => Some(TejxType::Function(
+                    vec![receiver.clone(), t.clone()],
+                    Box::new(TejxType::DynamicArray(Box::new(t.clone()))),
+                )),
+                "filter" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![t.clone(), TejxType::Int32],
+                            Box::new(TejxType::Bool),
+                        ),
+                    ],
+                    Box::new(TejxType::DynamicArray(Box::new(t.clone()))),
+                )),
+                "join" => Some(TejxType::Function(
+                    vec![receiver.clone(), TejxType::String],
+                    Box::new(TejxType::String),
+                )),
+                "sort" => Some(TejxType::Function(
+                    vec![receiver.clone()],
+                    Box::new(TejxType::Void),
+                )),
+                "forEach" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![t.clone(), TejxType::Int32],
+                            Box::new(TejxType::Void),
+                        ),
+                    ],
+                    Box::new(TejxType::Void),
+                )),
+                "map" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![t.clone(), TejxType::Int32],
+                            Box::new(u.clone()),
+                        ),
+                    ],
+                    Box::new(TejxType::DynamicArray(Box::new(u.clone()))),
+                )),
+                "reduce" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![u.clone(), t.clone(), TejxType::Int32],
+                            Box::new(u.clone()),
+                        ),
+                        u.clone(),
+                    ],
+                    Box::new(u.clone()),
+                )),
+                "find" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![t.clone(), TejxType::Int32],
+                            Box::new(TejxType::Bool),
+                        ),
+                    ],
+                    Box::new(t.clone()),
+                )),
+                "findIndex" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![t.clone(), TejxType::Int32],
+                            Box::new(TejxType::Bool),
+                        ),
+                    ],
+                    Box::new(TejxType::Int32),
+                )),
+                "every" | "some" => Some(TejxType::Function(
+                    vec![
+                        receiver.clone(),
+                        TejxType::Function(
+                            vec![t.clone(), TejxType::Int32],
+                            Box::new(TejxType::Bool),
+                        ),
+                    ],
+                    Box::new(TejxType::Bool),
+                )),
+                "includes" => Some(TejxType::Function(
+                    vec![receiver.clone(), t.clone()],
+                    Box::new(TejxType::Bool),
+                )),
+                _ => None,
+            };
+        }
+
+        None
+    }
+
     pub(crate) fn check_expression(&mut self, expr: &Expression) -> Result<TejxType, ()> {
         match expr {
             Expression::NumberLiteral { value, .. } => {
+                if let Some(expected) = &self.current_expected_type {
+                    if expected.is_numeric() {
+                        return Ok(expected.clone());
+                    }
+                }
                 if value.fract() == 0.0 {
                     Ok(TejxType::Int32)
                 } else {
@@ -30,11 +319,16 @@ impl TypeChecker {
                 match op {
                     TokenType::Bang => Ok(TejxType::Bool),
                     TokenType::Minus => {
-                        if right_type.is_numeric() || right_type == TejxType::from_name("<inferred>") {
+                        if right_type.is_numeric()
+                            || right_type == TejxType::from_name("<inferred>")
+                        {
                             Ok(right_type)
                         } else {
                             self.report_error_detailed(
-                                format!("Unary '-' cannot be applied to type '{}'", right_type.to_name()),
+                                format!(
+                                    "Unary '-' cannot be applied to type '{}'",
+                                    right_type.to_name()
+                                ),
                                 *_line,
                                 *_col,
                                 "E0100",
@@ -96,10 +390,16 @@ impl TypeChecker {
                     inferred_ret.to_name()
                 };
 
+                self.lambda_inferred_returns
+                    .insert((*_line, *_col), TejxType::from_name(&final_ret));
+
                 self.current_function_return = prev_return;
                 self.exit_scope();
 
-                Ok(TejxType::Function(actual_param_types, Box::new(TejxType::from_name(&final_ret))))
+                Ok(TejxType::Function(
+                    actual_param_types,
+                    Box::new(TejxType::from_name(&final_ret)),
+                ))
             }
             Expression::Identifier { name, _line, _col } => {
                 if let Some(s) = self.lookup(name) {
@@ -142,8 +442,6 @@ impl TypeChecker {
                         op,
                         TokenType::EqualEqual
                             | TokenType::BangEqual
-                            | TokenType::EqualEqualEqual
-                            | TokenType::BangEqualEqual
                     ) {
                         return Ok(TejxType::Bool);
                     }
@@ -224,6 +522,7 @@ impl TypeChecker {
                 member,
                 _line,
                 _col,
+                _is_namespace,
                 ..
             } => {
                 let mut obj_type = self.check_expression(object)?.to_name();
@@ -237,6 +536,19 @@ impl TypeChecker {
 
                 // Special case for class names (static access)
                 if let Expression::Identifier { name, .. } = &**object {
+                    if name == "Promise" && member == "all" {
+                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
+                        return Ok(TejxType::Function(
+                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
+                                "Promise".to_string(),
+                                vec![missing.clone()],
+                            )))],
+                            Box::new(TejxType::Class(
+                                "Promise".to_string(),
+                                vec![TejxType::DynamicArray(Box::new(missing))],
+                            )),
+                        ));
+                    }
                     if let Some(s) = self.lookup(name) {
                         if s.ty.to_name() == "class" || s.ty.to_name() == "enum" {
                             if let Some(members) = self.class_members.get(name) {
@@ -244,7 +556,38 @@ impl TypeChecker {
                                     if !info.is_static {
                                         self.report_error_detailed(format!("Member '{}' is not static", member), *_line, *_col, "E0116", Some("Access this member on an instance, not the class itself"));
                                     }
-                                    return Ok(TejxType::from_name(&self.substitute_generics(&info.ty.to_name(), name)));
+                                    return Ok(TejxType::from_name(
+                                        &self.substitute_generics(&info.ty.to_name(), name),
+                                    ));
+                                } else {
+                                    let kind = if s.ty.to_name() == "enum" {
+                                        "enum"
+                                    } else if *_is_namespace {
+                                        "namespace"
+                                    } else {
+                                        "class"
+                                    };
+                                    let available = self.collect_member_names(name, true);
+                                    let hint = if available.is_empty() {
+                                        None
+                                    } else {
+                                        Some(format!(
+                                            "Available {} members: {}",
+                                            kind,
+                                            available.join(", ")
+                                        ))
+                                    };
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Member '{}' does not exist on {} '{}'",
+                                            member, kind, name
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0105",
+                                        hint.as_deref(),
+                                    );
+                                    return Ok(TejxType::from_name("<inferred>"));
                                 }
                             }
                         }
@@ -268,17 +611,20 @@ impl TypeChecker {
                             self.report_error_detailed(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_type), *_line, *_col, "E0106", Some("Mark the member as 'public' in the class definition, or access it from within the class"));
                         }
                     }
-                    return Ok(TejxType::from_name(&self.substitute_generics(&info.ty.to_name(), &obj_type)));
+                    return Ok(TejxType::from_name(
+                        &self.substitute_generics(&info.ty.to_name(), &obj_type),
+                    ));
                 }
 
+                let obj_ty = TejxType::from_name(&obj_type);
                 // Built-in 'length' property for arrays, strings, and slices
                 if member == "length" {
-                    if obj_type == "string"
-                        || obj_type.ends_with("[]")
-                        || (obj_type.starts_with("slice<") && obj_type.ends_with(">"))
-                    {
+                    if obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice() {
                         return Ok(TejxType::Int32);
                     }
+                }
+                if let Some(builtin_ty) = self.builtin_member_function_type(&obj_ty, member) {
+                    return Ok(builtin_ty);
                 }
 
                 if let TejxType::Object(props) = TejxType::from_name(&obj_type) {
@@ -287,6 +633,10 @@ impl TypeChecker {
                             return Ok(t);
                         }
                     }
+                }
+
+                if TejxType::from_name(&obj_type) == TejxType::Any {
+                    return Ok(TejxType::Any);
                 }
 
                 if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
@@ -304,22 +654,16 @@ impl TypeChecker {
                 // --- UFCS Lookup ---
                 // If not found as a member, check if there is a global function name(obj, ...)
                 if member == "push" || member == "fill" {
-                    println!("DEBUG UFCS LOOKUP: looking up '{}' for object type '{}'", member, obj_type);
                     if let Some(s) = self.lookup(member) {
-                        println!("DEBUG UFCS FOUND: ty={:?}", s.ty);
                         if let TejxType::Function(_, ref _ret) = s.ty {
                             if !s.params.is_empty() {
                                 let first_param = &s.params[0];
-                                let is_compat = self.are_types_compatible(first_param, &TejxType::from_name(&obj_type));
-                                println!("DEBUG UFCS: are_types_compatible({}, {}) -> {}", first_param.to_name(), obj_type, is_compat);
-                            } else {
-                                println!("DEBUG UFCS: params is empty!");
+                                let is_compat = self.are_types_compatible(
+                                    first_param,
+                                    &TejxType::from_name(&obj_type),
+                                );
                             }
-                        } else {
-                            println!("DEBUG UFCS: s.ty is not a function!");
                         }
-                    } else {
-                        println!("DEBUG UFCS: not found in lookup!");
                     }
                 }
 
@@ -327,20 +671,29 @@ impl TypeChecker {
                     if let TejxType::Function(_, ref ret) = s.ty {
                         if !s.params.is_empty() {
                             let first_param = &s.params[0];
-                            let is_compat = self.are_types_compatible(first_param, &TejxType::from_name(&obj_type));
+                            let is_compat = self
+                                .are_types_compatible(first_param, &TejxType::from_name(&obj_type));
                             if is_compat {
                                 // Full ty
                                 let full_ty = TejxType::Function(s.params.clone(), ret.clone());
                                 // Found a match! Return the function type but we keep note it's UFCS
                                 // Actually, for type checking, we just return the function type.
                                 // CodeGen will handle the translation.
-                                return Ok(TejxType::from_name(&self.substitute_generics(&full_ty.to_name(), &obj_type)));
+                                return Ok(TejxType::from_name(
+                                    &self.substitute_generics(&full_ty.to_name(), &obj_type),
+                                ));
                             }
                         }
                     }
                 }
 
                 if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
+                    let available = self.collect_member_names(&obj_type, false);
+                    let hint = if available.is_empty() {
+                        None
+                    } else {
+                        Some(format!("Available members: {}", available.join(", ")))
+                    };
                     self.report_error_detailed(
                         format!(
                             "Property '{}' does not exist on type '{}'",
@@ -349,7 +702,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        Some("Check the property name or define it in the class"),
+                        hint.as_deref().or(Some("Check the property name or define it in the class")),
                     );
                 }
                 Ok(TejxType::from_name("<inferred>"))
@@ -367,10 +720,10 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
-                let target_type = self.check_expression(target)?.to_name();
+                let target_ty = self.check_expression(target)?;
                 self.check_expression(index)?;
 
-                let mut unwrapped_type = target_type.clone();
+                let mut unwrapped_type = target_ty.to_name();
                 if let Some(sym) = self.lookup(&unwrapped_type) {
                     if let Some(aliased) = &sym.aliased_type {
                         unwrapped_type = aliased.to_name();
@@ -382,18 +735,17 @@ impl TypeChecker {
                         .split('|')
                         .map(|s| s.trim().to_string())
                         .find(|s| s != "None" && !s.is_empty())
-                        .unwrap_or(target_type.clone());
+                        .unwrap_or(target_ty.to_name());
                 }
 
-                if unwrapped_type.ends_with("[]") {
-                    let res = unwrapped_type[..unwrapped_type.len() - 2].to_string();
-                    return Ok(TejxType::from_name(&res));
+                let parsed = TejxType::from_name(&unwrapped_type);
+                if parsed == TejxType::Any {
+                    return Ok(TejxType::Any);
                 }
-                if unwrapped_type.starts_with("Array<") && unwrapped_type.ends_with(">") {
-                    let inner = &unwrapped_type[6..unwrapped_type.len() - 1];
-                    return Ok(TejxType::from_name(inner));
+                if parsed.is_array() || parsed.is_slice() {
+                    return Ok(parsed.get_array_element_type());
                 }
-                if unwrapped_type == "string" {
+                if parsed == TejxType::String {
                     return Ok(TejxType::String);
                 }
                 Ok(TejxType::from_name("<inferred>"))
@@ -460,19 +812,17 @@ impl TypeChecker {
                     }
                 }
 
-                let prev_expected = self.current_expected_type.take();
-                self.current_expected_type = Some(target_ty_obj.clone());
-                let value_ty_obj = self.check_expression(value)?;
+                let value_ty_obj = self.with_expected_type(Some(target_ty_obj.clone()), |s| {
+                    s.check_expression(value)
+                })?;
                 let value_type = value_ty_obj.to_name();
-                self.current_expected_type = prev_expected;
-                
+
                 if target_type != "<inferred>" && value_type != "<inferred>" {
                     self.check_numeric_bounds(value, &target_ty_obj, *_line, *_col);
                     if !self.is_assignable(&target_ty_obj, &value_ty_obj) {
                         if value_type == "[]" {
                             self.report_error_detailed(
                                 format!(
-
                                     "Type mismatch in assignment: expected '{}', got empty array",
                                     target_type
                                 ),
@@ -506,12 +856,19 @@ impl TypeChecker {
             }
             Expression::CallExpr {
                 callee,
-                type_args: _,
+                type_args,
                 args,
                 _line,
                 _col,
             } => {
-                let callee_str = callee.to_callee_name();
+                let mut callee_str = callee.to_callee_name();
+                if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
+                    if let Expression::Identifier { name, .. } = object.as_ref() {
+                        if name == "Promise" && member == "all" {
+                            callee_str = "Promise_all".to_string();
+                        }
+                    }
+                }
 
                 if callee_str == "typeof" {
                     for arg in args {
@@ -564,7 +921,9 @@ impl TypeChecker {
                     _signature_found = true;
                 }
 
-                if !_signature_found && (callee_type.starts_with("function:") || callee_type.contains("=>")) {
+                if !_signature_found
+                    && (callee_type.starts_with("function:") || callee_type.contains("=>"))
+                {
                     let (parsed_ret, parsed_params, parsed_variadic) =
                         self.parse_signature(callee_type.clone());
                     // The returned final_type from parse_signature is "function:ret", so we strip it.
@@ -581,8 +940,81 @@ impl TypeChecker {
                     _signature_found = true;
                 }
 
+                if !_signature_found {
+                    if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
+                        if let Ok(receiver_ty) = self.check_expression(object) {
+                            if let Some(TejxType::Function(params, ret)) =
+                                self.builtin_member_function_type(&receiver_ty, member)
+                            {
+                                return_type = ret.to_name();
+                                s_params = params.iter().map(|p| p.to_name()).collect();
+                                is_variadic = false;
+                                _signature_found = true;
+                            }
+                        }
+                    }
+                }
+
                 let mut generic_map: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
+                let mut call_generic_params: Vec<crate::ast::GenericParam> = Vec::new();
+                let mut call_generic_owner = callee_str.clone();
+                let mut member_lookup_resolved = false;
+                if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
+                    if let Ok(obj_type) = self.check_expression(object) {
+                        if let Some(info) =
+                            self.resolve_instance_member(&obj_type.to_name(), member)
+                        {
+                            member_lookup_resolved = true;
+                            if !info.generic_params.is_empty() {
+                                call_generic_params = info.generic_params.clone();
+                                call_generic_owner = member.clone();
+                            }
+                        } else if obj_type == TejxType::String
+                            && self
+                                .builtin_member_function_type(&obj_type, member)
+                                .is_some()
+                        {
+                            // String builtins are not UFCS generics; skip global generic lookup.
+                            member_lookup_resolved = true;
+                        }
+                    }
+                }
+                if call_generic_params.is_empty() && !member_lookup_resolved {
+                    let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                    if let Some(s) = self.lookup(func_name) {
+                        call_generic_params = s.generic_params.clone();
+                        call_generic_owner = func_name.to_string();
+                    }
+                }
+
+                // Pre-fill generic bindings from the receiver type (e.g., Stack<int> -> T = int)
+                if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                    if let Ok(mut receiver_ty) = self.check_expression(object) {
+                        if let TejxType::Union(parts) = receiver_ty.clone() {
+                            if let Some(non_none) = parts
+                                .iter()
+                                .find(|t| t.to_name() != "None" && t.to_name() != "<inferred>")
+                            {
+                                receiver_ty = non_none.clone();
+                            }
+                        }
+                        if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                            if let Some(aliased) = &sym.aliased_type {
+                                receiver_ty = aliased.clone();
+                            }
+                        }
+                        if let TejxType::Class(base, args) = receiver_ty {
+                            if let Some(sym) = self.lookup(&base) {
+                                for (gp, arg) in sym.generic_params.iter().zip(args.iter()) {
+                                    generic_map
+                                        .entry(gp.name.clone())
+                                        .or_insert(arg.to_name());
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // If `s_params` is still empty, fallback to looking up just the method name
                 if !_signature_found {
@@ -598,6 +1030,156 @@ impl TypeChecker {
                 if let Expression::MemberAccessExpr { .. } = &**callee {
                     if s_params.len() > 0 && s_params.len() >= args.len() + 1 {
                         param_offset = 1;
+                    }
+                }
+
+                let parse_type_string =
+                    |tc: &TypeChecker, ty_str: &str| -> TejxType {
+                        if ty_str.starts_with("function:") || ty_str.contains("=>") {
+                            let (ret, params, _) = tc.parse_signature(ty_str.to_string());
+                            let parts: Vec<&str> = ret.split(':').collect();
+                            let actual_ret = if parts.len() >= 2 { parts[1] } else { &ret };
+                            TejxType::Function(
+                                params.iter().map(|p| TejxType::from_name(p)).collect(),
+                                Box::new(TejxType::from_name(actual_ret)),
+                            )
+                        } else {
+                            TejxType::from_name(ty_str)
+                        }
+                    };
+
+                let apply_bindings_to_type_str =
+                    |tc: &TypeChecker, ty_str: &str, bindings: &HashMap<String, TejxType>| -> String {
+                        let parsed = parse_type_string(tc, ty_str);
+                        parsed.substitute_generics(bindings).to_name()
+                    };
+
+                let mut explicit_generic_bindings: HashMap<String, TejxType> = HashMap::new();
+                let mut explicit_type_args_valid = false;
+                let explicit_type_args =
+                    type_args.as_ref().map(|args| args.iter().map(TejxType::from_node).collect::<Vec<_>>());
+                let explicit_type_args_used = explicit_type_args.is_some();
+                if let Some(explicit_args) = explicit_type_args.as_ref() {
+                    if call_generic_params.is_empty() {
+                        self.report_error_detailed(
+                            format!(
+                                "Type arguments are not allowed for non-generic call '{}'",
+                                callee_str
+                            ),
+                            *_line,
+                            *_col,
+                            "E0122",
+                            Some("Remove the explicit type arguments"),
+                        );
+                    } else if explicit_args.len() != call_generic_params.len() {
+                        self.report_error_detailed(
+                            format!(
+                                "Generic type argument count mismatch for '{}': expected {}, got {}",
+                                call_generic_owner,
+                                call_generic_params.len(),
+                                explicit_args.len()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0122",
+                            Some("Provide the correct number of type arguments"),
+                        );
+                    } else {
+                        explicit_type_args_valid = true;
+                        for (gp, concrete) in call_generic_params.iter().zip(explicit_args.iter()) {
+                            if !self.is_valid_type(concrete) {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Unknown data type: '{}' for generic parameter '{}'",
+                                        concrete.to_name(),
+                                        gp.name
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0101",
+                                    Some("Provide a valid concrete type"),
+                                );
+                                explicit_type_args_valid = false;
+                                break;
+                            }
+                            if let Some(bound) = &gp.bound {
+                                let bound_ty = TejxType::from_node(bound);
+                                if !self.is_assignable(&bound_ty, concrete) {
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Type '{}' does not satisfy constraint '{}' for generic parameter '{}'",
+                                            concrete.to_name(),
+                                            bound_ty.to_name(),
+                                            gp.name
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0120",
+                                        Some(&format!(
+                                            "Provide a type that satisfies the constraint '{}'",
+                                            bound_ty.to_name()
+                                        )),
+                                    );
+                                    explicit_type_args_valid = false;
+                                    break;
+                                }
+                            }
+                            explicit_generic_bindings.insert(gp.name.clone(), concrete.clone());
+                            generic_map.entry(gp.name.clone()).or_insert_with(|| concrete.to_name());
+                        }
+                    }
+                }
+
+                if explicit_type_args_valid && !explicit_generic_bindings.is_empty() {
+                    s_params = s_params
+                        .iter()
+                        .map(|p| apply_bindings_to_type_str(self, p, &explicit_generic_bindings))
+                        .collect();
+                    return_type = apply_bindings_to_type_str(
+                        self,
+                        &return_type,
+                        &explicit_generic_bindings,
+                    );
+                }
+
+                if param_offset == 1 {
+                    let mut resolved_receiver = String::new();
+                    if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                        resolved_receiver = self
+                            .check_expression(object)
+                            .map(|t| t.to_name())
+                            .unwrap_or_default();
+                    }
+
+                    if let Some(first_param) = s_params.first() {
+                        let receiver_ty = TejxType::from_name(&resolved_receiver);
+                        if receiver_ty.is_array() || receiver_ty.is_slice() {
+                            let inner = receiver_ty.get_array_element_type().to_name();
+                            if Self::is_unresolved_generic_name(first_param) {
+                                generic_map.entry(first_param.clone()).or_insert(inner.clone());
+                            } else if first_param.ends_with("[]") {
+                                let base = &first_param[..first_param.len() - 2];
+                                if Self::is_unresolved_generic_name(base) {
+                                    generic_map.entry(base.to_string()).or_insert(inner.clone());
+                                }
+                            }
+                        } else if resolved_receiver.starts_with("Promise<")
+                            && resolved_receiver.ends_with('>')
+                        {
+                            let inner = &resolved_receiver[8..resolved_receiver.len() - 1];
+                            if first_param == "T"
+                                || first_param == "$0"
+                                || first_param.starts_with("$MISSING_GENERIC_")
+                            {
+                                generic_map
+                                    .entry(first_param.clone())
+                                    .or_insert(inner.to_string());
+                            } else if first_param == "Promise<T>" {
+                                generic_map
+                                    .entry("T".to_string())
+                                    .or_insert(inner.to_string());
+                            }
+                        }
                     }
                 }
 
@@ -629,8 +1211,13 @@ impl TypeChecker {
                         if let Ok(obj_type) = self.check_expression(object).map(|t| t.to_name()) {
                             resolved_receiver = obj_type;
                         }
-                    } else if (callee_type.starts_with("function:") || callee_type.contains("=>")) && !args.is_empty() {
-                        resolved_receiver = self.check_expression(&args[0]).map(|t| t.to_name()).unwrap_or_default();
+                    } else if (callee_type.starts_with("function:") || callee_type.contains("=>"))
+                        && !args.is_empty()
+                    {
+                        resolved_receiver = self
+                            .check_expression(&args[0])
+                            .map(|t| t.to_name())
+                            .unwrap_or_default();
                     }
 
                     if resolved_receiver.is_empty() {
@@ -643,35 +1230,27 @@ impl TypeChecker {
                         }
                     }
 
-                    if resolved_receiver.starts_with("Array<") {
-                        let inner = &resolved_receiver[6..resolved_receiver.len() - 1];
+                    let receiver_ty = TejxType::from_name(&resolved_receiver);
+                    if receiver_ty.is_array() || receiver_ty.is_slice() {
+                        let inner = receiver_ty.get_array_element_type().to_name();
                         if target_type == "T"
                             || target_type.starts_with("$MISSING_GENERIC_")
                             || target_type == "$0"
                         {
-                            target_type = inner.to_string();
-                        } else if target_type == "Array<T>" {
-                            target_type = format!("Array<{}>", inner);
-                        } else if target_type == "T[]"
-                            || target_type == "$0[]"
-                            || target_type.ends_with("[]") && target_type.starts_with("T")
-                        {
-                            target_type = format!("{}[]", inner);
-                        }
-                    } else if resolved_receiver.ends_with("[]") {
-                        let inner = &resolved_receiver[..resolved_receiver.len() - 2];
-                        if target_type == "T"
-                            || target_type.starts_with("$MISSING_GENERIC_")
-                            || target_type == "$0"
-                        {
-                            target_type = inner.to_string();
-                        } else if target_type == "Array<T>" {
-                            target_type = format!("Array<{}>", inner);
-                        } else if target_type == "T[]"
-                            || target_type == "$0[]"
-                            || target_type.ends_with("[]") && target_type.starts_with("T")
-                        {
-                            target_type = format!("{}[]", inner);
+                            if let Some(explicit) = generic_map.get("T") {
+                                target_type = explicit.clone();
+                            } else {
+                                target_type = inner.clone();
+                            }
+                        } else if target_type.ends_with("[]") {
+                            let base = &target_type[..target_type.len() - 2];
+                            if Self::is_unresolved_generic_name(base) {
+                                if let Some(explicit) = generic_map.get(base) {
+                                    target_type = format!("{}[]", explicit);
+                                } else {
+                                    target_type = format!("{}[]", inner);
+                                }
+                            }
                         }
                     } else if resolved_receiver.starts_with("Promise<") {
                         let inner = &resolved_receiver[8..resolved_receiver.len() - 1];
@@ -679,35 +1258,80 @@ impl TypeChecker {
                             || target_type.starts_with("$MISSING_GENERIC_")
                             || target_type == "$0"
                         {
-                            target_type = inner.to_string();
+                            if let Some(explicit) = generic_map.get("T") {
+                                target_type = explicit.clone();
+                            } else {
+                                target_type = inner.to_string();
+                            }
                         } else if target_type == "Promise<T>" {
-                            target_type = format!("Promise<{}>", inner);
+                            if let Some(explicit) = generic_map.get("T") {
+                                target_type = format!("Promise<{}>", explicit);
+                            } else {
+                                target_type = format!("Promise<{}>", inner);
+                            }
                         } else if target_type == "T[]"
                             || target_type == "$0[]"
                             || target_type.ends_with("[]") && target_type.starts_with("T")
                         {
-                            target_type = format!("{}[]", inner);
+                            if let Some(explicit) = generic_map.get("T") {
+                                target_type = format!("{}[]", explicit);
+                            } else {
+                                target_type = format!("{}[]", inner);
+                            }
                         } else if target_type == "Promise<T[]>" {
-                            target_type = format!("Promise<{}[]>", inner);
+                            if let Some(explicit) = generic_map.get("T") {
+                                target_type = format!("Promise<{}[]>", explicit);
+                            } else {
+                                target_type = format!("Promise<{}[]>", inner);
+                            }
                         }
                     }
 
-                    if matches!(arg, Expression::LambdaExpr { .. }) {
+                    let lambda_ctx_params = if matches!(arg, Expression::LambdaExpr { .. }) {
                         if target_type.starts_with("function:") || target_type.contains("=>") {
-                            let (_, parsed_params, _) = self.parse_signature(target_type.clone());
-
-                            let parsed_params: Vec<TejxType> = parsed_params.into_iter().map(|p| TejxType::from_name(&p)).collect();
-                            self.lambda_context_params = Some(parsed_params);
+                            let (ret_sig, params, _) = self.parse_signature(target_type.clone());
+                            let ret_ty = ret_sig
+                                .splitn(2, ':')
+                                .nth(1)
+                                .unwrap_or("void")
+                                .to_string();
+                            let mut func_ty = TejxType::Function(
+                                params.iter().map(|p| TejxType::from_name(p)).collect(),
+                                Box::new(TejxType::from_name(&ret_ty)),
+                            );
+                            if !resolved_receiver.is_empty() {
+                                let receiver_ty = TejxType::from_name(&resolved_receiver);
+                                let mut bindings: std::collections::HashMap<String, TejxType> =
+                                    std::collections::HashMap::new();
+                                if receiver_ty.is_array() || receiver_ty.is_slice() {
+                                    bindings.insert(
+                                        "T".to_string(),
+                                        receiver_ty.get_array_element_type(),
+                                    );
+                                }
+                                if !bindings.is_empty() {
+                                    func_ty = func_ty.substitute_generics(&bindings);
+                                }
+                            }
+                            if let TejxType::Function(parsed_params, _) = func_ty {
+                                Some(parsed_params)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
                     } else {
-                        self.lambda_context_params = None;
-                    }
+                        None
+                    };
 
-                    let prev_expected = self.current_expected_type.take();
-                    self.current_expected_type = Some(TejxType::from_name(&target_type));
-                    let arg_type = self.check_expression(arg)?.to_name();
-                    self.current_expected_type = prev_expected;
-                    self.lambda_context_params = None;
+                    let arg_type = self
+                        .with_expected_type(Some(TejxType::from_name(&target_type)), |s| {
+                            s.with_lambda_context(lambda_ctx_params, |s_inner| {
+                                s_inner.check_expression(arg)
+                            })
+                        })?
+                        .to_name();
 
                     let is_unknown_check = |t: &str| t == "<inferred>" || t.ends_with(":unknown");
                     if !target_type.is_empty() && !is_unknown_check(&target_type) {
@@ -733,52 +1357,69 @@ impl TypeChecker {
                             );
                         }
 
+                        Self::collect_generic_bindings_from_types(
+                            &expected_obj,
+                            &actual_obj,
+                            &mut generic_map,
+                        );
+
+                        let is_print_call = callee_str == "print" || callee_str == "eprint";
                         if !self.are_types_compatible(&expected_obj, &actual_obj) {
-                            // Skip error if either side is a generic type param (defined as 'unknown' in scope)
-                            let is_generic_param = |t: &str| {
-                                if t.starts_with("$MISSING_GENERIC_") {
-                                    return true;
-                                }
-                                if let Some(sym) = self.lookup(t) {
-                                    sym.ty.to_name() == "<inferred>"
-                                        && t.len() <= 2
-                                        && t.chars().next().map_or(false, |c| c.is_uppercase())
-                                } else {
-                                    false
-                                }
-                            };
-                        // Also check if the function's original param was a generic type variable
-                        let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
-                        let original_param_is_generic = if let Some(sym) = self.lookup(func_name) {
-                            if adjusted_i < sym.params.len() {
-                                let orig = sym.params[adjusted_i].to_name();
-                                orig.len() <= 2
-                                    && orig.chars().next().map_or(false, |c| c.is_uppercase())
-                                    && orig.chars().all(|c| c.is_alphanumeric())
+                            if is_print_call && matches!(expected_obj, TejxType::String) {
+                                // Allow automatic stringification for print/eprint
                             } else {
-                                false
+                                // Original generic check logic ...
+                                let is_generic_param = |t: &str| {
+                                    if t.starts_with("$MISSING_GENERIC_") {
+                                        return true;
+                                    }
+                                    if let Some(sym) = self.lookup(t) {
+                                        sym.ty.to_name() == "<inferred>"
+                                            && t.len() <= 2
+                                            && t.chars().next().map_or(false, |c| c.is_uppercase())
+                                    } else {
+                                        false
+                                    }
+                                };
+                                let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                                let original_param_is_generic =
+                                    if let Some(sym) = self.lookup(func_name) {
+                                        if adjusted_i < sym.params.len() {
+                                            let orig = sym.params[adjusted_i].to_name();
+                                            orig.len() <= 2
+                                                && orig
+                                                    .chars()
+                                                    .next()
+                                                    .map_or(false, |c| c.is_uppercase())
+                                                && orig.chars().all(|c| c.is_alphanumeric())
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    };
+                                let expected_has_unresolved =
+                                    Self::contains_unresolved_generic_type(&expected_obj);
+                                if !is_generic_param(&target_type)
+                                    && !is_generic_param(&arg_type)
+                                    && !original_param_is_generic
+                                    && !expected_has_unresolved
+                                {
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Argument type mismatch for '{}': expected '{}', got '{}'",
+                                            callee_str, target_type, arg_type
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0108",
+                                        Some(&format!(
+                                            "Pass a value of type '{}' or convert using 'as {}'",
+                                            target_type, target_type
+                                        )),
+                                    );
+                                }
                             }
-                        } else {
-                            false
-                        };
-                        if !is_generic_param(&target_type)
-                            && !is_generic_param(&arg_type)
-                            && !original_param_is_generic
-                        {
-                            self.report_error_detailed(
-                                format!(
-                                    "Argument type mismatch for '{}': expected '{}', got '{}'",
-                                    callee_str, target_type, arg_type
-                                ),
-                                *_line,
-                                *_col,
-                                "E0108",
-                                Some(&format!(
-                                    "Pass a value of type '{}' or convert using 'as {}'",
-                                    target_type, target_type
-                                )),
-                            );
-                        }
                         }
                     }
 
@@ -791,39 +1432,107 @@ impl TypeChecker {
                             && t.chars().all(|c| c.is_alphanumeric())
                     };
                     if is_generic_param_check(&target_type) && arg_type != "<inferred>" {
-                        generic_map.insert(target_type.clone(), arg_type.clone());
+                        generic_map.entry(target_type.clone()).or_insert(arg_type.clone());
                     }
                 }
 
-                if !generic_map.is_empty() {
-                    let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
-                    if let Some(s) = self.lookup(func_name) {
-                        if !s.generic_params.is_empty() {
-                            let mut concrete_args = Vec::new();
-                            for gp in &s.generic_params {
-                                if let Some(concrete) = generic_map.get(&gp.name) {
-                                    if let Some(bound) = &gp.bound {
-                                        let bound_str = bound.to_string();
-                                        if !self.is_assignable(&TejxType::from_name(&bound_str), &TejxType::from_name(concrete)) {
-                                            self.report_error_detailed(
-                                                format!("Type '{}' does not satisfy constraint '{}' for generic parameter '{}'", concrete, bound_str, gp.name),
-                                                *_line,
-                                                *_col,
-                                                "E0120",
-                                                Some(&format!("Provide a type that satisfies the constraint '{}'", bound_str))
-                                            );
-                                        }
-                                    }
-                                    concrete_args.push(TejxType::from_name(&concrete));
-                                } else {
-                                    concrete_args.push(TejxType::from_name("<inferred>"));
-                                }
-                            }
+                let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                if explicit_type_args_valid {
+                    if !call_generic_params.is_empty() {
+                        if let Some(explicit_args) = explicit_type_args.clone() {
                             self.function_instantiations
                                 .entry(func_name.to_string())
                                 .or_default()
-                                .insert(concrete_args);
+                                .insert(explicit_args);
                         }
+                    }
+                } else if !explicit_type_args_used && !call_generic_params.is_empty() {
+                    let mut concrete_args = Vec::new();
+                    let mut missing_inference = None;
+                    for gp in &call_generic_params {
+                        let inferred_from_receiver = if let Some(existing) =
+                            generic_map.get(&gp.name)
+                        {
+                            Some(existing.clone())
+                        } else if let Some(existing) = generic_map
+                            .get(&format!("$MISSING_GENERIC_{}", concrete_args.len()))
+                        {
+                            Some(existing.clone())
+                        } else if let Expression::MemberAccessExpr { object, .. } =
+                            &**callee
+                        {
+                            self.check_expression(object).ok().and_then(|receiver_ty| {
+                                match gp.name.as_str() {
+                                    "T" if receiver_ty.is_array() || receiver_ty.is_slice() => {
+                                        Some(receiver_ty.get_array_element_type().to_name())
+                                    }
+                                    "T" => {
+                                        let receiver_name = receiver_ty.to_name();
+                                        if receiver_name.starts_with("Promise<")
+                                            && receiver_name.ends_with('>')
+                                        {
+                                            Some(
+                                                receiver_name[8..receiver_name.len() - 1]
+                                                    .to_string(),
+                                            )
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        } else {
+                            None
+                        };
+
+                        if let Some(concrete) = inferred_from_receiver.as_ref() {
+                            generic_map
+                                .entry(gp.name.clone())
+                                .or_insert_with(|| concrete.clone());
+                            if let Some(bound) = &gp.bound {
+                                let bound_str = bound.to_string();
+                                if !self.is_assignable(
+                                    &TejxType::from_name(&bound_str),
+                                    &TejxType::from_name(concrete),
+                                ) {
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Type '{}' does not satisfy constraint '{}' for generic parameter '{}'",
+                                            concrete, bound_str, gp.name
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0120",
+                                        Some(&format!(
+                                            "Provide a type that satisfies the constraint '{}'",
+                                            bound_str
+                                        )),
+                                    );
+                                }
+                            }
+                            concrete_args.push(TejxType::from_name(concrete));
+                        } else {
+                            missing_inference = Some(gp.name.clone());
+                            break;
+                        }
+                    }
+                    if let Some(missing) = missing_inference {
+                        self.report_error_detailed(
+                            format!(
+                                "Cannot infer generic type parameter '{}' for '{}'",
+                                missing, callee_str
+                            ),
+                            *_line,
+                            *_col,
+                            "E0121",
+                            Some("Pass an argument with a concrete type or provide explicit type arguments"),
+                        );
+                    } else {
+                        self.function_instantiations
+                            .entry(func_name.to_string())
+                            .or_default()
+                            .insert(concrete_args);
                     }
                 }
 
@@ -882,21 +1591,16 @@ impl TypeChecker {
                     return Ok(TejxType::from_name("<inferred>"));
                 }
 
-                let mut final_ret = return_type.clone();
+                let mut bindings: HashMap<String, TejxType> = HashMap::new();
                 for (k, v) in &generic_map {
-                    if final_ret == *k {
-                        final_ret = v.clone();
-                    } else if final_ret.contains(k) {
-                        final_ret = final_ret.replace(&format!("<{}>", k), &format!("<{}>", v));
-                        final_ret = final_ret.replace(&format!("{},", k), &format!("{},", v));
-                        final_ret = final_ret.replace(&format!(", {}", k), &format!(", {}", v));
-                        final_ret = final_ret.replace(&format!("{}[]", k), &format!("{}[]", v));
-                    }
+                    bindings.insert(k.clone(), parse_type_string(self, v));
                 }
-
-                Ok(TejxType::from_name(&final_ret))
+                let final_ret_ty = apply_bindings_to_type_str(self, &return_type, &bindings);
+                Ok(parse_type_string(self, &final_ret_ty))
             }
-            Expression::ObjectLiteralExpr { entries, _spreads, .. } => {
+            Expression::ObjectLiteralExpr {
+                entries, _spreads, ..
+            } => {
                 let mut props = Vec::new();
 
                 for (key, val_expr) in entries {
@@ -915,7 +1619,8 @@ impl TypeChecker {
                             }
                         }
                     }
-                    if let TejxType::Object(spread_props) = TejxType::from_name(&resolved.to_name()) {
+                    if let TejxType::Object(spread_props) = TejxType::from_name(&resolved.to_name())
+                    {
                         for (k, opt, t) in spread_props {
                             props.push((k, opt, t));
                         }
@@ -931,47 +1636,66 @@ impl TypeChecker {
                 _col,
                 ..
             } => {
+                let expected_array =
+                    self.current_expected_type
+                        .as_ref()
+                        .and_then(|expected| match expected {
+                            TejxType::DynamicArray(inner) => Some(((*inner.clone()), None, false)),
+                            TejxType::FixedArray(inner, size) => {
+                                Some(((*inner.clone()), Some(*size), true))
+                            }
+                            TejxType::Slice(inner) => Some(((*inner.clone()), None, false)),
+                            _ => None,
+                        });
+
                 if !elements.is_empty() {
                     let mut first_type_opt: Option<String> = None;
-                    let mut expected_inner: Option<TejxType> = None;
-                    if let Some(expected) = &self.current_expected_type {
-                        expected_inner = match expected {
-                            TejxType::DynamicArray(inner) | TejxType::FixedArray(inner, _) | TejxType::Slice(inner) => Some(*inner.clone()),
-                            TejxType::Class(name, generics) if name == "Array" && generics.len() == 1 => Some(generics[0].clone()),
-                            _ => None,
-                        };
-                    }
+                    let expected_inner = expected_array.as_ref().map(|(inner, _, _)| inner.clone());
+                    let expected_is_any = matches!(expected_inner, Some(TejxType::Any));
+                    let has_spread = elements
+                        .iter()
+                        .any(|element| matches!(element, Expression::SpreadExpr { .. }));
 
                     for i in 0..elements.len() {
-                        let prev_expected = self.current_expected_type.take();
-                        let prev_lambda_ctx = self.lambda_context_params.take();
-                        
+                        let mut lambda_ctx_params: Option<Vec<TejxType>> = None;
                         if let Some(inner) = &expected_inner {
-                            self.current_expected_type = Some(inner.clone());
                             if let TejxType::Function(params, _) = inner {
-                                self.lambda_context_params = Some(params.clone());
+                                lambda_ctx_params = Some(params.clone());
                             }
                         }
 
-                        let mut elem_ty = self.check_expression(&elements[i])?.to_name();
-
-                        self.current_expected_type = prev_expected;
-                        self.lambda_context_params = prev_lambda_ctx;
+                        let mut elem_ty = self
+                            .with_expected_type(expected_inner.clone(), |s| {
+                                s.with_lambda_context(lambda_ctx_params, |s_inner| {
+                                    s_inner.check_expression(&elements[i])
+                                })
+                            })?
+                            .to_name();
 
                         if let Expression::SpreadExpr { .. } = elements[i] {
-                            let mut elem_ty_str = elem_ty.clone();
-                            if elem_ty_str.ends_with("[]") {
-                                elem_ty_str = elem_ty_str[..elem_ty_str.len() - 2].to_string();
-                            } else if elem_ty_str.starts_with("Array<") {
-                                elem_ty_str = elem_ty_str[6..elem_ty_str.len() - 1].to_string();
+                            let spread_ty = TejxType::from_name(&elem_ty);
+                            let is_array_like = spread_ty.is_array() || spread_ty.is_slice();
+                            if is_array_like {
+                                elem_ty = spread_ty.get_array_element_type().to_name();
                             }
-                            elem_ty = TejxType::from_name(&elem_ty_str).to_name();
+                        }
+
+                        if expected_is_any {
+                            if first_type_opt.is_none() {
+                                first_type_opt = Some("any".to_string());
+                            }
+                            continue;
                         }
 
                         if let Some(first_type) = &first_type_opt {
                             let elem_ty_str = elem_ty.clone();
                             if &elem_ty_str != first_type && first_type != "<inferred>" {
-                                let common = self.get_common_ancestor(&TejxType::from_name(first_type), &TejxType::from_name(&elem_ty_str)).to_name();
+                                let common = self
+                                    .get_common_ancestor(
+                                        &TejxType::from_name(first_type),
+                                        &TejxType::from_name(&elem_ty_str),
+                                    )
+                                    .to_name();
                                 if common == "<inferred>" {
                                     self.report_error_detailed(
                                         format!("Array elements have incompatible types: '{}' and '{}'", first_type, elem_ty),
@@ -989,19 +1713,54 @@ impl TypeChecker {
                             first_type_opt = Some(elem_ty.clone());
                         }
                     }
-                    let t = first_type_opt.unwrap_or_else(|| "<inferred>".to_string()) + "[]";
-                    *ty.borrow_mut() = Some(t.clone());
-                    Ok(TejxType::from_name(&t))
-                } else {
-                    let mut t = "[]".to_string();
-                    if let Some(expected) = &self.current_expected_type {
-                        let expected_str = expected.to_name();
-                        if expected_str.ends_with("[]") || expected_str.starts_with("Array<") {
-                            t = expected_str;
+
+                    let element_type = if expected_is_any {
+                        "any".to_string()
+                    } else {
+                        first_type_opt.unwrap_or_else(|| "<inferred>".to_string())
+                    };
+                    let inferred_ty = if let Some((_, expected_len, is_fixed)) = &expected_array {
+                        if *is_fixed {
+                            if !has_spread
+                                && !elements.is_empty()
+                                && elements.len() != *expected_len.as_ref().unwrap()
+                            {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Fixed array literal length mismatch: expected {}, got {}",
+                                        expected_len.unwrap(),
+                                        elements.len()
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0100",
+                                    Some("Match the declared fixed-array length exactly"),
+                                );
+                            }
+                            format!("{}[{}]", element_type, expected_len.unwrap())
+                        } else {
+                            format!("{}[]", element_type)
                         }
-                    }
-                    *ty.borrow_mut() = Some(t.clone());
-                    Ok(TejxType::from_name(&t))
+                    } else if has_spread {
+                        format!("{}[]", element_type)
+                    } else {
+                        format!("{}[{}]", element_type, elements.len())
+                    };
+                    *ty.borrow_mut() = Some(inferred_ty.clone());
+                    Ok(TejxType::from_name(&inferred_ty))
+                } else {
+                    let inferred_ty = if let Some((inner, expected_len, is_fixed)) = &expected_array
+                    {
+                        if *is_fixed {
+                            format!("{}[{}]", inner.to_name(), expected_len.unwrap())
+                        } else {
+                            format!("{}[]", inner.to_name())
+                        }
+                    } else {
+                        "[]".to_string()
+                    };
+                    *ty.borrow_mut() = Some(inferred_ty.clone());
+                    Ok(TejxType::from_name(&inferred_ty))
                 }
             }
             Expression::SpreadExpr { _expr, .. } => self.check_expression(_expr),
@@ -1024,9 +1783,9 @@ impl TypeChecker {
                 }
             }
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
-                let target_type = self.check_expression(target)?.to_name();
+                let target_ty = self.check_expression(target)?;
                 self.check_expression(index)?;
-                let mut unwrapped_type = target_type.clone();
+                let mut unwrapped_type = target_ty.to_name();
                 if let Some(sym) = self.lookup(&unwrapped_type) {
                     if let Some(aliased) = &sym.aliased_type {
                         unwrapped_type = aliased.to_name();
@@ -1039,12 +1798,9 @@ impl TypeChecker {
                         .find(|s| s != "None" && !s.is_empty())
                         .unwrap_or(unwrapped_type.clone());
                 }
-                if unwrapped_type.ends_with("[]") {
-                    return Ok(TejxType::from_name(&unwrapped_type[..unwrapped_type.len() - 2]));
-                }
-                if unwrapped_type.starts_with("Array<") && unwrapped_type.ends_with(">") {
-                    let inner = &unwrapped_type[6..unwrapped_type.len() - 1];
-                    return Ok(TejxType::from_name(inner));
+                let parsed = TejxType::from_name(&unwrapped_type);
+                if parsed.is_array() || parsed.is_slice() {
+                    return Ok(parsed.get_array_element_type());
                 }
                 Ok(TejxType::from_name("<inferred>"))
             }
@@ -1072,7 +1828,9 @@ impl TypeChecker {
                 }
 
                 if let Some(info) = self.resolve_instance_member(&obj_type, member) {
-                    return Ok(TejxType::from_name(&self.substitute_generics(&info.ty.to_name(), &obj_type)));
+                    return Ok(TejxType::from_name(
+                        &self.substitute_generics(&info.ty.to_name(), &obj_type),
+                    ));
                 }
 
                 Ok(TejxType::from_name("<inferred>"))
@@ -1114,19 +1872,132 @@ impl TypeChecker {
             }
             Expression::OptionalCallExpr {
                 callee,
-                type_args: _,
-                args: _,
+                type_args,
+                args,
                 _line,
                 _col,
             } => {
                 // Try to resolve return type from callee
                 let callee_type = self.check_expression(callee)?.to_name();
-                if callee_type.starts_with("function:") {
-                    let (ret, _, _) = self.parse_signature(callee_type);
-                    Ok(TejxType::from_name(&ret))
-                } else {
-                    Ok(TejxType::from_name(&callee_type))
+                for arg in args {
+                    self.check_expression(arg)?;
                 }
+
+                let parse_type_string = |tc: &TypeChecker, ty_str: &str| -> TejxType {
+                    if ty_str.starts_with("function:") || ty_str.contains("=>") {
+                        let (ret, params, _) = tc.parse_signature(ty_str.to_string());
+                        let parts: Vec<&str> = ret.split(':').collect();
+                        let actual_ret = if parts.len() >= 2 { parts[1] } else { &ret };
+                        TejxType::Function(
+                            params.iter().map(|p| TejxType::from_name(p)).collect(),
+                            Box::new(TejxType::from_name(actual_ret)),
+                        )
+                    } else {
+                        TejxType::from_name(ty_str)
+                    }
+                };
+
+                let mut return_type = if callee_type.starts_with("function:")
+                    || callee_type.contains("=>")
+                {
+                    let (ret, _, _) = self.parse_signature(callee_type.clone());
+                    ret
+                } else {
+                    callee_type.clone()
+                };
+
+                if let Some(explicit_args) = type_args.as_ref() {
+                    let mut call_generic_params: Vec<crate::ast::GenericParam> = Vec::new();
+                    if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
+                        if let Ok(obj_type) = self.check_expression(object) {
+                            if let Some(info) =
+                                self.resolve_instance_member(&obj_type.to_name(), member)
+                            {
+                                if !info.generic_params.is_empty() {
+                                    call_generic_params = info.generic_params.clone();
+                                }
+                            }
+                        }
+                    }
+                    if call_generic_params.is_empty() {
+                        let func_name = callee.to_callee_name();
+                        if let Some(s) = self.lookup(&func_name) {
+                            call_generic_params = s.generic_params.clone();
+                        }
+                    }
+
+                    if call_generic_params.is_empty() {
+                        self.report_error_detailed(
+                            format!(
+                                "Type arguments are not allowed for non-generic call '{}'",
+                                callee.to_callee_name()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0122",
+                            Some("Remove the explicit type arguments"),
+                        );
+                    } else if explicit_args.len() != call_generic_params.len() {
+                        self.report_error_detailed(
+                            format!(
+                                "Generic type argument count mismatch for '{}': expected {}, got {}",
+                                callee.to_callee_name(),
+                                call_generic_params.len(),
+                                explicit_args.len()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0122",
+                            Some("Provide the correct number of type arguments"),
+                        );
+                    } else {
+                        let mut bindings: HashMap<String, TejxType> = HashMap::new();
+                        for (gp, concrete) in
+                            call_generic_params.iter().zip(explicit_args.iter())
+                        {
+                            let concrete_ty = TejxType::from_node(concrete);
+                            if !self.is_valid_type(&concrete_ty) {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Unknown data type: '{}' for generic parameter '{}'",
+                                        concrete_ty.to_name(),
+                                        gp.name
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0101",
+                                    Some("Provide a valid concrete type"),
+                                );
+                            }
+                            if let Some(bound) = &gp.bound {
+                                let bound_ty = TejxType::from_node(bound);
+                                if !self.is_assignable(&bound_ty, &concrete_ty) {
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Type '{}' does not satisfy constraint '{}' for generic parameter '{}'",
+                                            concrete_ty.to_name(),
+                                            bound_ty.to_name(),
+                                            gp.name
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0120",
+                                        Some(&format!(
+                                            "Provide a type that satisfies the constraint '{}'",
+                                            bound_ty.to_name()
+                                        )),
+                                    );
+                                }
+                            }
+                            bindings.insert(gp.name.clone(), concrete_ty);
+                        }
+                        return_type = parse_type_string(self, &return_type)
+                            .substitute_generics(&bindings)
+                            .to_name();
+                    }
+                }
+
+                Ok(parse_type_string(self, &return_type))
             }
             Expression::NewExpr {
                 class_name,
@@ -1134,30 +2005,171 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
-                self.register_instantiation(class_name, *_line, *_col);
                 // Generic type parameters are inferred from the variable declaration's
                 // type annotation (e.g., `let m: Map<string, int> = new Map()`),
                 // so we don't require explicit type args on the constructor call.
-                if !self.is_valid_type(&TejxType::from_name(class_name)) {
-                    self.report_error_detailed(
-                        format!("Unknown class '{}'", class_name),
-                        *_line,
-                        *_col,
-                        "E0101",
-                        Some("Ensure the class is defined or imported before use"),
-                    );
+                let mut class_ty = TejxType::from_name(class_name);
+                let mut effective_class_name = class_name.clone();
+                if let TejxType::Class(base, generics) = class_ty.clone() {
+                    if !generics.is_empty() {
+                        if let Some(sym) = self.lookup(&base) {
+                            if sym.generic_params.is_empty() {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Type arguments are not allowed for non-generic class '{}'",
+                                        base
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0122",
+                                    Some("Remove the explicit type arguments"),
+                                );
+                                // Ignore type arguments on non-generic classes to avoid cascading errors.
+                                class_ty = TejxType::Class(base.clone(), vec![]);
+                                effective_class_name = base.clone();
+                            }
+                        }
+                    }
                 }
-                if self.abstract_classes.contains(class_name) {
+                if !self.is_valid_type(&class_ty) {
+                    let base_name = match &class_ty {
+                        TejxType::Class(name, _) => name.as_str(),
+                        _ => class_name.as_str(),
+                    };
+                    let is_known = self.lookup(base_name).is_some();
+                    if !(is_known && !class_name.contains('<')) {
+                        self.report_error_detailed(
+                            format!("Unknown class '{}'", class_name),
+                            *_line,
+                            *_col,
+                            "E0101",
+                            Some("Ensure the class is defined or imported before use"),
+                        );
+                    }
+                }
+                if self.abstract_classes.contains(&effective_class_name) {
                     self.report_error_detailed(format!("Cannot instantiate abstract class '{}'", class_name), *_line, *_col, "E0110", Some("Create a concrete subclass that implements all abstract methods, then instantiate that instead"));
                 }
-                for arg in args {
-                    self.check_expression(arg)?;
+
+                let mut expected_arg_types = Vec::new();
+                if let Some(info) =
+                    self.resolve_instance_member(&effective_class_name, "constructor")
+                {
+                    if let TejxType::Function(params, _) = &info.ty {
+                        expected_arg_types = params.clone();
+                    } else if let TejxType::Class(sig, _) = &info.ty {
+                        if sig.starts_with("function:") || sig.contains("=>") {
+                            let (_ret, params, _) = self.parse_signature(sig.clone());
+                            expected_arg_types = params
+                                .iter()
+                                .map(|p| TejxType::from_name(p))
+                                .collect();
+                        }
+                    }
                 }
-                Ok(TejxType::from_name(class_name))
+
+                let mut actual_arg_types = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let expected_ty = if i < expected_arg_types.len() {
+                        Some(expected_arg_types[i].clone())
+                    } else {
+                        None
+                    };
+                    let actual = self.with_expected_type(expected_ty, |s| s.check_expression(arg))?;
+                    actual_arg_types.push(actual);
+                }
+
+                let mut inferred_class_name = effective_class_name.clone();
+                let mut inferred = false;
+
+                if !effective_class_name.contains('<') {
+                    if let Some(expected) = self.current_expected_type.as_ref() {
+                        if let TejxType::Class(exp_name, exp_generics) = expected {
+                            if exp_name == &effective_class_name && !exp_generics.is_empty() {
+                                let args = exp_generics
+                                    .iter()
+                                    .map(|t| t.to_name())
+                                    .collect::<Vec<_>>();
+                                inferred_class_name =
+                                    format!("{}<{}>", effective_class_name, args.join(", "));
+                                inferred = true;
+                            }
+                        }
+                    }
+                }
+
+                if !effective_class_name.contains('<') {
+                    if let Some(sym) = self.lookup(&effective_class_name) {
+                        if !sym.generic_params.is_empty() && !inferred {
+                            if !expected_arg_types.is_empty() {
+                                let mut bindings: std::collections::HashMap<String, String> =
+                                    std::collections::HashMap::new();
+                                for (formal, actual) in expected_arg_types
+                                    .iter()
+                                    .zip(actual_arg_types.iter())
+                                {
+                                    Self::collect_generic_bindings_from_types(
+                                        formal,
+                                        actual,
+                                        &mut bindings,
+                                    );
+                                }
+                                let mut concrete_args = Vec::new();
+                                let mut all_inferred = true;
+                                for gp in &sym.generic_params {
+                                    if let Some(concrete) = bindings.get(&gp.name) {
+                                        concrete_args.push(concrete.clone());
+                                    } else {
+                                        all_inferred = false;
+                                        break;
+                                    }
+                                }
+                                if !all_inferred
+                                    && sym.generic_params.len() == 1
+                                    && !actual_arg_types.is_empty()
+                                {
+                                    let fallback = actual_arg_types
+                                        .last()
+                                        .map(|t| t.to_name())
+                                        .unwrap_or_default();
+                                    if !fallback.is_empty() && fallback != "<inferred>" {
+                                        concrete_args = vec![fallback];
+                                        all_inferred = true;
+                                    }
+                                }
+                                if all_inferred && !concrete_args.is_empty() {
+                                    inferred_class_name = format!(
+                                        "{}<{}>",
+                                        effective_class_name,
+                                        concrete_args.join(", ")
+                                    );
+                                    inferred = true;
+                                }
+                            }
+
+                            if !inferred {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Generic type '{}' requires explicit type arguments",
+                                        effective_class_name
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0121",
+                                    Some(&format!(
+                                        "Use 'new {}<...>(...)' or provide a typed context",
+                                        effective_class_name
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+                self.register_instantiation(&inferred_class_name, *_line, *_col);
+                Ok(TejxType::from_name(&inferred_class_name))
             }
             Expression::ThisExpr { _line, _col } => {
                 if let Some(sym) = self.lookup("this") {
-                    println!("DEBUG expr.rs ThisExpr evaluated to: {}", sym.ty.to_name());
                     Ok(sym.ty.clone())
                 } else {
                     self.report_error_detailed(

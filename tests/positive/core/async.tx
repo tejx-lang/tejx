@@ -79,15 +79,15 @@ async function test_features(): Promise<void> {
          compute(10),
          compute(20)
     ]);
-    assert_eq_int(2, results.length, "Promise.all length");
+    assert_eq_int(2, results.length(), "Promise.all length");
     // assert_eq_int(20, results[0], "Promise.all[0]"); // Type check might fail if array is mixed?
     // assert_eq_string("Instant", results[2], "Promise.all[2]");
 
     assert_eq_int(20, results[0] as int, "Promise.all[0]");
     assert_eq_int(40, results[1] as int, "Promise.all[1]");
     // let html = await http.get("https://www.google.com");
-    // if (html.length > 0) {
-    //    print("Fetched Google! Length: ", html.length);
+    // if (html.length() > 0) {
+    //    print("Fetched Google! Length: ", html.length());
     // }
 }
 

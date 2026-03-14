@@ -93,7 +93,6 @@ impl Parser {
                 }
             }
             TokenType::Interface => Some(self.parse_interface_declaration()),
-            TokenType::Extension => Some(self.parse_extension_declaration()),
             TokenType::Enum => Some(self.parse_enum_declaration()),
             // TokenType::Protocol => Some(self.parse_protocol_declaration()), // Removed
             TokenType::TypeAlias => Some(self.parse_type_alias_declaration()), // Added
@@ -115,7 +114,6 @@ impl Parser {
                         Some(self.parse_class_declaration(true))
                     }
                     TokenType::Interface => Some(self.parse_interface_declaration()),
-                    TokenType::Extension => Some(self.parse_extension_declaration()),
                     TokenType::Enum => Some(self.parse_enum_declaration()),
                     TokenType::TypeAlias => Some(self.parse_type_alias_declaration()),
                     TokenType::Namespace => Some(self.parse_namespace_declaration()),
@@ -153,7 +151,7 @@ impl Parser {
 
         let pattern = self.parse_binding_pattern();
 
-        let mut type_annotation = TypeNode::Any;
+        let mut type_annotation = TypeNode::Named("".to_string());
         if self.match_token(TokenType::Colon) {
             type_annotation = self.parse_type_annotation();
         }
@@ -175,7 +173,7 @@ impl Parser {
         // Handle multiple declarations: let x = 1, y = 2;
         while self.match_token(TokenType::Comma) {
             let p = self.parse_binding_pattern();
-        let mut ta = TypeNode::Any;
+        let mut ta = TypeNode::Named("".to_string());
         if self.match_token(TokenType::Colon) {
             ta = self.parse_type_annotation();
         }
@@ -236,9 +234,7 @@ impl Parser {
 
     fn is_keyword_identifier(&self) -> bool {
         match self.peek().token_type {
-            TokenType::Get
-            | TokenType::Set
-            | TokenType::Interface
+            TokenType::Interface
             | TokenType::Enum
             | TokenType::Async
             | TokenType::Await
@@ -376,7 +372,7 @@ impl Parser {
                     .consume(TokenType::Identifier, "Expected param name")
                     .value
                     .clone();
-                let mut p_type = TypeNode::Any;
+                let mut p_type = TypeNode::Named("".to_string());
                 if self.match_token(TokenType::Colon) {
                     p_type = self.parse_type_annotation();
                 }
@@ -399,7 +395,7 @@ impl Parser {
         }
         self.consume(TokenType::CloseParen, "Expected ')'");
 
-        let mut return_type = TypeNode::Any;
+        let mut return_type = TypeNode::Named("".to_string());
         if self.match_token(TokenType::Colon) {
             return_type = self.parse_type_annotation();
         }
@@ -526,7 +522,7 @@ impl Parser {
                             .consume(TokenType::Identifier, "Expected param name")
                             .value
                             .clone();
-                        let mut type_name = TypeNode::Any;
+                        let mut type_name = TypeNode::Named("".to_string());
                         if self.match_token(TokenType::Colon) {
                             type_name = self.parse_type_annotation();
                         }
@@ -561,56 +557,7 @@ impl Parser {
                 continue;
             }
 
-            // Field or Method or Getter/Setter
-            if self.check(TokenType::Get) && self.check_next(TokenType::Identifier) {
-                self.advance(); // consume get
-                let name = self
-                    .consume_identifier("Expected getter name")
-                    .value
-                    .clone();
-                self.consume(TokenType::OpenParen, "Expected '('");
-                self.consume(TokenType::CloseParen, "Expected ')'");
-                let mut return_type = TypeNode::Any;
-                if self.match_token(TokenType::Colon) {
-                    return_type = self.parse_type_annotation();
-                }
-                let body = self.parse_block();
-                getters.push(ClassGetter {
-                    _name: name,
-                    _return_type: return_type,
-                    _body: Box::new(body),
-                    _access: access.clone(),
-                });
-                continue;
-            }
-
-            if self.check(TokenType::Set) && self.check_next(TokenType::Identifier) {
-                self.advance(); // consume set
-                let name = self
-                    .consume_identifier("Expected setter name")
-                    .value
-                    .clone();
-                self.consume(TokenType::OpenParen, "Expected '('");
-                let param = self
-                    .consume(TokenType::Identifier, "Expected param")
-                    .value
-                    .clone();
-                let mut p_type = TypeNode::Any;
-                if self.match_token(TokenType::Colon) {
-                    p_type = self.parse_type_annotation();
-                }
-                self.consume(TokenType::CloseParen, "Expected ')'");
-                let body = self.parse_block();
-                setters.push(ClassSetter {
-                    _name: name,
-                    _param_name: param,
-                    _param_type: p_type,
-                    _body: Box::new(body),
-                    _access: access.clone(),
-                });
-                continue;
-            }
-
+            // Field or Method
             let name = self
                 .consume_identifier("Expected member name")
                 .value
@@ -667,7 +614,7 @@ impl Parser {
                             .consume(TokenType::Identifier, "Expected param")
                             .value
                             .clone();
-                        let mut p_type = TypeNode::Any;
+                        let mut p_type = TypeNode::Named("".to_string());
                         if self.match_token(TokenType::Colon) {
                             p_type = self.parse_type_annotation();
                         }
@@ -717,7 +664,7 @@ impl Parser {
                 });
             } else {
                 // Field
-                let mut type_name = TypeNode::Any;
+                let mut type_name = TypeNode::Named("".to_string());
                 if self.match_token(TokenType::Colon) {
                     type_name = self.parse_type_annotation();
                 }
@@ -803,78 +750,6 @@ impl Parser {
             _line: start.line,
             _col: start.column,
         }
-    }
-
-    fn parse_extension_declaration(&mut self) -> Statement {
-        let start = self
-            .consume(TokenType::Extension, "Expected 'extension'")
-            .clone();
-        let target_type = self.consume_identifier("Expected type name").value.clone();
-        self.consume(TokenType::OpenBrace, "Expected '{'");
-
-        let mut methods = Vec::new();
-        while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            // Methods in extension are like methods in class but without modifiers usually?
-            // features_oop.tx uses standard method syntax: greet(name: string): void { ... }
-            // or status(): string { ... }
-            // They look like function declarations but without 'function' keyword.
-
-            let name = self
-                .consume_identifier("Expected method name")
-                .value
-                .clone();
-            self.consume(TokenType::OpenParen, "Expected '('");
-            let mut params = Vec::new();
-            if !self.check(TokenType::CloseParen) {
-                loop {
-                    let p_name = self
-                        .consume(TokenType::Identifier, "Param name")
-                        .value
-                        .clone();
-                    let mut p_type = TypeNode::Any;
-                    if self.match_token(TokenType::Colon) {
-                        p_type = self.parse_type_annotation();
-                    }
-                    params.push(Parameter {
-                        name: p_name,
-                        type_name: p_type,
-                        _default_value: None,
-                        _is_rest: false,
-                    });
-                    if !self.match_token(TokenType::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.consume(TokenType::CloseParen, "Expected ')'");
-
-            let mut return_type = TypeNode::Named("void".to_string());
-            if self.match_token(TokenType::Colon) {
-                return_type = self.parse_type_annotation();
-            }
-
-            let body = self.parse_block();
-
-            methods.push(FunctionDeclaration {
-                name,
-                params,
-                return_type,
-                body: Box::new(body),
-                _is_async: false,
-                is_extern: false,
-                generic_params: Vec::new(),
-                _line: 0,
-                _col: 0,
-            });
-        }
-        self.consume(TokenType::CloseBrace, "Expected '}'");
-
-        Statement::ExtensionDeclaration(ExtensionDeclaration {
-            _target_type: TypeNode::Named(target_type),
-            _methods: methods,
-            _line: start.line,
-            _col: start.column,
-        })
     }
 
     fn parse_enum_declaration(&mut self) -> Statement {
@@ -1194,11 +1069,27 @@ impl Parser {
             let mut node = TypeNode::Object(member_nodes);
             
             while self.match_token(TokenType::OpenBracket) {
-                node = TypeNode::Array(Box::new(node));
-                if !self.match_token(TokenType::CloseBracket) {
-                    let _expr = self.parse_expression();
-                    self.consume(TokenType::CloseBracket, "Expected ']'");
+                if self.match_token(TokenType::CloseBracket) {
+                    node = TypeNode::Array(Box::new(node));
+                    continue;
                 }
+
+                let size_expr = self.parse_expression();
+                self.consume(TokenType::CloseBracket, "Expected ']'");
+
+                if let Expression::NumberLiteral {
+                    value,
+                    _is_float: false,
+                    ..
+                } = size_expr
+                {
+                    if value.fract() == 0.0 && value >= 0.0 {
+                        node = TypeNode::Named(format!("{}[{:.0}]", node.to_string(), value));
+                        continue;
+                    }
+                }
+
+                node = TypeNode::Array(Box::new(node));
             }
             return node;
         }
@@ -1284,12 +1175,27 @@ impl Parser {
         }
 
         while self.match_token(TokenType::OpenBracket) {
-            base_node = TypeNode::Array(Box::new(base_node));
-            if !self.match_token(TokenType::CloseBracket) {
-                // Sized array: Type[expr]
-                let _expr = self.parse_expression();
-                self.consume(TokenType::CloseBracket, "Expected ']'");
+            if self.match_token(TokenType::CloseBracket) {
+                base_node = TypeNode::Array(Box::new(base_node));
+                continue;
             }
+
+            let size_expr = self.parse_expression();
+            self.consume(TokenType::CloseBracket, "Expected ']'");
+
+            if let Expression::NumberLiteral {
+                value,
+                _is_float: false,
+                ..
+            } = size_expr
+            {
+                if value.fract() == 0.0 && value >= 0.0 {
+                    base_node = TypeNode::Named(format!("{}[{:.0}]", base_node.to_string(), value));
+                    continue;
+                }
+            }
+
+            base_node = TypeNode::Array(Box::new(base_node));
         }
 
         let mut intersection_types = Vec::new();
@@ -1834,8 +1740,6 @@ impl Parser {
         let mut expr = self.parse_comparison();
         while self.match_token(TokenType::EqualEqual)
             || self.match_token(TokenType::BangEqual)
-            || self.match_token(TokenType::EqualEqualEqual)
-            || self.match_token(TokenType::BangEqualEqual)
         {
             let op_token = self.tokens[self.current - 1].clone();
             let right = self.parse_comparison();

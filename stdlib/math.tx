@@ -1,13 +1,3 @@
-extern function std_math_sin(x: float): float;
-extern function std_math_cos(x: float): float;
-extern function std_math_sqrt(x: float): float;
-extern function std_math_floor(x: float): float;
-extern function std_math_ceil(x: float): float;
-extern function std_math_round(x: float): float;
-extern function std_math_pow(base: float, exp: float): float;
-extern function std_math_abs(x: float): float;
-extern function rt_math_random(): float;
-
 export function abs(x: float): float {
     return std_math_abs(x);
 }

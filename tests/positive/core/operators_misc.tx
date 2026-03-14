@@ -12,7 +12,7 @@ function main() {
     
     // Note: assertions depend on implementation return values
     // Using string matching if possible, else print
-    assert_eq_string(typeof(i), "int", "typeof(i) should be int");
+    assert_eq_string("int", typeof(i), "typeof(i) should be int");
     assert_eq_string(typeof(s), "string", "typeof(s) should be string");
     assert_eq_string(typeof(c), "bool", "typeof(c) should be bool");
     

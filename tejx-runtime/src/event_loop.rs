@@ -3,6 +3,7 @@ use super::*;
 use super::gc::{ThreadContext, MY_CONTEXT};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::io::Write;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -168,6 +169,37 @@ static EXCEPTION_STACK: LazyLock<Mutex<Vec<ExceptionHandler>>> =
 
 static mut CURRENT_EXCEPTION: i64 = 0;
 
+unsafe fn log_exception(prefix: &str, exception: i64) {
+    let mut v = exception;
+    rt_push_root(&mut v);
+
+    let mut s_id = rt_to_string(v);
+    rt_push_root(&mut s_id);
+
+    let mut t_id = rt_typeof(v);
+    rt_push_root(&mut t_id);
+
+    let _ = std::io::stderr().write_all(prefix.as_bytes());
+    let _ = std::io::stderr().write_all(b" (");
+    if let Some((data, len)) = get_str_parts(t_id) {
+        let slice = std::slice::from_raw_parts(data, len as usize);
+        let _ = std::io::stderr().write_all(slice);
+    } else {
+        let _ = std::io::stderr().write_all(b"unknown");
+    }
+    let _ = std::io::stderr().write_all(b"): ");
+
+    if let Some((data, len)) = get_str_parts(s_id) {
+        let slice = std::slice::from_raw_parts(data, len as usize);
+        let _ = std::io::stderr().write_all(slice);
+    } else {
+        let _ = std::io::stderr().write_all(b"<unprintable>");
+    }
+    let _ = std::io::stderr().write_all(b"\n");
+
+    rt_pop_roots(3);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn tejx_get_exception() -> i64 {
     CURRENT_EXCEPTION
@@ -208,18 +240,14 @@ pub unsafe extern "C" fn tejx_throw(exception: i64) {
     };
 
     if let Some(h) = handler {
+        log_exception("Throw", exception);
         MY_CONTEXT.with(|ctx: &std::cell::UnsafeCell<Box<ThreadContext>>| {
             let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
             (*ctx_ptr).roots_top = h.roots_top;
         });
         longjmp(h.jmpbuf as *mut i8, 1);
     } else {
-        /*
-        printf(
-            "Uncaught exception: %lld\n\0".as_ptr() as *const _,
-            exception,
-        );
-        */
+        log_exception("UnhandledException", exception);
         exit(1);
     }
 }

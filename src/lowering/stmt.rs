@@ -9,6 +9,22 @@ impl Lowering {
     pub(crate) fn lower_statement(&self, stmt: &Statement) -> Option<HIRStatement> {
         let line = stmt.get_line();
         match stmt {
+            Statement::TypeAliasDeclaration { name, _type_def, .. } => {
+                let alias_ty = TejxType::from_node(_type_def);
+                self.register_type_alias(name, alias_ty);
+                None
+            }
+            Statement::ExportDecl { declaration, .. } => {
+                if let Statement::TypeAliasDeclaration { name, _type_def, .. } =
+                    declaration.as_ref()
+                {
+                    let alias_ty = TejxType::from_node(_type_def);
+                    self.register_type_alias(name, alias_ty);
+                    return None;
+                }
+                // Fall through to handle other exports
+                self.lower_statement(declaration)
+            }
             Statement::BlockStmt { statements, .. } => {
                 self.enter_scope();
 
@@ -25,13 +41,13 @@ impl Lowering {
                                 func.name.clone(),
                                 (
                                     name.clone(),
-                                    TejxType::from_node(&func.return_type),
+                                    self.resolve_alias_type(&TejxType::from_node(&func.return_type)),
                                 ),
                             );
                         }
                         self.user_functions.borrow_mut().insert(
                             name.clone(),
-                            TejxType::from_node(&func.return_type),
+                            self.resolve_alias_type(&TejxType::from_node(&func.return_type)),
                         );
                         self.user_function_args
                             .borrow_mut()
@@ -58,13 +74,23 @@ impl Lowering {
                 is_const,
                 ..
             } => {
+                let expected_ty = if type_annotation.to_string().is_empty() {
+                    None
+                } else {
+                    Some(self.resolve_alias_type(&TejxType::from_node(&type_annotation)))
+                };
+
+                let prev_expected = self.current_expected_type.borrow_mut().take();
+                *self.current_expected_type.borrow_mut() = expected_ty.clone();
                 let mut init = initializer.as_ref().map(|e| self.lower_expression(e));
-                let ty = if type_annotation.to_string().is_empty() {
+                *self.current_expected_type.borrow_mut() = prev_expected;
+
+                let ty = if let Some(expected) = expected_ty {
+                    expected
+                } else {
                     init.as_ref()
                         .map(|e| e.get_type())
                         .unwrap_or(TejxType::Int64)
-                } else {
-                    TejxType::from_node(&type_annotation)
                 };
 
                 // Sized allocations are now handled during AST parsing/transforming where possible,
@@ -371,6 +397,32 @@ impl Lowering {
                         )
                     });
 
+                    let promise_inner = |ty: &TejxType| -> Option<TejxType> {
+                        match ty {
+                            TejxType::Class(name, generics)
+                                if name == "Promise" && !generics.is_empty() =>
+                            {
+                                Some(generics[0].clone())
+                            }
+                            TejxType::Class(name, _) if name.starts_with("Promise<") && name.ends_with('>') => {
+                                Some(TejxType::from_name(&name[8..name.len() - 1]))
+                            }
+                            _ => None,
+                        }
+                    };
+
+                    let val = val.map(|v| {
+                        if let Some(inner) = promise_inner(&v.get_type()) {
+                            HIRExpression::Await {
+                                line,
+                                expr: Box::new(v),
+                                ty: inner,
+                            }
+                        } else {
+                            v
+                        }
+                    });
+
                     let (eval_val, final_val) = if !is_pure {
                         let mut counter = self.lambda_counter.borrow_mut();
                         let id = *counter;
@@ -470,6 +522,19 @@ impl Lowering {
                         value: val,
                     })
                 }
+            }
+            Statement::DelStmt { target, .. } => {
+                let t = self.lower_expression(target);
+                let ty = t.get_type();
+                Some(HIRStatement::ExpressionStmt {
+                    line,
+                    expr: HIRExpression::Assignment {
+                        line,
+                        target: Box::new(t),
+                        value: Box::new(HIRExpression::NoneLiteral { line }),
+                        ty,
+                    },
+                })
             }
             Statement::BreakStmt { .. } => Some(HIRStatement::Break { line }),
             Statement::ContinueStmt { .. } => Some(HIRStatement::Continue { line }),
@@ -605,14 +670,6 @@ impl Lowering {
                 // but if someone expects an inline block we return empty block, but really
                 // it shouldn't be executed inline! Function declarations are hoisted anyway.
                 None
-            }
-            Statement::ExportDecl {
-                declaration,
-                _is_default,
-                ..
-            } => {
-                // Just lower the declaration - default export aliasing is handled during import splicing
-                self.lower_statement(declaration)
             }
             _ => None,
         }

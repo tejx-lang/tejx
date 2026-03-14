@@ -1,13 +1,26 @@
 pub mod gc;
 pub use gc::{
     gc_allocate, rt_get_header, rt_init_gc, rt_is_gc_ptr, rt_pop_roots, rt_push_root,
-    rt_write_barrier, ObjectHeader,
+    rt_register_thread, rt_unregister_thread, rt_write_barrier, ObjectHeader,
 };
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 #[no_mangle]
 pub static HEAP_OFFSET: i64 = 1i64 << 50;
 #[no_mangle]
 pub static STACK_OFFSET: i64 = 1i64 << 48;
+
+#[inline]
+unsafe fn rt_obj_ptr(val: i64) -> *mut i64 {
+    if val >= HEAP_OFFSET {
+        (val - HEAP_OFFSET) as *mut i64
+    } else if val >= STACK_OFFSET {
+        (val - STACK_OFFSET) as *mut i64
+    } else {
+        std::ptr::null_mut()
+    }
+}
 
 #[no_mangle]
 pub static TAG_BOOLEAN: i64 = 1;
@@ -38,6 +51,10 @@ const ARRAY_LEN_OFFSET: isize = 12; // byte offset in header
 const ARRAY_CAP_OFFSET: isize = 16; // byte offset in header
 const ARRAY_FLAGS_OFFSET: isize = 10; // byte offset in header (flags & 0xFF = elem_size)
 const ARRAY_HEADER_SIZE: isize = 24;
+const OBJECT_SIZE_OFFSET: isize = 0;
+const OBJECT_CAP_OFFSET: isize = 8;
+const OBJECT_KEYS_OFFSET: isize = 16;
+const OBJECT_VALUES_OFFSET: isize = 24;
 
 const ARRAY_FLAG_FIXED: i64 = 0x01;
 const ARRAY_FLAG_CONSTANT: i64 = 0x02;
@@ -104,6 +121,24 @@ pub static mut PREV2_ID: i64 = 0;
 pub static mut PREV2_PTR: *mut u8 = 0 as *mut u8;
 #[no_mangle]
 pub static mut PREV2_LEN: i64 = 0;
+
+static ARRAY_FORWARD: LazyLock<Mutex<HashMap<i64, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[inline]
+unsafe fn rt_resolve_array_id(mut id: i64) -> i64 {
+    if id < HEAP_OFFSET {
+        return id;
+    }
+    let map = ARRAY_FORWARD.lock().unwrap();
+    while let Some(next) = map.get(&id) {
+        if *next == id {
+            break;
+        }
+        id = *next;
+    }
+    id
+}
 
 extern "C" {
     pub fn malloc(size: usize) -> *mut std::ffi::c_void;
@@ -176,11 +211,14 @@ pub unsafe extern "C" fn rt_to_number(val: i64) -> f64 {
         return val as f64;
     }
     let body = (val - HEAP_OFFSET) as *mut u8;
+    if !rt_is_gc_ptr(body) {
+        return f64::from_bits(val as u64);
+    }
     let header = rt_get_header(body);
     let tag = (*header).type_id as i64;
     let ptr = body as *const i64;
     if tag == TAG_FLOAT {
-        return *(ptr as *const f64);
+        return *(body as *const f64);
     }
     if tag == TAG_INT {
         return *ptr as f64;
@@ -194,7 +232,9 @@ pub unsafe extern "C" fn rt_to_number(val: i64) -> f64 {
     if tag == TAG_STRING {
         return atof(body as *const _);
     }
-    0.0
+
+    // Fallback for other objects: return pointer bits as a double
+    f64::from_bits(val as u64)
 }
 
 #[no_mangle]
@@ -633,64 +673,67 @@ pub unsafe extern "C" fn tejx_libc_puts(s_ptr: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_to_string_int(v: i64) -> i64 {
+    let mut buf = [0u8; 32];
+    sprintf(buf.as_mut_ptr() as *mut _, "%lld\0".as_ptr() as *const _, v);
+    rt_string_from_c_str(buf.as_ptr() as *const _)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_to_string_float(v: f64) -> i64 {
+    let mut buf = [0u8; 64];
+    sprintf(buf.as_mut_ptr() as *mut _, "%g\0".as_ptr() as *const _, v);
+    rt_string_from_c_str(buf.as_ptr() as *const _)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_to_string_boolean(v: i64) -> i64 {
+    if v != 0 {
+        rt_string_from_c_str("true\0".as_ptr() as *const _)
+    } else {
+        rt_string_from_c_str("false\0".as_ptr() as *const _)
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     let mut v = val;
     let mut res_id = 0i64;
     rt_push_root(&mut v);
     rt_push_root(&mut res_id);
 
-    let is_gc = if v >= HEAP_OFFSET {
-        rt_is_gc_ptr((v - HEAP_OFFSET) as *mut u8)
-    } else {
-        false
-    };
+    // Robust pointer check: within the HEAP_OFFSET range AND verified by GC.
+    let body_ptr_probe = (v - HEAP_OFFSET) as *mut u8;
+    let in_offset_range = v >= HEAP_OFFSET;
+    let is_gc = in_offset_range && rt_is_gc_ptr(body_ptr_probe);
+    let is_stack = v >= STACK_OFFSET && v < HEAP_OFFSET;
+    let is_ptr = is_gc || is_stack;
 
-    if !is_gc {
-        let mut buf = [0u8; 64];
-        if v == 1 {
-            res_id = rt_string_from_c_str("true\0".as_ptr() as *const _);
-        } else if v == 0 {
-            res_id = rt_string_from_c_str("false\0".as_ptr() as *const _);
+    if is_ptr {
+        let body_ptr = if is_gc {
+            (v - HEAP_OFFSET) as *mut u8
         } else {
-            let n = f64::from_bits(v as u64);
-            if n.fract() == 0.0 && n.abs() < 9007199254740992.0 {
-                sprintf(
-                    buf.as_mut_ptr() as *mut _,
-                    "%lld\0".as_ptr() as *const _,
-                    n as i64,
-                );
-            } else {
-                sprintf(buf.as_mut_ptr() as *mut _, "%g\0".as_ptr() as *const _, n);
-            }
-            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
-        }
-    } else {
-        let body_ptr = (v - HEAP_OFFSET) as *mut u8;
+            (v - STACK_OFFSET) as *mut u8
+        };
         let header = rt_get_header(body_ptr);
         let tag = (*header).type_id as i64;
-        let ptr = body_ptr as *mut i64;
 
         if tag == TAG_STRING {
             res_id = v;
         } else if tag == TAG_FLOAT {
-            let mut buf = [0u8; 64];
             let n = *(body_ptr as *const f64);
-            sprintf(buf.as_mut_ptr() as *mut _, "%g\0".as_ptr() as *const _, n);
-            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
+            res_id = rt_to_string_float(n);
         } else if tag == TAG_INT {
-            let mut buf = [0u8; 64];
-            let n = *ptr;
-            sprintf(buf.as_mut_ptr() as *mut _, "%lld\0".as_ptr() as *const _, n);
-            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
+            let n = *(body_ptr as *const i64);
+            res_id = rt_to_string_int(n);
         } else if tag == TAG_CHAR {
             let mut buf = [0u8; 2];
-            buf[0] = *body_ptr as u8;
+            buf[0] = *(body_ptr) as u8;
             buf[1] = 0;
             res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
         } else if tag == TAG_BOOLEAN {
-            let b = *body_ptr;
-            let s = if b == 0 { "false\0" } else { "true\0" };
-            res_id = rt_string_from_c_str(s.as_ptr() as *const _);
+            let b = *(body_ptr as *const i64);
+            res_id = rt_to_string_boolean(b as i64);
         } else if tag == TAG_ARRAY {
             res_id = rt_string_from_c_str("[\0".as_ptr() as *const _);
             let len = rt_len(v);
@@ -700,8 +743,7 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
                 let mut item_str = rt_to_string(item);
                 rt_push_root(&mut item_str);
                 res_id = rt_str_concat_v2(res_id, item_str);
-                rt_pop_roots(1); // item_str
-                rt_pop_roots(1); // item
+                rt_pop_roots(2); // item_str, item
 
                 if i < len - 1 {
                     let mut comma = rt_string_from_c_str(", \0".as_ptr() as *const _);
@@ -714,85 +756,38 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
             rt_push_root(&mut bracket);
             res_id = rt_str_concat_v2(res_id, bracket);
             rt_pop_roots(1);
-        } else if tag == TAG_OBJECT {
-            let mut brace_open = rt_string_from_c_str("{\0".as_ptr() as *const _);
-            rt_push_root(&mut brace_open);
-            res_id = rt_str_concat_v2(res_id, brace_open);
-            rt_pop_roots(1);
-
-            // We must re-resolve everything inside the loop as GC can happen
-            let mut i = 0i64;
-            loop {
-                let current_ptr = (v - HEAP_OFFSET) as *mut i64;
-                let size = *current_ptr.offset(0);
-                if i >= size {
-                    break;
-                }
-
-                let current_keys = *current_ptr.offset(2);
-                let current_vals = *current_ptr.offset(3);
-
-                let mut k = rt_array_get_fast(current_keys, i as i64);
-                let mut v_val = rt_array_get_fast(current_vals, i as i64);
-                rt_push_root(&mut k);
-                rt_push_root(&mut v_val);
-
-                let k_str = rt_to_string(k);
-                res_id = rt_str_concat_v2(res_id, k_str);
-
-                let mut colon = rt_string_from_c_str(": \0".as_ptr() as *const _);
-                rt_push_root(&mut colon);
-                res_id = rt_str_concat_v2(res_id, colon);
-                rt_pop_roots(1);
-
-                let v_str = rt_to_string(v_val);
-                res_id = rt_str_concat_v2(res_id, v_str);
-
-                // Re-read size inside loop in case something grew (unlikely here but safe)
-                let latest_ptr = (v - HEAP_OFFSET) as *mut i64;
-                let latest_size = *latest_ptr.offset(0);
-
-                if i < latest_size - 1 {
-                    let mut comma = rt_string_from_c_str(", \0".as_ptr() as *const _);
-                    rt_push_root(&mut comma);
-                    res_id = rt_str_concat_v2(res_id, comma);
-                    rt_pop_roots(1);
-                }
-
-                rt_pop_roots(2); // k, v_val
-                i += 1;
-            }
-            let mut brace_close = rt_string_from_c_str("}\0".as_ptr() as *const _);
-            rt_push_root(&mut brace_close);
-            res_id = rt_str_concat_v2(res_id, brace_close);
-            rt_pop_roots(1);
-        } else if tag == TAG_FUNCTION {
-            res_id = rt_string_from_c_str("[function]\0".as_ptr() as *const _);
-        } else if tag == TAG_PROMISE {
-            res_id = rt_string_from_c_str("[Promise]\0".as_ptr() as *const _);
         } else {
-            res_id = rt_string_from_c_str("[object]\0".as_ptr() as *const _);
+            res_id = rt_string_from_c_str("[object Object]\0".as_ptr() as *const _);
+        }
+    } else {
+        // Handle unboxed primitives (direct i64 representation)
+        if in_offset_range {
+            // Large value, not a GC pointer -> Assume it's a bitcasted f64
+            let n = f64::from_bits(v as u64);
+            res_id = rt_to_string_float(n);
+        } else {
+            // Normal small integer
+            res_id = rt_to_string_int(v);
         }
     }
 
-    rt_pop_roots(2); // pop v, res_id
+    rt_pop_roots(2);
     res_id
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_panic(msg_id: i64) {
     if let Some(s) = i64_to_rust_str(msg_id) {
-        let c_str = std::ffi::CString::new(s).unwrap_or_default();
-        //printf("PANIC: %s\n\0".as_ptr() as *const _, c_str.as_ptr());
+        eprintln!("PANIC: {}", s);
     } else {
-        //printf("PANIC: (invalid string object)\n\0".as_ptr() as *const _);
+        eprintln!("PANIC: (invalid string object)");
     }
     exit(1);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_div_zero_error() {
-    //eprintln!("PANIC: Division by zero");
+    eprintln!("PANIC: Division by zero");
     exit(1);
 }
 
@@ -800,15 +795,20 @@ pub unsafe extern "C" fn rt_div_zero_error() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_len(val: i64) -> i64 {
-    let is_gc = if val >= HEAP_OFFSET {
-        rt_is_gc_ptr((val - HEAP_OFFSET) as *mut u8)
+    let resolved = if val >= HEAP_OFFSET {
+        rt_resolve_array_id(val)
+    } else {
+        val
+    };
+    let is_gc = if resolved >= HEAP_OFFSET {
+        rt_is_gc_ptr((resolved - HEAP_OFFSET) as *mut u8)
     } else {
         false
     };
     if !is_gc {
         return 0;
     }
-    let body = (val - HEAP_OFFSET) as *mut u8;
+    let body = (resolved - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
     if (*header).type_id == TAG_STRING as u16 || (*header).type_id == TAG_ARRAY as u16 {
         return (*header).length as i64;
@@ -891,6 +891,9 @@ pub unsafe extern "C" fn rt_class_new(
     }
     let size = (body_size) as usize; // Body size is now just for data, no internal tag
     let obj = gc_allocate(size) as *mut i64;
+
+    // Primitives and fields now start at offset 0.
+
     let header = rt_get_header(obj as *mut u8);
     (*header).type_id = type_id as u16;
     // *obj = TAG_OBJECT; // Removed, type_id is in header
@@ -922,7 +925,7 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     if actual_elem_size == 0 {
         actual_elem_size = 8; // Default to 8 if unknown
     }
-    
+
     let total_size = (cap * actual_elem_size) as usize;
     let body_ptr = gc_allocate(total_size);
 
@@ -958,7 +961,7 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64 {
-    let mut current_id = id;
+    let mut current_id = rt_resolve_array_id(id);
     if (current_id as u64) < (HEAP_OFFSET as u64) {
         return current_id;
     }
@@ -1003,6 +1006,7 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
     let res = (new_body as i64) + HEAP_OFFSET;
     rt_pop_roots(1);
     rt_update_array_cache(res, new_body, (*new_header).length as i64, elem_size);
+    ARRAY_FORWARD.lock().unwrap().insert(current_id, res);
     res
 }
 
@@ -1036,7 +1040,7 @@ pub unsafe extern "C" fn rt_Array_new_fixed(len: i64, elem_size: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
-    let mut current_id = id;
+    let mut current_id = rt_resolve_array_id(id);
     let mut current_val = val;
     if (current_id as u64) < (HEAP_OFFSET as u64) {
         return 0;
@@ -1080,6 +1084,7 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
+    let id = rt_resolve_array_id(id);
     if (id as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
@@ -1119,6 +1124,7 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) {
+    let id = rt_resolve_array_id(id);
     if (id as u64) < (HEAP_OFFSET as u64) {
         return;
     }
@@ -1153,6 +1159,7 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
+    let id = rt_resolve_array_id(id);
     if (id as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
@@ -1198,7 +1205,7 @@ pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
-    let mut current_id = id;
+    let mut current_id = rt_resolve_array_id(id);
     if (current_id as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
@@ -1323,6 +1330,7 @@ pub unsafe extern "C" fn rt_array_splice(
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_indexOf(id: i64, val: i64) -> i64 {
+    let id = rt_resolve_array_id(id);
     if (id as u64) < (HEAP_OFFSET as u64) {
         return -1;
     }
@@ -1386,8 +1394,8 @@ pub unsafe extern "C" fn rt_Array_keys(id: i64) -> i64 {
     let body = (id - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
     let tag = (*header).type_id as i64;
-    if tag == TAG_OBJECT {
-        return rt_Map_keys(id);
+    if tag == TAG_ARRAY {
+        // ... handled elsewhere or just return empty for now
     }
     rt_Array_new_fixed(0, 8)
 }
@@ -1405,6 +1413,8 @@ pub unsafe extern "C" fn rt_closure_new(_capacity: i64) -> i64 {
     raw
 }
 
+// rt_get_map_body removed.
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_closure_from_ptr(ptr: i64) -> i64 {
     let closure = rt_closure_new(0);
@@ -1414,388 +1424,7 @@ pub unsafe extern "C" fn rt_closure_from_ptr(ptr: i64) -> i64 {
     closure
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_constructor(_this: i64) -> i64 {
-    let mut v_this = _this;
-    let mut is_existing = false;
-
-    if (v_this as u64) >= (HEAP_OFFSET as u64) {
-        let body = (v_this - HEAP_OFFSET) as *mut u8;
-        let _header = rt_get_header(body); // Use _header to avoid warning
-        is_existing = true;
-    }
-
-    if !is_existing {
-        let body_ptr = gc_allocate(40);
-        let header = rt_get_header(body_ptr);
-        (*header).type_id = TAG_OBJECT as u16;
-        (*header).length = 0;
-        v_this = (body_ptr as i64) + HEAP_OFFSET;
-    }
-
-    rt_push_root(&mut v_this);
-
-    let ptr = (v_this - HEAP_OFFSET) as *mut i64;
-    // Map class fields (_size, _capacity, _keys, _vals, _db) are at 0, 1, 2, 3, 4
-    *ptr.offset(0) = 0; // _size
-    *ptr.offset(1) = 8; // _capacity
-
-    let keys_id = rt_Array_new_fixed(8, 8);
-    let mut v_keys = keys_id;
-    rt_push_root(&mut v_keys);
-    *ptr.offset(2) = v_keys;
-
-    let vals_id = rt_Array_new_fixed(8, 8);
-    let mut v_vals = vals_id;
-    rt_push_root(&mut v_vals);
-    *ptr.offset(3) = v_vals;
-
-    *ptr.offset(4) = 0; // _db
-
-    rt_write_barrier(v_this, v_keys);
-    rt_write_barrier(v_this, v_vals);
-
-    rt_pop_roots(3); // v_this, v_keys, v_vals
-    v_this
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_merge(dest: i64, src: i64) {
-    if (dest as u64) < (HEAP_OFFSET as u64) || (src as u64) < (HEAP_OFFSET as u64) {
-        return;
-    }
-    let mut v_dest = dest;
-    let mut v_src = src;
-    rt_push_root(&mut v_dest);
-    rt_push_root(&mut v_src);
-
-    let src_ptr = (v_src - HEAP_OFFSET) as *const i64;
-    let size = *src_ptr.offset(0);
-    let keys = (*src_ptr.offset(2) - HEAP_OFFSET) as *const i64;
-    let vals = (*src_ptr.offset(3) - HEAP_OFFSET) as *const i64;
-
-    for i in 0..size {
-        let k = *keys.offset(i as isize);
-        let v = *vals.offset(i as isize);
-        rt_Map_set(v_dest, k, v);
-    }
-
-    rt_pop_roots(2);
-}
-
-unsafe fn map_key_eq(a: i64, b: i64) -> bool {
-    if a == b {
-        return true;
-    }
-    // Compare strings by value
-    if (a as u64) >= (HEAP_OFFSET as u64) && (b as u64) >= (HEAP_OFFSET as u64) {
-        let body_a = (a - HEAP_OFFSET) as *const u8;
-        let body_b = (b - HEAP_OFFSET) as *const u8;
-        let header_a = rt_get_header(body_a as *mut u8);
-        let header_b = rt_get_header(body_b as *mut u8);
-        let ta = (*header_a).type_id as i64;
-        let tb = (*header_b).type_id as i64;
-
-        // If one is a number and they aren't bitwise equal (handled above), they aren't equal
-        if ta == TAG_FLOAT || tb == TAG_FLOAT {
-            return false;
-        }
-
-        if ta == TAG_STRING && tb == TAG_STRING {
-            return rt_str_equals(a, b) != 0;
-        }
-    }
-    false
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_set(this: i64, key: i64, val: i64) {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return;
-    }
-
-    let mut v_this = this;
-    let mut v_key = key;
-    let mut v_val = val;
-    rt_push_root(&mut v_this);
-    rt_push_root(&mut v_key);
-    rt_push_root(&mut v_val);
-
-    // Clone key - these can trigger GC
-    let key_owned = rt_clone(v_key);
-    let mut v_key_owned = key_owned;
-    rt_push_root(&mut v_key_owned);
-
-    let v_val_owned = v_val; // Now we just use the original value
-
-    let body_ptr = (v_this - HEAP_OFFSET) as *mut u8;
-    let ptr = body_ptr as *mut i64;
-    let header = rt_get_header(body_ptr);
-    let size = *ptr.offset(0);
-    let cap = *ptr.offset(1);
-    let mut keys_id = *ptr.offset(2);
-    let mut vals_id = *ptr.offset(3);
-
-    if keys_id == 0 || vals_id == 0 {
-        rt_Map_constructor(v_this);
-        keys_id = *ptr.offset(2);
-        vals_id = *ptr.offset(3);
-    }
-
-    if (*header).type_id < TAG_OBJECT as u16 {
-        rt_pop_roots(4);
-        return;
-    }
-
-    let size = *ptr.offset(0);
-    let cap = *ptr.offset(1);
-    let mut keys_id = *ptr.offset(2);
-    let mut vals_id = *ptr.offset(3);
-
-    // Check if key exists
-    let keys_ptr = (keys_id - HEAP_OFFSET) as *mut i64;
-    let vals_ptr = (vals_id - HEAP_OFFSET) as *mut i64;
-    for i in 0..size {
-        if map_key_eq(*keys_ptr.offset(i as isize), v_key_owned) {
-            *vals_ptr.offset(i as isize) = v_val_owned;
-            rt_write_barrier(vals_id, v_val_owned);
-            rt_pop_roots(4);
-            return;
-        }
-    }
-
-    if size >= cap {
-        let new_cap = cap * 2;
-        let new_keys_id = rt_Array_new_fixed(new_cap, 8);
-        let mut v_new_keys = new_keys_id;
-        rt_push_root(&mut v_new_keys);
-        let new_vals_id = rt_Array_new_fixed(new_cap, 8);
-        let mut v_new_vals = new_vals_id;
-        rt_push_root(&mut v_new_vals);
-
-        let current_body = (v_this - HEAP_OFFSET) as *mut u8;
-        let current_ptr = current_body as *mut i64;
-        let old_keys = (*current_ptr.offset(2) - HEAP_OFFSET) as *const i64;
-        let old_vals = (*current_ptr.offset(3) - HEAP_OFFSET) as *const i64;
-        let dst_keys = (v_new_keys - HEAP_OFFSET) as *mut i64;
-        let dst_vals = (v_new_vals - HEAP_OFFSET) as *mut i64;
-
-        for i in 0..size {
-            let k = *old_keys.offset(i as isize);
-            let v = *old_vals.offset(i as isize);
-            *dst_keys.offset(i as isize) = k;
-            *dst_vals.offset(i as isize) = v;
-            rt_write_barrier(v_new_keys, k);
-            rt_write_barrier(v_new_vals, v);
-        }
-
-        *dst_keys.offset(size as isize) = v_key_owned;
-        *dst_vals.offset(size as isize) = v_val_owned;
-        rt_write_barrier(v_new_keys, v_key_owned);
-        rt_write_barrier(v_new_vals, v_val_owned);
-
-        let final_ptr = (v_this - HEAP_OFFSET) as *mut i64;
-        let new_size = size + 1;
-        *final_ptr.offset(0) = new_size;
-        *final_ptr.offset(1) = new_cap;
-        *final_ptr.offset(2) = v_new_keys;
-        *final_ptr.offset(3) = v_new_vals;
-
-        // Sync header lengths
-        let h_keys = rt_get_header((v_new_keys - HEAP_OFFSET) as *mut u8);
-        let h_vals = rt_get_header((v_new_vals - HEAP_OFFSET) as *mut u8);
-        (*h_keys).length = new_size as u32;
-        (*h_vals).length = new_size as u32;
-
-        rt_write_barrier(v_this, v_new_keys);
-        rt_write_barrier(v_this, v_new_vals);
-        rt_pop_roots(6); // 4 initial + 2 new
-    } else {
-        *keys_ptr.offset(size as isize) = v_key_owned;
-        *vals_ptr.offset(size as isize) = v_val_owned;
-        rt_write_barrier(keys_id, v_key_owned);
-        rt_write_barrier(vals_id, v_val_owned);
-        let new_size = size + 1;
-        *ptr.offset(0) = new_size;
-
-        // Sync header lengths
-        let h_keys = rt_get_header((keys_id - HEAP_OFFSET) as *mut u8);
-        let h_vals = rt_get_header((vals_id - HEAP_OFFSET) as *mut u8);
-        (*h_keys).length = new_size as u32;
-        (*h_vals).length = new_size as u32;
-
-        rt_pop_roots(4);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_get(this: i64, key: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return 0;
-    }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let size = *ptr.offset(0);
-    let keys_id = *ptr.offset(2);
-    let vals_id = *ptr.offset(3);
-
-    let keys = (keys_id - HEAP_OFFSET) as *const i64;
-    let vals = (vals_id - HEAP_OFFSET) as *const i64;
-    for i in 0..size {
-        if map_key_eq(*keys.offset(i as isize), key) {
-            return *vals.offset(i as isize);
-        }
-    }
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_has(this: i64, key: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return 0;
-    }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let size = *ptr;
-    let keys = (*ptr.offset(2) - HEAP_OFFSET) as *const i64;
-    for i in 0..size {
-        if map_key_eq(*keys.offset(i as isize), key) {
-            return 1;
-        }
-    }
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_delete(this: i64, key: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return 0;
-    }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let size = *ptr;
-    let keys = (*ptr.offset(2) - HEAP_OFFSET) as *mut i64;
-    let vals = (*ptr.offset(3) - HEAP_OFFSET) as *mut i64;
-    for i in 0..size {
-        if map_key_eq(*keys.offset(i as isize), key) {
-            // Shift remaining elements
-            for j in i..(size - 1) {
-                *keys.offset(j as isize) = *keys.offset((j + 1) as isize);
-                *vals.offset(j as isize) = *vals.offset((j + 1) as isize);
-            }
-            *ptr = size - 1;
-            return 1;
-        }
-    }
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_keys(this: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return rt_Array_new_fixed(0, 8);
-    }
-    let mut v_this = this;
-    let mut result = rt_Array_new_fixed(0, 8);
-    rt_push_root(&mut v_this);
-    rt_push_root(&mut result);
-
-    let ptr = (v_this - HEAP_OFFSET) as *const i64;
-    let size = *ptr;
-    let data_base = *ptr.offset(4);
-    let keys = (*ptr.offset(2) - HEAP_OFFSET) as *const i64;
-    for i in data_base..size {
-        result = rt_array_push(result, *keys.offset(i as isize));
-    }
-    rt_pop_roots(2);
-    result
-}
-
-// Map layout: [TAG_OBJECT, size, capacity, keys_ptr, values_ptr, data_base]
-// keys and values are parallel arrays of i64
-// data_base: number of method-slot entries (set before user data)
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_clear(this: i64) {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return;
-    }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let data_base = *ptr.offset(4);
-    *ptr = data_base; // Reset size to data_base (keep method slots)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_size(this: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return 0;
-    }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let total = *ptr;
-    let data_base = *ptr.offset(4);
-    total - data_base
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Set_size(this: i64) -> i64 {
-    rt_Map_size(this)
-}
-
-// Set uses the same parallel-array approach as Map, with dummy values
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Set_constructor(_this: i64) {
-    rt_Map_constructor(_this);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Set_add(this: i64, val: i64) {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return;
-    }
-    let body = (this - HEAP_OFFSET) as *mut u8;
-    let header = rt_get_header(body);
-    // If it has a TAG_OBJECT layout, use map operations
-    if (*header).type_id >= TAG_OBJECT as u16 {
-        rt_Map_set(this, val, 1); // value doesn't matter for Set
-        return;
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Set_has(this: i64, val: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return 0;
-    }
-    let body = (this - HEAP_OFFSET) as *mut u8;
-    let header = rt_get_header(body);
-    if (*header).type_id >= TAG_OBJECT as u16 {
-        return rt_Map_has(this, val);
-    }
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Set_delete(this: i64, val: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return 0;
-    }
-    let body = (this - HEAP_OFFSET) as *mut u8;
-    let header = rt_get_header(body);
-    if (*header).type_id >= TAG_OBJECT as u16 {
-        return rt_Map_delete(this, val);
-    }
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Set_values(this: i64) -> i64 {
-    if (this as u64) >= (HEAP_OFFSET as u64) {
-        let body = (this - HEAP_OFFSET) as *mut u8;
-        let header = rt_get_header(body);
-        if (*header).type_id >= TAG_OBJECT as u16 {
-            return rt_Map_keys(this); // Set stores values as keys
-        }
-    }
-    rt_Array_new_fixed(0, 8)
-}
+// Legacy Map and Set implementations removed.
 
 unsafe fn i64_to_rust_str(val: i64) -> Option<String> {
     if (val as u64) < (HEAP_OFFSET as u64) {
@@ -1810,6 +1439,8 @@ unsafe fn i64_to_rust_str(val: i64) -> Option<String> {
     let slice = std::slice::from_raw_parts(body, len as usize);
     Some(String::from_utf8_lossy(slice).to_string())
 }
+
+// Legacy Map and Set implementations removed.
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_fs_read_sync(path: i64) -> i64 {
@@ -1904,27 +1535,6 @@ pub unsafe extern "C" fn rt_fs_readdir_sync(path: i64) -> i64 {
                 }
             }
         }
-    }
-    rt_pop_roots(2);
-    result
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Map_values(this: i64) -> i64 {
-    if (this as u64) < (HEAP_OFFSET as u64) {
-        return rt_Array_new_fixed(0, 8);
-    }
-    let mut v_this = this;
-    let mut result = rt_Array_new_fixed(0, 8);
-    rt_push_root(&mut v_this);
-    rt_push_root(&mut result);
-
-    let ptr = (v_this - HEAP_OFFSET) as *const i64;
-    let size = *ptr;
-    let data_base = *ptr.offset(4);
-    let vals = (*ptr.offset(3) - HEAP_OFFSET) as *const i64;
-    for i in data_base..size {
-        result = rt_array_push(result, *vals.offset(i as isize));
     }
     rt_pop_roots(2);
     result
@@ -2536,151 +2146,55 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_connect(addr: i64) -> i64 {
-    let pid = rt_promise_new();
-    unsafe { crate::event_loop::tejx_inc_async_ops() };
-
     if let Some(address) = i64_to_rust_str(addr) {
-        let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
-        crate::event_loop::TOKIO_RT.spawn(async move {
-            match tokio::net::TcpStream::connect(&address).await {
-                Ok(stream) => {
-                    let boxed = Box::new(stream);
-                    let ptr = Box::into_raw(boxed) as i64;
-                    unsafe {
-                        let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                        let mut task_args = rt_Array_new_fixed(2, 8);
-                        rt_array_set_fast(task_args, 0, actual_pid);
-                        rt_array_set_fast(task_args, 1, ptr);
-                        crate::event_loop::tejx_enqueue_task(
-                            rt_promise_resolver_worker as i64,
-                            task_args,
-                        );
-                    }
-                }
-                Err(_) => unsafe {
-                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(2, 8);
-                    rt_array_set_fast(task_args, 0, actual_pid);
-                    rt_array_set_fast(task_args, 1, -1);
-                    crate::event_loop::tejx_enqueue_task(
-                        rt_promise_resolver_worker as i64,
-                        task_args,
-                    );
-                },
+        match std::net::TcpStream::connect(&address) {
+            Ok(stream) => {
+                let boxed = Box::new(stream);
+                Box::into_raw(boxed) as i64
             }
-            unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
-            unsafe { crate::event_loop::tejx_dec_async_ops() };
-        });
+            Err(_) => -1,
+        }
     } else {
-        rt_promise_resolve(pid, -1);
-        unsafe { crate::event_loop::tejx_dec_async_ops() };
+        -1
     }
-    pid
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_send(stream: i64, data: i64) -> i64 {
-    let pid = rt_promise_new();
     if stream <= 0 {
-        rt_promise_resolve(pid, -1);
-        return pid;
+        return -1;
     }
-
-    unsafe { crate::event_loop::tejx_inc_async_ops() };
-
     if let Some((bytes, len)) = get_str_parts(data) {
-        let slice = std::slice::from_raw_parts(bytes, len as usize).to_vec();
-        let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
-
-        crate::event_loop::TOKIO_RT.spawn(async move {
-            use tokio::io::AsyncWriteExt;
-            let s = &mut *(stream as *mut tokio::net::TcpStream);
-            match s.write_all(&slice).await {
-                Ok(_) => unsafe {
-                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(2, 8);
-                    rt_array_set_fast(task_args, 0, actual_pid);
-                    rt_array_set_fast(task_args, 1, len as i64);
-                    crate::event_loop::tejx_enqueue_task(
-                        rt_promise_resolver_worker as i64,
-                        task_args,
-                    );
-                },
-                Err(_) => unsafe {
-                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(2, 8);
-                    rt_array_set_fast(task_args, 0, actual_pid);
-                    rt_array_set_fast(task_args, 1, -1);
-                    crate::event_loop::tejx_enqueue_task(
-                        rt_promise_resolver_worker as i64,
-                        task_args,
-                    );
-                },
-            }
-            unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
-            unsafe { crate::event_loop::tejx_dec_async_ops() };
-        });
+        let slice = std::slice::from_raw_parts(bytes, len as usize);
+        let s = &mut *(stream as *mut std::net::TcpStream);
+        use std::io::Write;
+        match s.write_all(slice) {
+            Ok(_) => len as i64,
+            Err(_) => -1,
+        }
     } else {
-        rt_promise_resolve(pid, -1);
-        unsafe { crate::event_loop::tejx_dec_async_ops() };
+        -1
     }
-
-    pid
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
-    let pid = rt_promise_new();
     if stream <= 0 {
-        let empty_str = rt_string_from_c_str("\0".as_ptr() as *const _);
-        rt_promise_resolve(pid, empty_str);
-        return pid;
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
 
-    unsafe { crate::event_loop::tejx_inc_async_ops() };
     let max = if max_len <= 0 { 4096 } else { max_len as usize };
-    let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
-
-    crate::event_loop::TOKIO_RT.spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let s = &mut *(stream as *mut tokio::net::TcpStream);
-        let mut buf = vec![0u8; max];
-        match s.read(&mut buf).await {
-            Ok(n) => {
-                buf.truncate(n);
-                buf.push(0);
-                // We must yield back to Tejx thread to allocate the string safely since GC runs on main thread
-                unsafe {
-                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(3, 8);
-                    rt_array_set_fast(task_args, 0, actual_pid);
-                    let boxed = Box::new(buf);
-                    let ptr = Box::into_raw(boxed) as i64;
-                    rt_array_set_fast(task_args, 1, ptr);
-                    crate::event_loop::tejx_enqueue_task(
-                        rt_net_receive_resolver_worker as i64,
-                        task_args,
-                    );
-                }
-            }
-            Err(_) => {
-                unsafe {
-                    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(2, 8);
-                    rt_array_set_fast(task_args, 0, actual_pid);
-                    rt_array_set_fast(task_args, 1, 0); // 0 means error/empty
-                    crate::event_loop::tejx_enqueue_task(
-                        rt_net_receive_resolver_worker as i64,
-                        task_args,
-                    );
-                }
-            }
+    let s = &mut *(stream as *mut std::net::TcpStream);
+    let mut buf = vec![0u8; max];
+    use std::io::Read;
+    match s.read(&mut buf) {
+        Ok(n) => {
+            buf.truncate(n);
+            buf.push(0);
+            rt_string_from_c_str(buf.as_ptr() as *const _)
         }
-        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
-        unsafe { crate::event_loop::tejx_dec_async_ops() };
-    });
-
-    pid
+        Err(_) => rt_string_from_c_str("\0".as_ptr() as *const _),
+    }
 }
 
 #[no_mangle]
@@ -2703,18 +2217,50 @@ pub unsafe extern "C" fn rt_net_close(stream: i64) -> i64 {
     if stream <= 0 {
         return -1;
     }
-    let _ = Box::from_raw(stream as *mut tokio::net::TcpStream); // drops & closes
+    let _ = Box::from_raw(stream as *mut std::net::TcpStream); // drops & closes
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_http_request(url: i64, method: i64, body: i64) -> i64 {
+    let url_str = match i64_to_rust_str(url) {
+        Some(s) => s,
+        None => return rt_string_from_c_str("\0".as_ptr() as *const _),
+    };
+    let method_str = i64_to_rust_str(method).unwrap_or_else(|| "GET".to_string());
+    let body_str = i64_to_rust_str(body);
+
+    let client = reqwest::blocking::Client::new();
+    let mut req = match method_str.as_str() {
+        "POST" => client.post(&url_str),
+        "PUT" => client.put(&url_str),
+        "DELETE" => client.delete(&url_str),
+        _ => client.get(&url_str),
+    };
+
+    if let Some(b) = body_str {
+        if !b.is_empty() {
+            req = req.body(b);
+        }
+    }
+
+    let text = match req.send() {
+        Ok(resp) => resp.text().unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+    let c_str = std::ffi::CString::new(text).unwrap_or_default();
+    rt_string_from_c_str(c_str.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_http_request_async(url: i64, method: i64, body: i64) -> i64 {
     let pid = rt_promise_new();
 
     let url_str = match i64_to_rust_str(url) {
         Some(s) => s,
         None => {
-            rt_promise_resolve(pid, 0);
+            let empty = rt_string_from_c_str("\0".as_ptr() as *const _);
+            rt_promise_resolve(pid, empty);
             return pid;
         }
     };
@@ -2788,7 +2334,7 @@ pub unsafe extern "C" fn rt_http_request_resolver_worker(args: i64) {
     let str_ptr = rt_array_get_fast(args, 1);
 
     let res_str = if str_ptr == 0 {
-        0
+        rt_string_from_c_str("\0".as_ptr() as *const _)
     } else {
         let boxed_str = Box::from_raw(str_ptr as *mut String);
         let c_str = std::ffi::CString::new(boxed_str.as_str()).unwrap_or_default();
@@ -2845,6 +2391,7 @@ pub unsafe extern "C" fn rt_to_number_v2(v: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
+    let id = rt_resolve_array_id(id);
     if (id as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
@@ -2853,16 +2400,9 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     let len = (*header).length as i64;
     let flags = (*header).flags;
 
-    /*
-    /*
-    printf(
-        "FATAL: Array index out of bounds: %lld / %lld id=0x%llx\n\0".as_ptr() as *const _,
-        index,
-        len,
-        id,
-    );
-    */
-    */
+    if index < 0 || index >= len {
+        return 0;
+    }
 
     let elem_size = (flags & 0xFF) as i64;
     let res = if elem_size == 1 {
@@ -2899,12 +2439,10 @@ pub unsafe extern "C" fn rt_map_get_fast(this: i64, key: i64) -> i64 {
             } else {
                 return 0;
             };
-            let val = rt_array_get_fast(this, idx);
-            return val;
+            return rt_array_get_fast(this, idx);
         }
     }
-    let val = rt_Map_get(this, _key);
-    return val;
+    0 // Dynamic property access on objects via string keys no longer supported without Map
 }
 
 extern "C" {
@@ -2914,11 +2452,9 @@ extern "C" {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *mut *mut u8) -> i32 {
-    eprintln!("INITIALIZING TEJX RUNTIME!");
     rt_init_gc();
-    eprintln!("EDEN_START = {:?}", crate::gc::EDEN_START);
+    rt_register_thread();
     rt_init_types();
-    eprintln!("CALLING tejx_main()...");
     tejx_main();
     tejx_run_event_loop();
     0
@@ -2931,23 +2467,41 @@ pub unsafe extern "C" fn a_new() -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
-    let mut res = rt_array_get_fast(closure, 0);
-    if res >= HEAP_OFFSET {
-        let body = (res - HEAP_OFFSET) as *mut u8;
-        let h = rt_get_header(body);
-        if (*h).type_id == TAG_INT as u16 {
-            res = *(body as *mut i64);
+    // 1. Check if it's a GC pointer (a Closure object)
+    let body_ptr_probe = (closure - HEAP_OFFSET) as *mut u8;
+    if (closure >= HEAP_OFFSET) && rt_is_gc_ptr(body_ptr_probe) {
+        let h = rt_get_header(body_ptr_probe);
+        if (*h).type_id == TAG_FUNCTION as u16 || (*h).type_id == TAG_ARRAY as u16 {
+            // It's a standard Closure (stored as an array where elem 0 is the func ptr)
+            let mut res = rt_array_get_fast(closure, 0);
+            if res >= HEAP_OFFSET {
+                let body = (res - HEAP_OFFSET) as *mut u8;
+                let h_inner = rt_get_header(body);
+                if (*h_inner).type_id == TAG_INT as u16 {
+                    res = *(body as *mut i64);
+                }
+            }
+            return res;
         }
     }
-    if res == 0 {
-        // printf("Runtime Error: Closure function pointer is NULL\n\0".as_ptr() as *const _);
-    }
-    res
+
+    // 2. Otherwise treatment as a raw function address (as stored in Any)
+    closure
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_closure_env(closure: i64) -> i64 {
-    rt_array_get_fast(closure, 1)
+    // If this is not a GC-managed closure object, treat env as null.
+    if (closure as u64) >= (HEAP_OFFSET as u64) {
+        let body_ptr_probe = (closure - HEAP_OFFSET) as *mut u8;
+        if rt_is_gc_ptr(body_ptr_probe) {
+            let h = rt_get_header(body_ptr_probe);
+            if (*h).type_id == TAG_FUNCTION as u16 || (*h).type_id == TAG_ARRAY as u16 {
+                return rt_array_get_fast(closure, 1);
+            }
+        }
+    }
+    0
 }
 
 #[no_mangle]
@@ -2981,14 +2535,100 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
         rt_pop_roots(2);
         return 0;
     }
-    // Expected signature: fn(env: i64, arg: i64, p1: i64, p2: i64, p3: i64) -> i64
-    let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
-        std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64>(
-            raw_func_ptr as *const (),
-        );
+    let result = if env == 0 {
+        // Non-closure function: no env parameter
+        let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64) -> i64>(
+                raw_func_ptr as *const (),
+            );
+        func(a, 0, 0, 0)
+    } else {
+        // Closure: first argument is env
+        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64>(
+                raw_func_ptr as *const (),
+            );
+        func(env, a, 0, 0, 0)
+    };
 
-    let result = func(env, a, 0, 0, 0);
+    rt_pop_roots(2);
+    result
+}
 
+#[no_mangle]
+pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
+    let mut c = closure;
+    let mut a = args;
+    rt_push_root(&mut c);
+    rt_push_root(&mut a);
+
+    let mut ptr_val = 0;
+    let mut env = 0;
+
+    if (c as u64) >= (HEAP_OFFSET as u64) {
+        ptr_val = rt_get_closure_ptr(c);
+        env = rt_get_closure_env(c);
+    } else {
+        ptr_val = c;
+    }
+
+    // Ensure ptr_val is unboxed if it's a heap object
+    let mut raw_func_ptr = ptr_val;
+    if raw_func_ptr >= HEAP_OFFSET {
+        let body = (raw_func_ptr - HEAP_OFFSET) as *mut u8;
+        let h = rt_get_header(body);
+        if (*h).type_id == TAG_INT as u16 {
+            raw_func_ptr = *(body as *mut i64);
+        }
+    }
+
+    if raw_func_ptr == 0 {
+        rt_pop_roots(2);
+        return 0;
+    }
+
+    let mut a0 = 0;
+    let mut a1 = 0;
+    let mut a2 = 0;
+    let mut a3 = 0;
+
+    if a >= HEAP_OFFSET {
+        let body = (a - HEAP_OFFSET) as *mut u8;
+        if rt_is_gc_ptr(body) {
+            let h = rt_get_header(body);
+            if (*h).type_id == TAG_ARRAY as u16 {
+                let len = (*h).length as i64;
+                if len > 0 {
+                    a0 = rt_array_get_fast(a, 0);
+                }
+                if len > 1 {
+                    a1 = rt_array_get_fast(a, 1);
+                }
+                if len > 2 {
+                    a2 = rt_array_get_fast(a, 2);
+                }
+                if len > 3 {
+                    a3 = rt_array_get_fast(a, 3);
+                }
+            }
+        }
+    }
+
+    let result = if env == 0 {
+        // Non-closure function: no env parameter
+        let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64) -> i64>(
+                raw_func_ptr as *const (),
+            );
+        func(a0, a1, a2, a3)
+    } else {
+        // Closure: first argument is env
+        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64>(
+                raw_func_ptr as *const (),
+            );
+        func(env, a0, a1, a2, a3)
+    };
     rt_pop_roots(2);
     result
 }
@@ -3037,6 +2677,13 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
             unsafe extern "C" fn() -> i64,
         >(raw_func_ptr as *const ());
         func()
+    } else if env == 0 {
+        // Closure created from raw pointer: no env parameter
+        let func: unsafe extern "C" fn() -> i64 = std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn() -> i64,
+        >(raw_func_ptr as *const ());
+        func()
     } else {
         // Heap closures expect at least an env argument.
         let func: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute::<
@@ -3052,14 +2699,10 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_not(val: i64) -> i64 {
-    if val == BOOL_TRUE {
+    if rt_to_boolean(val) != 0 {
         BOOL_FALSE
-    } else if val == BOOL_FALSE {
-        BOOL_TRUE
-    } else if val == 0 {
-        BOOL_TRUE
     } else {
-        BOOL_FALSE
+        BOOL_TRUE
     }
 }
 
@@ -3156,8 +2799,8 @@ pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_Map_get_ref(this: i64, key: i64) -> i64 {
-    rt_Map_get(this, key)
+pub unsafe extern "C" fn rt_String_concat(a: i64, b: i64) -> i64 {
+    rt_str_concat_v2(a, b)
 }
 
 #[no_mangle]
@@ -3174,20 +2817,10 @@ pub unsafe extern "C" fn rt_map_set_fast(this: i64, key: i64, val: i64) {
     }
 
     let mut unboxed_val = val;
-    if (val as u64) >= (HEAP_OFFSET as u64) {
-        let v_ptr = (val - HEAP_OFFSET) as *mut i64;
-        if *v_ptr == TAG_FLOAT {
-            let f = *(v_ptr.offset(1) as *const f64);
-            if f.fract() == 0.0 && f >= 0.0 && f < (HEAP_OFFSET as f64) {
-                unboxed_val = f as i64;
-            }
-        }
-    }
-
-    if this >= HEAP_OFFSET {
+    if (this as u64) >= (HEAP_OFFSET as u64) {
         let tag = *((this - HEAP_OFFSET) as *mut i64);
         if tag == TAG_ARRAY {
-            let idx = if _key >= 0 && _key < HEAP_OFFSET {
+            let idx = if _key >= 0 && (_key as u64) < (HEAP_OFFSET as u64) {
                 _key
             } else {
                 return;
@@ -3196,24 +2829,32 @@ pub unsafe extern "C" fn rt_map_set_fast(this: i64, key: i64, val: i64) {
             return;
         }
     }
-    rt_Map_set(this, _key, unboxed_val);
+    // Dynamic property access on objects via string keys no longer supported without Map
 }
 
 // --- Atomic Operations ---
-// Atomic objects store an AtomicI64 at offset 1 (as a boxed pointer)
-
-// Redundant imports removed
+// Atomic objects store an AtomicI64 at offset 0 (as a boxed pointer)
 
 unsafe fn get_atomic(this: i64) -> Option<&'static AtomicI64> {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return None;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let atom_ptr = *ptr.offset(1) as *const AtomicI64;
+    let atom_ptr = *ptr.offset(0) as *const AtomicI64;
     if atom_ptr.is_null() {
         return None;
     }
     Some(&*atom_ptr)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Atomic_constructor(this: i64, val: i64) {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
+        return;
+    }
+    let atom = Box::new(AtomicI64::new(val));
+    *ptr.offset(0) = Box::into_raw(atom) as i64;
 }
 
 #[no_mangle]
@@ -3284,57 +2925,65 @@ pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
     // Create a simple object: [0, atom_ptr]
     let obj = malloc(16) as *mut i64;
     *obj = 0; // No tag needed
-    *obj.offset(1) = atom_ptr as i64;
+    *obj.offset(0) = atom_ptr as i64;
     let result = (obj as i64) + HEAP_OFFSET;
 
     result
 }
 
 // --- Mutex Operations ---
-// Mutex objects store a Box<std::sync::Mutex<()>> pointer at offset 1
+// Mutex objects store a Box<std::sync::Mutex<()>> pointer at offset 0
 
-// Redundant StdMutex import removed
+thread_local! {
+    static HELD_MUTEX_GUARDS: std::cell::RefCell<std::collections::HashMap<usize, std::sync::MutexGuard<'static, ()>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_constructor(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
     let mutex = Box::new(std::sync::Mutex::new(()));
-    *ptr.offset(1) = Box::into_raw(mutex) as i64;
+    *ptr.offset(0) = Box::into_raw(mutex) as i64;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_acquire(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let mutex_ptr = *ptr.offset(1) as *const std::sync::Mutex<()>;
+    let mutex_ptr = *ptr.offset(0) as *const std::sync::Mutex<()>;
     if mutex_ptr.is_null() {
         return;
     }
-    let _guard = (*mutex_ptr)
+    let guard = (*mutex_ptr)
         .lock()
         .unwrap_or_else(|e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner());
-    std::mem::forget(_guard); // Keep locked until release
+    let static_guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute::<
+        std::sync::MutexGuard<'_, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    >(guard);
+    HELD_MUTEX_GUARDS.with(|held| {
+        held.borrow_mut().insert(mutex_ptr as usize, static_guard);
+    });
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_release(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let mutex_ptr = *ptr.offset(1) as *const std::sync::Mutex<()>;
+    let mutex_ptr = *ptr.offset(0) as *const std::sync::Mutex<()>;
     if mutex_ptr.is_null() {
         return;
     }
-    // Rust's std::sync::Mutex doesn't support explicit unlock.
-    // The MutexGuard was forgotten in acquire. We cannot cleanly release it.
-    // For TejX threading, we use a simpler approach: just remember the guard.
-    // This is a known limitation; for production use, switch to parking_lot::Mutex.
+    HELD_MUTEX_GUARDS.with(|held| {
+        held.borrow_mut().remove(&(mutex_ptr as usize));
+    });
 }
 
 #[no_mangle]
@@ -3343,16 +2992,19 @@ pub unsafe extern "C" fn rt_Mutex_lock(mutex: i64) {
         return;
     }
     let mutex_ptr = mutex as *const std::sync::Mutex<()>;
-    // Blocking acquire
-    let _guard = (*mutex_ptr)
+    if mutex_ptr.is_null() {
+        return;
+    }
+    let guard = (*mutex_ptr)
         .lock()
         .unwrap_or_else(|e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner());
-    // In actual Tejx we don't hold the lock across ticks usually, or if we do,
-    // we drop the guard but keep a flag? No, std::sync::Mutex locks across block.
-    // Wait, if it locks, we need to return the guard and store it, else it unlocks instantly.
-    // For a true Mutex accessible from TS, we can't easily map Rust's RAII guard to TS without
-    // storing it. Actually, typical C-style mutex mapping:
-    // This is fundamentally broken if we just drop the guard.
+    let static_guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute::<
+        std::sync::MutexGuard<'_, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    >(guard);
+    HELD_MUTEX_GUARDS.with(|held| {
+        held.borrow_mut().insert(mutex_ptr as usize, static_guard);
+    });
 }
 
 #[no_mangle]
@@ -3367,53 +3019,64 @@ pub unsafe extern "C" fn f_any_unlock(m: i64) {
 // --- Thread Operations ---
 
 struct ThreadData {
-    cb: i64,
-    arg: i64,
     handle: Option<std::thread::JoinHandle<()>>,
+    started: bool,
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64, arg: i64) {
-    if this < HEAP_OFFSET {
+pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64, args: i64) {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
+    // field 0 = runtime data pointer (non-GC)
+    // field 1 = callback (GC-managed)
+    // field 2 = args array (GC-managed)
+    *ptr.offset(1) = cb;
+    *ptr.offset(2) = args;
     let data = Box::new(ThreadData {
-        cb,
-        arg,
         handle: None,
+        started: false,
     });
-    *ptr.offset(1) = Box::into_raw(data) as i64;
+    *ptr.offset(0) = Box::into_raw(data) as i64;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_start(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let data_ptr = *ptr.offset(1) as *mut ThreadData;
+    let data_ptr = *ptr.offset(0) as *mut ThreadData;
     if data_ptr.is_null() {
         return;
     }
-    let cb = (*data_ptr).cb;
-    let arg = (*data_ptr).arg;
+    if (*data_ptr).started {
+        return;
+    }
+    (*data_ptr).started = true;
+    let cb = *ptr.offset(1);
+    let args = *ptr.offset(2);
     let handle = std::thread::spawn(move || {
-        let func: unsafe extern "C" fn(i64) = std::mem::transmute(cb);
-        func(arg);
+        rt_register_thread();
+        let _ = rt_call_closure(cb, args);
+        rt_unregister_thread();
     });
     (*data_ptr).handle = Some(handle);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_join(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let data_ptr = *ptr.offset(1) as *mut ThreadData;
+    let data_ptr = *ptr.offset(0) as *mut ThreadData;
     if data_ptr.is_null() {
         return;
+    }
+    if !(*data_ptr).started {
+        rt_Thread_start(this);
     }
     if let Some(handle) = (*data_ptr).handle.take() {
         let _ = handle.join();
@@ -3422,94 +3085,60 @@ pub unsafe extern "C" fn rt_Thread_join(this: i64) {
 
 // --- SharedQueue Operations ---
 
-use std::collections::VecDeque;
-use std::sync::Mutex; // Import Mutex here
-
-struct SharedQueue {
-    mutex: Mutex<VecDeque<i64>>,
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_new() -> i64 {
-    let boxed = Box::new(SharedQueue {
-        mutex: Mutex::new(VecDeque::new()),
-    });
-    Box::into_raw(boxed) as i64
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_SharedQueue_constructor(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
-    let data = Box::new(SharedQueue {
-        mutex: Mutex::new(VecDeque::new()),
-    });
-    *ptr.offset(1) = Box::into_raw(data) as i64;
+    let arr = rt_array_new(0, 8);
+    *ptr.offset(0) = arr;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_enqueue(q_ptr: i64, val: i64) {
-    if q_ptr <= 0 {
+pub unsafe extern "C" fn rt_SharedQueue_enqueue(this: i64, val: i64) {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return;
     }
-    let queue = &*(q_ptr as *const SharedQueue);
-    if let Ok(mut q) = queue.mutex.lock() {
-        q.push_back(val);
-    } else if let Err(e) = queue.mutex.lock() {
-        let mut q = e.into_inner();
-        q.push_back(val);
+    let mut arr = *ptr.offset(0);
+    if arr == 0 {
+        arr = rt_array_new(0, 8);
+        *(ptr as *mut i64).offset(0) = arr;
+    }
+    let new_arr = rt_array_push(arr, val);
+    if new_arr != arr && new_arr != 0 {
+        *(ptr as *mut i64).offset(0) = new_arr;
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_dequeue(q_ptr: i64) -> i64 {
-    if q_ptr <= 0 {
+pub unsafe extern "C" fn rt_SharedQueue_dequeue(this: i64) -> i64 {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return 0;
     }
-    let queue = &*(q_ptr as *const SharedQueue);
-    if let Ok(mut q) = queue.mutex.lock() {
-        q.pop_front().unwrap_or(0)
-    } else if let Err(e) = queue.mutex.lock() {
-        let mut q = e.into_inner();
-        q.pop_front().unwrap_or(0)
-    } else {
-        0
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_SharedQueue_size(q_ptr: i64) -> i64 {
-    if q_ptr <= 0 {
+    let arr = *ptr.offset(0);
+    if arr == 0 {
         return 0;
     }
-    let queue = &*(q_ptr as *const SharedQueue);
-    if let Ok(q) = queue.mutex.lock() {
-        q.len() as i64
-    } else if let Err(e) = queue.mutex.lock() {
-        let q = e.into_inner();
-        q.len() as i64
-    } else {
-        0
+    rt_array_shift(arr)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_SharedQueue_size(this: i64) -> i64 {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
+        return 0;
     }
+    let arr = *ptr.offset(0);
+    if arr == 0 {
+        return 0;
+    }
+    rt_len(arr)
 }
 
-// --- Map Aliases ---
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_new() -> i64 {
-    rt_Map_constructor(0)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn m_new() -> i64 {
-    rt_Map_constructor(0)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn m_set(this: i64, key: i64, val: i64) {
-    rt_Map_set(this, key, val);
-}
+// Map aliases removed.
 
 // --- Condition Variables ---
 
@@ -3521,46 +3150,58 @@ struct ConditionData {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Condition_constructor(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *mut i64;
     let data = Box::new(ConditionData {
         condvar: Condvar::new(),
     });
-    *ptr.offset(1) = Box::into_raw(data) as i64;
+    *ptr.offset(0) = Box::into_raw(data) as i64;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Condition_wait(this: i64, mutex: i64) {
-    if this < HEAP_OFFSET || mutex < HEAP_OFFSET {
+    let cond_ptr = rt_obj_ptr(this) as *const i64;
+    let mutex_obj = rt_obj_ptr(mutex) as *const i64;
+    if cond_ptr.is_null() || mutex_obj.is_null() {
         return;
     }
-    let cond_ptr = (this - HEAP_OFFSET) as *const i64;
-    let cond_data = *cond_ptr.offset(1) as *const ConditionData;
-    let mutex_obj = (mutex - HEAP_OFFSET) as *const i64;
-    let mutex_ptr = *mutex_obj.offset(1) as *const std::sync::Mutex<()>;
+    let cond_data = *cond_ptr.offset(0) as *const ConditionData;
+    let mutex_ptr = *mutex_obj.offset(0) as *const std::sync::Mutex<()>;
     if cond_data.is_null() || mutex_ptr.is_null() {
         return;
     }
-    let guard = (*mutex_ptr)
-        .lock()
-        .unwrap_or_else(|e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner());
-    drop(
-        (*cond_data)
-            .condvar
-            .wait(guard)
-            .unwrap_or_else(|e| e.into_inner()),
-    );
+    let guard_opt = HELD_MUTEX_GUARDS.with(|held| held.borrow_mut().remove(&(mutex_ptr as usize)));
+    let guard = match guard_opt {
+        Some(g) => std::mem::transmute::<
+            std::sync::MutexGuard<'static, ()>,
+            std::sync::MutexGuard<'_, ()>,
+        >(g),
+        None => (*mutex_ptr).lock().unwrap_or_else(
+            |e: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| e.into_inner(),
+        ),
+    };
+    let new_guard = (*cond_data)
+        .condvar
+        .wait(guard)
+        .unwrap_or_else(|e| e.into_inner());
+    let static_guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute::<
+        std::sync::MutexGuard<'_, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    >(new_guard);
+    HELD_MUTEX_GUARDS.with(|held| {
+        held.borrow_mut().insert(mutex_ptr as usize, static_guard);
+    });
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Condition_notify(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let data = *ptr.offset(1) as *const ConditionData;
+    let data = *ptr.offset(0) as *const ConditionData;
     if data.is_null() {
         return;
     }
@@ -3569,11 +3210,11 @@ pub unsafe extern "C" fn rt_Condition_notify(this: i64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Condition_notifyAll(this: i64) {
-    if this < HEAP_OFFSET {
+    let ptr = rt_obj_ptr(this) as *const i64;
+    if ptr.is_null() {
         return;
     }
-    let ptr = (this - HEAP_OFFSET) as *const i64;
-    let data = *ptr.offset(1) as *const ConditionData;
+    let data = *ptr.offset(0) as *const ConditionData;
     if data.is_null() {
         return;
     }
@@ -3898,10 +3539,16 @@ pub unsafe extern "C" fn rt_move_member(id: i64, index: i32) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_instanceof(obj: i64, _class_name: i64) -> i64 {
-    if obj < HEAP_OFFSET {
+    let is_stack = obj >= STACK_OFFSET && obj < HEAP_OFFSET;
+    let is_heap = obj >= HEAP_OFFSET && rt_is_gc_ptr((obj - HEAP_OFFSET) as *mut u8);
+    if !is_heap && !is_stack {
         return 0;
     }
-    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let body = if is_heap {
+        (obj - HEAP_OFFSET) as *mut u8
+    } else {
+        (obj - STACK_OFFSET) as *mut u8
+    };
     let header = rt_get_header(body);
     let tag = (*header).type_id as i64;
     // Return true for objects, arrays, and user-defined classes (tag >= 12)
@@ -3912,44 +3559,70 @@ pub unsafe extern "C" fn rt_instanceof(obj: i64, _class_name: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_object_merge(obj: i64, _other: i64) -> i64 {
-    // Basic merge: return first for now or create new
-    obj
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_optional_chain(obj: i64, _op: *const u8) -> i64 {
-    if obj < HEAP_OFFSET {
-        return 0;
-    }
-    obj
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
     if a == b {
         return BOOL_TRUE;
     }
-    if a >= HEAP_OFFSET && b >= HEAP_OFFSET {
-        let ptr_a = (a - HEAP_OFFSET) as *const i64;
-        let ptr_b = (b - HEAP_OFFSET) as *const i64;
-        let tag_a = *ptr_a;
-        let tag_b = *ptr_b;
+    let a_is_gc = if a >= HEAP_OFFSET {
+        rt_is_gc_ptr((a - HEAP_OFFSET) as *mut u8)
+    } else {
+        false
+    };
+    let b_is_gc = if b >= HEAP_OFFSET {
+        rt_is_gc_ptr((b - HEAP_OFFSET) as *mut u8)
+    } else {
+        false
+    };
+
+    if a_is_gc && b_is_gc {
+        let body_a = (a - HEAP_OFFSET) as *mut u8;
+        let body_b = (b - HEAP_OFFSET) as *mut u8;
+        let header_a = rt_get_header(body_a);
+        let header_b = rt_get_header(body_b);
+        let tag_a = (*header_a).type_id as i64;
+        let tag_b = (*header_b).type_id as i64;
+
         if tag_a == TAG_STRING && tag_b == TAG_STRING {
-            if rt_str_equals(a, b) != 0 {
-                return BOOL_TRUE;
+            return if rt_str_equals(a, b) != 0 {
+                BOOL_TRUE
             } else {
-                return BOOL_FALSE;
-            }
+                BOOL_FALSE
+            };
         }
-        if tag_a == TAG_FLOAT && tag_b == TAG_FLOAT {
-            let na = *(ptr_a.offset(1) as *const f64);
-            let nb = *(ptr_b.offset(1) as *const f64);
-            return if na == nb { BOOL_TRUE } else { BOOL_FALSE };
+
+        let a_num =
+            tag_a == TAG_FLOAT || tag_a == TAG_INT || tag_a == TAG_CHAR || tag_a == TAG_BOOLEAN;
+        let b_num =
+            tag_b == TAG_FLOAT || tag_b == TAG_INT || tag_b == TAG_CHAR || tag_b == TAG_BOOLEAN;
+        if a_num && b_num {
+            return if rt_to_number(a) == rt_to_number(b) {
+                BOOL_TRUE
+            } else {
+                BOOL_FALSE
+            };
+        }
+
+        return BOOL_FALSE;
+    }
+
+    if a_is_gc {
+        let tag = (*rt_get_header((a - HEAP_OFFSET) as *mut u8)).type_id as i64;
+        if tag == TAG_STRING {
+            return BOOL_FALSE;
+        }
+    }
+    if b_is_gc {
+        let tag = (*rt_get_header((b - HEAP_OFFSET) as *mut u8)).type_id as i64;
+        if tag == TAG_STRING {
+            return BOOL_FALSE;
         }
     }
 
-    BOOL_FALSE
+    if rt_to_number(a) == rt_to_number(b) {
+        BOOL_TRUE
+    } else {
+        BOOL_FALSE
+    }
 }
 
 #[no_mangle]
@@ -3998,20 +3671,25 @@ pub unsafe extern "C" fn rt_print(val: i64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
-    let is_gc = if val >= HEAP_OFFSET {
+    let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
+    let is_heap = if val >= HEAP_OFFSET {
         rt_is_gc_ptr((val - HEAP_OFFSET) as *mut u8)
     } else {
         false
     };
 
-    if !is_gc {
+    if !is_heap && !is_stack {
         if val >= BOOL_FALSE && val <= BOOL_TRUE {
             return rt_string_from_c_str("bool\0".as_ptr() as *const _);
         } else {
             return rt_string_from_c_str("int\0".as_ptr() as *const _);
         }
     } else {
-        let body = (val - HEAP_OFFSET) as *mut u8;
+        let body = if is_heap {
+            (val - HEAP_OFFSET) as *mut u8
+        } else {
+            (val - STACK_OFFSET) as *mut u8
+        };
         let header = rt_get_header(body);
         let tag = (*header).type_id as i64;
         if tag == TAG_STRING {
@@ -4031,7 +3709,7 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
         } else if tag == TAG_CHAR {
             return rt_string_from_c_str("char\0".as_ptr() as *const _);
         } else if tag == TAG_PROMISE {
-            return rt_string_from_c_str("promise\0".as_ptr() as *const _);
+            return rt_string_from_c_str("object\0".as_ptr() as *const _);
         } else {
             return rt_string_from_c_str("object\0".as_ptr() as *const _);
         }
@@ -4072,30 +3750,6 @@ pub unsafe extern "C" fn rt_sizeof(val: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn m_new_1(k1: i64, v1: i64) -> i64 {
-    let m = rt_Map_constructor(0);
-    rt_Map_set(m, k1, v1);
-    m
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn m_new_2(k1: i64, v1: i64, k2: i64, v2: i64) -> i64 {
-    let m = rt_Map_constructor(0);
-    rt_Map_set(m, k1, v1);
-    rt_Map_set(m, k2, v2);
-    m
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn m_new_3(k1: i64, v1: i64, k2: i64, v2: i64, k3: i64, v3: i64) -> i64 {
-    let m = rt_Map_constructor(0);
-    rt_Map_set(m, k1, v1);
-    rt_Map_set(m, k2, v2);
-    rt_Map_set(m, k3, v3);
-    m
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn rt_await(p: i64) -> i64 {
     if p < HEAP_OFFSET {
         return p;
@@ -4117,12 +3771,9 @@ pub unsafe extern "C" fn rt_await(p: i64) -> i64 {
         body = (v_p - HEAP_OFFSET) as *mut i64;
 
         if !has_more && *body.offset(0) == 0 {
-            /*
-            printf(
-                "Uncaught exception: Deadlock detected! Awaited Promise will never resolve.\n\0"
-                    .as_ptr() as *const _,
+            eprintln!(
+                "Uncaught exception: Deadlock detected! Awaited Promise will never resolve."
             );
-            */
             exit(1);
         }
     }
@@ -4151,3 +3802,285 @@ pub unsafe extern "C" fn rt_to_slice(val: i64) -> Slice {
 
 pub mod event_loop;
 pub use event_loop::*;
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_box_boolean(b: i64) -> i64 {
+    let body = gc_allocate(8);
+    let header = rt_get_header(body);
+    (*header).type_id = TAG_BOOLEAN as u16;
+    (*header).length = 0;
+    *(body as *mut i64) = if b != 0 { 1 } else { 0 };
+    (body as i64) + HEAP_OFFSET
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_box_float(f: f64) -> i64 {
+    let body = gc_allocate(16);
+    let header = rt_get_header(body);
+    (*header).type_id = TAG_FLOAT as u16;
+    (*header).length = 0;
+    *(body as *mut f64) = f;
+    (body as i64) + HEAP_OFFSET
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_add(a: i64, b: i64) -> i64 {
+    let a_is_str = if a >= HEAP_OFFSET {
+        let body = (a - HEAP_OFFSET) as *mut u8;
+        rt_is_gc_ptr(body) && (*rt_get_header(body)).type_id == TAG_STRING as u16
+    } else {
+        false
+    };
+
+    let b_is_str = if b >= HEAP_OFFSET {
+        let body = (b - HEAP_OFFSET) as *mut u8;
+        rt_is_gc_ptr(body) && (*rt_get_header(body)).type_id == TAG_STRING as u16
+    } else {
+        false
+    };
+
+    if a_is_str || b_is_str {
+        return rt_str_concat_v2(a, b);
+    }
+    let res = rt_to_number(a) + rt_to_number(b);
+    res.to_bits() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_sub(a: i64, b: i64) -> i64 {
+    let res = rt_to_number(a) - rt_to_number(b);
+    res.to_bits() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_mul(a: i64, b: i64) -> i64 {
+    let res = rt_to_number(a) * rt_to_number(b);
+    res.to_bits() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_div(a: i64, b: i64) -> i64 {
+    let fb = rt_to_number(b);
+    if fb == 0.0 {
+        return 0; // Or panic
+    }
+    let res = rt_to_number(a) / fb;
+    res.to_bits() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_lt(a: i64, b: i64) -> i64 {
+    if rt_to_number(a) < rt_to_number(b) {
+        BOOL_TRUE
+    } else {
+        BOOL_FALSE
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gt(a: i64, b: i64) -> i64 {
+    if rt_to_number(a) > rt_to_number(b) {
+        BOOL_TRUE
+    } else {
+        BOOL_FALSE
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_le(a: i64, b: i64) -> i64 {
+    if rt_to_number(a) <= rt_to_number(b) {
+        BOOL_TRUE
+    } else {
+        BOOL_FALSE
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_ge(a: i64, b: i64) -> i64 {
+    if rt_to_number(a) >= rt_to_number(b) {
+        BOOL_TRUE
+    } else {
+        BOOL_FALSE
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_ne(a: i64, b: i64) -> i64 {
+    if rt_eq(a, b) == BOOL_TRUE {
+        BOOL_FALSE
+    } else {
+        BOOL_TRUE
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_object_new() -> i64 {
+    let body_ptr = gc_allocate(32);
+    let header = rt_get_header(body_ptr);
+    (*header).type_id = TAG_OBJECT as u16;
+
+    let keys = rt_Array_constructor_v2(0, 0, 8, 0);
+    let values = rt_Array_constructor_v2(0, 0, 8, 0);
+
+    *(body_ptr.offset(OBJECT_SIZE_OFFSET) as *mut i64) = 0;
+    *(body_ptr.offset(OBJECT_CAP_OFFSET) as *mut i64) = 0;
+    *(body_ptr.offset(OBJECT_KEYS_OFFSET) as *mut i64) = keys;
+    *(body_ptr.offset(OBJECT_VALUES_OFFSET) as *mut i64) = values;
+
+    (body_ptr as i64) + HEAP_OFFSET
+}
+
+unsafe fn rt_is_object(val: i64) -> bool {
+    if val < HEAP_OFFSET {
+        return false;
+    }
+    let body = (val - HEAP_OFFSET) as *mut u8;
+    rt_is_gc_ptr(body) && (*rt_get_header(body)).type_id == TAG_OBJECT as u16
+}
+
+unsafe fn rt_object_keys_array(obj: i64) -> i64 {
+    let body = (obj - HEAP_OFFSET) as *mut u8;
+    *(body.offset(OBJECT_KEYS_OFFSET) as *const i64)
+}
+
+unsafe fn rt_object_values_array(obj: i64) -> i64 {
+    let body = (obj - HEAP_OFFSET) as *mut u8;
+    *(body.offset(OBJECT_VALUES_OFFSET) as *const i64)
+}
+
+unsafe fn rt_object_set_arrays(obj: i64, keys: i64, values: i64) {
+    let body = (obj - HEAP_OFFSET) as *mut u8;
+    *(body.offset(OBJECT_KEYS_OFFSET) as *mut i64) = keys;
+    *(body.offset(OBJECT_VALUES_OFFSET) as *mut i64) = values;
+}
+
+unsafe fn rt_object_refresh_meta(obj: i64) {
+    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let keys = rt_object_keys_array(obj);
+    let len = rt_len(keys);
+    *(body.offset(OBJECT_SIZE_OFFSET) as *mut i64) = len;
+    *(body.offset(OBJECT_CAP_OFFSET) as *mut i64) = len;
+}
+
+unsafe fn rt_object_find_key_index(obj: i64, key: i64) -> i64 {
+    let keys = rt_object_keys_array(obj);
+    let len = rt_len(keys);
+    let mut i = 0;
+    while i < len {
+        let existing = rt_array_get_fast(keys, i);
+        if existing == key || rt_str_equals(existing, key) != 0 {
+            return i;
+        }
+        i += 1;
+    }
+    -1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_property(obj: i64, key: i64) -> i64 {
+    if !rt_is_object(obj) {
+        return 0;
+    }
+    let idx = rt_object_find_key_index(obj, key);
+    if idx < 0 {
+        return 0;
+    }
+    rt_array_get_fast(rt_object_values_array(obj), idx)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
+    if !rt_is_object(obj) {
+        return;
+    }
+    let mut keys = rt_object_keys_array(obj);
+    let mut values = rt_object_values_array(obj);
+    let idx = rt_object_find_key_index(obj, key);
+    if idx >= 0 {
+        rt_array_set_fast(values, idx, val);
+    } else {
+        keys = rt_array_push(keys, key);
+        values = rt_array_push(values, val);
+        rt_object_set_arrays(obj, keys, values);
+        rt_object_refresh_meta(obj);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Object_keys(obj: i64) -> i64 {
+    if !rt_is_object(obj) {
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+    }
+    rt_object_keys_array(obj)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_obj_keys(obj: i64) -> i64 {
+    rt_Object_keys(obj)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Object_values(obj: i64) -> i64 {
+    if !rt_is_object(obj) {
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+    }
+    rt_object_values_array(obj)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Object_entries(obj: i64) -> i64 {
+    if !rt_is_object(obj) {
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+    }
+    let keys = rt_object_keys_array(obj);
+    let values = rt_object_values_array(obj);
+    let len = rt_len(keys);
+    let result = rt_Array_constructor_v2(0, len, 8, ARRAY_FLAG_FIXED);
+    let mut i = 0;
+    while i < len {
+        let pair = rt_Array_constructor_v2(0, 2, 8, ARRAY_FLAG_FIXED);
+        rt_array_set_fast(pair, 0, rt_array_get_fast(keys, i));
+        rt_array_set_fast(pair, 1, rt_array_get_fast(values, i));
+        rt_array_set_fast(result, i, pair);
+        i += 1;
+    }
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Object_assign(target: i64, source: i64) -> i64 {
+    if !rt_is_object(target) || !rt_is_object(source) {
+        return target;
+    }
+    let keys = rt_object_keys_array(source);
+    let values = rt_object_values_array(source);
+    let len = rt_len(keys);
+    let mut i = 0;
+    while i < len {
+        rt_set_property(
+            target,
+            rt_array_get_fast(keys, i),
+            rt_array_get_fast(values, i),
+        );
+        i += 1;
+    }
+    target
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Object_freeze(obj: i64) -> i64 {
+    obj
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_object_merge(obj: i64, other: i64) -> i64 {
+    rt_Object_assign(obj, other)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_optional_chain(obj: i64, _op: *const u8) -> i64 {
+    if obj < HEAP_OFFSET {
+        return 0;
+    }
+    obj
+}

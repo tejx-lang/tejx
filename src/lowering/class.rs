@@ -34,9 +34,15 @@ impl Lowering {
     pub(crate) fn register_class(&self, class_decl: &ClassDeclaration) {
         if let Some(cons) = &class_decl._constructor {
             let mangled = format!("f_{}_constructor", class_decl.name);
+            let param_types = cons
+                .params
+                .iter()
+                .map(|p| self.resolve_alias_type(&TejxType::from_node(&p.type_name)))
+                .collect::<Vec<_>>();
+            let ret_type = self.resolve_alias_type(&TejxType::from_node(&cons.return_type));
             self.user_functions.borrow_mut().insert(
                 mangled.clone(),
-                TejxType::from_node(&cons.return_type),
+                TejxType::Function(param_types, Box::new(ret_type)),
             );
             self.user_function_args
                 .borrow_mut()
@@ -52,7 +58,7 @@ impl Lowering {
 
             self.user_functions.borrow_mut().insert(
                 mangled.clone(),
-                TejxType::from_node(&method.func.return_type),
+                self.resolve_alias_type(&TejxType::from_node(&method.func.return_type)),
             );
             self.user_function_args
                 .borrow_mut()
@@ -79,7 +85,7 @@ impl Lowering {
         let mut i_fields = Vec::new();
         let mut s_fields = Vec::new();
         for member in &class_decl._members {
-            let ty = TejxType::from_node(&member._type_name);
+            let ty = self.resolve_alias_type(&TejxType::from_node(&member._type_name));
             let init = member._initializer.as_ref().map(|e| *e.clone()).unwrap_or(
                 Expression::NumberLiteral {
                     value: 0.0,
@@ -103,9 +109,15 @@ impl Lowering {
 
         if let Some(constructor) = &class_decl._constructor {
             let mangled = format!("{}_{}", class_decl.name, constructor.name);
+            let param_types = constructor
+                .params
+                .iter()
+                .map(|p| self.resolve_alias_type(&TejxType::from_node(&p.type_name)))
+                .collect::<Vec<_>>();
+            let ret_type = self.resolve_alias_type(&TejxType::from_node(&constructor.return_type));
             self.user_functions.borrow_mut().insert(
                 mangled.clone(),
-                TejxType::from_node(&constructor.return_type),
+                TejxType::Function(param_types, Box::new(ret_type)),
             );
             self.user_function_args
                 .borrow_mut()
@@ -117,7 +129,7 @@ impl Lowering {
             let mangled = format!("{}_get_{}", class_decl.name, getter._name);
             self.user_functions.borrow_mut().insert(
                 mangled.clone(),
-                TejxType::from_node(&getter._return_type),
+                self.resolve_alias_type(&TejxType::from_node(&getter._return_type)),
             );
             self.user_function_args.borrow_mut().insert(mangled, 1); // Getters take 'this'
             getters.insert(getter._name.clone());
@@ -187,8 +199,6 @@ impl Lowering {
         if let Some(cons) = &class_decl._constructor {
             all_methods.push((cons, false));
         } else {
-            // Check if we need to generate a default constructor
-            // Always generate one to avoid linker errors in mir_lowering
             all_methods.push((&default_cons, false));
         }
 
@@ -201,10 +211,14 @@ impl Lowering {
                 ));
             }
             for p in &func_decl.params {
-                params.push((p.name.clone(), TejxType::from_node(&p.type_name)));
+                params.push((
+                    p.name.clone(),
+                    self.resolve_alias_type(&TejxType::from_node(&p.type_name)),
+                ));
             }
             let name = format!("f_{}_{}", class_decl.name, func_decl.name);
-            let return_type = TejxType::from_node(&func_decl.return_type);
+            let return_type =
+                self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params
@@ -224,291 +238,81 @@ impl Lowering {
                 ref mut statements,
             } = hir_body
             {
-                // Inject method attachments for constructor
                 if func_decl.name == "constructor" {
+                    let mut insert_pos = 0;
+                    // Find position after super() call if present
+                    if let Some(parent_name) = &*self.parent_class.borrow() {
+                        let base_parent = parent_name.split('<').next().unwrap_or(parent_name);
+                        let super_callee = format!("f_{}_constructor", base_parent);
+                        for (i, stmt) in statements.iter().enumerate() {
+                            if let HIRStatement::ExpressionStmt { expr, .. } = stmt {
+                                if let HIRExpression::Call { callee, .. } = expr {
+                                    if callee == &super_callee {
+                                        insert_pos = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let mangled_this = self
                         .lookup("this")
                         .map(|(n, _)| n)
                         .unwrap_or("this".to_string());
-                    // Instance fields
-                    let i_fields_borrow = self.class_instance_fields.borrow();
-                    if let Some(i_list) = i_fields_borrow.get(&class_decl.name) {
-                        for (f_name, f_ty, f_init) in i_list {
+                    
+                    let mut injections = Vec::<HIRStatement>::new();
+ 
+                     // 3. Instance fields initialization
+                     let i_fields_borrow = self.class_instance_fields.borrow();
+                     if let Some(i_list) = i_fields_borrow.get(&class_decl.name) {
+                         for (f_name, f_ty, f_init) in i_list {
+                            let prev_expected = self.current_expected_type.borrow_mut().take();
+                            *self.current_expected_type.borrow_mut() = Some(f_ty.clone());
                             let hir_init = self.lower_expression(f_init);
-                            // Insert before other logic
-                            statements.insert(
-                                0,
-                                HIRStatement::ExpressionStmt {
-                                    line: line,
-                                    expr: HIRExpression::Assignment {
-                                        line: line,
-                                        target: Box::new(HIRExpression::MemberAccess {
-                                            line: line,
-                                            target: Box::new(HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_this.clone(),
-                                                ty: TejxType::Class(
-                                                    class_decl.name.clone(),
-                                                    vec![],
-                                                ),
-                                            }),
-                                            member: f_name.clone(),
-                                            ty: f_ty.clone(),
-                                        }),
-                                        value: Box::new(hir_init),
-                                        ty: f_ty.clone(),
-                                    },
-                                },
-                            );
-                        }
-                    }
+                            *self.current_expected_type.borrow_mut() = prev_expected;
+                            injections.push(HIRStatement::ExpressionStmt {
+                                 line: line,
+                                 expr: HIRExpression::Assignment {
+                                     line: line,
+                                     target: Box::new(HIRExpression::MemberAccess {
+                                         line: line,
+                                         target: Box::new(HIRExpression::Variable {
+                                             line: line,
+                                             name: mangled_this.clone(),
+                                             ty: TejxType::Class(class_decl.name.clone(), vec![]),
+                                         }),
+                                         member: f_name.clone(),
+                                         ty: f_ty.clone(),
+                                     }),
+                                     value: Box::new(hir_init),
+                                     ty: f_ty.clone(),
+                                 },
+                             });
+                         }
+                     }
+ 
+                     // 5. Getters/Setters: Modern compiler doesn't attach them to instances
+                     // (They should be resolved via VTable or static dispatch in CodeGen)
 
-                    let methods_borrow = self.class_methods.borrow();
-                    if let Some(m_list) = methods_borrow.get(&class_decl.name) {
-                        for m_name in m_list {
-                            let mangled_func = format!("f_{}_{}", class_decl.name, m_name);
-                            // Insert after debug print
-                            statements.insert(
-                                0,
-                                HIRStatement::ExpressionStmt {
-                                    line: line,
-                                    expr: HIRExpression::Call {
-                                        line: line,
-                                        callee: "m_set".to_string(),
-                                        args: vec![
-                                            HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_this.clone(),
-                                                ty: TejxType::Class(
-                                                    class_decl.name.clone(),
-                                                    vec![],
-                                                ),
-                                            },
-                                            HIRExpression::Literal {
-                                                line: line,
-                                                value: m_name.clone(),
-                                                ty: TejxType::String,
-                                            },
-                                            HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_func,
-                                                ty: TejxType::Int64,
-                                            },
-                                        ],
-                                        ty: TejxType::Void,
-                                    },
-                                },
-                            );
-                        }
-                    }
-
-                    // Getters
-                    let getters_borrow = self.class_getters.borrow();
-                    if let Some(g_list) = getters_borrow.get(&class_decl.name) {
-                        for g_name in g_list {
-                            let mangled_func = format!("f_{}_get_{}", class_decl.name, g_name);
-                            statements.insert(
-                                0,
-                                HIRStatement::ExpressionStmt {
-                                    line: line,
-                                    expr: HIRExpression::Call {
-                                        line: line,
-                                        callee: "m_set".to_string(),
-                                        args: vec![
-                                            HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_this.clone(),
-                                                ty: TejxType::Class(
-                                                    class_decl.name.clone(),
-                                                    vec![],
-                                                ),
-                                            },
-                                            HIRExpression::Literal {
-                                                line: line,
-                                                value: format!("get_{}", g_name),
-                                                ty: TejxType::String,
-                                            },
-                                            HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_func,
-                                                ty: TejxType::Int64,
-                                            },
-                                        ],
-                                        ty: TejxType::Void,
-                                    },
-                                },
-                            );
-                        }
-                    }
-
-                    // Setters
-                    let setters_borrow = self.class_setters.borrow();
-                    if let Some(s_list) = setters_borrow.get(&class_decl.name) {
-                        for s_name in s_list {
-                            let mangled_func = format!("f_{}_set_{}", class_decl.name, s_name);
-                            statements.insert(
-                                0,
-                                HIRStatement::ExpressionStmt {
-                                    line: line,
-                                    expr: HIRExpression::Call {
-                                        line: line,
-                                        callee: "m_set".to_string(),
-                                        args: vec![
-                                            HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_this.clone(),
-                                                ty: TejxType::Class(
-                                                    class_decl.name.clone(),
-                                                    vec![],
-                                                ),
-                                            },
-                                            HIRExpression::Literal {
-                                                line: line,
-                                                value: format!("set_{}", s_name),
-                                                ty: TejxType::String,
-                                            },
-                                            HIRExpression::Variable {
-                                                line: line,
-                                                name: mangled_func,
-                                                ty: TejxType::Int64,
-                                            },
-                                        ],
-                                        ty: TejxType::Void,
-                                    },
-                                },
-                            );
-                        }
-                    }
-
-                    // Inject class metadata for instanceof support
-                    // Set __class__ = "ClassName" on this
-                    statements.insert(
-                        0,
-                        HIRStatement::ExpressionStmt {
-                            line: line,
-                            expr: HIRExpression::Call {
-                                line: line,
-                                callee: "m_set".to_string(),
-                                args: vec![
-                                    HIRExpression::Variable {
-                                        line: line,
-                                        name: mangled_this.clone(),
-                                        ty: TejxType::Class(class_decl.name.clone(), vec![]),
-                                    },
-                                    HIRExpression::Literal {
-                                        line: line,
-                                        value: "__class__".to_string(),
-                                        ty: TejxType::String,
-                                    },
-                                    HIRExpression::Literal {
-                                        line: line,
-                                        value: class_decl.name.clone(),
-                                        ty: TejxType::String,
-                                    },
-                                ],
-                                ty: TejxType::Void,
-                            },
-                        },
-                    );
-
-                    // Set __parents__ = "Parent1,Parent2,..." for inheritance chain
-                    if !class_decl._parent_name.is_empty() {
-                        // Build chain: walk up parent hierarchy
-                        let mut parents = Vec::new();
-                        let mut current_parent = class_decl._parent_name.clone();
-                        parents.push(current_parent.clone());
-                        // Also add transitive parents if known
-                        let class_parents_borrow = self.class_parents.borrow();
-                        loop {
-                            if let Some(gp) = class_parents_borrow.get(&current_parent) {
-                                if !gp.is_empty() {
-                                    parents.push(gp.clone());
-                                    current_parent = gp.clone();
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        drop(class_parents_borrow);
-                        let parents_str = parents.join(",");
-                        statements.insert(
-                            0,
-                            HIRStatement::ExpressionStmt {
-                                line: line,
-                                expr: HIRExpression::Call {
-                                    line: line,
-                                    callee: "m_set".to_string(),
-                                    args: vec![
-                                        HIRExpression::Variable {
-                                            line: line,
-                                            name: mangled_this,
-                                            ty: TejxType::Class(class_decl.name.clone(), vec![]),
-                                        },
-                                        HIRExpression::Literal {
-                                            line: line,
-                                            value: "__parents__".to_string(),
-                                            ty: TejxType::String,
-                                        },
-                                        HIRExpression::Literal {
-                                            line: line,
-                                            value: parents_str,
-                                            ty: TejxType::String,
-                                        },
-                                    ],
-                                    ty: TejxType::Void,
-                                },
-                            },
-                        );
+                    // Splice injections into statements at insert_pos
+                    for (i, injection) in injections.into_iter().enumerate() {
+                        statements.insert(insert_pos + i, injection);
                     }
                 }
             }
 
             if func_decl._is_async {
-                // Async method lowering
-                // 1. Generate unique worker name: f_ClassName_MethodName_worker
-                let worker_name = format!("{}_worker", name);
-
-                // 2. Create state struct name
-                let _state_struct_name = format!("State_{}", worker_name);
-
-                // 3. Prepare params for worker (needs 'this' + original params)
-                // The wrapper method 'name' has (this, p1, p2...)
-                // The worker needs a state object that contains these.
-
-                // Let's use the existing lower_async_function logic but we need to trick it or adapt it
-                // to handle 'this' which is implicit in AST but explicit in HIR function params.
-                // The easiest way is to treat 'this' as just another parameter for the async transformation.
-
-                // We need to define 'this' in scope before lowering body so it's captured in state.
-                // Wait, we already called define for all params (including 'this') above.
-
-                let mangled_name = if name.starts_with("f_") {
-                    name.to_string()
-                } else {
-                    format!("f_{}_{}", class_decl.name, name)
-                };
-
+                let mangled_name = format!("f_{}_{}", class_decl.name, func_decl.name);
                 let (worker_func, _state_struct, wrapper_body) = self.lower_async_function_impl(
                     &mangled_name,
                     &mangled_params,
                     &func_decl.return_type.to_string(),
                     &func_decl.body,
                 );
-
                 self._exit_scope();
-
-                // Register the worker and state struct (which are global/top-level in HIR)
-                // But wait, lower_async_function_impl returns HIRStatement::Function for worker
-                // and HIRStatement::Struct for state.
-                // We should push them to 'functions' (which ends up in global HIR functions).
-
-                // The wrapper body returned is what goes into the method body.
-
                 functions.push(worker_func);
                 functions.push(_state_struct);
-
                 functions.push(HIRStatement::Function {
                     async_params: None,
                     line: line,
@@ -519,22 +323,8 @@ impl Lowering {
                     is_extern: false,
                 });
             } else {
-                // Sync method
-                // hir_body was already lowered above for constructor, let's ensure it's lowered for others too
-                // Actually, if it's not a constructor, it was lowered at line 830.
-
                 self._exit_scope();
-
-                let mangled_name = if name.starts_with("f_") {
-                    name.to_string()
-                } else {
-                    format!(
-                        "f_{}_{}",
-                        class_decl.name.replace("[", "_").replace("]", "_"),
-                        name
-                    )
-                };
-
+                let mangled_name = format!("f_{}_{}", class_decl.name.replace("[", "_").replace("]", "_"), func_decl.name);
                 functions.push(HIRStatement::Function {
                     async_params: None,
                     line: line,
@@ -549,77 +339,50 @@ impl Lowering {
 
         // Lower getters
         for getter in &class_decl._getters {
-            let mut params: Vec<(String, TejxType)> = Vec::new();
-            params.push((
-                "this".to_string(),
-                TejxType::Class(class_decl.name.clone(), vec![]),
-            ));
-
+            let mut params = vec![("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![]))];
             let name = format!("f_{}_get_{}", class_decl.name, getter._name);
-            let return_type = TejxType::from_node(&getter._return_type);
-
+            let return_type =
+                self.resolve_alias_type(&TejxType::from_node(&getter._return_type));
             self.enter_scope();
-            let mangled_params: Vec<(String, TejxType)> = params
-                .iter()
-                .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
-                .collect();
-
-            let hir_body = self
-                .lower_statement(&getter._body)
-                .unwrap_or(HIRStatement::Block {
-                    line: line,
-                    statements: vec![],
-                });
-
+            let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
+            let hir_body = self.lower_statement(&getter._body).unwrap_or(HIRStatement::Block { line: line, statements: vec![] });
             self._exit_scope();
-            functions.push(HIRStatement::Function {
-                async_params: None,
-                line: line,
-                name,
-                params: mangled_params,
-                _return_type: return_type,
-                body: Box::new(hir_body),
-                is_extern: false,
-            });
+            functions.push(HIRStatement::Function { async_params: None, line: line, name, params: mangled_params, _return_type: return_type, body: Box::new(hir_body), is_extern: false });
         }
 
         // Lower setters
         for setter in &class_decl._setters {
-            let mut params: Vec<(String, TejxType)> = Vec::new();
-            params.push((
-                "this".to_string(),
-                TejxType::Class(class_decl.name.clone(), vec![]),
-            ));
-            params.push((
-                setter._param_name.clone(),
-                TejxType::from_node(&setter._param_type),
-            ));
-
+            let mut params = vec![
+                ("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![])),
+                (
+                    setter._param_name.clone(),
+                    self.resolve_alias_type(&TejxType::from_node(&setter._param_type)),
+                )
+            ];
             let name = format!("f_{}_set_{}", class_decl.name, setter._name);
-
             self.enter_scope();
-            let mangled_params: Vec<(String, TejxType)> = params
-                .iter()
-                .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
-                .collect();
-
-            let hir_body = self
-                .lower_statement(&setter._body)
-                .unwrap_or(HIRStatement::Block {
-                    line: line,
-                    statements: vec![],
-                });
-
+            let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
+            let hir_body = self.lower_statement(&setter._body).unwrap_or(HIRStatement::Block { line: line, statements: vec![] });
             self._exit_scope();
-            functions.push(HIRStatement::Function {
-                async_params: None,
-                line: line,
-                name,
-                params: mangled_params,
-                _return_type: TejxType::Void,
-                body: Box::new(hir_body),
-                is_extern: false,
-            });
+            functions.push(HIRStatement::Function { async_params: None, line: line, name, params: mangled_params, _return_type: TejxType::Void, body: Box::new(hir_body), is_extern: false });
+        }
+
+        // Lower static fields
+        let s_fields_borrow = self.class_static_fields.borrow();
+        if let Some(s_list) = s_fields_borrow.get(&class_decl.name) {
+            for (f_name, f_ty, f_init) in s_list {
+                let hir_init = self.lower_expression(f_init);
+                let mangled_name = format!("g_{}_{}", class_decl.name, f_name);
+                main_stmts.push(HIRStatement::ExpressionStmt {
+                    line: line,
+                    expr: HIRExpression::Assignment {
+                        line: line,
+                        target: Box::new(HIRExpression::Variable { line: line, name: mangled_name, ty: f_ty.clone() }),
+                        value: Box::new(hir_init),
+                        ty: TejxType::Int64,
+                    },
+                });
+            }
         }
 
         // Lower static fields into global assignments
@@ -663,7 +426,10 @@ impl Lowering {
             ));
 
             for p in &func_decl.params {
-                params.push((p.name.clone(), TejxType::from_node(&p.type_name)));
+                params.push((
+                    p.name.clone(),
+                    self.resolve_alias_type(&TejxType::from_node(&p.type_name)),
+                ));
             }
 
             let name = if func_decl.name.starts_with("f_") {
@@ -679,7 +445,8 @@ impl Lowering {
                     func_decl.name
                 )
             };
-            let return_type = TejxType::from_node(&func_decl.return_type);
+            let return_type =
+                self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params

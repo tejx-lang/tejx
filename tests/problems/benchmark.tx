@@ -168,9 +168,9 @@ function bench_strings(): float {
     let s = "";
     for (let i = 0; i < 50000000; i++) {
         s += "a";
-        if (s.length > 100) s = ""; 
+        if (s.length() > 100) s = ""; 
     }
-    return s.length;
+    return s.length();
 }
 
 // 11. Bitwise Flipping (ALU Logic)
@@ -252,6 +252,7 @@ function bench_bubble(): float {
                 }
             }
         }
+        if (k == 999999) first = arr[0];
     }
     return first * 1.0 + 0.1;
 }
@@ -317,7 +318,7 @@ function bench_float_to_int(): float {
 // --- Benchmark Runner ---
 function run(name: string, fn: () => float): void {
     let s = now();
-    let res = fn();
+    let res: float = fn();
     let e = now();
     print(name , " -> [" , res , "] : " , (e - s) , " ms");
 }

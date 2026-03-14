@@ -100,8 +100,7 @@ impl CodeGen {
                     callee, args, dst, ..
                 } = inst
                 {
-                    if callee == "rt_Map_constructor"
-                        || callee == "f_Array_constructor"
+                    if callee == "f_Array_constructor"
                         || callee == "rt_Array_new_fixed"
                         || callee == "f_Function_constructor"
                     {
@@ -268,7 +267,7 @@ impl CodeGen {
             let mut current_offset = 0;
             for (_name, ty) in fields {
                 current_offset = Self::get_aligned_offset(current_offset, ty);
-                if matches!(ty, TejxType::Class(_, _) | TejxType::String) {
+                if Self::is_gc_managed(ty) {
                     ptr_offsets.push(current_offset);
                 }
                 current_offset += ty.size();
@@ -339,12 +338,17 @@ impl CodeGen {
         );
 
         // Pre-declare commonly used runtime functions
-        self.declare_runtime_fn("rt_class_new", "i64 @rt_class_new(i8*)");
+        self.declare_runtime_fn(
+            "rt_class_new",
+            "i64 @rt_class_new(i32, i64, i64, i64*, i64) nounwind",
+        );
+        self.declare_runtime_fn("rt_object_new", "i64 @rt_object_new()");
         self.declare_runtime_fn("rt_len", "i64 @rt_len(i64)");
         self.declare_runtime_fn("rt_typeof", "i64 @rt_typeof(i64)");
         self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
         self.declare_runtime_fn("rt_str_concat_v2", "i64 @rt_str_concat_v2(i64, i64)");
-        self.declare_runtime_fn("rt_str_equals", "i64 @rt_str_equals(i64, i64)");
+        self.declare_runtime_fn("rt_String_concat", "i64 @rt_String_concat(i64, i64)");
+        self.declare_runtime_fn("rt_str_equals", "i32 @rt_str_equals(i64, i64)");
         self.declare_runtime_fn("rt_box_int", "i64 @rt_box_int(i64)");
         self.declare_runtime_fn("rt_box_number", "i64 @rt_box_number(double)");
         self.declare_runtime_fn("rt_unbox_int", "i64 @rt_unbox_int(i64)");
@@ -356,8 +360,11 @@ impl CodeGen {
             "rt_array_set_fast",
             "void @rt_array_set_fast(i64, i64, i64)",
         );
-        self.declare_runtime_fn("rt_object_get", "i64 @rt_object_get(i64, i8*)");
-        self.declare_runtime_fn("rt_object_set", "void @rt_object_set(i64, i8*, i64)");
+        self.declare_runtime_fn("rt_Object_keys", "i64 @rt_Object_keys(i64)");
+        self.declare_runtime_fn("rt_Object_values", "i64 @rt_Object_values(i64)");
+        self.declare_runtime_fn("rt_Object_entries", "i64 @rt_Object_entries(i64)");
+        self.declare_runtime_fn("rt_Object_assign", "i64 @rt_Object_assign(i64, i64)");
+        self.declare_runtime_fn("rt_Object_freeze", "i64 @rt_Object_freeze(i64)");
         self.declare_runtime_fn("rt_is_nullish", "i64 @rt_is_nullish(i64)");
         self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
         self.declare_runtime_fn("rt_panic", "void @rt_panic(i64)");
@@ -435,6 +442,10 @@ impl CodeGen {
         self.current_env = None;
         self.current_arena = None;
         self.num_roots = 0;
+        self.volatile_locals = func
+            .blocks
+            .iter()
+            .any(|b| b.exception_handler.is_some());
 
         let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
 
@@ -537,14 +548,14 @@ impl CodeGen {
         // 2. Deterministic IR: Collect and sort ALL variables that need an alloca (params + locals)
         let mut sorted_alloca_vars: Vec<String> = Vec::new();
         for p in &func.params {
-            if !self.is_captured(p) {
-                sorted_alloca_vars.push(p.clone());
-            }
+            // Parameters ALWAYS get an alloca in their owning function.
+            // If they are captured, they are COPIED to the environment after being stored in the alloca.
+            sorted_alloca_vars.push(p.clone());
         }
         for name in &self.local_vars {
-            if !self.is_captured(name) {
-                sorted_alloca_vars.push(name.clone());
-            }
+            // Local variables also get an alloca even if captured.
+            // This simplifies the codegen as they can be treated as normal locals.
+            sorted_alloca_vars.push(name.clone());
         }
         sorted_alloca_vars.sort();
         sorted_alloca_vars.dedup();
@@ -557,7 +568,7 @@ impl CodeGen {
             let llvm_ty = if matches!(ty, TejxType::Void) {
                 "i64"
             } else {
-                Self::get_llvm_type(ty)
+                Self::get_llvm_storage_type(ty)
             };
             let reg_name = format!("%{}_ptr", name.replace('$', "_"));
             self.alloca_buffer
@@ -572,10 +583,12 @@ impl CodeGen {
 
         if func.name.starts_with("lambda_") {
             if !func.params.is_empty() {
-                // Create a NEW environment map for this lambda call
-                // and COPY all keys from the passed environment (%__env)
-                self.declare_runtime_fn("rt_map_new", "i64 @rt_map_new(i64) nounwind");
-                self.declare_runtime_fn("rt_Map_merge", "void @rt_Map_merge(i64, i64) nounwind");
+                // Create a NEW environment array for this lambda call
+                // and COPY all values from the passed environment (%__env)
+                self.declare_runtime_fn(
+                    "rt_Array_constructor_v2",
+                    "i64 @rt_Array_constructor_v2(i64, i64, i64, i64) nounwind",
+                );
 
                 self.temp_counter += 1;
                 let env_alloca = format!("%env_alloca_{}", self.temp_counter);
@@ -585,20 +598,20 @@ impl CodeGen {
                 let new_env = format!("%new_env_{}", self.temp_counter);
                 let passed_env = format!("%{}", func.params[0]);
 
-                self.emit_line(&format!("{} = call i64 @rt_map_new(i64 0)", new_env));
+                // rt_Array_constructor_v2(this, size_or_arr, elem_size, flags)
+                // If passed_env is an array, it clones it.
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_Array_constructor_v2(i64 0, i64 {}, i64 8, i64 0)",
+                    new_env, passed_env
+                ));
                 self.emit_line(&format!("store i64 {}, i64* {}", new_env, env_alloca));
                 self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
                 self.num_roots += 1;
 
-                self.emit_line(&format!(
-                    "call void @rt_Map_merge(i64 {}, i64 {})",
-                    new_env, passed_env
-                ));
-
                 self.current_env = Some(new_env);
             }
         } else if has_captures {
-            self.declare_runtime_fn("rt_map_new", "i64 @rt_map_new(i64) nounwind");
+            self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");
 
             self.temp_counter += 1;
             let env_alloca = format!("%env_alloca_{}", self.temp_counter);
@@ -606,7 +619,8 @@ impl CodeGen {
                 .push_str(&format!("  {} = alloca i64\n", env_alloca));
 
             let env_reg = format!("%env_id{}", self.temp_counter);
-            self.emit_line(&format!("{} = call i64 @rt_map_new(i64 0)", env_reg));
+            let cap_count = self.captured_vars.len();
+            self.emit_line(&format!("{} = call i64 @rt_array_new(i64 {}, i64 8)", env_reg, cap_count));
             self.emit_line(&format!("store i64 {}, i64* {}", env_reg, env_alloca));
             self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
             self.num_roots += 1;
@@ -616,7 +630,8 @@ impl CodeGen {
         // 4. Store parameters into their allocas
         for p in &func.params {
             if let Some(reg_name) = self.value_map.get(p).cloned() {
-                self.store_ptr(&reg_name, &format!("%{}", p));
+                let ty = func.variables.get(p).unwrap_or(&TejxType::Void);
+                self.store_ptr(&reg_name, &format!("%{}", p), Some(ty));
             }
         }
 
@@ -624,13 +639,11 @@ impl CodeGen {
         let mut sorted_managed_vars: Vec<String> = sorted_alloca_vars
             .iter()
             .filter(|name| {
-                let ty = func.variables.get(*name).unwrap_or_else(|| {
-                    panic!(
-                        "Variable '{}' not found in variables map of function '{}'",
-                        name, func.name
-                    );
-                });
-                Self::is_gc_managed(ty)
+                if let Some(ty) = func.variables.get(*name) {
+                    Self::is_gc_managed(ty)
+                } else {
+                    false
+                }
             })
             .cloned()
             .collect();
@@ -733,7 +746,23 @@ impl CodeGen {
                 }
             }
 
+            let has_pop_handler = bb
+                .instructions
+                .iter()
+                .any(|inst| matches!(inst, MIRInstruction::PopHandler { .. }));
+
             for inst in &bb.instructions {
+                if bb.exception_handler.is_some()
+                    && !has_pop_handler
+                    && matches!(
+                        inst,
+                        MIRInstruction::Return { .. }
+                            | MIRInstruction::Jump { .. }
+                            | MIRInstruction::Branch { .. }
+                    )
+                {
+                    self.emit_line("call void @tejx_pop_handler()");
+                }
                 self.gen_instruction_v2(inst, func, &bb.name, i);
             }
 

@@ -31,7 +31,6 @@ impl Lexer {
         keywords.insert("case".to_string(), TokenType::Case);
         keywords.insert("default".to_string(), TokenType::Default);
         keywords.insert("extends".to_string(), TokenType::Extends);
-        keywords.insert("extension".to_string(), TokenType::Extension);
         keywords.insert("implements".to_string(), TokenType::Implements);
         keywords.insert("string".to_string(), TokenType::TypeString);
         keywords.insert("bool".to_string(), TokenType::TypeBoolean);
@@ -73,8 +72,6 @@ impl Lexer {
         keywords.insert("export".to_string(), TokenType::Export);
         keywords.insert("from".to_string(), TokenType::From);
         keywords.insert("instanceof".to_string(), TokenType::Instanceof);
-        keywords.insert("get".to_string(), TokenType::Get);
-        keywords.insert("set".to_string(), TokenType::Set);
         keywords.insert("interface".to_string(), TokenType::Interface);
         keywords.insert("to".to_string(), TokenType::To);
         keywords.insert("of".to_string(), TokenType::Of);
@@ -162,12 +159,7 @@ impl Lexer {
                     '=' => {
                         if self.peek(1) == '=' {
                             self.advance();
-                            if self.peek(1) == '=' {
-                                self.advance();
-                                TokenType::EqualEqualEqual
-                            } else {
-                                TokenType::EqualEqual
-                            }
+                            TokenType::EqualEqual
                         } else if self.peek(1) == '>' {
                             self.advance();
                             TokenType::Arrow
@@ -178,12 +170,7 @@ impl Lexer {
                     '!' => {
                         if self.peek(1) == '=' {
                             self.advance();
-                            if self.peek(1) == '=' {
-                                self.advance();
-                                TokenType::BangEqualEqual
-                            } else {
-                                TokenType::BangEqual
-                            }
+                            TokenType::BangEqual
                         } else {
                             TokenType::Bang
                         }
@@ -288,7 +275,19 @@ impl Lexer {
                     }
                     '~' => TokenType::Tilde,
                     '#' => TokenType::Hash,
-                    _ => TokenType::Unknown,
+                    _ => {
+                        let diag = crate::diagnostics::Diagnostic::new(
+                            format!("Unexpected character '{}'", c),
+                            self.line,
+                            start_col,
+                            self.filename.clone(),
+                        )
+                        .with_code("E0001")
+                        .with_hint("Remove or replace the unsupported character");
+                        self.errors.push(diag);
+                        self.advance();
+                        continue;
+                    }
                 };
 
                 let value = match token_type {
@@ -306,9 +305,7 @@ impl Lexer {
                     TokenType::GreaterGreaterEquals => ">>=".to_string(),
                     TokenType::Arrow => "=>".to_string(),
                     TokenType::EqualEqual => "==".to_string(),
-                    TokenType::EqualEqualEqual => "===".to_string(),
                     TokenType::BangEqual => "!=".to_string(),
-                    TokenType::BangEqualEqual => "!==".to_string(),
                     TokenType::LessEqual => "<=".to_string(),
                     TokenType::GreaterEqual => ">=".to_string(),
                     TokenType::Ellipsis => "...".to_string(),

@@ -15,12 +15,12 @@ class Stack<T> {
     }
     
     peek(): T | None {
-        if (this.items.length == 0) return None;
-        return this.items[this.items.length - 1];
+        if (this.items.length() == 0) return None;
+        return this.items[this.items.length() - 1];
     }
     
     isEmpty(): bool {
-        return this.items.length == 0;
+        return this.items.length() == 0;
     }
 }
 
@@ -62,7 +62,7 @@ function test_generic_inference() {
     let names = new Set<string>();
     names.add("Alice");
     let allNames = names.values();
-    assert_eq_int(1, allNames.length, "Set inference length");
+    assert_eq_int(1, allNames.length(), "Set inference length");
     assert_eq_string("Alice", allNames[0], "Set inference value");
 
     // 3. Custom Classes

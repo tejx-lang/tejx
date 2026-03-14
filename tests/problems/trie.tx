@@ -10,7 +10,7 @@ class MyTrie {
 
   insert(word: string): void {
     let current = this.root;
-    for (let i = 0; i < word.length; i++) {
+    for (let i = 0; i < word.length(); i++) {
         let c = word[i];
       if (!current.children.has(c)) {
         current.children.set(c, new TrieNode());

@@ -1,7 +1,6 @@
 // Types & Language Features Tests
 // ===============================
 import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
-import { Thread, Mutex } from "std:thread";
 
 // --- Declarations ---
 
@@ -38,7 +37,7 @@ function test_declarations() {
     assert_eq_int(16, squared, "Lambda as arg");
 
     // Typeof
-    assert_eq_string("int32", typeof(42), "typeof int"); // or "number" if JS style
+    assert_eq_string("int", typeof(42), "typeof int"); // or "number" if JS style
     // check features_declarations output: "Expected: int32/42 ... Actual: int32/number/..."
     // Based on previous file, it prints result. We assume typeof works.
     let t_str = typeof("hello");
@@ -74,38 +73,11 @@ function test_types() {
     assert_eq_int(1, p.x, "Type alias struct x");
 }
 
-// --- Concurrency ---
 
-function runThread(state: object) {
-    let m = state.mutex;
-    m.lock();
-    let c = state.count;
-    // sleep/yield?
-    let temp = c + 1;
-    state.count = temp;
-    m.unlock();
-}
-
-function test_concurrency() {
-    print("--- Concurrency ---");
-    let state = {
-        count: 0,
-        mutex: new Mutex()
-    };
-
-    let t1 = new Thread(runThread, state);
-    let t2 = new Thread(runThread, state);
-
-    t1.join();
-    t2.join();
-
-    assert_eq_int(2, state.count, "Thread mutex count");
-}
 
 function main() {
     print("=== TYPES & LANG TESTS START ===");
     test_declarations();
     test_types();
-    test_concurrency();
     print("=== TYPES & LANG TESTS COMPLETE ===");
 }

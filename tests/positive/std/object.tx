@@ -2,24 +2,25 @@
 // ============
 
 import { assert_eq_int, assert_eq_string, assert_ne_int } from "../utils.tx";
+import { Object } from "std:object";
 
 function main() {
     print("--- Object Static Methods ---");
     let obj = { a: 1, b: 2 };
 
     let keys = Object.keys(obj);
-    assert_eq_int(2, len(keys), "Object.keys length");
-    assert_ne_int(0, len(keys), "Object.keys not empty");
+    assert_eq_int(2, keys.length(), "Object.keys length");
+    assert_ne_int(0, keys.length(), "Object.keys not empty");
     
     let values = Object.values(obj);
-    assert_eq_int(2, len(values), "Object.values length");
-    assert_ne_int(0, len(values), "Object.values not empty");
+    assert_eq_int(2, values.length(), "Object.values length");
+    assert_ne_int(0, values.length(), "Object.values not empty");
     // Sort to handle potential non-deterministic order
     values.sort();
     assert_eq_int(1, values[0], "Object.values[0]");
     assert_eq_int(2, values[1], "Object.values[1]");
 
     let entries = Object.entries(obj);
-    assert_eq_int(2, len(entries), "Object.entries length");
-    assert_ne_int(0, len(entries), "Object.entries not empty");
+    assert_eq_int(2, entries.length(), "Object.entries length");
+    assert_ne_int(0, entries.length(), "Object.entries not empty");
 }

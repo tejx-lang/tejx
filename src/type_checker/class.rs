@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins;
 use crate::ast::*;
 use std::collections::HashMap;
 
@@ -29,11 +30,15 @@ impl TypeChecker {
                 }
                 let mut members = HashMap::new();
                 for m in &class_decl._members {
+                    let mut member_ty = m._type_name.to_string();
+                    if member_ty.is_empty() {
+                        member_ty = "<inferred>".to_string();
+                    }
                     members.insert(
                         m._name.clone(),
                         MemberInfo {
                             ty: TejxType::from_name(&self.parameterize_generics(
-                                &m._type_name.to_string(),
+                                &member_ty,
                                 &class_decl.generic_params,
                             )),
                             is_static: m._is_static,
@@ -43,19 +48,24 @@ impl TypeChecker {
                                 AccessLevel::Public
                             },
                             is_readonly: false,
+                            generic_params: Vec::new(),
                         },
                     );
                 }
                 for method in &class_decl.methods {
                     let ret_ty_str = method.func.return_type.to_string();
-                    let ret_ty = if ret_ty_str == "any" || ret_ty_str.is_empty() {
+                    let ret_ty = if ret_ty_str.is_empty() {
                         "void".to_string()
                     } else {
                         ret_ty_str
                     };
                     let mut param_types = Vec::new();
                     for p in &method.func.params {
-                        param_types.push(p.type_name.to_string());
+                        let mut p_ty = p.type_name.to_string();
+                        if p_ty.is_empty() {
+                            p_ty = "<inferred>".to_string();
+                        }
+                        param_types.push(p_ty);
                     }
                     let p_str = param_types.join(",");
                     let sig_str = if p_str.is_empty() {
@@ -82,6 +92,7 @@ impl TypeChecker {
                                 AccessLevel::Public
                             },
                             is_readonly: true, // Methods are readonly
+                            generic_params: method.func.generic_params.clone(),
                         },
                     );
                 }
@@ -96,6 +107,7 @@ impl TypeChecker {
                             is_static: false,
                             access: AccessLevel::Public,
                             is_readonly: true, // Default to readonly, setter can clear it
+                            generic_params: Vec::new(),
                         },
                     );
                 }
@@ -113,9 +125,36 @@ impl TypeChecker {
                                 is_static: false,
                                 access: AccessLevel::Public,
                                 is_readonly: false,
+                                generic_params: Vec::new(),
                             },
                         );
                     }
+                }
+                if let Some(constructor) = &class_decl._constructor {
+                    let mut param_types = Vec::new();
+                    for p in &constructor.params {
+                        let mut p_ty = p.type_name.to_string();
+                        if p_ty.is_empty() {
+                            p_ty = "<inferred>".to_string();
+                        }
+                        param_types.push(p_ty);
+                    }
+                    let p_str = param_types.join(",");
+                    let sig_str = if p_str.is_empty() {
+                        "function:void".to_string()
+                    } else {
+                        format!("function:void:{}", p_str)
+                    };
+                    members.insert(
+                        "constructor".to_string(),
+                        MemberInfo {
+                            ty: TejxType::from_name(&sig_str),
+                            is_static: false,
+                            access: AccessLevel::Public,
+                            is_readonly: true,
+                            generic_params: Vec::new(),
+                        },
+                    );
                 }
                 self.class_members.insert(class_decl.name.clone(), members);
             }
@@ -139,7 +178,11 @@ impl TypeChecker {
                         if p._is_rest {
                             is_variadic = true;
                         }
-                        let (t, _, _) = self.parse_signature(p.type_name.to_string());
+                        let mut p_ty = p.type_name.to_string();
+                        if p_ty.is_empty() {
+                            p_ty = "<inferred>".to_string();
+                        }
+                        let (t, _, _) = self.parse_signature(p_ty);
                         TejxType::from_name(&t)
                     })
                     .collect::<Vec<TejxType>>();
@@ -149,7 +192,10 @@ impl TypeChecker {
                     scope.insert(
                         func.name.clone(),
                         Symbol {
-                            ty: TejxType::Function(params.clone(), Box::new(TejxType::from_name(&final_ret))),
+                            ty: TejxType::Function(
+                                params.clone(),
+                                Box::new(TejxType::from_name(&final_ret)),
+                            ),
                             is_const: false,
                             params,
                             min_params: if has_defaults {
@@ -178,12 +224,7 @@ impl TypeChecker {
                             params: Vec::new(),
                             min_params: None,
                             is_variadic: false,
-                            aliased_type: {
-                                if name == "Node" {
-                                    println!("DEBUG NODE ALIAS STRING: '{}'", _type_def.to_string());
-                                }
-                                Some(TejxType::from_node(&_type_def))
-                            },
+                            aliased_type: { Some(TejxType::from_node(&_type_def)) },
                             generic_params: Vec::new(),
                         },
                     );
@@ -200,6 +241,7 @@ impl TypeChecker {
                             is_static: true,
                             access: AccessLevel::Public,
                             is_readonly: true, // Enum members are constants
+                            generic_params: Vec::new(),
                         },
                     );
                 }
@@ -231,6 +273,7 @@ impl TypeChecker {
                             is_static: false,
                             access: AccessLevel::Public,
                             is_readonly: true,
+                            generic_params: Vec::new(),
                         },
                     );
                 }
@@ -248,11 +291,7 @@ impl TypeChecker {
         }
     }
 
-    pub(crate) fn resolve_instance_member(
-        &self,
-        obj_type: &str,
-        member: &str,
-    ) -> Option<MemberInfo> {
+    fn normalize_member_container(&self, obj_type: &str) -> String {
         let mut unwrapped_type = obj_type.to_string();
         if obj_type.contains('|') {
             unwrapped_type = obj_type
@@ -262,20 +301,7 @@ impl TypeChecker {
                 .unwrap_or(obj_type.to_string());
         }
 
-        let mut current_type = if unwrapped_type.ends_with("[]") {
-            "Array".to_string()
-        } else if unwrapped_type.contains('[') && unwrapped_type.ends_with(']') {
-            // Fixed-size arrays like int32[5] should also map to Array
-            "Array".to_string()
-        } else if unwrapped_type.starts_with("Array<") {
-            // Generic Array<T> maps to Array
-            "Array".to_string()
-        } else if unwrapped_type == "string" {
-            "String".to_string()
-        } else if unwrapped_type.starts_with('{') {
-            // Object literals map to Map
-            "Map".to_string()
-        } else if unwrapped_type == "enum"
+        let mut current_type = if unwrapped_type == "enum"
             || self
                 .lookup(&unwrapped_type)
                 .map(|s| s.ty.to_name() == "enum")
@@ -292,6 +318,75 @@ impl TypeChecker {
                 current_type = current_type[..angle].to_string();
             }
         }
+
+        current_type
+    }
+
+    pub(crate) fn collect_member_names(&self, obj_type: &str, want_static: bool) -> Vec<String> {
+        let mut current_type = self.normalize_member_container(obj_type);
+        let mut names = std::collections::HashSet::new();
+        let obj_ty = TejxType::from_name(obj_type);
+
+        if !want_static {
+            if let Some(builtin_names) = builtins::member_names(&obj_ty) {
+                for name in builtin_names {
+                    names.insert(name.to_string());
+                }
+            }
+            if let TejxType::Object(props) = obj_ty {
+                for (name, _, _) in props {
+                    names.insert(name);
+                }
+            }
+        }
+
+        while !current_type.is_empty() && current_type != "<inferred>" {
+            if let Some(members) = self.class_members.get(&current_type) {
+                for (name, info) in members {
+                    if info.is_static == want_static {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+
+            if !want_static {
+                if let Some(members) = self.interfaces.get(&current_type) {
+                    for name in members.keys() {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+
+            if let Some(parent) = self.class_hierarchy.get(&current_type) {
+                current_type = parent.clone();
+            } else {
+                break;
+            }
+        }
+
+        let mut list: Vec<String> = names.into_iter().collect();
+        list.sort();
+        list
+    }
+
+    pub(crate) fn resolve_instance_member(
+        &self,
+        obj_type: &str,
+        member: &str,
+    ) -> Option<MemberInfo> {
+        let obj_ty = TejxType::from_name(obj_type);
+            if let TejxType::Object(props) = obj_ty {
+                if let Some((_, _, ty)) = props.into_iter().find(|(name, _, _)| name == member) {
+                    return Some(MemberInfo {
+                        ty,
+                        is_static: false,
+                        access: AccessLevel::Public,
+                        is_readonly: false,
+                        generic_params: Vec::new(),
+                    });
+                }
+            }
+        let mut current_type = self.normalize_member_container(obj_type);
 
         while !current_type.is_empty() && current_type != "<inferred>" {
             if let Some(members) = self.class_members.get(&current_type) {
