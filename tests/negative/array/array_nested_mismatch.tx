@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test nested array type mismatches.
+
+function main() {
+    // Correct: let arr: int[][] = [[1], [2]];
+    
+    // Case 1: Inner element mismatch
+    let arr1: int[][] = [[1], ["2"]];
+
+    // Case 2: Depth mismatch
+    let arr2: int[][] = [[1], 2];
+}

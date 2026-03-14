@@ -34,6 +34,6 @@ function main() {
         print("Parsed w.nested: ", parsed["w"]["nested"]);
 
     } catch(e) {
-        print("❌ FAIL: Caught error: ", e);
+        print("❌ FAIL: Caught error: ", e.message);
     }
 }

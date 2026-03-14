@@ -1,0 +1,19 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that calling non-existent methods or properties on any object/class results in a compilation error.
+
+class MyClass {
+    a: int = 1;
+}
+
+function main() {
+    let s = "test string";
+    // s.nonExistentMethod(); // String might have dynamic methods in some languages, but let's check tejx
+
+    let c = new MyClass();
+    // c.unknownProp = 10; // Error: MyClass has no such property
+    
+    // The user's specific example: Stream.func
+    // If Stream is not defined at all, it's an undefined identifier error.
+    // If it is a variable/class, then it's a member access error.
+    Stream.func(); 
+}

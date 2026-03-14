@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test implicit float to int assignment (should fail).
+
+function main() {
+    let f: float = 3.14;
+    let i: int = f; // Error: Type mismatch (requires explicit cast)
+}

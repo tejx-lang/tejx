@@ -2,7 +2,7 @@ import { Stack } from "std:collections";
 
 function assert(condition: bool, message: string): void {
   if (!condition) {
-    print("❌ ASSERT FAILED: ", message);
+    print("❌ FAIL: ", message);
   } else {
     print("✅ PASS: ", message);
   }

@@ -1,0 +1,15 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic type parameter count mismatch (too few).
+
+class Pair<K, V> {
+    key: K;
+    value: V;
+    constructor(k: K, v: V) {
+        this.key = k;
+        this.value = v;
+    }
+}
+
+function main() {
+    let p1 = new Pair<int>(1, 2); // Error: expected 2 type params, got 1
+}

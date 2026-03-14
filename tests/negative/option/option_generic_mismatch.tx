@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic mismatch with Option types.
+
+function main() {
+    let x: Option<int> = 10;
+    let y: Option<string> = x; // Error: Option<int> is not compatible with Option<string>
+}

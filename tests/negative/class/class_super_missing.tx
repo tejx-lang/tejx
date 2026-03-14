@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test missing super() call in derived class constructor.
+
+class Base {
+    constructor(x: int) {}
+}
+
+class DerivedNoSuper extends Base {
+    constructor() {
+        // Error: Missing super() call in derived class constructor
+    }
+}
+
+function main() {}

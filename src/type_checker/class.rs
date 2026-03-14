@@ -7,6 +7,15 @@ impl TypeChecker {
     pub(crate) fn collect_declarations(&mut self, stmt: &Statement) {
         match stmt {
             Statement::ClassDeclaration(class_decl) => {
+                if self.scopes.len() > 1 {
+                    self.report_error_detailed(
+                        format!("Class '{}' cannot be defined inside a function or block", class_decl.name),
+                        class_decl._line,
+                        class_decl._col,
+                        "E0114",
+                        Some("Move the class definition to the top level of the file"),
+                    );
+                }
                 if let Some(scope) = self.scopes.last_mut() {
                     scope.insert(
                         class_decl.name.clone(),

@@ -324,7 +324,6 @@ function run(name: string, fn: () => float): void {
 }
 
 function main(): float {
-    try {
         print("--- Unified Performance Suite (23 Tests) ---");
         run("1. Sieve of Eratosthenes", bench_sieve);
         run("2. Pointer Chasing", bench_pointers);
@@ -349,7 +348,5 @@ function main(): float {
         run("21. Hard: N-Queens", bench_nqueens);
         run("22. Hard: Ackermann", bench_ackermann);
         run("23. Regress: Float-to-Int", bench_float_to_int);
-    } catch (e) {
-        print("Error: " + e);
-    }
+   
 }

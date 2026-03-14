@@ -1,0 +1,18 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test array indexing with non-integer values and method argument count mismatch.
+
+function main() {
+    let arr = [1, 2, 3];
+    
+    // Case 1: Indexing with string
+    let x = arr["0"]; 
+
+    // Case 2: Indexing with bool
+    let y = arr[true];
+
+    // Case 3: push with wrong number of arguments
+    arr.push(4, 5); 
+
+    // Case 4: push with no arguments
+    arr.push();
+}

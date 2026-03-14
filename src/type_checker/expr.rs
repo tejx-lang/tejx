@@ -1655,8 +1655,18 @@ impl TypeChecker {
                 entries, _spreads, ..
             } => {
                 let mut props = Vec::new();
+                let mut seen_keys = std::collections::HashSet::new();
 
                 for (key, val_expr) in entries {
+                    if !seen_keys.insert(key.clone()) {
+                        self.report_error_detailed(
+                            format!("Duplicate key '{}' in object literal", key),
+                            0, // Ideally we have line/col for entries, but entries might not have them individualy
+                            0,
+                            "E0111",
+                            Some("Each key in an object literal must be unique")
+                        );
+                    }
                     let val_ty = self.check_expression(val_expr)?;
                     props.push((key.clone(), false, val_ty));
                 }

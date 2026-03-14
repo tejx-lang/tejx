@@ -1,0 +1,49 @@
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+function test_numeric_conversions() {
+    print("--- Numeric Conversions ---");
+    
+    // Int to Float (Implicit)
+    let i: int = 42;
+    let f: float = i; // Should be implicit
+    print("int to float implicit:", f);
+    
+    // Int to Float (Explicit)
+    let f2: float = i as float;
+    print("int to float explicit:", f2);
+    
+    // Float to Int (Explicit Casting)
+    let f3: float = 3.14;
+    let i2: int = f3 as int;
+    print("float to int explicit:", i2); // Should be 3
+    assert_eq_int(3, i2, "Float to int truncated");
+}
+
+function test_string_conversions() {
+    print("--- String Conversions ---");
+    
+    // Float to String (Using rt_to_string or implicit via print)
+    let f: float = 123.45;
+    let s: string = rt_to_string(f);
+    print("float to string:", s);
+    assert_eq_string("123.45", s, "Float to string conversion");
+    
+    // Int to String
+    let i: int = 999;
+    let s2: string = rt_to_string(i);
+    print("int to string:", s2);
+    assert_eq_string("999", s2, "Int to string conversion");
+    
+    // String to Float (parseFloat)
+    let s3: string = "45.67";
+    let f2: float = parseFloat(s3);
+    print("string to float:", f2);
+    // Note: Comparing floats directly can be tricky, but for exact literals it might work.
+}
+
+function main() {
+    print("=== CONVERSION TESTS START ===");
+    test_numeric_conversions();
+    test_string_conversions();
+    print("=== CONVERSION TESTS COMPLETE ===");
+}

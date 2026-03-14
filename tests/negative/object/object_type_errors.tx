@@ -1,0 +1,21 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Comprehensive test for object type mismatches.
+
+function main() {
+    // 1. Structural Mismatch
+    let obj1: { name: string; age: int } = { name: "praveen", age: 21 };
+    obj1 = { name: "test" }; // Error: missing 'age'
+    obj1 = { name: "test", age: 21, extra: true }; // This might be allowed (subtyping), but let's check
+
+    // 2. Type Mismatch in values
+    let obj2: { x: float } = { x: 1.0 };
+    obj2 = { x: "high" }; // Error: string to float
+
+    // 3. Nested Object Mismatch
+    let obj3: { a: { b: int } } = { a: { b: 1 } };
+    obj3 = { a: { b: "1" } }; // Error: nested mismatch
+
+    // 4. Union Type Mismatch (if supported in objects)
+    let obj4: { val: int | string } = { val: 10 };
+    obj4.val = true; // Error: bool not in int | string
+}

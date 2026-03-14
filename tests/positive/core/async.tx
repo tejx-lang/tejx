@@ -83,12 +83,9 @@ async function test_features(): Promise<void> {
     // assert_eq_int(20, results[0], "Promise.all[0]"); // Type check might fail if array is mixed?
     // assert_eq_string("Instant", results[2], "Promise.all[2]");
 
-    assert_eq_int(20, results[0] as int, "Promise.all[0]");
-    assert_eq_int(40, results[1] as int, "Promise.all[1]");
-    // let html = await http.get("https://www.google.com");
-    // if (html.length() > 0) {
-    //    print("Fetched Google! Length: ", html.length());
-    // }
+    assert_eq_int(20, results[0], "Promise.all[0]");
+    assert_eq_int(40, results[1], "Promise.all[1]");
+   
 }
 
 // --- From async_scenarios.tx ---
@@ -133,9 +130,8 @@ async function testPromiseAllMixed() {
     let p2 = level1(30); // 31
     
     let results = await Promise.all([p1, p2]);
-    // assert_eq_int(11, results[0], "Mixed[0]");
-    // assert_eq_int(20, results[1], "Mixed[1]");
-    // assert_eq_int(31, results[2], "Mixed[2]");
+    assert_eq_int(11, results[0], "Mixed[0]");
+    assert_eq_int(31, results[1], "Mixed[1]");
 }
 
 async function asyncFactorial(n: int): Promise<int> {
@@ -220,7 +216,6 @@ async function test_async_oop() {
     assert_eq_int(300, v2, "Async method arguments");
 }
 
-// Producer/Consumer test removed - Mutex.acquire/release not implemented in runtime
 
 async function main() {
     print("=== ASYNC TESTS START ===");
