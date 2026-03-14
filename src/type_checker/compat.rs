@@ -381,7 +381,7 @@ impl TypeChecker {
                 };
 
                 if ret_ok {
-                    if e_params.len() == a_params.len() {
+                    if a_params.len() <= e_params.len() {
                         let mut all_params_ok = true;
                         for (ep, ap) in e_params.iter().zip(a_params.iter()) {
                             if !self.are_types_compatible(ep, ap)

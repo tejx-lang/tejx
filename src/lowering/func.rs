@@ -74,7 +74,13 @@ impl Lowering {
             .iter()
             .map(|p| TejxType::from_node(&p.type_name))
             .collect();
-        let ret_type = TejxType::from_node(&func.return_type);
+        let mut ret_type = TejxType::from_node(&func.return_type);
+        if func._is_async {
+            let is_promise = matches!(ret_type, TejxType::Class(ref n, _) if n == "Promise");
+            if !is_promise {
+                ret_type = TejxType::Class("Promise".to_string(), vec![ret_type]);
+            }
+        }
 
         let name = if func.is_extern {
             func.name.clone()

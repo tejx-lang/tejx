@@ -171,42 +171,46 @@ impl TypeChecker {
         }
 
         if receiver.is_array() || receiver.is_slice() {
-            let t = TejxType::Class("T".to_string(), vec![]);
+            let elem = receiver.get_array_element_type();
             let u = TejxType::Class("U".to_string(), vec![]);
+            let is_fixed_or_slice = matches!(receiver, TejxType::FixedArray(_, _) | TejxType::Slice(_));
+            if is_fixed_or_slice && matches!(member, "push" | "pop" | "shift" | "unshift") {
+                return None;
+            }
             return match member {
                 "length" => Some(TejxType::Function(
                     vec![receiver.clone()],
                     Box::new(TejxType::Int32),
                 )),
                 "push" => Some(TejxType::Function(
-                    vec![receiver.clone(), t.clone()],
+                    vec![receiver.clone(), elem.clone()],
                     Box::new(TejxType::Int32),
                 )),
                 "pop" | "shift" => Some(TejxType::Function(
                     vec![receiver.clone()],
-                    Box::new(t.clone()),
+                    Box::new(elem.clone()),
                 )),
                 "unshift" => Some(TejxType::Function(
-                    vec![receiver.clone(), t.clone()],
+                    vec![receiver.clone(), elem.clone()],
                     Box::new(TejxType::Int32),
                 )),
                 "indexOf" => Some(TejxType::Function(
-                    vec![receiver.clone(), t.clone()],
+                    vec![receiver.clone(), elem.clone()],
                     Box::new(TejxType::Int32),
                 )),
                 "concat" | "slice" | "reverse" | "fill" => Some(TejxType::Function(
-                    vec![receiver.clone(), t.clone()],
-                    Box::new(TejxType::DynamicArray(Box::new(t.clone()))),
+                    vec![receiver.clone(), elem.clone()],
+                    Box::new(TejxType::DynamicArray(Box::new(elem.clone()))),
                 )),
                 "filter" => Some(TejxType::Function(
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![t.clone(), TejxType::Int32],
+                            vec![elem.clone(), TejxType::Int32],
                             Box::new(TejxType::Bool),
                         ),
                     ],
-                    Box::new(TejxType::DynamicArray(Box::new(t.clone()))),
+                    Box::new(TejxType::DynamicArray(Box::new(elem.clone()))),
                 )),
                 "join" => Some(TejxType::Function(
                     vec![receiver.clone(), TejxType::String],
@@ -220,7 +224,7 @@ impl TypeChecker {
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![t.clone(), TejxType::Int32],
+                            vec![elem.clone(), TejxType::Int32],
                             Box::new(TejxType::Void),
                         ),
                     ],
@@ -230,7 +234,7 @@ impl TypeChecker {
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![t.clone(), TejxType::Int32],
+                            vec![elem.clone(), TejxType::Int32],
                             Box::new(u.clone()),
                         ),
                     ],
@@ -240,7 +244,7 @@ impl TypeChecker {
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![u.clone(), t.clone(), TejxType::Int32],
+                            vec![u.clone(), elem.clone(), TejxType::Int32],
                             Box::new(u.clone()),
                         ),
                         u.clone(),
@@ -251,17 +255,17 @@ impl TypeChecker {
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![t.clone(), TejxType::Int32],
+                            vec![elem.clone(), TejxType::Int32],
                             Box::new(TejxType::Bool),
                         ),
                     ],
-                    Box::new(t.clone()),
+                    Box::new(elem.clone()),
                 )),
                 "findIndex" => Some(TejxType::Function(
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![t.clone(), TejxType::Int32],
+                            vec![elem.clone(), TejxType::Int32],
                             Box::new(TejxType::Bool),
                         ),
                     ],
@@ -271,14 +275,14 @@ impl TypeChecker {
                     vec![
                         receiver.clone(),
                         TejxType::Function(
-                            vec![t.clone(), TejxType::Int32],
+                            vec![elem.clone(), TejxType::Int32],
                             Box::new(TejxType::Bool),
                         ),
                     ],
                     Box::new(TejxType::Bool),
                 )),
                 "includes" => Some(TejxType::Function(
-                    vec![receiver.clone(), t.clone()],
+                    vec![receiver.clone(), elem.clone()],
                     Box::new(TejxType::Bool),
                 )),
                 _ => None,
@@ -617,6 +621,21 @@ impl TypeChecker {
                 }
 
                 let obj_ty = TejxType::from_name(&obj_type);
+                if matches!(obj_ty, TejxType::FixedArray(_, _) | TejxType::Slice(_))
+                    && matches!(member.as_str(), "push" | "pop" | "shift" | "unshift")
+                {
+                    self.report_error_detailed(
+                        format!(
+                            "Cannot call '{}' on fixed-size array or slice '{}'",
+                            member, obj_type
+                        ),
+                        *_line,
+                        *_col,
+                        "E0105",
+                        Some("Fixed-size arrays and slices do not support length-changing methods"),
+                    );
+                    return Ok(TejxType::from_name("<inferred>"));
+                }
                 // Built-in 'length' property for arrays, strings, and slices
                 if member == "length" {
                     if obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice() {
@@ -633,6 +652,8 @@ impl TypeChecker {
                             return Ok(t);
                         }
                     }
+                    // Allow dynamic extension on structural objects.
+                    return Ok(TejxType::Any);
                 }
 
                 if TejxType::from_name(&obj_type) == TejxType::Any {
@@ -653,35 +674,27 @@ impl TypeChecker {
 
                 // --- UFCS Lookup ---
                 // If not found as a member, check if there is a global function name(obj, ...)
-                if member == "push" || member == "fill" {
+                let allow_ufcs = (obj_ty.is_array() || obj_ty.is_slice() || obj_ty == TejxType::String)
+                    && obj_type != "any"
+                    && obj_type != "<inferred>"
+                    && !obj_type.is_empty();
+                if allow_ufcs {
                     if let Some(s) = self.lookup(member) {
-                        if let TejxType::Function(_, ref _ret) = s.ty {
+                        if let TejxType::Function(_, ref ret) = s.ty {
                             if !s.params.is_empty() {
                                 let first_param = &s.params[0];
-                                let is_compat = self.are_types_compatible(
-                                    first_param,
-                                    &TejxType::from_name(&obj_type),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if let Some(s) = self.lookup(member) {
-                    if let TejxType::Function(_, ref ret) = s.ty {
-                        if !s.params.is_empty() {
-                            let first_param = &s.params[0];
-                            let is_compat = self
-                                .are_types_compatible(first_param, &TejxType::from_name(&obj_type));
-                            if is_compat {
-                                // Full ty
-                                let full_ty = TejxType::Function(s.params.clone(), ret.clone());
-                                // Found a match! Return the function type but we keep note it's UFCS
-                                // Actually, for type checking, we just return the function type.
-                                // CodeGen will handle the translation.
-                                return Ok(TejxType::from_name(
-                                    &self.substitute_generics(&full_ty.to_name(), &obj_type),
-                                ));
+                                let is_compat = self
+                                    .are_types_compatible(first_param, &TejxType::from_name(&obj_type));
+                                if is_compat {
+                                    // Full ty
+                                    let full_ty = TejxType::Function(s.params.clone(), ret.clone());
+                                    // Found a match! Return the function type but we keep note it's UFCS
+                                    // Actually, for type checking, we just return the function type.
+                                    // CodeGen will handle the translation.
+                                    return Ok(TejxType::from_name(
+                                        &self.substitute_generics(&full_ty.to_name(), &obj_type),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -739,6 +752,40 @@ impl TypeChecker {
                 }
 
                 let parsed = TejxType::from_name(&unwrapped_type);
+                if let TejxType::FixedArray(_, size) = &parsed {
+                    let mut const_index: Option<i64> = None;
+                    match index.as_ref() {
+                        Expression::NumberLiteral { value, .. } => {
+                            if value.fract() == 0.0 {
+                                const_index = Some(*value as i64);
+                            }
+                        }
+                        Expression::UnaryExpr { op, right, .. } => {
+                            if matches!(op, TokenType::Minus) {
+                                if let Expression::NumberLiteral { value, .. } = right.as_ref() {
+                                    if value.fract() == 0.0 {
+                                        const_index = Some(-(*value as i64));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    if let Some(idx) = const_index {
+                        if idx < 0 || (idx as usize) >= *size {
+                            self.report_error_detailed(
+                                format!(
+                                    "Array index {} out of bounds for fixed array length {}",
+                                    idx, size
+                                ),
+                                *_line,
+                                *_col,
+                                "E0100",
+                                Some("Use a valid index within the fixed array bounds"),
+                            );
+                        }
+                    }
+                }
                 if parsed == TejxType::Any {
                     return Ok(TejxType::Any);
                 }
@@ -794,6 +841,12 @@ impl TypeChecker {
                                 );
                             }
                         } else {
+                            if let TejxType::Object(props) = TejxType::from_name(&obj_type) {
+                                let exists = props.iter().any(|(name, _, _)| name == member);
+                                if !exists {
+                                    // Structural objects are open: allow dynamic property additions.
+                                }
+                            }
                             // Static access??
                             if let Expression::Identifier { name, .. } = &**object {
                                 if let Some(s) = self.lookup(name) {
@@ -1744,7 +1797,8 @@ impl TypeChecker {
                     } else if has_spread {
                         format!("{}[]", element_type)
                     } else {
-                        format!("{}[{}]", element_type, elements.len())
+                        // Default array literals to dynamic arrays unless a fixed size is expected.
+                        format!("{}[]", element_type)
                     };
                     *ty.borrow_mut() = Some(inferred_ty.clone());
                     Ok(TejxType::from_name(&inferred_ty))
@@ -2077,6 +2131,52 @@ impl TypeChecker {
                     };
                     let actual = self.with_expected_type(expected_ty, |s| s.check_expression(arg))?;
                     actual_arg_types.push(actual);
+                }
+
+                let is_optional_param = |ty: &TejxType| -> bool {
+                    match ty {
+                        TejxType::Class(name, gen) => name == "Option" && gen.len() == 1,
+                        TejxType::Union(types) => types.iter().any(|t| t.to_name() == "None"),
+                        _ => false,
+                    }
+                };
+                if !expected_arg_types.is_empty() {
+                    if args.len() > expected_arg_types.len() {
+                        self.report_error_detailed(
+                            format!(
+                                "Constructor for '{}' expects {} argument(s), but {} were provided",
+                                effective_class_name,
+                                expected_arg_types.len(),
+                                args.len()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0109",
+                            Some(&format!(
+                                "Provide {} argument(s)",
+                                expected_arg_types.len()
+                            )),
+                        );
+                    } else if args.len() < expected_arg_types.len() {
+                        let missing = &expected_arg_types[args.len()..];
+                        if !missing.iter().all(|t| is_optional_param(t)) {
+                            self.report_error_detailed(
+                                format!(
+                                    "Constructor for '{}' expects {} argument(s), but {} were provided",
+                                    effective_class_name,
+                                    expected_arg_types.len(),
+                                    args.len()
+                                ),
+                                *_line,
+                                *_col,
+                                "E0109",
+                                Some(&format!(
+                                    "Provide {} argument(s)",
+                                    expected_arg_types.len()
+                                )),
+                            );
+                        }
+                    }
                 }
 
                 let mut inferred_class_name = effective_class_name.clone();

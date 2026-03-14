@@ -537,11 +537,15 @@ impl CodeGen {
                 }
 
                 if is_float_type {
-                    let mut s = value.clone();
-                    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-                        s.push_str(".0");
+                    if let Ok(f) = value.parse::<f64>() {
+                        let bits = if matches!(ty, TejxType::Float32) {
+                            (f as f32 as f64).to_bits()
+                        } else {
+                            f.to_bits()
+                        };
+                        return format!("0x{:016X}", bits);
                     }
-                    return s;
+                    return "0.0".to_string();
                 }
 
                 if value == "null" {

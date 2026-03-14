@@ -60,6 +60,26 @@ const ARRAY_METHOD_NAMES: &[&str] = &[
     "includes",
 ];
 
+const ARRAY_FIXED_METHOD_NAMES: &[&str] = &[
+    "length",
+    "indexOf",
+    "concat",
+    "join",
+    "slice",
+    "reverse",
+    "fill",
+    "sort",
+    "map",
+    "filter",
+    "forEach",
+    "reduce",
+    "every",
+    "some",
+    "find",
+    "findIndex",
+    "includes",
+];
+
 fn string_method_info(name: &str) -> Option<BuiltinMethodInfo> {
     let info = match name {
         "length" => BuiltinMethodInfo {
@@ -245,6 +265,11 @@ pub fn method_info(receiver_ty: &TejxType, name: &str) -> Option<(String, Option
         return Some((info.callee.to_string(), ret));
     }
     if receiver_ty.is_array() || receiver_ty.is_slice() {
+        if matches!(receiver_ty, TejxType::FixedArray(_, _) | TejxType::Slice(_))
+            && matches!(name, "push" | "pop" | "shift" | "unshift")
+        {
+            return None;
+        }
         let info = array_method_info(name)?;
         let ret = info.ret.map(|r| resolve_ret(receiver_ty, r));
         return Some((info.callee.to_string(), ret));
@@ -257,6 +282,9 @@ pub fn member_names(receiver_ty: &TejxType) -> Option<&'static [&'static str]> {
         return Some(STRING_METHOD_NAMES);
     }
     if receiver_ty.is_array() || receiver_ty.is_slice() {
+        if matches!(receiver_ty, TejxType::FixedArray(_, _) | TejxType::Slice(_)) {
+            return Some(ARRAY_FIXED_METHOD_NAMES);
+        }
         return Some(ARRAY_METHOD_NAMES);
     }
     None

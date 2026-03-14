@@ -54,11 +54,17 @@ impl TypeChecker {
                 }
                 for method in &class_decl.methods {
                     let ret_ty_str = method.func.return_type.to_string();
-                    let ret_ty = if ret_ty_str.is_empty() {
+                    let mut ret_ty = if ret_ty_str.is_empty() {
                         "void".to_string()
                     } else {
                         ret_ty_str
                     };
+                    if method.func._is_async
+                        && !ret_ty.starts_with("Promise<")
+                        && ret_ty != "Promise"
+                    {
+                        ret_ty = format!("Promise<{}>", ret_ty);
+                    }
                     let mut param_types = Vec::new();
                     for p in &method.func.params {
                         let mut p_ty = p.type_name.to_string();
@@ -160,11 +166,14 @@ impl TypeChecker {
             }
             Statement::FunctionDeclaration(func) => {
                 let ret_ty_str = func.return_type.to_string();
-                let ret_ty = if ret_ty_str == "any" || ret_ty_str.is_empty() {
+                let mut ret_ty = if ret_ty_str == "any" || ret_ty_str.is_empty() {
                     "void".to_string()
                 } else {
                     ret_ty_str
                 };
+                if func._is_async && !ret_ty.starts_with("Promise<") && ret_ty != "Promise" {
+                    ret_ty = format!("Promise<{}>", ret_ty);
+                }
                 let mut is_variadic = false;
                 let min_required = func
                     .params

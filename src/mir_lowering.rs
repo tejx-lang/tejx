@@ -263,50 +263,8 @@ impl MIRLowering {
         let cb = self.current_block;
         if !self.current_function.blocks[cb].is_terminated() {
             if is_async_worker {
-                let ctx_val = MIRValue::Variable {
-                    name: "ctx".to_string(),
-                    ty: TejxType::DynamicArray(Box::new(TejxType::Int64)),
-                };
-                let promise_id =
-                    self.new_async_temp(TejxType::Class("Promise".to_string(), vec![]));
-                self.emit(MIRInstruction::Call {
-                    line: 0,
-                    dst: promise_id.clone(),
-                    callee: "rt_array_get_fast".to_string(),
-                    args: vec![
-                        ctx_val.clone(),
-                        MIRValue::Constant {
-                            value: "0".to_string(),
-                            ty: TejxType::Int32,
-                        },
-                    ],
-                });
-
-                let unused = self.new_async_temp(TejxType::Void);
-                self.emit(MIRInstruction::Call {
-                    line: 0,
-                    dst: unused.clone(),
-                    callee: "rt_promise_resolve".to_string(),
-                    args: vec![
-                        MIRValue::Variable {
-                            name: promise_id,
-                            ty: TejxType::Class("Promise".to_string(), vec![]),
-                        },
-                        MIRValue::Constant {
-                            value: "0".to_string(),
-                            ty: TejxType::Int32,
-                        },
-                    ],
-                });
-
-                let unused2 = self.new_async_temp(TejxType::Void);
-                self.emit(MIRInstruction::Call {
-                    line: 0,
-                    dst: unused2,
-                    callee: "tejx_dec_async_ops".to_string(),
-                    args: vec![],
-                });
-
+                // Async workers already resolve/reject inside the desugared try/catch.
+                // Terminate the block to avoid double resolve/dec.
                 self.emit(MIRInstruction::Return {
                     line: 0,
                     value: None,

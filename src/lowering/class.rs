@@ -56,10 +56,17 @@ impl Lowering {
                 format!("f_{}_{}", class_decl.name, method.func.name)
             };
 
-            self.user_functions.borrow_mut().insert(
-                mangled.clone(),
-                self.resolve_alias_type(&TejxType::from_node(&method.func.return_type)),
-            );
+            let mut ret_type =
+                self.resolve_alias_type(&TejxType::from_node(&method.func.return_type));
+            if method.func._is_async {
+                let is_promise = matches!(ret_type, TejxType::Class(ref n, _) if n == "Promise");
+                if !is_promise {
+                    ret_type = TejxType::Class("Promise".to_string(), vec![ret_type]);
+                }
+            }
+            self.user_functions
+                .borrow_mut()
+                .insert(mangled.clone(), ret_type);
             self.user_function_args
                 .borrow_mut()
                 .insert(mangled, method.func.params.len());

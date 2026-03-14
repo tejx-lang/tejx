@@ -7,6 +7,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
+    let cstr = std::ffi::CString::new(msg).unwrap_or_else(|_| {
+        std::ffi::CString::new("RuntimeError").expect("CString for RuntimeError")
+    });
+    let msg_id = rt_string_from_c_str(cstr.as_ptr());
+    crate::event_loop::tejx_throw(msg_id);
+    std::hint::unreachable_unchecked();
+}
+
 #[no_mangle]
 pub static HEAP_OFFSET: i64 = 1i64 << 50;
 #[no_mangle]
@@ -47,13 +56,6 @@ pub static TAG_RAW_DATA: i64 = 11;
 pub static TAG_MAP: i64 = 12;
 
 // --- Object Layout Constants ---
-// String layout: [data: len+1 bytes]
-const STRING_HEADER_SIZE: isize = 24;
-// Array layout: [tag:i64] [data: len * elem_size bytes]
-const ARRAY_LEN_OFFSET: isize = 12; // byte offset in header
-const ARRAY_CAP_OFFSET: isize = 16; // byte offset in header
-const ARRAY_FLAGS_OFFSET: isize = 10; // byte offset in header (flags & 0xFF = elem_size)
-const ARRAY_HEADER_SIZE: isize = 24;
 const OBJECT_SIZE_OFFSET: isize = 0;
 const OBJECT_CAP_OFFSET: isize = 8;
 const OBJECT_KEYS_OFFSET: isize = 16;
@@ -404,8 +406,7 @@ pub unsafe extern "C" fn rt_array_reverse(arr: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        //printf("RuntimeError: Cannot reverse a constant array.\n\0".as_ptr() as *const _);
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot reverse a constant array.");
     }
 
     let len = (*header).length as i64;
@@ -458,8 +459,7 @@ pub unsafe extern "C" fn rt_array_sort(arr: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        //printf("RuntimeError: Cannot sort a constant array.\n\0".as_ptr() as *const _);
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot sort a constant array.");
     }
 
     let len = (*header).length as i64;
@@ -490,8 +490,7 @@ pub unsafe extern "C" fn rt_array_fill(arr: i64, val: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        //printf("RuntimeError: Cannot fill a constant array.\n\0".as_ptr() as *const _);
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot fill a constant array.");
     }
 
     let len = (*header).length as i64;
@@ -810,18 +809,17 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_panic(msg_id: i64) {
-    if let Some(s) = i64_to_rust_str(msg_id) {
-        eprintln!("PANIC: {}", s);
+    let msg = if let Some(s) = i64_to_rust_str(msg_id) {
+        format!("PANIC: {}", s)
     } else {
-        eprintln!("PANIC: (invalid string object)");
-    }
-    exit(1);
+        "PANIC: (invalid string object)".to_string()
+    };
+    rt_throw_runtime_error(&msg);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_div_zero_error() {
-    eprintln!("PANIC: Division by zero");
-    exit(1);
+    rt_throw_runtime_error("RuntimeError: Division by zero");
 }
 
 // --- Metadata ---
@@ -1006,8 +1004,7 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
     }
 
     if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 {
-        //printf("RuntimeError: Cannot resize a fixed-size array.\n\0".as_ptr() as *const _);
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot resize a fixed-size array.");
     }
 
     let elem_size = (flags & 0xFF) as i64;
@@ -1084,8 +1081,7 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        //printf("RuntimeError: Cannot push to a constant array.\n\0".as_ptr() as *const _);
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot push to a constant array.");
     }
 
     let len = (*header).length as i64;
@@ -1124,13 +1120,7 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & ((ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16)) != 0 {
-        /*
-        printf(
-            "RuntimeError: Cannot pop from a fixed-size or constant array.\n\0".as_ptr()
-                as *const _,
-        );
-        */
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot pop from a fixed-size or constant array.");
     }
 
     let len = (*header).length as i64;
@@ -1184,8 +1174,7 @@ pub unsafe extern "C" fn rt_array_set_fast(mut id: i64, index: i64, val: i64) ->
         flags = (*header).flags;
     }
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
-        //printf("RuntimeError: Cannot set element in a constant array.\n\0".as_ptr() as *const _);
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
 
     let mut len = (*header).length as i64;
@@ -1243,12 +1232,7 @@ pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & ((ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16)) != 0 {
-        /*
-        printf(
-            "RuntimeError: Cannot shift a fixed-size or constant array.\n\0".as_ptr() as *const _,
-        );
-        */
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot shift a fixed-size or constant array.");
     }
 
     let len = (*header).length as i64;
@@ -1289,12 +1273,7 @@ pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & ((ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16)) != 0 {
-        /*
-        printf(
-            "RuntimeError: Cannot unshift a fixed-size or constant array.\n\0".as_ptr() as *const _,
-        );
-        */
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot unshift a fixed-size or constant array.");
     }
 
     let len = (*header).length as i64;
@@ -1340,12 +1319,7 @@ pub unsafe extern "C" fn rt_array_splice(
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_FIXED | ARRAY_FLAG_CONSTANT) as u16) != 0 {
-        /*
-        printf(
-            "RuntimeError: Cannot splice a fixed-size or constant array.\n\0".as_ptr() as *const _,
-        );
-        */
-        exit(1);
+        rt_throw_runtime_error("RuntimeError: Cannot splice a fixed-size or constant array.");
     }
 
     let len = (*header).length as i64;
@@ -3542,10 +3516,12 @@ pub unsafe extern "C" fn rt_promise_then(p: i64, cb_resolve: i64, cb_reject: i64
     if state == 0 {
         // Pending: Store (cb_res, cb_rej, new_p)
         let mut callbacks_arr = *body.offset(2);
+        rt_push_root(&mut callbacks_arr);
         callbacks_arr = rt_array_push(callbacks_arr, v_cb_res);
         callbacks_arr = rt_array_push(callbacks_arr, v_cb_rej);
         callbacks_arr = rt_array_push(callbacks_arr, v_new_p);
         *body.offset(2) = callbacks_arr;
+        rt_pop_roots(1);
     } else if state == 1 {
         let mut val = *body.offset(1);
         rt_push_root(&mut val);
@@ -3590,10 +3566,12 @@ pub unsafe extern "C" fn rt_promise_await_resume(p: i64, worker: i64, ctx: i64) 
     if state == 0 {
         // Pending: Store (worker, ctx, -2) in callbacks
         let mut callbacks_arr = *body.offset(2);
+        rt_push_root(&mut callbacks_arr);
         callbacks_arr = rt_array_push(callbacks_arr, v_worker);
         callbacks_arr = rt_array_push(callbacks_arr, v_ctx);
         callbacks_arr = rt_array_push(callbacks_arr, -2); // Marker for state machine resume
         *body.offset(2) = callbacks_arr;
+        rt_pop_roots(1);
     } else {
         // Already settled: Enqueue microtask immediately
         tejx_enqueue_task(v_worker, v_ctx);
@@ -3872,8 +3850,9 @@ pub unsafe extern "C" fn rt_await(p: i64) -> i64 {
         body = (v_p - HEAP_OFFSET) as *mut i64;
 
         if !has_more && *body.offset(0) == 0 {
-            eprintln!("Uncaught exception: Deadlock detected! Awaited Promise will never resolve.");
-            exit(1);
+            rt_throw_runtime_error(
+                "RuntimeError: Deadlock detected. Awaited Promise will never resolve.",
+            );
         }
     }
 

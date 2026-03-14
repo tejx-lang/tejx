@@ -336,24 +336,32 @@ export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
     let results: T[] = rt_array_new(total, 8) as T[];
     let state = new PromiseState();
     for (let i = 0; i < total; i++) {
-        let callback = (index: int) => {
-            rt_promise_then(promises[index], (v: T) => {
-                if (state.rejected) return;
-                results[index] = v;
-                state.count = state.count + 1;
-                if (state.count == total) {
-                    rt_promise_resolve(p, results);
-                }
-            }, (e) => {
-                if (!state.rejected) {
-                    state.rejected = true;
-                    rt_promise_reject(p, e);
-                }
-            });
-        };
-        callback(i);
+        _promise_all_attach(promises[i], i, results, state, total, p);
     }
     return p; 
+}
+
+function _promise_all_attach<T>(
+    promise: Promise<T>,
+    index: int,
+    results: T[],
+    state: PromiseState,
+    total: int,
+    out: Promise<T[]>
+): void {
+    rt_promise_then(promise, (v: T) => {
+        if (state.rejected) return;
+        results[index] = v;
+        state.count = state.count + 1;
+        if (state.count == total) {
+            rt_promise_resolve(out, results);
+        }
+    }, (e) => {
+        if (!state.rejected) {
+            state.rejected = true;
+            rt_promise_reject(out, e);
+        }
+    });
 }
 
 

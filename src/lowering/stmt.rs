@@ -83,6 +83,17 @@ impl Lowering {
                         .unwrap_or(TejxType::Int64)
                 };
 
+                if init.is_none() {
+                    if let TejxType::DynamicArray(_) = ty {
+                        init = Some(HIRExpression::ArrayLiteral {
+                            line,
+                            elements: vec![],
+                            ty: ty.clone(),
+                            sized_allocation: None,
+                        });
+                    }
+                }
+
                 // Sized allocations are now handled during AST parsing/transforming where possible,
                 // or we can extract size from TypeNode::Array if needed later.
 
@@ -97,6 +108,27 @@ impl Lowering {
             Statement::ExpressionStmt { _expression, .. } => {
                 let expr = self.lower_expression(_expression);
                 Some(HIRStatement::ExpressionStmt { line: line, expr })
+            }
+            Statement::ClassDeclaration(class_decl) => {
+                self.scan_variadic_class(class_decl);
+                self.register_class(class_decl);
+
+                let mut functions = Vec::new();
+                let mut init_stmts = Vec::new();
+                self.lower_class_declaration(class_decl, &mut functions, &mut init_stmts);
+
+                if !functions.is_empty() {
+                    self.nested_functions.borrow_mut().extend(functions);
+                }
+
+                if init_stmts.is_empty() {
+                    None
+                } else {
+                    Some(HIRStatement::Sequence {
+                        line: line,
+                        statements: init_stmts,
+                    })
+                }
             }
             Statement::WhileStmt {
                 condition, body, ..
@@ -376,7 +408,7 @@ impl Lowering {
             }
             Statement::ReturnStmt { value, .. } => {
                 let val = value.as_ref().map(|e| self.lower_expression(e));
-                if let Some(p_id) = self.current_async_promise_id.borrow().as_ref() {
+                if self.current_async_promise_id.borrow().is_some() {
                     let mut stmts = Vec::new();
 
                     // Prevent double evaluation of function calls or complex expressions
@@ -413,7 +445,7 @@ impl Lowering {
                         }
                     });
 
-                    let (eval_val, final_val) = if !is_pure {
+                    let eval_val = if !is_pure && val.is_some() {
                         let mut counter = self.lambda_counter.borrow_mut();
                         let id = *counter;
                         *counter += 1;
@@ -428,17 +460,16 @@ impl Lowering {
                             line,
                         };
                         stmts.push(decl);
-                        let var_expr = HIRExpression::Variable {
+                        Some(HIRExpression::Variable {
                             name: temp_name,
                             ty,
                             line,
-                        };
-                        (Some(var_expr.clone()), Some(var_expr))
+                        })
                     } else {
-                        (val.clone(), val.clone())
+                        val.clone()
                     };
 
-                    let resolved_expr =
+                    let return_expr =
                         if let Some(target_ty) = self.current_return_type.borrow().as_ref() {
                             if val.is_some()
                                 && *target_ty != TejxType::Int64
@@ -469,38 +500,9 @@ impl Lowering {
                             eval_val.clone()
                         };
 
-                    stmts.push(HIRStatement::ExpressionStmt {
-                        line: line,
-                        expr: HIRExpression::Call {
-                            line: line,
-                            callee: "rt_promise_resolve".to_string(),
-                            args: vec![
-                                HIRExpression::Variable {
-                                    line: line,
-                                    name: p_id.clone(),
-                                    ty: TejxType::Int64,
-                                },
-                                resolved_expr.unwrap_or(HIRExpression::Literal {
-                                    line: line,
-                                    value: "0".to_string(),
-                                    ty: TejxType::Int64,
-                                }),
-                            ],
-                            ty: TejxType::Void,
-                        },
-                    });
-                    stmts.push(HIRStatement::ExpressionStmt {
-                        line: line,
-                        expr: HIRExpression::Call {
-                            line: line,
-                            callee: TEJX_DEC_ASYNC_OPS.to_string(),
-                            args: vec![],
-                            ty: TejxType::Void,
-                        },
-                    });
                     stmts.push(HIRStatement::Return {
                         line: line,
-                        value: final_val,
+                        value: return_expr,
                     });
                     Some(HIRStatement::Block {
                         line: line,
