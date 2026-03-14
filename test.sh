@@ -35,6 +35,7 @@ run_with_timeout() {
     local child_pid=$!
     (sleep "$timeout"; kill -SIGHUP "$child_pid" 2>/dev/null) >/dev/null 2>&1 &
     local watcher_pid=$!
+    disown "$watcher_pid" 2>/dev/null
     wait "$child_pid" 2>/dev/null
     local exit_code=$?
     kill "$watcher_pid" 2>/dev/null

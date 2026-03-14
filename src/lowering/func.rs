@@ -416,6 +416,7 @@ impl Lowering {
             return;
         }
 
+        let name = format!("f_{}", func.name);
         let params: Vec<(String, TejxType)> = func
             .params
             .iter()
@@ -428,6 +429,7 @@ impl Lowering {
             .collect();
         let return_type = self.resolve_alias_type(&TejxType::from_node(&func.return_type));
 
+        self.push_env_owner(name.clone());
         self.enter_scope();
         let mangled_params: Vec<(String, TejxType)> = params
             .iter()
@@ -442,8 +444,8 @@ impl Lowering {
             });
 
         self._exit_scope();
+        self.pop_env_owner();
 
-        let name = format!("f_{}", func.name);
         functions.push(HIRStatement::Function {
             async_params: None,
             line: line,

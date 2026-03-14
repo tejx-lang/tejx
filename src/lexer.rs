@@ -437,7 +437,19 @@ impl Lexer {
         while !self.is_at_end() {
             let c = self.peek(0);
             if is_escaped {
-                value.push(self.advance());
+                let esc = self.advance();
+                match esc {
+                    'n' => value.push('\n'),
+                    't' => value.push('\t'),
+                    'r' => value.push('\r'),
+                    'b' => value.push('\u{0008}'),
+                    'f' => value.push('\u{000C}'),
+                    '\\' => value.push('\\'),
+                    '"' => value.push('"'),
+                    '\'' => value.push('\''),
+                    '0' => value.push('\0'),
+                    _ => value.push(esc),
+                }
                 is_escaped = false;
             } else if c == '\\' {
                 is_escaped = true;

@@ -44,7 +44,6 @@ pub struct Lowering {
     current_async_promise_id: RefCell<Option<String>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
     pub filename: RefCell<String>,
-    pub captured_vars: RefCell<HashSet<String>>,
     pub stdlib_path: RefCell<std::path::PathBuf>,
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<TejxType>>,
     pub lambda_inferred_returns: HashMap<(usize, usize), TejxType>,
@@ -52,6 +51,9 @@ pub struct Lowering {
     current_expected_type: RefCell<Option<TejxType>>,
     pub generic_instantiations: RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
+    env_owner_stack: RefCell<Vec<String>>,
+    captured_vars_by_owner: RefCell<HashMap<String, HashSet<String>>>,
+    lambda_env_owner: RefCell<HashMap<String, String>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -59,7 +61,7 @@ pub struct Lowering {
 pub struct LoweringResult {
     pub functions: Vec<HIRStatement>, // Each should be HIRStatement::Function
     pub signatures: HashMap<String, Vec<TejxType>>,
-    pub captured_vars: HashSet<String>,
+    pub captured_vars_by_function: HashMap<String, HashSet<String>>,
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
 }
@@ -94,7 +96,6 @@ impl Lowering {
             current_async_promise_id: RefCell::new(None),
             diagnostics: RefCell::new(Vec::new()),
             filename: RefCell::new(String::new()),
-            captured_vars: RefCell::new(HashSet::new()),
             stdlib_path: RefCell::new(std::path::PathBuf::from("stdlib")),
             lambda_inferred_types: HashMap::new(),
             lambda_inferred_returns: HashMap::new(),
@@ -102,6 +103,9 @@ impl Lowering {
             current_expected_type: RefCell::new(None),
             generic_instantiations: RefCell::new(HashMap::new()),
             function_instantiations: HashMap::new(),
+            env_owner_stack: RefCell::new(Vec::new()),
+            captured_vars_by_owner: RefCell::new(HashMap::new()),
+            lambda_env_owner: RefCell::new(HashMap::new()),
         }
     }
 
@@ -133,6 +137,11 @@ impl Lowering {
     }
 
     pub(crate) fn define(&self, name: String, ty: TejxType) -> String {
+        if let Some((scope, _)) = self.scopes.borrow().last() {
+            if let Some((existing, _)) = scope.get(&name) {
+                return existing.clone();
+            }
+        }
         let depth = self.scopes.borrow().len() - 1;
         let mangled = if depth == 0 {
             format!("g_{}", name)
@@ -241,12 +250,42 @@ impl Lowering {
                 // Only capture if accessing across a lambda boundary
                 // (not from simple nested blocks like for-loops/if-blocks)
                 if *scope_lambda_depth < current_lambda_depth && i > 0 {
-                    self.captured_vars.borrow_mut().insert(mangled.clone());
+                    if let Some(owner) = self.current_env_owner() {
+                        self.captured_vars_by_owner
+                            .borrow_mut()
+                            .entry(owner)
+                            .or_insert_with(HashSet::new)
+                            .insert(mangled.clone());
+                    }
                 }
                 return Some(info.clone());
             }
         }
         None
+    }
+
+    fn push_env_owner(&self, name: String) {
+        self.env_owner_stack.borrow_mut().push(name.clone());
+        self.captured_vars_by_owner
+            .borrow_mut()
+            .entry(name)
+            .or_insert_with(HashSet::new);
+    }
+
+    fn pop_env_owner(&self) {
+        self.env_owner_stack.borrow_mut().pop();
+    }
+
+    fn current_env_owner(&self) -> Option<String> {
+        self.env_owner_stack.borrow().last().cloned()
+    }
+
+    fn register_lambda_env_owner(&self, lambda_name: &str) {
+        if let Some(owner) = self.current_env_owner() {
+            self.lambda_env_owner
+                .borrow_mut()
+                .insert(lambda_name.to_string(), owner);
+        }
     }
 
     fn find_class_template(
@@ -561,6 +600,7 @@ impl Lowering {
         }
 
         // Pass 2: Lower
+        self.push_env_owner(TEJX_MAIN.to_string());
         for stmt in &merged_statements {
             match stmt {
                 Statement::FunctionDeclaration(func) => {
@@ -623,6 +663,7 @@ impl Lowering {
                 }
             }
         }
+        self.pop_env_owner();
 
         // Include any lambdas generated during expression lowering
         let mut lambdas = self.lambda_functions.borrow_mut();
@@ -793,10 +834,24 @@ impl Lowering {
             class_fields.insert(class_name.clone(), all_fields);
         }
 
+        let captured_by_owner = self.captured_vars_by_owner.borrow().clone();
+        let lambda_owner = self.lambda_env_owner.borrow().clone();
+        let mut captured_vars_by_function: HashMap<String, HashSet<String>> = HashMap::new();
+        for func in &functions {
+            if let HIRStatement::Function { name, .. } = func {
+                let owner = lambda_owner
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone());
+                let vars = captured_by_owner.get(&owner).cloned().unwrap_or_default();
+                captured_vars_by_function.insert(name.clone(), vars);
+            }
+        }
+
         LoweringResult {
             functions,
             signatures,
-            captured_vars: self.captured_vars.borrow().clone(),
+            captured_vars_by_function,
             class_fields,
             class_methods: self.class_methods.borrow().clone(),
         }

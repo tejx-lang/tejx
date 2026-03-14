@@ -28,30 +28,20 @@ impl Lowering {
             Statement::BlockStmt { statements, .. } => {
                 self.enter_scope();
 
-                // Pre-pass: Hoist function declarations within the block
+                // Pre-pass: Hoist nested function names as variables for forward references.
                 for s in statements {
                     if let Statement::FunctionDeclaration(func) = s {
-                        let name = if func.is_extern {
-                            func.name.clone()
-                        } else {
-                            format!("f_{}", func.name)
-                        };
-                        if let Some((scope, _)) = self.scopes.borrow_mut().last_mut() {
-                            scope.insert(
-                                func.name.clone(),
-                                (
-                                    name.clone(),
-                                    self.resolve_alias_type(&TejxType::from_node(&func.return_type)),
-                                ),
-                            );
+                        if func.is_extern {
+                            continue;
                         }
-                        self.user_functions.borrow_mut().insert(
-                            name.clone(),
-                            self.resolve_alias_type(&TejxType::from_node(&func.return_type)),
-                        );
-                        self.user_function_args
-                            .borrow_mut()
-                            .insert(name, func.params.len());
+                        let param_types: Vec<TejxType> = func
+                            .params
+                            .iter()
+                            .map(|p| TejxType::from_node(&p.type_name))
+                            .collect();
+                        let return_type = TejxType::from_node(&func.return_type);
+                        let fn_ty = TejxType::Function(param_types, Box::new(return_type));
+                        self.define(func.name.clone(), fn_ty);
                     }
                 }
 
@@ -617,59 +607,38 @@ impl Lowering {
                 })
             }
             Statement::FunctionDeclaration(func) => {
-                let params: Vec<(String, TejxType)> = func
-                    .params
-                    .iter()
-                    .map(|p| (p.name.clone(), TejxType::from_node(&p.type_name)))
-                    .collect();
-                let return_type = TejxType::from_node(&func.return_type);
-
-                self.enter_scope();
-                for (name, ty) in &params {
-                    self.define(name.clone(), ty.clone());
+                if func.is_extern {
+                    // Extern functions must stay at the top level; ignore nested externs.
+                    return None;
                 }
 
-                let body = self
-                    .lower_statement(&func.body)
-                    .unwrap_or(HIRStatement::Block {
-                        line: line,
-                        statements: vec![],
-                    });
+                // Treat nested function declarations as closures that capture their environment.
+                let param_types: Vec<TejxType> = func
+                    .params
+                    .iter()
+                    .map(|p| TejxType::from_node(&p.type_name))
+                    .collect();
+                let return_type = TejxType::from_node(&func.return_type);
+                let fn_ty = TejxType::Function(param_types, Box::new(return_type));
 
-                self._exit_scope();
+                // Define the function name in the current scope so recursion works.
+                let mangled_name = self.define(func.name.clone(), fn_ty.clone());
 
-                let name = if func.is_extern {
-                    func.name.clone()
-                } else {
-                    format!("f_{}", func.name)
+                let lambda_expr = Expression::LambdaExpr {
+                    params: func.params.clone(),
+                    body: func.body.clone(),
+                    _line: func._line,
+                    _col: func._col,
                 };
+                let hir_lambda = self.lower_expression(&lambda_expr);
 
-                Some(HIRStatement::Function {
-                    async_params: None,
+                Some(HIRStatement::VarDecl {
+                    name: mangled_name,
+                    initializer: Some(hir_lambda),
+                    ty: fn_ty,
+                    _is_const: false,
                     line: line,
-                    name: name.clone(),
-                    params: params.clone(),
-                    _return_type: return_type.clone(),
-                    body: Box::new(body.clone()),
-                    is_extern: func.is_extern,
-                });
-
-                self.nested_functions
-                    .borrow_mut()
-                    .push(HIRStatement::Function {
-                        async_params: None,
-                        line: line,
-                        name,
-                        params,
-                        _return_type: return_type,
-                        body: Box::new(body),
-                        is_extern: func.is_extern,
-                    });
-
-                // Since it's extracted to global, we don't return an inline closure,
-                // but if someone expects an inline block we return empty block, but really
-                // it shouldn't be executed inline! Function declarations are hoisted anyway.
-                None
+                })
             }
             _ => None,
         }

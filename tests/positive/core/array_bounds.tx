@@ -1,0 +1,6 @@
+import { assert_true } from "../utils.tx";
+
+function main() {
+    let arr: int[] = [1, 2, 3];
+    assert_true(arr[5] == None, "Out-of-bounds returns None");
+}

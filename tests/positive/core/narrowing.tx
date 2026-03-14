@@ -1,0 +1,41 @@
+class Animal {
+    name: string;
+    constructor(name: string) {
+        this.name = name;
+    }
+}
+
+class Dog extends Animal {
+    breed: string;
+    constructor(name: string, breed: string) {
+        super(name);
+        this.breed = breed;
+    }
+    bark(): void {
+        print("Woof");
+    }
+}
+
+function processAnimal(a: Animal | None): void {
+    if (a != None) {
+        if (a instanceof Dog) {
+            a.bark(); // narrow to Dog
+            print(a.breed); // narrow to Dog
+        } else {
+            print(a.name); // narrow to Animal
+        }
+    } else {
+        print("No animal\n");
+    }
+}
+
+function main(): int {
+    let d = new Dog("Buddy", "Golden Retriever");
+    processAnimal(d);
+    
+    let a = new Animal("Generic");
+    processAnimal(a);
+    
+    processAnimal(None);
+    return 0;
+}

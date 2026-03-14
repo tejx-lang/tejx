@@ -74,20 +74,151 @@ export class Queue<T> {
     }
 }
 
-// Map implementation is pure TejX now.
+let __tejx_map_next_id: int64 = 1;
+
+// Map implementation is pure TejX (open addressing, O(1) avg).
 export class Map<K, V> {
-    private _id: any;
+    private _keys: any[];
+    private _values: any[];
+    private _states: int[];
+    private _size: int;
+    private _used: int;
+    private _cap: int;
 
     constructor() {
-        this._id = rt_map_new();
+        this._cap = 16;
+        this._size = 0;
+        this._used = 0;
+        this._keys = [];
+        this._values = [];
+        this._states = [];
+        for (let i = 0; i < this._cap; i++) {
+            this._keys.push(None);
+            this._values.push(None);
+            this._states.push(0); // 0=empty, 1=filled, 2=deleted
+        }
+    }
+
+    private hashString(s: string): int {
+        let h = 0;
+        let alphabet: string = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:-/ .";
+        for (let i = 0; i < s.length(); i++) {
+            let ch = s[i];
+            let idx = alphabet.indexOf(ch);
+            if (idx < 0) idx = 0;
+            h = h * 131 + idx + 1;
+        }
+        if (h < 0) h = 0 - h;
+        return h;
+    }
+
+    private hashKey(key: any): int {
+        if (key == None) return 0;
+        let ty = typeof(key);
+        if (ty == "string") return this.hashString(key as string);
+        if (ty == "int" || ty == "int64") return key as int;
+        if (ty == "float" || ty == "float64") return (key as int);
+        if (ty == "bool") return (key == true ? 1 : 0);
+
+        if (ty == "object" || ty == "function") {
+            let existing: any = key["__tejx_map_id__"];
+            if (existing == None || existing == 0) {
+                key["__tejx_map_id__"] = __tejx_map_next_id;
+                existing = __tejx_map_next_id;
+                __tejx_map_next_id = __tejx_map_next_id + 1;
+            }
+            return existing as int;
+        }
+
+        // Fallback: stringify
+        let s = rt_to_string(key);
+        return this.hashString(s);
+    }
+
+    private findSlot(key: any): int {
+        let hash = this.hashKey(key);
+        let cap = this._cap;
+        let idx = hash % cap;
+        if (idx < 0) idx = 0 - idx;
+        let tomb = -1;
+        while (true) {
+            let st = this._states[idx];
+            if (st == 0) {
+                if (tomb >= 0) return tomb;
+                return idx;
+            }
+            if (st == 1 && this._keys[idx] == key) return idx;
+            if (st == 2 && tomb < 0) tomb = idx;
+            idx = idx + 1;
+            if (idx >= cap) idx = 0;
+        }
+    }
+
+    private findIndex(key: any): int {
+        let hash = this.hashKey(key);
+        let cap = this._cap;
+        let idx = hash % cap;
+        if (idx < 0) idx = 0 - idx;
+        while (true) {
+            let st = this._states[idx];
+            if (st == 0) return -1;
+            if (st == 1 && this._keys[idx] == key) return idx;
+            idx = idx + 1;
+            if (idx >= cap) idx = 0;
+        }
+    }
+
+    private ensureCapacity(): void {
+        if (this._used * 10 >= this._cap * 7) {
+            this.resize(this._cap * 2);
+        }
+    }
+
+    private resize(newCap: int): void {
+        let oldKeys: any[] = this._keys;
+        let oldValues: any[] = this._values;
+        let oldStates: int[] = this._states;
+        let oldCap: int = this._cap;
+
+        this._cap = newCap;
+        this._size = 0;
+        this._used = 0;
+        this._keys = [];
+        this._values = [];
+        this._states = [];
+        for (let i = 0; i < this._cap; i++) {
+            this._keys.push(None);
+            this._values.push(None);
+            this._states.push(0);
+        }
+
+        for (let i = 0; i < oldCap; i++) {
+            if (oldStates[i] == 1) {
+                this.set(oldKeys[i] as K, oldValues[i] as V);
+            }
+        }
     }
 
     set(key: K, val: V): void {
-        rt_map_set(this._id, key, val);
+        this.ensureCapacity();
+        let idx = this.findSlot(key);
+        if (this._states[idx] == 1) {
+            this._values[idx] = val;
+            return;
+        }
+        if (this._states[idx] == 0) {
+            this._used = this._used + 1;
+        }
+        this._keys[idx] = key;
+        this._values[idx] = val;
+        this._states[idx] = 1;
+        this._size = this._size + 1;
     }
 
     get(key: K): V {
-        let v: V = rt_map_get(this._id, key);
+        let idx = this.findIndex(key);
+        if (idx < 0) return None;
+        let v: V = this._values[idx];
         return v;
     }
 
@@ -100,70 +231,95 @@ export class Map<K, V> {
     }
 
     has(key: K): bool {
-        return rt_map_has(this._id, key);
+        return this.findIndex(key) >= 0;
     }
 
     delete(key: K): bool {
-        return rt_map_delete(this._id, key);
+        let idx = this.findIndex(key);
+        if (idx < 0) return false;
+        this._states[idx] = 2;
+        this._keys[idx] = None;
+        this._values[idx] = None;
+        this._size = this._size - 1;
+        return true;
     }
 
     keys(): K[] {
-        let k: K[] = rt_map_keys(this._id);
-        return k;
+        let out: K[] = [];
+        for (let i = 0; i < this._cap; i++) {
+            if (this._states[i] == 1) {
+                out.push(this._keys[i] as K);
+            }
+        }
+        return out;
     }
 
     values(): V[] {
-        let v: V[] = rt_map_values(this._id);
-        return v;
+        let out: V[] = [];
+        for (let i = 0; i < this._cap; i++) {
+            if (this._states[i] == 1) {
+                out.push(this._values[i] as V);
+            }
+        }
+        return out;
     }
 
     size(): int {
-        return rt_map_size(this._id);
+        return this._size;
     }
 
     isEmpty(): bool {
-        return this.size() == 0;
+        return this._size == 0;
     }
 
     clear(): void {
-        this._id = rt_map_new();
+        this._cap = 16;
+        this._size = 0;
+        this._used = 0;
+        this._keys = [];
+        this._values = [];
+        this._states = [];
+        for (let i = 0; i < this._cap; i++) {
+            this._keys.push(None);
+            this._values.push(None);
+            this._states.push(0);
+        }
     }
 }
 
 export class Set<T> {
-    private _id: any;
+    private _map: Map<T, int>;
 
     constructor() {
-        this._id = rt_map_new();
+        this._map = new Map<T, int>();
     }
 
     add(val: T): void {
-        rt_map_set(this._id, val, 1);
+        this._map.set(val, 1);
     }
 
     has(val: T): bool {
-        return rt_map_has(this._id, val);
+        return this._map.has(val);
     }
 
     delete(val: T): bool {
-        return rt_map_delete(this._id, val);
+        return this._map.delete(val);
     }
 
     values(): T[] {
-        let k: T[] = rt_map_keys(this._id);
-        return k;
+        return this._map.keys();
     }
 
     size(): int {
-        return rt_map_size(this._id);
+        return this._map.size();
     }
 
     isEmpty(): bool {
-        return this.size() == 0;
+        return this._map.isEmpty();
     }
 
     clear(): void {
-        this._id = rt_map_new();
+        this._map.clear();
     }
 }
 

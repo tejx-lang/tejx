@@ -38,7 +38,7 @@ function serialize(val: any, out: string[], seen: any[], indent: string, gap: st
         return;
     }
     if (ty == "int" || ty == "float" || ty == "bool") {
-        out.push(val.toString()); // Native method call
+        out.push( rt_to_string(val)); 
         return;
     }
  
@@ -161,6 +161,7 @@ export function parse(s: string): any {
     function skipWhitespace() {
         while (index < len) {
             let ch = s[index];
+            // print("skipWhitespace: index=", index, " ch='", ch, "'");
             if (ch == " " || ch == "\n" || ch == "\t" || ch == "\r") {
                 index++;
             } else {
@@ -168,6 +169,7 @@ export function parse(s: string): any {
             }
         }
     }
+
 
     function parseString(): string {
         index++; // skip "
@@ -299,7 +301,8 @@ export function parse(s: string): any {
         skipWhitespace();
         if (index >= len) throw new Error("SyntaxError: Unexpected end of JSON input");
 
-        let ch = s[index];
+        let ch = " ";
+        if (index < len) ch = s[index];
         if (ch == "{") return parseObject();
         if (ch == "[") return parseArray();
         if (ch == "\"") return parseString();

@@ -2,7 +2,7 @@ use super::*;
 use crate::intrinsics::*;
 use crate::mir::*;
 use crate::types::TejxType;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
     pub(crate) fn does_escape(&self, func: &MIRFunction, var_name: &str) -> bool {
@@ -150,11 +150,15 @@ impl CodeGen {
     pub fn generate_with_blocks(
         &mut self,
         functions: &[MIRFunction],
-        captured_vars: HashSet<String>,
+        captured_vars_by_function: HashMap<String, HashSet<String>>,
     ) -> String {
-        let mut sorted_captured: Vec<String> = captured_vars.into_iter().collect();
-        sorted_captured.sort();
-        self.captured_vars = sorted_captured;
+        self.captured_vars_by_function.clear();
+        for (name, vars) in captured_vars_by_function {
+            let mut sorted: Vec<String> = vars.into_iter().collect();
+            sorted.sort();
+            self.captured_vars_by_function.insert(name, sorted);
+        }
+        self.captured_vars.clear();
         self.buffer.clear();
         self.global_buffer.clear();
         self.declared_functions.clear();
@@ -394,6 +398,11 @@ impl CodeGen {
         }
 
         for func in unique_functions {
+            self.captured_vars = self
+                .captured_vars_by_function
+                .get(&func.name)
+                .cloned()
+                .unwrap_or_default();
             self.gen_function_v2(func);
         }
 
@@ -583,32 +592,20 @@ impl CodeGen {
 
         if func.name.starts_with("lambda_") {
             if !func.params.is_empty() {
-                // Create a NEW environment array for this lambda call
-                // and COPY all values from the passed environment (%__env)
-                self.declare_runtime_fn(
-                    "rt_Array_constructor_v2",
-                    "i64 @rt_Array_constructor_v2(i64, i64, i64, i64) nounwind",
-                );
+                // Reuse the passed environment pointer so closures share state.
+                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
 
                 self.temp_counter += 1;
                 let env_alloca = format!("%env_alloca_{}", self.temp_counter);
                 self.alloca_buffer
                     .push_str(&format!("  {} = alloca i64\n", env_alloca));
 
-                let new_env = format!("%new_env_{}", self.temp_counter);
                 let passed_env = format!("%{}", func.params[0]);
-
-                // rt_Array_constructor_v2(this, size_or_arr, elem_size, flags)
-                // If passed_env is an array, it clones it.
-                self.emit_line(&format!(
-                    "{} = call i64 @rt_Array_constructor_v2(i64 0, i64 {}, i64 8, i64 0)",
-                    new_env, passed_env
-                ));
-                self.emit_line(&format!("store i64 {}, i64* {}", new_env, env_alloca));
+                self.emit_line(&format!("store i64 {}, i64* {}", passed_env, env_alloca));
                 self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
                 self.num_roots += 1;
 
-                self.current_env = Some(new_env);
+                self.current_env = Some(passed_env);
             }
         } else if has_captures {
             self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");

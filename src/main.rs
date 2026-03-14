@@ -272,7 +272,8 @@ fn main() {
     codegen.unsafe_arrays = unsafe_arrays;
     codegen.class_fields = lowering_result.class_fields;
     codegen.class_methods = lowering_result.class_methods;
-    let llvm_code = codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars);
+    let llvm_code =
+        codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars_by_function);
 
     if emit_llvm {
         eprintln!("{}", llvm_code);

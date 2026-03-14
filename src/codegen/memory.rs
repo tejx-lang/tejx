@@ -71,12 +71,46 @@ impl CodeGen {
             }
 
             if !used_fast {
+                let mut temp_root_count = 0;
+                if Self::is_gc_managed(obj.get_type())
+                    && !(matches!(obj.get_type(), TejxType::String)
+                        && obj_val.starts_with("ptrtoint"))
+                {
+                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                    self.temp_counter += 1;
+                    let tmp_root = format!("%member_obj_root_{}", self.temp_counter);
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                    self.emit_line(&format!("store i64 {}, i64* {}", obj_val, tmp_root));
+                    self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                    temp_root_count += 1;
+                }
+
                 let k_val = self.resolve_value(&MIRValue::Constant {
                     value: format!("\"{}\"", member),
                     ty: TejxType::String,
                 });
+                if Self::is_gc_managed(&TejxType::String) && !k_val.starts_with("ptrtoint") {
+                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                    self.temp_counter += 1;
+                    let tmp_root = format!("%member_key_root_{}", self.temp_counter);
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                    self.emit_line(&format!("store i64 {}, i64* {}", k_val, tmp_root));
+                    self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                    temp_root_count += 1;
+                }
                 self.declare_runtime_fn("rt_get_property", "i64 @rt_get_property(i64, i64)");
                 self.emit_line(&format!("{} = call i64 @rt_get_property(i64 {}, i64 {})", res_tmp, obj_val, k_val));
+
+                if temp_root_count > 0 {
+                    self.emit_line(&format!(
+                        "call void @rt_pop_roots(i64 {})",
+                        temp_root_count
+                    ));
+                }
             }
         }
 
@@ -198,8 +232,51 @@ impl CodeGen {
                 ty: TejxType::String,
             });
             let boxed_v = self.emit_auto_box(&v_val, &v_ty);
+            let mut temp_root_count = 0;
+            if Self::is_gc_managed(obj.get_type()) {
+                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                self.temp_counter += 1;
+                let tmp_root = format!("%member_obj_root_{}", self.temp_counter);
+                self.alloca_buffer
+                    .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                self.emit_line(&format!("store i64 {}, i64* {}", obj_val, tmp_root));
+                self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                temp_root_count += 1;
+            }
+
+            if Self::is_gc_managed(&TejxType::String) {
+                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                self.temp_counter += 1;
+                let tmp_root = format!("%member_key_root_{}", self.temp_counter);
+                self.alloca_buffer
+                    .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                self.emit_line(&format!("store i64 {}, i64* {}", k_val, tmp_root));
+                self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                temp_root_count += 1;
+            }
+
+            // boxed_v is always a GC-managed object (auto-boxed to Any).
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let tmp_root = format!("%member_val_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", tmp_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", boxed_v, tmp_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+            temp_root_count += 1;
+
             self.declare_runtime_fn("rt_set_property", "void @rt_set_property(i64, i64, i64)");
             self.emit_line(&format!("call void @rt_set_property(i64 {}, i64 {}, i64 {})", obj_val, k_val, boxed_v));
+
+            if temp_root_count > 0 {
+                self.emit_line(&format!(
+                    "call void @rt_pop_roots(i64 {})",
+                    temp_root_count
+                ));
+            }
         }
     }
 

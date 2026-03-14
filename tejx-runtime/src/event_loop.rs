@@ -240,7 +240,6 @@ pub unsafe extern "C" fn tejx_throw(exception: i64) {
     };
 
     if let Some(h) = handler {
-        log_exception("Throw", exception);
         MY_CONTEXT.with(|ctx: &std::cell::UnsafeCell<Box<ThreadContext>>| {
             let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
             (*ctx_ptr).roots_top = h.roots_top;

@@ -220,6 +220,12 @@ impl Lowering {
             let return_type =
                 self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
+            let env_owner_name = if func_decl._is_async {
+                format!("f_{}_worker", name)
+            } else {
+                name.clone()
+            };
+            self.push_env_owner(env_owner_name);
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params
                 .iter()
@@ -311,6 +317,7 @@ impl Lowering {
                     &func_decl.body,
                 );
                 self._exit_scope();
+                self.pop_env_owner();
                 functions.push(worker_func);
                 functions.push(_state_struct);
                 functions.push(HIRStatement::Function {
@@ -324,6 +331,7 @@ impl Lowering {
                 });
             } else {
                 self._exit_scope();
+                self.pop_env_owner();
                 let mangled_name = format!("f_{}_{}", class_decl.name.replace("[", "_").replace("]", "_"), func_decl.name);
                 functions.push(HIRStatement::Function {
                     async_params: None,
@@ -343,10 +351,12 @@ impl Lowering {
             let name = format!("f_{}_get_{}", class_decl.name, getter._name);
             let return_type =
                 self.resolve_alias_type(&TejxType::from_node(&getter._return_type));
+            self.push_env_owner(name.clone());
             self.enter_scope();
             let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
             let hir_body = self.lower_statement(&getter._body).unwrap_or(HIRStatement::Block { line: line, statements: vec![] });
             self._exit_scope();
+            self.pop_env_owner();
             functions.push(HIRStatement::Function { async_params: None, line: line, name, params: mangled_params, _return_type: return_type, body: Box::new(hir_body), is_extern: false });
         }
 
@@ -360,10 +370,12 @@ impl Lowering {
                 )
             ];
             let name = format!("f_{}_set_{}", class_decl.name, setter._name);
+            self.push_env_owner(name.clone());
             self.enter_scope();
             let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
             let hir_body = self.lower_statement(&setter._body).unwrap_or(HIRStatement::Block { line: line, statements: vec![] });
             self._exit_scope();
+            self.pop_env_owner();
             functions.push(HIRStatement::Function { async_params: None, line: line, name, params: mangled_params, _return_type: TejxType::Void, body: Box::new(hir_body), is_extern: false });
         }
 
@@ -448,6 +460,7 @@ impl Lowering {
             let return_type =
                 self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
+            self.push_env_owner(name.clone());
             self.enter_scope();
             let mangled_params: Vec<(String, TejxType)> = params
                 .iter()
@@ -462,6 +475,7 @@ impl Lowering {
                 });
 
             self._exit_scope();
+            self.pop_env_owner();
 
             functions.push(HIRStatement::Function {
                 async_params: None,

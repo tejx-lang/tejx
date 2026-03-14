@@ -59,14 +59,31 @@ impl Lowering {
             Expression::NumberLiteral {
                 value, _is_float, ..
             } => {
-                let (val_str, ty) = if *_is_float {
+                if let Some(expected) = self.current_expected_type.borrow().clone() {
+                    if expected.is_numeric() {
+                        let val_str = if expected.is_float() {
+                            let mut s = value.to_string();
+                            if !s.contains('.') && !s.contains('e') {
+                                s.push_str(".0");
+                            }
+                            s
+                        } else {
+                            format!("{:.0}", value)
+                        };
+                        return HIRExpression::Literal {
+                            line,
+                            value: val_str,
+                            ty: expected,
+                        };
+                    }
+                }
+
+                let (val_str, ty) = if *_is_float || value.fract() != 0.0 {
                     let mut s = value.to_string();
                     if !s.contains('.') && !s.contains('e') {
                         s.push_str(".0");
                     }
-                    (s, TejxType::Float64)
-                } else if value.fract() != 0.0 {
-                    (value.to_string(), TejxType::Float64)
+                    (s, TejxType::Float32)
                 } else {
                     (format!("{:.0}", value), TejxType::Int32)
                 };
@@ -110,6 +127,7 @@ impl Lowering {
                 let (resolved_name, mut ty) = self
                     .lookup(name)
                     .unwrap_or_else(|| (name.clone(), TejxType::Int64));
+                ty = self.resolve_alias_type(&ty);
                 let f_name = format!("f_{}", name);
                 let final_name = if (self.user_functions.borrow().contains_key(name)
                     || self.user_functions.borrow().contains_key(&f_name))
@@ -468,7 +486,7 @@ impl Lowering {
                             TejxType::Int64 => Some(8),
                             TejxType::Int128 => Some(16),
                             TejxType::Float16 => Some(2),
-                            TejxType::Float32 => Some(8),
+                            TejxType::Float32 => Some(4),
                             TejxType::Float64 => Some(8),
                             TejxType::Bool => Some(1),
                             TejxType::Char => Some(4),
@@ -1039,6 +1057,7 @@ impl Lowering {
                     val
                 };
                 let lambda_name = format!("lambda_{}", id);
+                self.register_lambda_env_owner(&lambda_name);
 
                 // Use inferred types from TypeChecker if available
                 let inferred = self.lambda_inferred_types.get(&(*_line, *_col));
@@ -1106,7 +1125,8 @@ impl Lowering {
                         line: line,
                         name: lambda_name.clone(),
                         params: mangled_params,
-                        _return_type: TejxType::Int64,
+                        // Lambdas return through the Any/i64 ABI so closures are uniform.
+                        _return_type: TejxType::Any,
                         body: Box::new(hir_body),
                         is_extern: false,
                     });

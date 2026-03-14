@@ -537,10 +537,11 @@ impl CodeGen {
                 }
 
                 if is_float_type {
-                    if let Ok(d) = value.parse::<f64>() {
-                        return format!("0x{:016X}", d.to_bits());
+                    let mut s = value.clone();
+                    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                        s.push_str(".0");
                     }
-                    return "0.0".to_string();
+                    return s;
                 }
 
                 if value == "null" {
@@ -758,10 +759,29 @@ impl CodeGen {
                     val.to_string()
                 };
 
+                let mut temp_root_count = 0;
+                if Self::is_gc_managed(ty) {
+                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                    self.temp_counter += 1;
+                    let tmp_root = format!("%tmp_root_{}", self.temp_counter);
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                    self.emit_line(&format!("store i64 {}, i64* {}", val_to_store, tmp_root));
+                    self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                    temp_root_count = 1;
+                }
+
                 self.emit_line(&format!(
                     "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
                     env, cap_idx, val_to_store
                 ));
+                if temp_root_count > 0 {
+                    self.emit_line(&format!(
+                        "call void @rt_pop_roots(i64 {})",
+                        temp_root_count
+                    ));
+                }
                 return;
             }
         }

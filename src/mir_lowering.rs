@@ -1888,9 +1888,8 @@ impl MIRLowering {
                     .collect();
 
                 let mut raw_temp = self.new_temp(ty.clone());
-                // For strings coming back from Map/Set intrinsics, they might be raw ptrs,
-                // and the user expects them as boxed strings if the variable is typed 'string'.
-                // If it's a known runtime method that returns raw generic i64 representing a string ptr
+                // For strings coming back from some runtime calls (e.g. property access or array pop/shift),
+                // they might be raw ptrs, but the user expects boxed strings if the variable is typed 'string'.
                 if (final_callee == "rt_get_property"
                     || final_callee == "rt_array_pop"
                     || final_callee == "rt_array_shift")

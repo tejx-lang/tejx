@@ -673,10 +673,6 @@ pub unsafe fn mark_object(root: *mut i64) {
     } else if type_id == TAG_OBJECT as u16 {
         mark_object(body_ptr.add(16) as *mut i64); // keys_handle at offset 2 (16 bytes)
         mark_object(body_ptr.add(24) as *mut i64); // values_handle at offset 3 (24 bytes)
-    } else if type_id == TAG_MAP as u16 {
-        mark_object(body_ptr.add(16) as *mut i64); // keys array
-        mark_object(body_ptr.add(24) as *mut i64); // values array
-        mark_object(body_ptr.add(32) as *mut i64); // states array
     } else if type_id == TAG_PROMISE as u16 {
         mark_object(body_ptr.add(8) as *mut i64); // value
         mark_object(body_ptr.add(16) as *mut i64); // callbacks array
@@ -869,10 +865,6 @@ unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mu
     } else if type_id == TAG_OBJECT as u16 {
         updater(body_ptr.add(16) as *mut i64); // keys_handle
         updater(body_ptr.add(24) as *mut i64); // values_handle
-    } else if type_id == TAG_MAP as u16 {
-        updater(body_ptr.add(16) as *mut i64); // keys array
-        updater(body_ptr.add(24) as *mut i64); // values array
-        updater(body_ptr.add(32) as *mut i64); // states array
     } else if type_id == TAG_PROMISE as u16 {
         updater(body_ptr.add(8) as *mut i64); // value
         updater(body_ptr.add(16) as *mut i64); // callbacks array
@@ -894,8 +886,6 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
         (*header).capacity as usize * elem_size
     } else if type_id == TAG_OBJECT as u16 {
         40 // Object layout: [size, capacity, keys_ptr, values_ptr, data_base]
-    } else if type_id == TAG_MAP as u16 {
-        40 // Map layout: [size, capacity, keys_ptr, values_ptr, states_ptr]
     } else if type_id == TAG_INT as u16
         || type_id == TAG_FLOAT as u16
         || type_id == TAG_CHAR as u16
@@ -1011,10 +1001,6 @@ unsafe fn scan_object_fields(header: *mut ObjectHeader) {
     } else if type_id == TAG_OBJECT as u16 {
         copy_object(body_ptr.add(16) as *mut i64); // keys_handle
         copy_object(body_ptr.add(24) as *mut i64); // values_handle
-    } else if type_id == TAG_MAP as u16 {
-        copy_object(body_ptr.add(16) as *mut i64); // keys array
-        copy_object(body_ptr.add(24) as *mut i64); // values array
-        copy_object(body_ptr.add(32) as *mut i64); // states array
     } else if type_id == TAG_PROMISE as u16 {
         copy_object(body_ptr.add(8) as *mut i64); // value
         copy_object(body_ptr.add(16) as *mut i64); // callbacks array
@@ -1089,11 +1075,9 @@ unsafe fn clear_array_caches() {
     PREV_ID = 0;
     PREV_PTR = std::ptr::null_mut();
     PREV_LEN = 0;
-    PREV_ELEM_SIZE = 0;
     PREV2_ID = 0;
     PREV2_PTR = std::ptr::null_mut();
     PREV2_LEN = 0;
-    PREV2_ELEM_SIZE = 0;
 }
 
 pub unsafe fn minor_gc_locked() {

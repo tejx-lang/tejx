@@ -198,11 +198,6 @@ impl CodeGen {
         right: &MIRValue,
         op_width: &TejxType,
     ) {
-        let l = self.resolve_value(left);
-        let r = self.resolve_value(right);
-        self.temp_counter += 1;
-        let tmp = format!("%tmp{}", self.temp_counter);
-
         let l_ty = match left {
             MIRValue::Constant { ty, .. } => ty,
             MIRValue::Variable { ty, .. } => ty,
@@ -211,6 +206,40 @@ impl CodeGen {
             MIRValue::Constant { ty, .. } => ty,
             MIRValue::Variable { ty, .. } => ty,
         };
+
+        let mut temp_root_count = 0;
+        let l = self.resolve_value(left);
+        if Self::is_gc_managed(l_ty)
+            && !(matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint"))
+        {
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let tmp_root = format!("%bin_l_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", tmp_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", l, tmp_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+            temp_root_count += 1;
+        }
+
+        let r = self.resolve_value(right);
+        if Self::is_gc_managed(r_ty)
+            && !(matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint"))
+        {
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let tmp_root = format!("%bin_r_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", tmp_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", r, tmp_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+            temp_root_count += 1;
+        }
+
+        self.temp_counter += 1;
+        let tmp = format!("%tmp{}", self.temp_counter);
 
         let unwrap_ty = |ty: &TejxType| -> TejxType { ty.clone() };
 
@@ -287,6 +316,16 @@ impl CodeGen {
                 self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]))
             };
 
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let l_val_root = format!("%str_l_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", l_val_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", l_val, l_val_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", l_val_root));
+            temp_root_count += 1;
+
             let r_val = if r_ty.is_numeric() {
                 if r_ty.is_float() {
                     self.declare_runtime_fn(
@@ -335,6 +374,16 @@ impl CodeGen {
                 self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]))
             };
 
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let r_val_root = format!("%str_r_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", r_val_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", r_val, r_val_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", r_val_root));
+            temp_root_count += 1;
+
             if matches!(op, TokenType::Plus) {
                 self.declare_runtime_fn(
                     "rt_str_concat_v2",
@@ -377,7 +426,28 @@ impl CodeGen {
             self.emit_store_variable(dst, &final_tmp, dst_ty);
         } else if is_any_op {
             let l_any = self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]));
+
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let l_any_root = format!("%any_l_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", l_any_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", l_any, l_any_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", l_any_root));
+            temp_root_count += 1;
+
             let r_any = self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]));
+
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let r_any_root = format!("%any_r_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", r_any_root));
+            self.emit_line(&format!("store i64 {}, i64* {}", r_any, r_any_root));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", r_any_root));
+            temp_root_count += 1;
 
             let rt_fn = match op {
                 TokenType::Plus => "rt_add",
@@ -604,6 +674,13 @@ impl CodeGen {
                 self.emit_store_variable(dst, &final_res, dst_ty);
             }
         }
+
+        if temp_root_count > 0 {
+            self.emit_line(&format!(
+                "call void @rt_pop_roots(i64 {})",
+                temp_root_count
+            ));
+        }
     }
 
     pub(crate) fn emit_call(
@@ -639,39 +716,80 @@ impl CodeGen {
         }
 
         if callee == "rt_to_number" {
-            let float_val = self.resolve_float_value(&args[0]);
+            let arg_ty = args[0].get_type();
+            let needs_runtime = matches!(arg_ty, TejxType::String | TejxType::Any)
+                || matches!(arg_ty, TejxType::Class(name, _) if name == "Any");
 
-            if !dst.is_empty() {
-                self.float_ssa_vars.insert(dst.clone(), float_val.clone());
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            if needs_runtime {
+                let arg_val = self.resolve_value(&args[0]);
+                self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
+                self.temp_counter += 1;
+                let num_val = format!("%num_val{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call double @rt_to_number(i64 {})",
+                    num_val, arg_val
+                ));
 
-                let store_val = match dst_ty {
-                    TejxType::Float32 => {
-                        // fptrunc double -> float for Float32 destinations
-                        self.temp_counter += 1;
-                        let trunc = format!("%ftrunc{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = fptrunc double {} to float",
-                            trunc, float_val
-                        ));
-                        trunc
-                    }
-                    TejxType::Float64 => {
-                        // Store the double directly without bitcasting to i64
-                        float_val
-                    }
-                    _ => {
-                        // Default: bitcast double -> i64 for integer/general types
-                        self.temp_counter += 1;
-                        let bits_tmp = format!("%bits{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = bitcast double {} to i64",
-                            bits_tmp, float_val
-                        ));
-                        bits_tmp
-                    }
-                };
-                self.emit_store_variable(dst, &store_val, dst_ty);
+                if !dst.is_empty() {
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                    let store_val = match dst_ty {
+                        TejxType::Float32 => {
+                            self.temp_counter += 1;
+                            let trunc = format!("%ftrunc{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = fptrunc double {} to float",
+                                trunc, num_val
+                            ));
+                            trunc
+                        }
+                        TejxType::Float64 => num_val,
+                        _ => {
+                            self.temp_counter += 1;
+                            let bits_tmp = format!("%bits{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = bitcast double {} to i64",
+                                bits_tmp, num_val
+                            ));
+                            bits_tmp
+                        }
+                    };
+                    self.emit_store_variable(dst, &store_val, dst_ty);
+                }
+            } else {
+                let float_val = self.resolve_float_value(&args[0]);
+
+                if !dst.is_empty() {
+                    self.float_ssa_vars.insert(dst.clone(), float_val.clone());
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+
+                    let store_val = match dst_ty {
+                        TejxType::Float32 => {
+                            // fptrunc double -> float for Float32 destinations
+                            self.temp_counter += 1;
+                            let trunc = format!("%ftrunc{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = fptrunc double {} to float",
+                                trunc, float_val
+                            ));
+                            trunc
+                        }
+                        TejxType::Float64 => {
+                            // Store the double directly without bitcasting to i64
+                            float_val
+                        }
+                        _ => {
+                            // Default: bitcast double -> i64 for integer/general types
+                            self.temp_counter += 1;
+                            let bits_tmp = format!("%bits{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = bitcast double {} to i64",
+                                bits_tmp, float_val
+                            ));
+                            bits_tmp
+                        }
+                    };
+                    self.emit_store_variable(dst, &store_val, dst_ty);
+                }
             }
             return;
         }
@@ -1185,7 +1303,19 @@ impl CodeGen {
                 let _ = call_arg_vals.join(", ");
             }
 
-            let mut call_args_info = Vec::new();
+            let is_math_fn = final_callee.starts_with("std_math_");
+            let is_runtime_fn = final_callee.starts_with("rt_")
+                || final_callee.starts_with("tejx_")
+                || final_callee == "printf"
+                || final_callee == "malloc"
+                || final_callee == "free";
+            let is_runtime_any = is_runtime_fn && final_callee != "rt_str_equals";
+
+            let mut call_args_info: Vec<(MIRValue, String)> = Vec::new();
+            let mut llvm_args = Vec::new();
+            let mut llvm_decl_args = Vec::new();
+            let mut temp_root_count = 0;
+
             if is_instance_call {
                 // Peek at the first argument to see if it's already the instance
                 let already_has_this = args
@@ -1205,13 +1335,72 @@ impl CodeGen {
                         self.temp_counter += 1;
                         let tmp = format!("%inst{}", self.temp_counter);
                         self.load_ptr(&ptr_clone, &tmp);
-                        call_args_info.push((
-                            MIRValue::Variable {
-                                name: instance_var.clone(),
-                                ty: TejxType::Int64,
-                            },
-                            tmp,
-                        ));
+                        let instance_ty = func
+                            .variables
+                            .get(&instance_var)
+                            .cloned()
+                            .unwrap_or(TejxType::Int64);
+                        let arg_mir = MIRValue::Variable {
+                            name: instance_var.clone(),
+                            ty: instance_ty,
+                        };
+
+                        let mut final_reg = tmp.clone();
+                        if matches!(arg_mir.get_type(), TejxType::String)
+                            && final_reg.starts_with("ptrtoint")
+                            && final_callee != "rt_string_from_c_str"
+                        {
+                            final_reg = self.emit_box_string(&final_reg);
+                        }
+
+                        let target_llvm_ty = if is_math_fn {
+                            "double".to_string()
+                        } else if is_runtime_fn {
+                            "i64".to_string()
+                        } else {
+                            Self::get_llvm_type(arg_mir.get_type()).to_string()
+                        };
+
+                        let casted = if is_math_fn {
+                            self.emit_abi_cast(&final_reg, arg_mir.get_type(), &TejxType::Float64)
+                        } else if is_runtime_any {
+                            self.emit_abi_cast(
+                                &final_reg,
+                                arg_mir.get_type(),
+                                &TejxType::Class("Any".to_string(), vec![]),
+                            )
+                        } else {
+                            final_reg.clone()
+                        };
+
+                        if Self::is_gc_managed(arg_mir.get_type())
+                            && !(final_callee == "rt_string_from_c_str"
+                                && matches!(arg_mir.get_type(), TejxType::String)
+                                && final_reg.starts_with("ptrtoint"))
+                        {
+                            self.declare_runtime_fn(
+                                "rt_push_root",
+                                "void @rt_push_root(i64*) nounwind",
+                            );
+                            self.declare_runtime_fn(
+                                "rt_pop_roots",
+                                "void @rt_pop_roots(i64) nounwind",
+                            );
+                            self.temp_counter += 1;
+                            let tmp_root = format!("%arg_root_{}", self.temp_counter);
+                            self.alloca_buffer
+                                .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                            self.emit_line(&format!(
+                                "store i64 {}, i64* {}",
+                                casted, tmp_root
+                            ));
+                            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                            temp_root_count += 1;
+                        }
+
+                        call_args_info.push((arg_mir, final_reg));
+                        llvm_args.push(format!("{} {}", target_llvm_ty, casted));
+                        llvm_decl_args.push(target_llvm_ty);
                     }
                 }
             }
@@ -1230,22 +1419,8 @@ impl CodeGen {
                 } else {
                     self.resolve_value(arg)
                 };
-                call_args_info.push((arg.clone(), reg));
-            }
 
-            let is_math_fn = final_callee.starts_with("std_math_");
-            let is_runtime_fn = final_callee.starts_with("rt_")
-                || final_callee.starts_with("tejx_")
-                || final_callee == "printf"
-                || final_callee == "malloc"
-                || final_callee == "free";
-            let is_runtime_any = is_runtime_fn && final_callee != "rt_str_equals";
-
-            let mut llvm_args = Vec::new();
-            let mut llvm_decl_args = Vec::new();
-
-            for (arg_mir, reg) in &call_args_info {
-                let arg_ty = arg_mir.get_type();
+                let arg_ty = arg.get_type();
                 let mut final_reg = reg.clone();
 
                 // Ensure string literals are boxed when passed to runtime functions (except rt_string_from_c_str)
@@ -1273,9 +1448,26 @@ impl CodeGen {
                         &TejxType::Class("Any".to_string(), vec![]),
                     )
                 } else {
-                    final_reg // Native type is matched!
+                    final_reg.clone()
                 };
 
+                if Self::is_gc_managed(arg_ty)
+                    && !(final_callee == "rt_string_from_c_str"
+                        && matches!(arg_ty, TejxType::String)
+                        && final_reg.starts_with("ptrtoint"))
+                {
+                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                    self.temp_counter += 1;
+                    let tmp_root = format!("%arg_root_{}", self.temp_counter);
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                    self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
+                    self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                    temp_root_count += 1;
+                }
+
+                call_args_info.push((arg.clone(), final_reg));
                 llvm_args.push(format!("{} {}", target_llvm_ty, casted));
                 llvm_decl_args.push(target_llvm_ty);
             }
@@ -1374,6 +1566,13 @@ impl CodeGen {
                 self.emit_line(&format!(
                     "{} = call {} {}({})",
                     result_tmp, decl_ret, callee_symbol, args_str
+                ));
+            }
+
+            if temp_root_count > 0 {
+                self.emit_line(&format!(
+                    "call void @rt_pop_roots(i64 {})",
+                    temp_root_count
                 ));
             }
 
@@ -1550,6 +1749,22 @@ impl CodeGen {
 
         self.emit(&format!("{}:\n", ok_label));
 
+        let mut temp_root_count = 0;
+        if Self::is_gc_managed(callee_ty) {
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+            self.temp_counter += 1;
+            let tmp_root = format!("%callee_root_{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", tmp_root));
+            self.emit_line(&format!(
+                "store i64 {}, i64* {}",
+                callee_val, tmp_root
+            ));
+            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+            temp_root_count += 1;
+        }
+
         self.declare_runtime_fn("rt_get_closure_ptr", "i64 @rt_get_closure_ptr(i64)");
         self.declare_runtime_fn("rt_get_closure_env", "i64 @rt_get_closure_env(i64)");
 
@@ -1576,6 +1791,8 @@ impl CodeGen {
             param_tys = params.clone();
             ret_ty = (**ret).clone();
         }
+        // Lambdas/closures use the Any/i64 ABI for return values.
+        let call_ret_ty = TejxType::Any;
         for (idx, _) in args.iter().enumerate() {
             let ty = param_tys
                 .get(idx)
@@ -1587,7 +1804,7 @@ impl CodeGen {
             arg_types.push("i64".to_string());
         }
         let ptr_args = arg_types.join(", ");
-        let ret_llvm = Self::get_llvm_type(&ret_ty);
+        let ret_llvm = Self::get_llvm_type(&call_ret_ty);
         self.emit_line(&format!(
             "{} = inttoptr i64 {} to {} ({})*",
             func_ptr_tmp, ptr_reg, ret_llvm, ptr_args
@@ -1607,6 +1824,17 @@ impl CodeGen {
             }
 
             let casted = self.emit_abi_cast(&val, &arg_ty, &param_ty);
+            if Self::is_gc_managed(arg_ty) {
+                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                self.temp_counter += 1;
+                let tmp_root = format!("%arg_root_{}", self.temp_counter);
+                self.alloca_buffer
+                    .push_str(&format!("  {} = alloca i64\n", tmp_root));
+                self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
+                self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
+                temp_root_count += 1;
+            }
             arg_vals.push(format!("{} {}", Self::get_llvm_type(&param_ty), casted));
         }
         while arg_vals.len() < 5 {
@@ -1626,9 +1854,16 @@ impl CodeGen {
             ));
         }
 
+        if temp_root_count > 0 {
+            self.emit_line(&format!(
+                "call void @rt_pop_roots(i64 {})",
+                temp_root_count
+            ));
+        }
+
         if !dst.is_empty() && ret_llvm != "void" {
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-            let final_val = self.emit_abi_cast(&result_tmp, &ret_ty, dst_ty);
+            let final_val = self.emit_abi_cast(&result_tmp, &call_ret_ty, dst_ty);
             self.emit_store_variable(dst, &final_val, dst_ty);
         }
     }

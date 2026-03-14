@@ -11,6 +11,7 @@ impl Lowering {
         functions: &mut Vec<HIRStatement>,
     ) {
         let line = func._line;
+        let worker_name = format!("f_{}_worker", func.name);
         let params: Vec<(String, TejxType)> = func
             .params
             .iter()
@@ -23,12 +24,14 @@ impl Lowering {
             .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
             .collect();
 
+        self.push_env_owner(worker_name);
         let (worker, _state_struct, wrapper_body) = self.lower_async_function_impl(
             &func.name,
             &mangled_params,
             &func.return_type.to_string(),
             &func.body,
         );
+        self.pop_env_owner();
 
         self._exit_scope();
 
