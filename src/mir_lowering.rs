@@ -1,6 +1,7 @@
 /// HIR → MIR Lowering pass, mirroring C++ MIRLowering.cpp
 /// Converts high-level typed IR into basic blocks with low-level instructions.
 use crate::hir::*;
+use crate::intrinsics::*;
 use crate::mir::*;
 use crate::token::TokenType;
 use crate::types::TejxType;
@@ -93,26 +94,35 @@ impl MIRLowering {
 
     pub fn lower(&mut self, hir_func: &HIRStatement) -> MIRFunction {
         // Extract function info
-        let (name, params, body, ret_ty) = match hir_func {
+        let (name, params, body, ret_ty, is_extern) = match hir_func {
             HIRStatement::Function {
                 name,
                 params,
                 body,
                 _return_type,
+                is_extern,
                 ..
             } => (
                 name.clone(),
                 params.clone(),
                 body.as_ref(),
                 _return_type.clone(),
+                *is_extern,
             ),
-            _ => ("tejx_main".to_string(), vec![], hir_func, TejxType::Void),
+            _ => (
+                TEJX_MAIN.to_string(),
+                vec![],
+                hir_func,
+                TejxType::Void,
+                false,
+            ),
         };
 
         self.current_return_type = ret_ty;
 
         self.current_function = MIRFunction::new(name);
         self.current_function.params = params.iter().map(|(n, _)| n.clone()).collect();
+        self.current_function.is_extern = is_extern;
         self.temp_counter = 0;
         self.block_counter = 0;
         self.scopes.clear();
@@ -188,12 +198,12 @@ impl MIRLowering {
 
     fn auto_box(&mut self, val: MIRValue, target_ty: &TejxType) -> MIRValue {
         let src_ty = val.get_type();
-        let target_is_any = matches!(target_ty, TejxType::Any);
+        let target_is_any = matches!(target_ty, TejxType::Class(c) if c == "any");
         let target_is_string = matches!(target_ty, TejxType::String);
 
         if target_is_any || target_is_string {
             let box_func = match src_ty {
-                t if t.is_float() && target_is_any => Some("rt_box_number"),
+                t if t.is_float() && target_is_any => Some("rt_box_number_v2"),
                 t if t.is_numeric() && target_is_any => Some("rt_box_int"),
                 TejxType::Bool if target_is_any => Some("rt_box_boolean"),
                 TejxType::String
@@ -222,7 +232,7 @@ impl MIRLowering {
 
         // Unboxing logic: target is primitive, src is Any
         let is_complex = matches!(target_ty, TejxType::Class(_) | TejxType::FixedArray(_, _));
-        if !is_complex && matches!(src_ty, TejxType::Any) {
+        if !is_complex && false {
             let unbox_func = match target_ty {
                 t if t.is_numeric() => Some("rt_to_number"),
                 TejxType::Bool => Some("rt_is_truthy"),
@@ -591,7 +601,7 @@ impl MIRLowering {
 
                 // Variables to track unwinding state across finally block
                 let is_unwinding_var = self.new_temp(TejxType::Bool);
-                let saved_ex_var = self.new_temp(TejxType::Any);
+                let saved_ex_var = self.new_temp(TejxType::Class("any".to_string()));
 
                 let finally_handler_idx = if finally_block.is_some() {
                     Some(self.new_block("finally_unwind"))
@@ -668,11 +678,11 @@ impl MIRLowering {
                 self.current_block = catch_block_idx;
                 if let Some(var) = catch_var {
                     // Extract exception into variable
-                    let temp = self.new_temp(TejxType::Any);
+                    let temp = self.new_temp(TejxType::Class("any".to_string()));
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: temp.clone(),
-                        callee: "tejx_get_exception".to_string(),
+                        callee: TEJX_GET_EXCEPTION.to_string(),
                         args: vec![],
                     });
                     self.emit(MIRInstruction::Move {
@@ -680,7 +690,7 @@ impl MIRLowering {
                         dst: var.clone(),
                         src: MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         },
                     });
                 }
@@ -730,11 +740,11 @@ impl MIRLowering {
                     });
 
                     // Save exception
-                    let temp = self.new_temp(TejxType::Any);
+                    let temp = self.new_temp(TejxType::Class("any".to_string()));
                     self.emit(MIRInstruction::Call {
                         line: 0,
                         dst: temp.clone(),
-                        callee: "tejx_get_exception".to_string(),
+                        callee: TEJX_GET_EXCEPTION.to_string(),
                         args: vec![],
                     });
                     self.emit(MIRInstruction::Move {
@@ -742,7 +752,7 @@ impl MIRLowering {
                         dst: saved_ex_var.clone(),
                         src: MIRValue::Variable {
                             name: temp,
-                            ty: TejxType::Any,
+                            ty: TejxType::Class("any".to_string()),
                         },
                     });
 
@@ -780,7 +790,7 @@ impl MIRLowering {
                             line: 0,
                             value: MIRValue::Variable {
                                 name: saved_ex_var,
-                                ty: TejxType::Any,
+                                ty: TejxType::Class("any".to_string()),
                             },
                         });
                     }
@@ -815,207 +825,36 @@ impl MIRLowering {
             HIRExpression::NewExpr {
                 class_name, _args, ..
             } => {
-                if class_name == "Thread" {
-                    let callback = self.lower_expression(&_args[0]);
-                    let arg = if _args.len() > 1 {
-                        self.lower_expression(&_args[1])
-                    } else {
-                        MIRValue::Constant {
-                            value: "0".to_string(),
-                            ty: TejxType::Any,
-                        }
-                    };
-                    let arg2 = if _args.len() > 2 {
-                        self.lower_expression(&_args[2])
-                    } else {
-                        MIRValue::Constant {
-                            value: "0".to_string(),
-                            ty: TejxType::Any,
-                        }
-                    };
+                // Default: create a generic object (Map)
+                let temp = self.new_temp(TejxType::Class(class_name.clone()));
+                self.emit(MIRInstruction::Call {
+                    line: 0,
+                    callee: RT_MAP_NEW.to_string(),
+                    args: vec![],
+                    dst: temp.clone(),
+                });
 
-                    let temp = self.new_temp(TejxType::Int32);
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "Thread_new".to_string(),
-                        args: vec![callback, arg, arg2],
-                        dst: temp.clone(),
-                    });
+                // Initialize with constructor: f_ClassName_constructor(this, args...)
+                let constructor_name = format!("f_{}_constructor", class_name);
+                let mut constructor_args = vec![MIRValue::Variable {
+                    name: temp.clone(),
+                    ty: TejxType::Class(class_name.clone()),
+                }];
+                for arg in _args {
+                    constructor_args.push(self.lower_expression(arg));
+                }
 
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class("Thread".to_string()),
-                    }
-                } else if class_name == "Mutex" {
-                    let temp = self.new_temp(TejxType::Class("Mutex".to_string()));
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "Mutex_new".to_string(),
-                        args: vec![],
-                        dst: temp.clone(),
-                    });
+                let void_temp = self.new_temp(TejxType::Void);
+                self.emit(MIRInstruction::Call {
+                    line: 0,
+                    callee: constructor_name,
+                    args: constructor_args,
+                    dst: void_temp,
+                });
 
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class("Mutex".to_string()),
-                    }
-                } else if class_name == "Atomic" {
-                    let initial = if !_args.is_empty() {
-                        self.lower_expression(&_args[0])
-                    } else {
-                        MIRValue::Constant {
-                            value: "0".to_string(),
-                            ty: TejxType::Int32,
-                        }
-                    };
-                    let temp = self.new_temp(TejxType::Class("Atomic".to_string()));
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "rt_atomic_new".to_string(),
-                        args: vec![initial],
-                        dst: temp.clone(),
-                    });
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class("Atomic".to_string()),
-                    }
-                } else if class_name == "Condition" {
-                    let temp = self.new_temp(TejxType::Class("Condition".to_string()));
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "rt_cond_new".to_string(),
-                        args: vec![],
-                        dst: temp.clone(),
-                    });
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class("Condition".to_string()),
-                    }
-                } else if class_name == "Promise" {
-                    let callback = self.lower_expression(&_args[0]);
-                    let temp = self.new_temp(TejxType::Class("Promise".to_string()));
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "Promise_new".to_string(),
-                        args: vec![callback],
-                        dst: temp.clone(),
-                    });
-
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class("Promise".to_string()),
-                    }
-                } else if class_name == "Array" || class_name == "ByteArray" {
-                    let temp = self.new_temp(TejxType::Class(class_name.clone()));
-                    let elem_size = if class_name == "ByteArray" {
-                        1
-                    } else if let Some(ety) = &self.expected_ty {
-                        if ety.is_array() && matches!(ety.get_array_element_type(), TejxType::Bool)
-                        {
-                            1
-                        } else {
-                            8
-                        }
-                    } else {
-                        8
-                    };
-
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "m_new".to_string(),
-                        args: vec![],
-                        dst: temp.clone(),
-                    });
-
-                    let constructor_name = "f_Array_constructor".to_string();
-                    let mut constructor_args = vec![MIRValue::Variable {
-                        name: temp.clone(),
-                        ty: TejxType::Class(class_name.clone()),
-                    }];
-                    if !_args.is_empty() {
-                        let arg_val = self.lower_expression(&_args[0]);
-                        constructor_args.push(self.auto_box(arg_val, &TejxType::Any));
-                    } else {
-                        constructor_args.push(MIRValue::Constant {
-                            value: "0".to_string(),
-                            ty: TejxType::Int32,
-                        });
-                    }
-                    // Pass elem_size as 3rd arg
-                    constructor_args.push(MIRValue::Constant {
-                        value: elem_size.to_string(),
-                        ty: TejxType::Int32,
-                    });
-
-                    let void_temp = self.new_temp(TejxType::Void);
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: constructor_name,
-                        args: constructor_args,
-                        dst: void_temp,
-                    });
-
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class(class_name.clone()),
-                    }
-                } else {
-                    // Default: create a generic object (Map)
-                    let temp = self.new_temp(TejxType::Class(class_name.clone()));
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: "m_new".to_string(),
-                        args: vec![],
-                        dst: temp.clone(),
-                    });
-
-                    // Initialize with constructor: f_ClassName_constructor(this, args...)
-                    let is_std_collection = [
-                        "Stack",
-                        "Queue",
-                        "PriorityQueue",
-                        "MinHeap",
-                        "MaxHeap",
-                        "Map",
-                        "Set",
-                        "OrderedMap",
-                        "OrderedSet",
-                        "BloomFilter",
-                        "Trie",
-                        "SharedQueue",
-                    ]
-                    .contains(&class_name.as_str());
-                    let constructor_name = if is_std_collection {
-                        format!("rt_{}_constructor", class_name)
-                    } else if class_name == "Thread" {
-                        "Thread_new".to_string()
-                    } else {
-                        format!("f_{}_constructor", class_name)
-                    };
-                    let mut constructor_args = if class_name == "Thread" {
-                        vec![]
-                    } else {
-                        vec![MIRValue::Variable {
-                            name: temp.clone(),
-                            ty: TejxType::Class(class_name.clone()),
-                        }]
-                    };
-                    for arg in _args {
-                        constructor_args.push(self.lower_expression(arg));
-                    }
-
-                    let void_temp = self.new_temp(TejxType::Void);
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        callee: constructor_name,
-                        args: constructor_args,
-                        dst: void_temp,
-                    });
-
-                    MIRValue::Variable {
-                        name: temp,
-                        ty: TejxType::Class(class_name.clone()),
-                    }
+                MIRValue::Variable {
+                    name: temp,
+                    ty: TejxType::Class(class_name.clone()),
                 }
             }
             HIRExpression::BinaryExpr {
@@ -1304,8 +1143,19 @@ impl MIRLowering {
             HIRExpression::Call {
                 callee, args, ty, ..
             } => {
-                let maybe_sig = self.signatures.get(callee).cloned();
-                let mut mir_args: Vec<MIRValue> = args
+                let mut final_callee = callee.clone();
+                if callee.contains('.') {
+                    let parts: Vec<&str> = callee.split('.').collect();
+                    if parts.len() == 2 {
+                        let base = parts[0];
+                        let method = parts[1];
+                        let resolved_base = self.resolve_variable(base);
+                        final_callee = format!("{}.{}", resolved_base, method);
+                    }
+                }
+
+                let maybe_sig = self.signatures.get(&final_callee).cloned();
+                let mir_args: Vec<MIRValue> = args
                     .iter()
                     .enumerate()
                     .map(|(i, a)| {
@@ -1313,30 +1163,27 @@ impl MIRLowering {
                         let mut target_ty = maybe_sig
                             .as_ref()
                             .and_then(|sig| sig.get(i))
-                            .unwrap_or(&TejxType::Any)
+                            .unwrap_or(&TejxType::Void)
                             .clone();
 
                         // Fix: prevent primitive boxing for typed arrays by overriding target type
                         if args.len() >= 1 {
                             if let Some(arr_ty) = args.get(0).map(|a| a.get_type()) {
-                                if callee.starts_with("Array_") {}
                                 if arr_ty.is_array() {
-                                    if callee.starts_with("Array_") {}
-                                    if (callee == "Array_push"
-                                        || callee == "Array_unshift"
-                                        || callee == "Array_indexOf"
-                                        || callee == "Array_includes")
+                                    if (final_callee.ends_with("_push")
+                                        || final_callee.ends_with("_unshift")
+                                        || final_callee.ends_with("_indexOf")
+                                        || final_callee.ends_with("_includes"))
                                         && i == 1
                                     {
                                         target_ty = arr_ty.get_array_element_type();
-                                    } else if callee == "Array_fill" {
+                                    } else if final_callee.ends_with("_fill") {
                                         if i == 1 {
                                             target_ty = arr_ty.get_array_element_type();
                                         } else if i >= 2 {
-                                            target_ty = TejxType::Int64; // start and end indices are integers
+                                            target_ty = TejxType::Int64;
                                         }
-                                    } else if callee == "Array_splice" {
-                                        // Array_splice(array, start, deleteCount, items...)
+                                    } else if final_callee.ends_with("_splice") {
                                         if i == 1 || i == 2 {
                                             target_ty = TejxType::Int64;
                                         } else if i >= 3 {
@@ -1348,20 +1195,22 @@ impl MIRLowering {
                         }
 
                         // Fix: prevent primitive boxing for math intrinsics
-                        if callee == "std_math_sin"
-                            || callee == "std_math_cos"
-                            || callee == "std_math_tan"
-                            || callee == "std_math_asin"
-                            || callee == "std_math_acos"
-                            || callee == "std_math_atan"
-                            || callee == "std_math_sqrt"
-                            || callee == "std_math_log"
-                            || callee == "std_math_exp"
-                            || callee == "std_math_round"
-                            || callee == "std_math_floor"
-                            || callee == "std_math_ceil"
-                            || callee == "std_math_abs"
-                            || callee == "std_math_pow"
+                        if final_callee == "std_math_sin"
+                            || final_callee == "std_math_cos"
+                            || final_callee == "std_math_tan"
+                            || final_callee == "std_math_asin"
+                            || final_callee == "std_math_acos"
+                            || final_callee == "std_math_atan"
+                            || final_callee == "std_math_sqrt"
+                            || final_callee == "std_math_log"
+                            || final_callee == "std_math_exp"
+                            || final_callee == "std_math_round"
+                            || final_callee == "std_math_floor"
+                            || final_callee == "std_math_ceil"
+                            || final_callee == "std_math_abs"
+                            || final_callee == "std_math_pow"
+                            || final_callee == "std_math_min"
+                            || final_callee == "std_math_max"
                         {
                             target_ty = TejxType::Float64;
                         }
@@ -1369,51 +1218,8 @@ impl MIRLowering {
                         self.auto_box(val, &target_ty)
                     })
                     .collect();
-                let temp = self.new_temp(ty.clone());
-                let mut final_callee = callee.clone();
-                // Map specialized method calls to runtime functions
-                if callee == "f_Atomic_add" {
-                    final_callee = "rt_atomic_add".to_string();
-                } else if callee == "f_Atomic_sub" {
-                    final_callee = "rt_atomic_sub".to_string();
-                } else if callee == "f_Atomic_load" {
-                    final_callee = "rt_atomic_load".to_string();
-                } else if callee == "f_Atomic_store" {
-                    final_callee = "rt_atomic_store".to_string();
-                } else if callee == "f_Atomic_exchange" {
-                    final_callee = "rt_atomic_exchange".to_string();
-                } else if callee == "f_Atomic_compareExchange" {
-                    final_callee = "rt_atomic_compare_exchange".to_string();
-                } else if callee == "f_Condition_wait" {
-                    final_callee = "rt_cond_wait".to_string();
-                } else if callee == "f_Condition_notify" {
-                    final_callee = "rt_cond_notify".to_string();
-                } else if callee == "f_Condition_notifyAll" {
-                    final_callee = "rt_cond_notify_all".to_string();
-                } else if callee == "f_Thread_join" {
-                    final_callee = "Thread_join".to_string();
-                } else if callee == "f_Mutex_acquire" {
-                    final_callee = "m_lock".to_string();
-                } else if callee == "f_Mutex_release" {
-                    final_callee = "m_unlock".to_string();
-                } else if callee == "f_Array_flat" || callee == "f_any___flat" {
-                    final_callee = "Array_flat".to_string();
-                    if mir_args.len() == 1 {
-                        mir_args.push(MIRValue::Constant {
-                            value: "1".to_string(),
-                            ty: TejxType::Int64,
-                        });
-                    }
-                } else if callee == "f_Array_concat" || callee == "f_any___concat" {
-                    final_callee = "Array_concat".to_string();
-                } else if callee == "f_any___unshift" {
-                    final_callee = "Array_unshift".to_string();
-                } else if callee == "f_any___shift" {
-                    final_callee = "Array_shift".to_string();
-                } else if callee == "f_any___join" {
-                    final_callee = "Array_join".to_string();
-                }
 
+                let temp = self.new_temp(ty.clone());
                 self.emit(MIRInstruction::Call {
                     line: 0,
                     dst: temp.clone(),
@@ -1448,7 +1254,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Any);
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1457,7 +1263,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 };
                             }
                         }
@@ -1483,7 +1289,7 @@ impl MIRLowering {
                 self.emit(MIRInstruction::Call {
                     line: 0,
                     dst: temp.clone(),
-                    callee: "__await".to_string(),
+                    callee: "rt_await".to_string(),
                     args: vec![val],
                 });
                 MIRValue::Variable {
@@ -1507,7 +1313,7 @@ impl MIRLowering {
                 self.emit(MIRInstruction::Call {
                     line: 0,
                     dst: temp.clone(),
-                    callee: "__optional_chain".to_string(),
+                    callee: "rt_optional_chain".to_string(),
                     args: vec![val, op_str],
                 });
                 MIRValue::Variable {
@@ -1522,9 +1328,9 @@ impl MIRLowering {
                 let idx = self.lower_expression(index);
 
                 let obj_ty = obj.get_type();
-                let is_any_source = matches!(obj_ty, TejxType::Any)
+                let is_any_source = obj_ty.is_array()
                     || (if let TejxType::Class(name) = &obj_ty {
-                        name == "any[]" || name == "Array"
+                        name.starts_with("Array<") || name.ends_with("[]")
                     } else {
                         false
                     });
@@ -1532,7 +1338,7 @@ impl MIRLowering {
                 // If source is Any/any[], the value loaded is a TaggedValue (Any).
                 // We must load it as Any first, then unbox if necessary.
                 let load_ty = if is_any_source {
-                    TejxType::Any
+                    TejxType::Class("any".to_string())
                 } else {
                     ty.clone()
                 };
@@ -1551,7 +1357,7 @@ impl MIRLowering {
                     ty: load_ty,
                 };
 
-                if is_any_source && ty != &TejxType::Any {
+                if is_any_source && ty != &TejxType::Void {
                     self.auto_box(val, ty)
                 } else {
                     val
@@ -1562,7 +1368,7 @@ impl MIRLowering {
             } => {
                 let obj = self.lower_expression(target);
                 // Runtime m_get returns a TaggedValue (Any), so we must load it as Any first.
-                let temp = self.new_temp(TejxType::Any);
+                let temp = self.new_temp(TejxType::Class("any".to_string()));
                 self.emit(MIRInstruction::LoadMember {
                     line: 0,
                     dst: temp.clone(),
@@ -1572,7 +1378,7 @@ impl MIRLowering {
                 });
                 let val = MIRValue::Variable {
                     name: temp,
-                    ty: TejxType::Any,
+                    ty: TejxType::Class("any".to_string()),
                 };
                 // Convert/Unbox to the expected HIR type (e.g. Int32 for length)
                 self.auto_box(val, ty)
@@ -1596,7 +1402,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Any);
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1605,7 +1411,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 };
                             }
                         }
@@ -1647,7 +1453,7 @@ impl MIRLowering {
                                 _ => None,
                             };
                             if let Some(f) = box_func {
-                                let temp = self.new_temp(TejxType::Any);
+                                let temp = self.new_temp(TejxType::Class("any".to_string()));
                                 self.emit(MIRInstruction::Call {
                                     line: 0,
                                     dst: temp.clone(),
@@ -1656,7 +1462,7 @@ impl MIRLowering {
                                 });
                                 val = MIRValue::Variable {
                                     name: temp,
-                                    ty: TejxType::Any,
+                                    ty: TejxType::Class("any".to_string()),
                                 };
                             }
                         }
@@ -1740,7 +1546,7 @@ impl MIRLowering {
             }
             HIRExpression::NoneLiteral { .. } => MIRValue::Constant {
                 value: "0".to_string(),
-                ty: TejxType::Any,
+                ty: TejxType::Class("any".to_string()),
             },
             HIRExpression::SomeExpr { value, .. } => self.lower_expression(value),
         }

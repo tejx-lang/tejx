@@ -1,0 +1,138 @@
+extern function rt_to_string<T>(val: T): string;
+extern function rt_to_number<T>(val: T): float;
+
+export function stringify<T>(val: T): string {
+    if (val === None) return "None";
+    let ty = typeof(val);
+    if (ty == "string") return "\"" + val + "\"";
+    if (ty == "number" || ty == "boolean") return rt_to_string(val);
+    
+    if (Array_isArray(val)) {
+        let res = "[";
+        for (let i = 0; i < len(val); i++) {
+            res = res + stringify(val[i]);
+            if (i < len(val) - 1) res = res + ",";
+        }
+        return res + "]";
+    }
+    
+    if (ty == "object") {
+        let res = "{";
+        let keys = Object_keys(val);
+        for (let i = 0; i < len(keys); i++) {
+            let k = keys[i];
+            if (k == "toString" || k == "constructor" || k == "__proto__") continue;
+            res = res + "\"" + k + "\":" + stringify(val[k]);
+            if (i < len(keys) - 1) res = res + ",";
+        }
+        return res + "}";
+    }
+    
+    return "None";
+}
+
+export function parse<T>(s: string): T {
+    let index = 0;
+
+    function skipWhitespace() {
+        while (index < len(s) && (s[index] == " " || s[index] == "\n" || s[index] == "\t" || s[index] == "\r")) {
+            index++;
+        }
+    }
+
+    function parseValue(): T {
+        skipWhitespace();
+        if (index >= len(s)) return None;
+
+        let ch = s[index];
+        if (ch == "{") return parseObject();
+        if (ch == "[") return parseArray();
+        if (ch == "\"") return parseString();
+        if (ch == "t") { index += 4; return true; }
+        if (ch == "f") { index += 5; return false; }
+        if (ch == "n") { index += 4; return None; }
+        return parseNumber();
+    }
+
+    function parseString(): string {
+        index++; // skip "
+        let res = "";
+        while (index < len(s) && s[index] != "\"") {
+            if (s[index] == "\\") {
+                index++;
+                let esc = s[index];
+                if (esc == "n") res = res + "\n";
+                else if (esc == "t") res = res + "\t";
+                else if (esc == "r") res = res + "\r";
+                else res = res + esc;
+            } else {
+                res = res + s[index];
+            }
+            index++;
+        }
+        index++; // skip trailing "
+        return res;
+    }
+
+    function parseNumber(): number {
+        let start = index;
+        if (index < len(s) && s[index] == "-") index++;
+        while (index < len(s) && (s[index] >= "0" && s[index] <= "9" || s[index] == "." || s[index] == "e" || s[index] == "E" || s[index] == "+" || s[index] == "-")) {
+            index++;
+        }
+        let numStr = "";
+        for (let i = start; i < index; i++) {
+            numStr = numStr + s[i];
+        }
+        return rt_to_number(numStr) as number;
+    }
+
+    function parseArray(): Array<T> {
+        index++; // skip [
+        let res: Array<T> = [];
+        skipWhitespace();
+        if (s[index] == "]") { index++; return res; }
+        
+        while (true) {
+            res.push(parseValue());
+            skipWhitespace();
+            if (s[index] == ",") {
+                index++;
+                skipWhitespace();
+            } else if (s[index] == "]") {
+                index++;
+                break;
+            }
+        }
+        return res;
+    }
+
+    function parseObject(): T {
+        index++; // skip {
+        let res: T = {};
+        skipWhitespace();
+        if (s[index] == "}") { index++; return res; }
+
+        while (true) {
+            let key = parseValue(); // expects string
+            skipWhitespace();
+            if (s[index] == ":") {
+                index++;
+                skipWhitespace();
+            }
+            let val = parseValue();
+            res[key] = val;
+            skipWhitespace();
+            if (s[index] == ",") {
+                index++;
+                skipWhitespace();
+            } else if (s[index] == "}") {
+                index++;
+                break;
+            }
+        }
+        return res;
+    }
+
+    return parseValue();
+}

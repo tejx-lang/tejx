@@ -156,1370 +156,10 @@ impl TypeChecker {
     }
 
     pub fn new() -> Self {
-        let mut globals = HashMap::new();
-        let builtin_func = |params_count: usize, variadic: bool| Symbol {
-            type_name: "function".to_string(),
-            is_const: true,
-            params: vec!["any".to_string(); params_count],
-            is_variadic: variadic,
-            aliased_type: None,
-            is_moved: false,
-        };
-        globals.insert("assert".to_string(), builtin_func(1, true));
-        globals.insert("len".to_string(), builtin_func(1, false));
-        globals.insert("print".to_string(), builtin_func(0, true)); // Variadic handled in CallExpr
-        globals.insert("println".to_string(), builtin_func(0, true));
-        globals.insert("eprint".to_string(), builtin_func(1, false));
-        globals.insert("random".to_string(), builtin_func(0, false));
-        globals.insert("now".to_string(), builtin_func(0, false));
-        globals.insert("delay".to_string(), builtin_func(1, true));
-        globals.insert("rt_sleep".to_string(), builtin_func(1, false));
-        globals.insert("parseInt".to_string(), builtin_func(1, false));
-        globals.insert("parseFloat".to_string(), builtin_func(1, false));
-        globals.insert("abs".to_string(), builtin_func(1, false));
-        globals.insert("min".to_string(), builtin_func(2, false));
-        globals.insert("max".to_string(), builtin_func(2, false));
-        globals.insert("parse".to_string(), builtin_func(1, false));
-
-        let mut class_members = HashMap::new();
-        let mut class_hierarchy = HashMap::new();
-
-        // Built-in Classes
-        let mut error_members = HashMap::new();
-        error_members.insert(
-            "message".to_string(),
-            MemberInfo {
-                type_name: "string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        error_members.insert(
-            "name".to_string(),
-            MemberInfo {
-                type_name: "string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Error".to_string(), error_members);
-
-        let mut date_members = HashMap::new();
-        date_members.insert(
-            "now".to_string(),
-            MemberInfo {
-                type_name: "function:int64:".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        date_members.insert(
-            "toISOString".to_string(),
-            MemberInfo {
-                type_name: "function:string:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        date_members.insert(
-            "getTime".to_string(),
-            MemberInfo {
-                type_name: "function:int64:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Date".to_string(), date_members);
-        class_hierarchy.insert("CustomError".to_string(), "Error".to_string()); // For test convenience
-
-        // Array members
-        let mut array_members = HashMap::new();
-        array_members.insert(
-            "length".to_string(),
-            MemberInfo {
-                type_name: "int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "push".to_string(),
-            MemberInfo {
-                type_name: "function:any:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "pop".to_string(),
-            MemberInfo {
-                type_name: "function:$0:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "shift".to_string(),
-            MemberInfo {
-                type_name: "function:$0:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "unshift".to_string(),
-            MemberInfo {
-                type_name: "function:int32:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "join".to_string(),
-            MemberInfo {
-                type_name: "function:string:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "forEach".to_string(),
-            MemberInfo {
-                type_name: "function:any:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "map".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "filter".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "slice".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:int32,int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "splice".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:int32,int32,any...".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "indexOf".to_string(),
-            MemberInfo {
-                type_name: "function:int32:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "includes".to_string(),
-            MemberInfo {
-                type_name: "function:bool:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "reduce".to_string(),
-            MemberInfo {
-                type_name: "function:any:function,any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "find".to_string(),
-            MemberInfo {
-                type_name: "function:$0:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "findIndex".to_string(),
-            MemberInfo {
-                type_name: "function:int32:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "reverse".to_string(),
-            MemberInfo {
-                type_name: "function:void:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "sort".to_string(),
-            MemberInfo {
-                type_name: "function:void:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "flat".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "fill".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "concat".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:any...".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        array_members.insert(
-            "clone".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Array".to_string(), array_members);
-
-        // String members
-        let mut string_members = HashMap::new();
-        string_members.insert(
-            "length".to_string(),
-            MemberInfo {
-                type_name: "int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "split".to_string(),
-            MemberInfo {
-                type_name: "function:string[]:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "substring".to_string(),
-            MemberInfo {
-                type_name: "function:string:int32,int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "trim".to_string(),
-            MemberInfo {
-                type_name: "function:string:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "charAt".to_string(),
-            MemberInfo {
-                type_name: "function:string:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "startsWith".to_string(),
-            MemberInfo {
-                type_name: "function:bool:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "endsWith".to_string(),
-            MemberInfo {
-                type_name: "function:bool:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "toLowerCase".to_string(),
-            MemberInfo {
-                type_name: "function:string:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "toUpperCase".to_string(),
-            MemberInfo {
-                type_name: "function:string:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "includes".to_string(),
-            MemberInfo {
-                type_name: "function:bool:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "replace".to_string(),
-            MemberInfo {
-                type_name: "function:string:string,string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "padStart".to_string(),
-            MemberInfo {
-                type_name: "function:string:int32,string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "padEnd".to_string(),
-            MemberInfo {
-                type_name: "function:string:int32,string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "repeat".to_string(),
-            MemberInfo {
-                type_name: "function:string:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "trimStart".to_string(),
-            MemberInfo {
-                type_name: "function:string:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "trimEnd".to_string(),
-            MemberInfo {
-                type_name: "function:string:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "slice".to_string(),
-            MemberInfo {
-                type_name: "function:string:int32,int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "indexOf".to_string(),
-            MemberInfo {
-                type_name: "function:int32:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        string_members.insert(
-            "concat".to_string(),
-            MemberInfo {
-                type_name: "function:string:any...".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("string".to_string(), string_members);
-
-        // Object members
-        let mut object_members = HashMap::new();
-        object_members.insert(
-            "keys".to_string(),
-            MemberInfo {
-                type_name: "function:string[]:object".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        object_members.insert(
-            "values".to_string(),
-            MemberInfo {
-                type_name: "function:any[]:object".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        object_members.insert(
-            "entries".to_string(),
-            MemberInfo {
-                type_name: "function:any[][]:object".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Object".to_string(), object_members.clone()); // Use clone here as object_members is reused below
-        globals.insert(
-            "Object".to_string(),
-            Symbol {
-                type_name: "class".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-
-        // Map members
-        let mut map_members = HashMap::new();
-        map_members.insert(
-            "put".to_string(),
-            MemberInfo {
-                type_name: "function:void:$0,$1".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "set".to_string(),
-            MemberInfo {
-                type_name: "function:void:$0,$1".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "get".to_string(),
-            MemberInfo {
-                type_name: "function:ref $1:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "has".to_string(),
-            MemberInfo {
-                type_name: "function:bool:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "delete".to_string(),
-            MemberInfo {
-                type_name: "function:bool:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "clear".to_string(),
-            MemberInfo {
-                type_name: "function:void:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "size".to_string(),
-            MemberInfo {
-                type_name: "function:int32:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "keys".to_string(),
-            MemberInfo {
-                type_name: "function:$0[]:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        map_members.insert(
-            "values".to_string(),
-            MemberInfo {
-                type_name: "function:$1[]:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Map".to_string(), map_members);
-
-        // Set members
-        let mut set_members = HashMap::new();
-        set_members.insert(
-            "add".to_string(),
-            MemberInfo {
-                type_name: "function:void:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        set_members.insert(
-            "has".to_string(),
-            MemberInfo {
-                type_name: "function:bool:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        set_members.insert(
-            "delete".to_string(),
-            MemberInfo {
-                type_name: "function:bool:$0".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        set_members.insert(
-            "clear".to_string(),
-            MemberInfo {
-                type_name: "function:void:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        set_members.insert(
-            "size".to_string(),
-            MemberInfo {
-                type_name: "function:int32:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        set_members.insert(
-            "values".to_string(),
-            MemberInfo {
-                type_name: "function:any[]:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Set".to_string(), set_members);
-
-        let mut math_members = HashMap::new();
-        math_members.insert(
-            "abs".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "random".to_string(),
-            MemberInfo {
-                type_name: "function:float64:".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "floor".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "ceil".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "round".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "pow".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64,float64".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "min".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64,float64...".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "max".to_string(),
-            MemberInfo {
-                type_name: "function:float64:float64,float64...".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        math_members.insert(
-            "PI".to_string(),
-            MemberInfo {
-                type_name: "float64".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Math".to_string(), math_members);
-
-        globals.insert(
-            "Math".to_string(),
-            Symbol {
-                type_name: "class".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-
-        // Console members
-        let mut console_members = HashMap::new();
-        console_members.insert(
-            "log".to_string(),
-            MemberInfo {
-                type_name: "function:void:any...".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        console_members.insert(
-            "error".to_string(),
-            MemberInfo {
-                type_name: "function:void:any...".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        console_members.insert(
-            "warn".to_string(),
-            MemberInfo {
-                type_name: "function:void:any...".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Console".to_string(), console_members.clone());
-        class_members.insert("console".to_string(), console_members);
-        globals.insert(
-            "console".to_string(),
-            Symbol {
-                type_name: "class".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-
-        // JSON members
-        let mut json_members = HashMap::new();
-        json_members.insert(
-            "stringify".to_string(),
-            MemberInfo {
-                type_name: "function:string:any".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        json_members.insert(
-            "parse".to_string(),
-            MemberInfo {
-                type_name: "function:any:string".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("JSON".to_string(), json_members);
-        globals.insert(
-            "JSON".to_string(),
-            Symbol {
-                type_name: "class".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-        globals.insert(
-            "json".to_string(),
-            Symbol {
-                type_name: "class".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-        class_members.insert(
-            "json".to_string(),
-            class_members.get("JSON").unwrap().clone(),
-        );
-
-        // Define them as classes in globals so is_valid_type finds them
-        let class_sym = |_name: &str| Symbol {
-            type_name: "class".to_string(),
-            is_const: true,
-            params: vec![],
-            is_variadic: false,
-            aliased_type: None,
-            is_moved: false,
-        };
-        globals.insert("Error".to_string(), class_sym("Error"));
-        globals.insert("Date".to_string(), class_sym("Date"));
-        globals.insert("Array".to_string(), class_sym("Array"));
-        globals.insert("Promise".to_string(), class_sym("Promise"));
-        globals.insert("Map".to_string(), class_sym("Map"));
-        globals.insert("Set".to_string(), class_sym("Set"));
-        globals.insert("Console".to_string(), class_sym("Console"));
-        globals.insert("Thread".to_string(), class_sym("Thread"));
-        globals.insert("Mutex".to_string(), class_sym("Mutex"));
-        globals.insert("Atomic".to_string(), class_sym("Atomic"));
-        globals.insert("Condition".to_string(), class_sym("Condition"));
-        globals.insert(
-            "time".to_string(),
-            Symbol {
-                type_name: "Time".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-
-        // Calculator for module tests
-        globals.insert(
-            "Calculator".to_string(),
-            Symbol {
-                type_name: "class".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-        let mut calc_members = HashMap::new();
-        calc_members.insert(
-            "add".to_string(),
-            MemberInfo {
-                type_name: "function:void:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        calc_members.insert(
-            "getValue".to_string(),
-            MemberInfo {
-                type_name: "function:int32:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Calculator".to_string(), calc_members);
-        // Time members (for std:time as object)
-        let mut time_members = HashMap::new();
-        time_members.insert(
-            "now".to_string(),
-            MemberInfo {
-                type_name: "function:float64:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        time_members.insert(
-            "sleep".to_string(),
-            MemberInfo {
-                type_name: "function:void:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        time_members.insert(
-            "delay".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Time".to_string(), time_members);
-
-        // Promise members
-        let mut promise_members = HashMap::new();
-        promise_members.insert(
-            "then".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        promise_members.insert(
-            "catch".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        promise_members.insert(
-            "finally".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:function".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        promise_members.insert(
-            "resolve".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:any".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        promise_members.insert(
-            "reject".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:any".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        promise_members.insert(
-            "all".to_string(),
-            MemberInfo {
-                type_name: "function:Promise<any[]>:any".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Promise".to_string(), promise_members);
-
-        // Thread members
-        let mut thread_members = HashMap::new();
-        thread_members.insert(
-            "constructor".to_string(),
-            MemberInfo {
-                type_name: "function:void:function,any,any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        thread_members.insert(
-            "join".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        thread_members.insert(
-            "sleep".to_string(),
-            MemberInfo {
-                type_name: "function:void:int32".to_string(),
-                is_static: true,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Thread".to_string(), thread_members);
-
-        // Net members (for std:net as object)
-        globals.insert(
-            "net".to_string(),
-            Symbol {
-                type_name: "Net".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-        let mut net_members = HashMap::new();
-        net_members.insert(
-            "connect".to_string(),
-            MemberInfo {
-                type_name: "function:int32:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        net_members.insert(
-            "close".to_string(),
-            MemberInfo {
-                type_name: "function:void:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        net_members.insert(
-            "listen".to_string(),
-            MemberInfo {
-                type_name: "function:int32:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        net_members.insert(
-            "accept".to_string(),
-            MemberInfo {
-                type_name: "function:int32:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-
-        class_members.insert("Net".to_string(), net_members);
-
-        // FS members (for std:fs as object)
-        globals.insert(
-            "fs".to_string(),
-            Symbol {
-                type_name: "FileSystem".to_string(),
-                is_const: true,
-                params: vec![],
-                is_variadic: false,
-                aliased_type: None,
-                is_moved: false,
-            },
-        );
-        let mut fs_members = HashMap::new();
-        fs_members.insert(
-            "readFileSync".to_string(),
-            MemberInfo {
-                type_name: "function:string:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "writeFileSync".to_string(),
-            MemberInfo {
-                type_name: "function:void:string,string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "appendFileSync".to_string(),
-            MemberInfo {
-                type_name: "function:void:string,string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "existsSync".to_string(),
-            MemberInfo {
-                type_name: "function:bool:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "unlinkSync".to_string(),
-            MemberInfo {
-                type_name: "function:void:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "mkdirSync".to_string(),
-            MemberInfo {
-                type_name: "function:void:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "readdirSync".to_string(),
-            MemberInfo {
-                type_name: "function:string[]:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "readFile".to_string(),
-            MemberInfo {
-                type_name: "function:Promise<string>:string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        fs_members.insert(
-            "writeFile".to_string(),
-            MemberInfo {
-                type_name: "function:Promise:string,string".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("FileSystem".to_string(), fs_members);
-        // Mutex members
-        let mut mutex_members = HashMap::new();
-        mutex_members.insert(
-            "lock".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        mutex_members.insert(
-            "unlock".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        mutex_members.insert(
-            "acquire".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        mutex_members.insert(
-            "release".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Mutex".to_string(), mutex_members);
-        globals.insert("Mutex".to_string(), class_sym("Mutex"));
-
-        // SharedQueue members
-        let mut shared_queue_members = HashMap::new();
-        shared_queue_members.insert(
-            "enqueue".to_string(),
-            MemberInfo {
-                type_name: "function:int32:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        shared_queue_members.insert(
-            "dequeue".to_string(),
-            MemberInfo {
-                type_name: "function:any:".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        shared_queue_members.insert(
-            "isEmpty".to_string(),
-            MemberInfo {
-                type_name: "function:bool".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        shared_queue_members.insert(
-            "size".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("SharedQueue".to_string(), shared_queue_members);
-        globals.insert("SharedQueue".to_string(), class_sym("SharedQueue"));
-
-        // Atomic members
-        let mut atomic_members = HashMap::new();
-        atomic_members.insert(
-            "add".to_string(),
-            MemberInfo {
-                type_name: "function:int32:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        atomic_members.insert(
-            "sub".to_string(),
-            MemberInfo {
-                type_name: "function:int32:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        atomic_members.insert(
-            "load".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        atomic_members.insert(
-            "store".to_string(),
-            MemberInfo {
-                type_name: "function:void:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        atomic_members.insert(
-            "exchange".to_string(),
-            MemberInfo {
-                type_name: "function:int32:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        atomic_members.insert(
-            "compareExchange".to_string(),
-            MemberInfo {
-                type_name: "function:int32:any:any".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Atomic".to_string(), atomic_members);
-
-        // Condition members
-        let mut condition_members = HashMap::new();
-        condition_members.insert(
-            "wait".to_string(),
-            MemberInfo {
-                type_name: "function:int32:Mutex".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        condition_members.insert(
-            "notify".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        condition_members.insert(
-            "notifyAll".to_string(),
-            MemberInfo {
-                type_name: "function:int32".to_string(),
-                is_static: false,
-                access: AccessLevel::Public,
-                is_readonly: true,
-            },
-        );
-        class_members.insert("Condition".to_string(), condition_members);
-
-        // Http/Https members
-        let mut http_members = HashMap::new();
-        let methods = ["get", "post", "put", "delete", "patch", "head", "options"];
-        for m in methods {
-            let p_count = if matches!(m, "get" | "delete" | "head" | "options") {
-                1
-            } else {
-                2
-            };
-            let p_str = vec!["string".to_string(); p_count].join(",");
-            http_members.insert(
-                m.to_string(),
-                MemberInfo {
-                    type_name: format!("function:Promise<string>:{}", p_str),
-                    is_static: false,
-                    access: AccessLevel::Public,
-                    is_readonly: true,
-                },
-            );
-            http_members.insert(
-                format!("{}Sync", m),
-                MemberInfo {
-                    type_name: format!("function:string:{}", p_str),
-                    is_static: false,
-                    access: AccessLevel::Public,
-                    is_readonly: true,
-                },
-            );
-        }
-        class_members.insert("Http".to_string(), http_members.clone());
-        class_members.insert("Https".to_string(), http_members);
-
+        let globals = HashMap::new();
+        let class_members = HashMap::new();
+        let class_hierarchy = HashMap::new();
+        // Standard library symbols are now loaded from the prelude and explicit imports.
         let checker = TypeChecker {
             scopes: vec![globals],
             current_class: None,
@@ -1768,203 +408,10 @@ impl TypeChecker {
                 }
                 self.interfaces.insert(name.clone(), interface_methods);
             }
-            Statement::ImportDecl { _names, source, .. } => {
-                if source.starts_with("std:") {
-                    if source == "std:math" {
-                        self.define_with_params(
-                            "min".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "max".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "abs".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "round".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "floor".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "ceil".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "pow".to_string(),
-                            "function:float64:float64,float64".to_string(),
-                            vec!["float64".to_string(), "float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "sqrt".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "sin".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                        self.define_with_params(
-                            "cos".to_string(),
-                            "function:float64:float64".to_string(),
-                            vec!["float64".to_string()],
-                        );
-                    } else if source == "std:json" {
-                        self.define_with_params(
-                            "parse".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "stringify".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                    } else if source == "std:fs" {
-                        self.define_with_params(
-                            "read_to_string".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "write".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string(), "string".to_string()],
-                        );
-                        self.define_with_params(
-                            "remove".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "exists".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                    } else if source == "std:time" {
-                        self.define_with_params(
-                            "now".to_string(),
-                            "float64".to_string(),
-                            Vec::new(),
-                        );
-                        self.define_with_params(
-                            "sleep".to_string(),
-                            "void".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "delay".to_string(),
-                            "Promise".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "setTimeout".to_string(),
-                            "any".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "setInterval".to_string(),
-                            "any".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "clearTimeout".to_string(),
-                            "void".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "clearInterval".to_string(),
-                            "void".to_string(),
-                            vec!["any".to_string()],
-                        );
-                    } else if source == "std:system" {
-                        self.define_with_params(
-                            "args".to_string(),
-                            "function".to_string(),
-                            Vec::new(),
-                        );
-                        let mut system_members = HashMap::new();
-                        system_members.insert(
-                            "argv".to_string(),
-                            MemberInfo {
-                                type_name: "string[]".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        system_members.insert(
-                            "env".to_string(),
-                            MemberInfo {
-                                type_name: "Map<string,string>".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        system_members.insert(
-                            "os".to_string(),
-                            MemberInfo {
-                                type_name: "string".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        system_members.insert(
-                            "exit".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:int32".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        self.class_members
-                            .insert("System".to_string(), system_members);
-                        self.define("system".to_string(), "System".to_string());
-                    } else if source == "std:collections" {
-                        self.define("Stack".to_string(), "class".to_string());
-                        self.define("Queue".to_string(), "class".to_string());
-                        self.define("Map".to_string(), "class".to_string());
-                        self.define("Set".to_string(), "class".to_string());
-                    } else if source == "std:net" {
-                        self.define_with_params(
-                            "connect".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "send".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "string".to_string()],
-                        );
-                        self.define_with_params(
-                            "receive".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "int32".to_string()],
-                        );
-                        self.define_with_params(
-                            "close".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define("http".to_string(), "Http".to_string());
-                        self.define("https".to_string(), "Https".to_string());
-                    }
-                }
+            Statement::ImportDecl {
+                _names, source: _, ..
+            } => {
+                // Stdlib files will be processed as normal TejX files through explicit inclusion
             }
             Statement::ExportDecl { declaration, .. } => {
                 self.collect_declarations(declaration);
@@ -1978,37 +425,76 @@ impl TypeChecker {
         let mut final_type = type_name.clone();
         let mut is_variadic = false;
 
+        let split_params = |params_str: &str| -> Vec<String> {
+            let mut params = Vec::new();
+            let mut current = String::new();
+            let mut depth_brace = 0;
+            let mut depth_angle = 0;
+            let mut depth_paren = 0;
+
+            for ch in params_str.chars() {
+                match ch {
+                    '{' => depth_brace += 1,
+                    '}' => depth_brace -= 1,
+                    '<' => depth_angle += 1,
+                    '>' => {
+                        if depth_angle > 0 {
+                            depth_angle -= 1;
+                        }
+                    }
+                    '(' => depth_paren += 1,
+                    ')' => depth_paren -= 1,
+                    ',' if depth_brace == 0 && depth_angle == 0 && depth_paren == 0 => {
+                        params.push(current.trim().to_string());
+                        current.clear();
+                        continue;
+                    }
+                    _ => {}
+                }
+                current.push(ch);
+            }
+            if !current.trim().is_empty() {
+                params.push(current.trim().to_string());
+            }
+            params
+        };
+
         if type_name.starts_with("function:") {
-            let parts: Vec<&str> = type_name.split(':').collect();
+            let parts: Vec<&str> = type_name.splitn(3, ':').collect();
             if parts.len() >= 3 {
                 // function:ret_ty:p1,p2,p3
                 final_type = format!("function:{}", parts[1]);
-                for p in parts[2].split(',') {
+                let params = split_params(parts[2]);
+                for mut p in params {
                     if p.ends_with("...") {
                         is_variadic = true;
-                        final_params.push(p[..p.len() - 3].to_string());
-                    } else if !p.is_empty() {
-                        final_params.push(p.to_string());
+                        p = p[..p.len() - 3].to_string();
+                    }
+                    if !p.is_empty() {
+                        final_params.push(p);
                     }
                 }
             }
         } else if type_name.contains("=>") {
             // (p1: t1, p2: t2) => ret
             if let Some(start) = type_name.find('(') {
-                if let Some(end) = type_name.find(')') {
+                if let Some(end) = type_name.rfind(')') {
                     let params_str = &type_name[start + 1..end];
-                    for p in params_str.split(',') {
-                        let p = p.trim();
-                        if !p.is_empty() {
-                            if let Some(colon) = p.find(':') {
-                                final_params.push(p[colon + 1..].trim().to_string());
-                            } else {
-                                final_params.push("any".to_string());
-                            }
+                    let params = split_params(params_str);
+                    for p in params {
+                        if p.ends_with("...") {
+                            is_variadic = true;
+                        }
+                        let p = p.trim_end_matches("...").trim();
+                        if let Some(colon) = p.find(':') {
+                            final_params.push(p[colon + 1..].trim().to_string());
+                        } else if !p.is_empty() {
+                            final_params.push("any".to_string());
                         }
                     }
-                    if let Some(arrow) = type_name.find("=>") {
-                        final_type = format!("function:{}", type_name[arrow + 2..].trim());
+                    if let Some(arrow) = type_name.rfind("=>") {
+                        let ret_part = &type_name[arrow + 2..].trim();
+                        final_type = format!("function:{}", ret_part);
                     }
                 }
             }
@@ -2122,8 +608,8 @@ impl TypeChecker {
     }
 
     fn is_assignable(&self, target: &str, value: &str) -> bool {
-        if target == "any" || value == "any" {
-            return true;
+        if target == "{unknown}" || value == "{unknown}" {
+            return true; // prevent cascading errors
         }
         self.are_types_compatible(target, value)
     }
@@ -2219,15 +705,6 @@ impl TypeChecker {
             return true;
         }
 
-        // Built-ins
-        let builtins = [
-            "Array", "Map", "Set", "Promise", "Console", "Error", "Date", "Math", "process",
-            "console", "Option", "Result", "Some", "None",
-        ];
-        if builtins.contains(&type_name) {
-            return true;
-        }
-
         // Defined in scopes (classes, interfaces, etc.)
         self.lookup(type_name).is_some()
     }
@@ -2285,16 +762,112 @@ impl TypeChecker {
         if let Some(angle) = t.find('<') {
             return self.is_copy_type(&t[..angle]);
         }
-        // Standard library shared types that are internally reference-counted/shared
-        let shared_types = ["Mutex", "SharedQueue", "Atomic", "Condition", "Promise"];
-        if shared_types.contains(&t) {
+        // Anonymous objects (structs): copyable if all their members are copyable
+        if t.starts_with('{') && t.ends_with('}') {
+            let props = self.parse_struct_props(t);
+            if props.is_empty() {
+                return true;
+            }
+            return props.values().all(|v| self.is_copy_type(v));
+        }
+
+        // Built-in prelude classes are i64 handles at runtime — they use copy/borrow semantics
+        let builtins = ["Array", "String", "Promise", "Error", "Map", "Set"];
+        if builtins.contains(&t) {
             return true;
         }
+
         // User-defined classes use MOVE semantics — they are NOT copy
         false
     }
 
+    fn get_common_ancestor(&self, t1: &str, t2: &str) -> String {
+        if t1 == t2 {
+            return t1.to_string();
+        }
+        if t1 == "{unknown}" {
+            return t2.to_string();
+        }
+        if t2 == "{unknown}" {
+            return t1.to_string();
+        }
+        if t1 == "any" || t2 == "any" {
+            return "any".to_string();
+        }
+
+        let mut t1_ancestors = std::collections::HashSet::new();
+        let mut curr = t1.to_string();
+        t1_ancestors.insert(curr.clone());
+        while let Some(parent) = self.class_hierarchy.get(&curr) {
+            t1_ancestors.insert(parent.clone());
+            curr = parent.clone();
+        }
+
+        curr = t2.to_string();
+        if t1_ancestors.contains(&curr) {
+            return curr;
+        }
+        while let Some(parent) = self.class_hierarchy.get(&curr) {
+            if t1_ancestors.contains(parent) {
+                return parent.clone();
+            }
+            curr = parent.clone();
+        }
+        "{unknown}".to_string()
+    }
+
     fn are_types_compatible(&self, expected: &str, actual: &str) -> bool {
+        // Fast path: exact match (handles T==T, Array<T>==Array<T>, etc.)
+        if expected == actual {
+            return true;
+        }
+        if expected.is_empty() || actual.is_empty() || expected == "any" || actual == "any" {
+            return true;
+        }
+
+        // Built-in type aliases: String == string, Array == array, etc.
+        fn normalize_builtin(t: &str) -> &str {
+            match t {
+                "String" => "string",
+                "Int" => "int",
+                "Float" => "float",
+                "Bool" | "Boolean" | "boolean" => "bool",
+                "Void" => "void",
+                other => other,
+            }
+        }
+        if normalize_builtin(expected) == normalize_builtin(actual) {
+            return true;
+        }
+
+        // Generic type param wildcard: single uppercase letter (or short like K,V) defined as 'any'
+        let is_generic_wildcard = |t: &str| -> bool {
+            t.len() <= 2
+                && t.chars().next().map_or(false, |c| c.is_uppercase())
+                && t.chars().all(|c| c.is_alphanumeric())
+        };
+        if is_generic_wildcard(expected) || is_generic_wildcard(actual) {
+            return true;
+        }
+
+        // Handle Optional<T> explicitly before generic base comparison
+        if expected.starts_with("Optional<") && expected.ends_with(">") {
+            let inner = &expected[9..expected.len() - 1]; // extract T
+            if actual == "None" || self.are_types_compatible(inner, actual) {
+                return true;
+            }
+        }
+
+        // If types contain generic params, compare base types only
+        // e.g. Array<T> vs Array<int> → compare Array vs Array
+        if expected.contains('<') || actual.contains('<') {
+            let e_base = expected.split('<').next().unwrap_or(expected);
+            let a_base = actual.split('<').next().unwrap_or(actual);
+            if e_base == a_base {
+                return true;
+            }
+        }
+
         let e_is_ref = expected.starts_with("ref ");
         let a_is_ref = actual.starts_with("ref ");
 
@@ -2391,17 +964,32 @@ impl TypeChecker {
             return true;
         }
 
-        if expected == "any"
+        if expected == "{unknown}"
+            || actual == "{unknown}"
+            || expected == "any"
             || actual == "any"
             || expected == ""
             || actual == ""
             || actual == "any:"
             || expected == "any:"
             || actual == "object"
+            || expected == "any[]"
+            || actual == "any[]"
         {
             return true;
         }
         if expected == actual {
+            return true;
+        }
+
+        // Object normalization
+        let e_norm_obj = expected.replace(" ", "").replace(";", ",");
+        let a_norm_obj = actual.replace(" ", "").replace(";", ",");
+        if e_norm_obj == a_norm_obj && !e_norm_obj.is_empty() {
+            return true;
+        }
+
+        if expected == "object" && (actual.starts_with('{') || actual.starts_with("Map<")) {
             return true;
         }
 
@@ -2443,11 +1031,21 @@ impl TypeChecker {
             return true;
         }
 
-        // Inheritance check
-        if let Some(parent) = self.class_hierarchy.get(actual) {
-            if self.are_types_compatible(expected, parent) {
+        if expected == "object" && actual.starts_with('{') {
+            return true;
+        }
+
+        if expected.ends_with("[]") && actual.ends_with("[]") {
+            let e_elem = &expected[..expected.len() - 2];
+            let a_elem = &actual[..actual.len() - 2];
+            if self.are_types_compatible(e_elem, a_elem) {
                 return true;
             }
+        }
+
+        // Inheritance check
+        if let Some(parent) = self.class_hierarchy.get(actual) {
+            return self.are_types_compatible(expected, parent);
         }
 
         // Interface check
@@ -2521,6 +1119,16 @@ impl TypeChecker {
             let inner_expected = expected.split('[').next().unwrap_or("");
             return self.are_types_compatible(inner_expected, inner_actual);
         }
+        if is_array_class(expected) && is_fixed_array(actual) {
+            let inner_expected = &expected[6..expected.len() - 1];
+            let inner_actual = actual.split('[').next().unwrap_or("");
+            return self.are_types_compatible(inner_expected, inner_actual);
+        }
+        if is_array_class(actual) && is_fixed_array(expected) {
+            let inner_actual = &actual[6..actual.len() - 1];
+            let inner_expected = expected.split('[').next().unwrap_or("");
+            return self.are_types_compatible(inner_expected, inner_actual);
+        }
 
         // Empty array assignment
         if actual == "[]" && expected.ends_with("[]") {
@@ -2559,7 +1167,135 @@ impl TypeChecker {
             return true;
         }
 
+        // Structural Object Type check
+        if expected.starts_with("{")
+            && expected.ends_with("}")
+            && actual.starts_with("{")
+            && actual.ends_with("}")
+        {
+            let e_props = self.parse_struct_props(expected);
+            let a_props = self.parse_struct_props(actual);
+
+            if e_props.len() != a_props.len() {
+                return false;
+            }
+            for (k, expected_k_ty) in &e_props {
+                if let Some(actual_k_ty) = a_props.get(k) {
+                    if !self.are_types_compatible(expected_k_ty, actual_k_ty) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         false
+    }
+
+    fn parse_struct_props(&self, s: &str) -> HashMap<String, String> {
+        let mut props = HashMap::new();
+        let s = s.trim();
+        if !s.starts_with('{') || !s.ends_with('}') {
+            return props;
+        }
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return props;
+        }
+
+        let mut brace_level = 0;
+        let mut bracket_level = 0;
+        let mut angle_level = 0;
+        let mut current_key = String::new();
+        let mut current_val = String::new();
+        let mut parsing_key = true;
+
+        for c in inner.chars() {
+            match c {
+                '{' => {
+                    brace_level += 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '}' => {
+                    brace_level -= 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '[' => {
+                    bracket_level += 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                ']' => {
+                    bracket_level -= 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '<' => {
+                    angle_level += 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                '>' => {
+                    angle_level -= 1;
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+                ':' if brace_level == 0
+                    && bracket_level == 0
+                    && angle_level == 0
+                    && parsing_key =>
+                {
+                    parsing_key = false;
+                }
+                ',' | ';' if brace_level == 0 && bracket_level == 0 && angle_level == 0 => {
+                    if !current_key.trim().is_empty() {
+                        props.insert(
+                            current_key.trim().to_string(),
+                            current_val.trim().to_string(),
+                        );
+                    }
+                    current_key.clear();
+                    current_val.clear();
+                    parsing_key = true;
+                }
+                _ => {
+                    if parsing_key {
+                        current_key.push(c);
+                    } else {
+                        current_val.push(c);
+                    }
+                }
+            }
+        }
+        if !current_key.trim().is_empty() {
+            props.insert(
+                current_key.trim().to_string(),
+                current_val.trim().to_string(),
+            );
+        }
+        props
     }
 
     fn check_statement(&mut self, stmt: &Statement) -> Result<(), ()> {
@@ -2830,6 +1566,10 @@ impl TypeChecker {
                 self.current_function_return = Some(ret_ty);
                 self.current_function_is_async = func._is_async;
                 self.enter_scope();
+                // Register function-level generic params as valid types
+                for gp in &func.generic_params {
+                    self.define(gp.clone(), "any".to_string());
+                }
                 for param in &func.params {
                     self.define_with_params(
                         param.name.clone(),
@@ -2882,12 +1622,20 @@ impl TypeChecker {
 
                 self.enter_scope();
                 self.define("this".to_string(), class_decl.name.clone());
+                // Register class-level generic params as valid types
+                for gp in &class_decl.generic_params {
+                    self.define(gp.clone(), "any".to_string());
+                }
                 if !class_decl._parent_name.is_empty() {
                     self.define("super".to_string(), class_decl._parent_name.clone());
                 }
 
                 for method in &class_decl.methods {
                     self.enter_scope();
+                    // Register method-level generic params as valid types
+                    for gp in &method.func.generic_params {
+                        self.define(gp.clone(), "any".to_string());
+                    }
                     for param in &method.func.params {
                         if !self.is_valid_type(&param.type_name) {
                             self.report_error_detailed(format!("Unknown data type: '{}'", param.type_name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
@@ -3042,470 +1790,11 @@ impl TypeChecker {
                 self.check_statement(declaration)?;
                 Ok(())
             }
-            Statement::ImportDecl { _names, source, .. } => {
-                if source.starts_with("std:") {
-                    if source == "std:math" {
-                        self.define_with_params(
-                            "min".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "max".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "abs".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "round".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "floor".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "ceil".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "pow".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "sqrt".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "sin".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "cos".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                    } else if source == "std:json" {
-                        self.define_with_params(
-                            "parse".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "stringify".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                    } else if source == "std:fs" {
-                        self.define_with_params(
-                            "read_to_string".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "write".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string(), "string".to_string()],
-                        );
-                        self.define_with_params(
-                            "remove".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define_with_params(
-                            "exists".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                    } else if source == "std:time" {
-                        self.define_with_params(
-                            "now".to_string(),
-                            "float64".to_string(),
-                            Vec::new(),
-                        );
-                        self.define_with_params(
-                            "sleep".to_string(),
-                            "void".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "delay".to_string(),
-                            "Promise".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "setTimeout".to_string(),
-                            "any".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "setInterval".to_string(),
-                            "any".to_string(),
-                            vec!["any".to_string(), "any".to_string()],
-                        );
-                        self.define_with_params(
-                            "clearTimeout".to_string(),
-                            "void".to_string(),
-                            vec!["any".to_string()],
-                        );
-                        self.define_with_params(
-                            "clearInterval".to_string(),
-                            "void".to_string(),
-                            vec!["any".to_string()],
-                        );
-                    } else if source == "std:system" {
-                        self.define_with_params(
-                            "args".to_string(),
-                            "function".to_string(),
-                            Vec::new(),
-                        );
-                        let mut system_members = HashMap::new();
-                        system_members.insert(
-                            "argv".to_string(),
-                            MemberInfo {
-                                type_name: "string[]".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        system_members.insert(
-                            "env".to_string(),
-                            MemberInfo {
-                                type_name: "Map<string,string>".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        system_members.insert(
-                            "os".to_string(),
-                            MemberInfo {
-                                type_name: "string".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        system_members.insert(
-                            "exit".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:int32".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        self.class_members
-                            .insert("System".to_string(), system_members);
-                        self.define("system".to_string(), "System".to_string());
-                    } else if source == "std:collections" {
-                        // Stack
-                        self.define("Stack".to_string(), "class".to_string());
-                        let mut stack_members = HashMap::new();
-                        stack_members.insert(
-                            "push".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:$0".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        stack_members.insert(
-                            "pop".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        stack_members.insert(
-                            "peek".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        stack_members.insert(
-                            "isEmpty".to_string(),
-                            MemberInfo {
-                                type_name: "function:bool:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        stack_members.insert(
-                            "size".to_string(),
-                            MemberInfo {
-                                type_name: "function:int32:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        self.class_members
-                            .insert("Stack".to_string(), stack_members);
-
-                        // Queue
-                        self.define("Queue".to_string(), "class".to_string());
-                        let mut queue_members = HashMap::new();
-                        queue_members.insert(
-                            "enqueue".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:$0".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        queue_members.insert(
-                            "dequeue".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        queue_members.insert(
-                            "peek".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        queue_members.insert(
-                            "isEmpty".to_string(),
-                            MemberInfo {
-                                type_name: "function:bool:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        queue_members.insert(
-                            "size".to_string(),
-                            MemberInfo {
-                                type_name: "function:int32:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        self.class_members
-                            .insert("Queue".to_string(), queue_members);
-
-                        // PriorityQueue/MinHeap/MaxHeap (assuming similar interface)
-                        let mut heap_members = HashMap::new();
-                        heap_members.insert(
-                            "push".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:$0".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "pop".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "insert".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:$0".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "insertMax".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:$0".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "extractMin".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "extractMax".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "peek".to_string(),
-                            MemberInfo {
-                                type_name: "function:$0:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "isEmpty".to_string(),
-                            MemberInfo {
-                                type_name: "function:bool:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        heap_members.insert(
-                            "size".to_string(),
-                            MemberInfo {
-                                type_name: "function:int32:".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-
-                        self.define("PriorityQueue".to_string(), "class".to_string());
-                        self.class_members
-                            .insert("PriorityQueue".to_string(), heap_members.clone());
-
-                        self.define("MinHeap".to_string(), "class".to_string());
-                        self.class_members
-                            .insert("MinHeap".to_string(), heap_members.clone());
-
-                        self.define("MaxHeap".to_string(), "class".to_string());
-                        self.class_members
-                            .insert("MaxHeap".to_string(), heap_members);
-
-                        // Map (shadows global Map but likely meant to be same)
-                        self.define("Map".to_string(), "class".to_string());
-                        if let Some(mut members) = self.class_members.get("Map").cloned() {
-                            members.insert(
-                                "at".to_string(),
-                                MemberInfo {
-                                    type_name: "function:ref $1:$0".to_string(),
-                                    is_static: false,
-                                    access: AccessLevel::Public,
-                                    is_readonly: true,
-                                },
-                            );
-                            self.class_members.insert("Map".to_string(), members);
-                        }
-
-                        self.define("Set".to_string(), "class".to_string());
-                        // Set already defined globally
-                        self.define("Map".to_string(), "class".to_string());
-                        self.define("Set".to_string(), "class".to_string());
-                        self.define("OrderedMap".to_string(), "class".to_string());
-                        if let Some(members) = self.class_members.get("Map").cloned() {
-                            self.class_members.insert("OrderedMap".to_string(), members);
-                        }
-
-                        self.define("OrderedSet".to_string(), "class".to_string());
-                        if let Some(members) = self.class_members.get("Set").cloned() {
-                            self.class_members.insert("OrderedSet".to_string(), members);
-                        }
-
-                        self.define("BloomFilter".to_string(), "class".to_string());
-                        let mut bf_members = HashMap::new();
-                        bf_members.insert(
-                            "add".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:string".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        bf_members.insert(
-                            "contains".to_string(),
-                            MemberInfo {
-                                type_name: "function:bool:string".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        self.class_members
-                            .insert("BloomFilter".to_string(), bf_members);
-
-                        self.define("Trie".to_string(), "class".to_string());
-                        let mut trie_members = HashMap::new();
-                        trie_members.insert(
-                            "addPath".to_string(),
-                            MemberInfo {
-                                type_name: "function:void:string,int32".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        trie_members.insert(
-                            "find".to_string(),
-                            MemberInfo {
-                                type_name: "function:int32:string".to_string(),
-                                is_static: false,
-                                access: AccessLevel::Public,
-                                is_readonly: true,
-                            },
-                        );
-                        self.class_members.insert("Trie".to_string(), trie_members);
-                    } else if source == "std:net" {
-                        self.define_with_params(
-                            "connect".to_string(),
-                            "function".to_string(),
-                            vec!["string".to_string()],
-                        );
-                        self.define("http".to_string(), "Http".to_string());
-                        self.define("https".to_string(), "Https".to_string());
-                        self.define_with_params(
-                            "send".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "string".to_string()],
-                        );
-                        self.define_with_params(
-                            "receive".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string(), "int32".to_string()],
-                        );
-                        self.define_with_params(
-                            "close".to_string(),
-                            "function".to_string(),
-                            vec!["any".to_string()],
-                        );
-                    }
-                }
+            Statement::ImportDecl {
+                _names, source: _, ..
+            } => {
+                // Previously, this contained hardcoded globals and function definitions for `std:` modules.
+                // We now rely on the lowering phase to actually include the `.tx` stdlib files and typecheck those directly.
                 Ok(())
             }
             Statement::ExtensionDeclaration(ext_decl) => {
@@ -3582,14 +1871,17 @@ impl TypeChecker {
         } else if let Some(open) = obj_type.find('<') {
             if let Some(close) = obj_type.rfind('>') {
                 let inner = &obj_type[open + 1..close];
-                // Split inner by comma, respecting nested generics
+                // Split inner by comma, respecting nested generics and object literals
                 let mut start = 0;
                 let mut depth = 0;
+                let mut depth_brace = 0;
                 for (i, c) in inner.char_indices() {
                     match c {
                         '<' => depth += 1,
                         '>' => depth -= 1,
-                        ',' if depth == 0 => {
+                        '{' => depth_brace += 1,
+                        '}' => depth_brace -= 1,
+                        ',' if depth == 0 && depth_brace == 0 => {
                             parts.push(inner[start..i].trim());
                             start = i + 1;
                         }
@@ -3670,6 +1962,14 @@ impl TypeChecker {
         } else if unwrapped_type.contains('[') && unwrapped_type.ends_with(']') {
             // Fixed-size arrays like int32[5] should also map to Array
             "Array".to_string()
+        } else if unwrapped_type.starts_with("Array<") {
+            // Generic Array<T> maps to Array
+            "Array".to_string()
+        } else if unwrapped_type == "string" {
+            "String".to_string()
+        } else if unwrapped_type.starts_with('{') {
+            // Object literals map to Map
+            "Map".to_string()
         } else if unwrapped_type == "enum"
             || self
                 .lookup(&unwrapped_type)
@@ -3739,10 +2039,7 @@ impl TypeChecker {
             return type_name.to_string();
         }
         let parts: Vec<&str> = type_name.split('|').map(|s| s.trim()).collect();
-        let filtered: Vec<&str> = parts
-            .into_iter()
-            .filter(|&p| p != "None" && p != "null")
-            .collect();
+        let filtered: Vec<&str> = parts.into_iter().filter(|&p| p != "None").collect();
         if filtered.len() == 1 {
             filtered[0].to_string()
         } else {
@@ -3904,6 +2201,12 @@ impl TypeChecker {
                     Ok("any".to_string())
                 }
             }
+            Expression::CastExpr {
+                expr, target_type, ..
+            } => {
+                let _expr_type = self.check_expression(expr)?;
+                Ok(target_type.clone())
+            }
             Expression::BinaryExpr {
                 left,
                 op,
@@ -3971,8 +2274,14 @@ impl TypeChecker {
                         op,
                         TokenType::Minus | TokenType::Star | TokenType::Slash | TokenType::Plus
                     ) {
+                        if left_type == "float64" || right_type == "float64" {
+                            return Ok("float64".to_string());
+                        }
                         if is_float(&left_type) || is_float(&right_type) {
                             return Ok("float32".to_string());
+                        }
+                        if left_type == "int64" || right_type == "int64" {
+                            return Ok("int64".to_string());
                         }
                         return Ok("int32".to_string());
                     }
@@ -4269,28 +2578,20 @@ impl TypeChecker {
                 let mut s_params = Vec::new();
                 let mut is_variadic = false;
 
-                if callee_type.starts_with("function:") {
-                    let parts: Vec<&str> = callee_type.split(':').collect();
+                if callee_type.starts_with("function:") || callee_type.contains("=>") {
+                    let (parsed_ret, parsed_params, parsed_variadic) =
+                        self.parse_signature(callee_type.clone());
+                    // The returned final_type from parse_signature is "function:ret", so we strip it.
+                    let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
                     if parts.len() >= 2 {
-                        return_type = parts[1].to_string();
-                        if parts.len() >= 3 {
-                            let p_str = parts[2];
-                            if p_str.ends_with("...") {
-                                is_variadic = true;
-                            }
-                            s_params = p_str
-                                .split(',')
-                                .filter(|s| !s.is_empty())
-                                .map(|s| {
-                                    if s.ends_with("...") {
-                                        s[..s.len() - 3].to_string()
-                                    } else {
-                                        s.to_string()
-                                    }
-                                })
-                                .collect();
+                        let mut ret = parts[1].to_string();
+                        if ret.ends_with(':') {
+                            ret.pop();
                         }
+                        return_type = ret;
                     }
+                    s_params = parsed_params;
+                    is_variadic = parsed_variadic;
                 }
                 // Always try lookup to fill s_params if not yet populated from type string
                 if s_params.is_empty() {
@@ -4298,7 +2599,11 @@ impl TypeChecker {
                         if return_type == "any" && s.type_name.starts_with("function:") {
                             let parts: Vec<&str> = s.type_name.split(':').collect();
                             if parts.len() >= 2 {
-                                return_type = parts[1].to_string();
+                                let mut ret = parts[1].to_string();
+                                if ret.ends_with(':') {
+                                    ret.pop();
+                                }
+                                return_type = ret;
                             }
                         }
                         s_params = s.params.clone();
@@ -4330,28 +2635,44 @@ impl TypeChecker {
                         "any".to_string()
                     };
 
-                    if target_type != "any" && !self.are_types_compatible(&target_type, &arg_type) {
-                        self.report_error_detailed(
-                            format!(
-                                "Argument type mismatch for '{}': expected '{}', got '{}'",
-                                callee_str, target_type, arg_type
-                            ),
-                            *_line,
-                            *_col,
-                            "E0108",
-                            Some(&format!(
-                                "Pass a value of type '{}' or convert using 'as {}'",
-                                target_type, target_type
-                            )),
-                        );
+                    if !target_type.is_empty()
+                        && target_type != "any"
+                        && !self.are_types_compatible(&target_type, &arg_type)
+                    {
+                        // Skip error if either side is a generic type param (defined as 'any' in scope)
+                        let is_generic_param = |t: &str| {
+                            if let Some(sym) = self.lookup(t) {
+                                sym.type_name == "any"
+                                    && t.len() <= 2
+                                    && t.chars().next().map_or(false, |c| c.is_uppercase())
+                            } else {
+                                false
+                            }
+                        };
+                        if !is_generic_param(&target_type) && !is_generic_param(&arg_type) {
+                            self.report_error_detailed(
+                                format!(
+                                    "Argument type mismatch for '{}': expected '{}', got '{}'",
+                                    callee_str, target_type, arg_type
+                                ),
+                                *_line,
+                                *_col,
+                                "E0108",
+                                Some(&format!(
+                                    "Pass a value of type '{}' or convert using 'as {}'",
+                                    target_type, target_type
+                                )),
+                            );
+                        }
                     }
 
                     // Handle Move Semantics in Call (SOI: Implicit Borrow)
                     if let Expression::Identifier { name: src_name, .. } = arg {
-                        let is_borrowing =
-                            matches!(callee_str.as_str(), "print" | "delay" | "eprint" | "len")
-                                || callee_str.starts_with("console.")
-                                || callee_str.starts_with("assert_");
+                        let is_borrowing = callee_str.starts_with("console.")
+                            || callee_str.starts_with("assert_")
+                            || callee_str.starts_with("rt_")
+                            || callee_str.starts_with("RT_")
+                            || callee_str.starts_with("tejx_");
                         // SOI: Check if variable is used later in the current block.
                         // If used later → implicit borrow (don't mark moved).
                         // If last use → implicit move (mark moved).
@@ -4369,25 +2690,40 @@ impl TypeChecker {
                     }
                 }
 
-                // Check argument count
                 if !is_variadic && !s_params.is_empty() && args.len() != s_params.len() {
-                    self.report_error_detailed(
-                        format!(
-                            "Function '{}' expects {} argument(s), but {} were provided",
-                            callee_str,
-                            s_params.len(),
-                            args.len()
-                        ),
-                        *_line,
-                        *_col,
-                        "E0109",
-                        Some(&format!("Provide exactly {} argument(s)", s_params.len())),
-                    );
+                    let mut all_missing_are_optional = true;
+                    if args.len() < s_params.len() {
+                        for missing_param in &s_params[args.len()..] {
+                            if !missing_param.starts_with("Optional<")
+                                && !missing_param.contains("| None")
+                            {
+                                all_missing_are_optional = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        all_missing_are_optional = false;
+                    }
+
+                    if !all_missing_are_optional {
+                        self.report_error_detailed(
+                            format!(
+                                "Function '{}' expects {} argument(s), but {} were provided",
+                                callee_str,
+                                s_params.len(),
+                                args.len()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0109",
+                            Some(&format!("Provide exactly {} argument(s)", s_params.len())),
+                        );
+                    }
                 }
 
                 if callee_type == "any" && return_type == "any" {
                     // Possible dynamic call or lookup failed but we used any
-                    if callee_str != "print" && callee_str != "delay" && !callee_str.contains('.') {
+                    if !callee_str.contains('.') {
                         if self.lookup(&callee_str).is_none() {
                             // self.report_error(format!("Undefined function '{}'", callee_str), *_line, *_col);
                         }
@@ -4396,7 +2732,21 @@ impl TypeChecker {
 
                 Ok(return_type)
             }
-            Expression::ObjectLiteralExpr { .. } => Ok("any".to_string()),
+            Expression::ObjectLiteralExpr { entries, .. } => {
+                let mut type_str = String::from("{");
+                for (i, (key, val_expr)) in entries.iter().enumerate() {
+                    let mut val_ty = self.check_expression(val_expr)?;
+                    if val_ty.starts_with("ref ") {
+                        val_ty = val_ty[4..].to_string();
+                    }
+                    type_str.push_str(&format!("{}: {}", key, val_ty));
+                    if i < entries.len() - 1 {
+                        type_str.push_str(", ");
+                    }
+                }
+                type_str.push('}');
+                Ok(type_str)
+            }
             Expression::ArrayLiteral { elements, ty, .. } => {
                 if !elements.is_empty() {
                     let mut first_type = self.check_expression(&elements[0])?;
@@ -4408,8 +2758,20 @@ impl TypeChecker {
                         if elem_ty.starts_with("ref ") {
                             elem_ty = elem_ty[4..].to_string();
                         }
-                        if elem_ty != first_type && first_type != "any" {
-                            first_type = "any".to_string();
+                        if elem_ty != first_type && first_type != "{unknown}" {
+                            let common = self.get_common_ancestor(&first_type, &elem_ty);
+                            if common == "{unknown}" {
+                                self.report_error_detailed(
+                                    format!("Array elements must have consistent types. Expected '{}' but found '{}'", first_type, elem_ty),
+                                    elements[i].get_line(),
+                                    0,
+                                    "E0091",
+                                    Some("Ensure all elements in the array literal match the type of the first element or share a common ancestor"),
+                                );
+                                first_type = "{unknown}".to_string();
+                            } else {
+                                first_type = common;
+                            }
                         }
                     }
                     let inferred = format!("{}[{}]", first_type, elements.len());
@@ -4477,6 +2839,25 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
+                // Check if this class requires generic type parameters
+                if let Some(members) = self.class_members.get(class_name) {
+                    // Classes with generic params should require explicit type args
+                    if members.contains_key("__generic")
+                        || class_name == "Map"
+                        || class_name == "Set"
+                    {
+                        self.report_error_detailed(
+                            format!("{} requires explicit type arguments", class_name),
+                            *_line,
+                            *_col,
+                            "E0101",
+                            Some(&format!(
+                                "Use {}<K, V> or equivalent to strictly type this collection",
+                                class_name
+                            )),
+                        );
+                    }
+                }
                 if !self.is_valid_type(class_name) {
                     self.report_error_detailed(
                         format!("Unknown class '{}'", class_name),

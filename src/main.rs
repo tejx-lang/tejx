@@ -4,13 +4,13 @@ mod borrow_checker;
 mod codegen;
 mod diagnostics;
 mod hir;
+mod intrinsics;
 mod lexer;
 mod linker;
 mod lowering;
 mod mir;
 mod mir_lowering;
 mod parser;
-pub mod runtime;
 mod token;
 mod type_checker;
 mod types;
@@ -145,24 +145,32 @@ fn main() {
 
     let mut lowering = Lowering::new();
     lowering.async_enabled = async_enabled;
+    if let Ok(path) = std::env::var("stdlib-path") {
+        *lowering.stdlib_path.borrow_mut() = std::path::PathBuf::from(path);
+    } else if std::path::Path::new("stdlib").exists() {
+        *lowering.stdlib_path.borrow_mut() = std::path::PathBuf::from("stdlib");
+    }
     *lowering.filename.borrow_mut() = filename.clone();
     let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
 
     // Resolve imports before type checking
     let mut processed_files = std::collections::HashSet::new();
     let mut import_stack = Vec::new();
+    let mut initial_file_path = None;
     if let Ok(p) = std::fs::canonicalize(base_path.join(&filename)) {
         processed_files.insert(p.clone());
-        import_stack.push(p);
+        import_stack.push(p.clone());
+        initial_file_path = Some(p);
     }
-    let merged_statements = lowering.resolve_imports(
-        program.statements.clone(),
+    let resolved_statements = lowering.resolve_imports(
+        program.statements,
         base_path,
         &mut processed_files,
         &mut import_stack,
+        initial_file_path.as_deref(),
     );
     let merged_program = ast::Program {
-        statements: merged_statements,
+        statements: resolved_statements,
     };
 
     // Check for lowering errors (import validation happens in resolve_imports)
@@ -369,19 +377,16 @@ fn main() {
         process::exit(1);
     });
 
-    let pid = process::id();
-    let temp_dir = env::temp_dir();
-    let runtime_lib_path = temp_dir.join(format!("libruntime_{}.a", pid));
-
-    if let Err(e) = fs::write(&runtime_lib_path, RUNTIME_LIB) {
-        eprintln!("Error writing embedded runtime to temp file: {}", e);
-        let _ = fs::remove_file(&temp_ll_file);
-        process::exit(1);
-    }
-
     let mut linker = Linker::new(Path::new(&output_name));
     linker.add_object(Path::new(&temp_ll_file));
-    linker.add_object(&runtime_lib_path);
+
+    // Handle compiler-side runtime (libruntime.a)
+    let temp_runtime_path = env::temp_dir().join(format!("libruntime_{}.a", process::id()));
+    fs::write(&temp_runtime_path, RUNTIME_LIB).unwrap_or_else(|err| {
+        eprintln!("Error writing runtime library: {}", err);
+        process::exit(1);
+    });
+    linker.add_object(&temp_runtime_path);
 
     // Add other input files (objects or libraries)
     for i in 1..input_files.len() {
@@ -400,12 +405,11 @@ fn main() {
             // Success - cleanup temp files if not compile_only or if otherwise needed
             if !compile_only {
                 let _ = fs::remove_file(&temp_ll_file);
+                let _ = fs::remove_file(&temp_runtime_path);
             }
-            let _ = fs::remove_file(&runtime_lib_path);
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            let _ = fs::remove_file(&runtime_lib_path);
             // Keep .ll file for debugging
             process::exit(1);
         }

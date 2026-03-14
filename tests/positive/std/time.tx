@@ -1,13 +1,13 @@
 // Time Tests
 // ==========
-import std:time;
+import {delay,sleep,now} from "std:time";
 import { assert_eq_int, assert_true } from "../utils.tx";
 
 async function test_delay() {
     print("--- Async Delay ---");
-    let t1 = time.now();
-    await time.delay(500);
-    let t2 = time.now();
+    let t1 = now();
+    await delay(500);
+    let t2 = now();
     let d = t2 - t1;
     assert_true(d >= 500, "Async delay >= 500ms");
     print("Async delay diff: ", d);
@@ -15,9 +15,9 @@ async function test_delay() {
 
 function test_sleep() {
     print("--- Sync Sleep ---");
-    let start = time.now();
-    time.sleep(200);
-    let end = time.now();
+    let start = now();
+    sleep(200);
+    let end = now();
     let diff = end - start;
     assert_true(diff >= 200, "Sync sleep >= 200ms");
     print("Sync sleep diff: ", diff);
@@ -25,7 +25,7 @@ function test_sleep() {
 
 async function main() {
     print("=== TIME TESTS START ===");
-    let start = time.now();
+    let start = now();
     assert_true(start > 0, "time.now() positive");
     
     test_sleep();

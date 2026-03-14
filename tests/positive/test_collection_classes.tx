@@ -23,17 +23,17 @@ function test_queue(): void {
 
 function test_map(): void {
     print("Testing Map...");
-    let m = new Map();
-    m.put("key", 123);
+    let m = new Map<string, int>();
+    m.set("key", 123);
     assert(m.has("key") == true);
-    assert(m.at("key") == 123);
+    assert(m.get("key") == 123);
     assert(m.size() == 1);
     print("Map OK");
 }
 
 function test_set(): void {
     print("Testing Set...");
-    let s = new Set();
+    let s = new Set<int>();
     s.add(100);
     s.add(200);
     s.add(100);

@@ -18,7 +18,6 @@ pub enum TejxType {
     Class(String),
     FixedArray(Box<TejxType>, usize),
     Void,
-    Any,
     Ref(Box<TejxType>),  // Non-owning borrow
     Weak(Box<TejxType>), // Non-owning cycle-breaker
 }
@@ -43,9 +42,7 @@ impl TejxType {
             | TejxType::Ref(_)
             | TejxType::Weak(_) => false,
             // Re-enabling drops. Strict checking in borrow checker will prevent double-frees.
-            TejxType::String | TejxType::Class(_) | TejxType::Any | TejxType::FixedArray(_, _) => {
-                true
-            }
+            TejxType::String | TejxType::Class(_) | TejxType::FixedArray(_, _) => true,
         }
     }
 
@@ -96,10 +93,11 @@ impl TejxType {
             }
             TejxType::Class(name) if name == "ByteArray" => TejxType::Bool,
             TejxType::Ref(inner) | TejxType::Weak(inner) => inner.get_array_element_type(), // Delegate to underlying type
-            _ => TejxType::Any,
+            _ => TejxType::Void,
         }
     }
 
+    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         match self {
             TejxType::Int16 | TejxType::Float16 => 2,
@@ -108,11 +106,7 @@ impl TejxType {
             TejxType::Int128 => 16,
             TejxType::Bool => 1,
             TejxType::Char => 4,
-            TejxType::String
-            | TejxType::Class(_)
-            | TejxType::Any
-            | TejxType::Ref(_)
-            | TejxType::Weak(_) => 8, // Pointers/Boxed/Borrows
+            TejxType::String | TejxType::Class(_) | TejxType::Ref(_) | TejxType::Weak(_) => 8, // Pointers/Boxed/Borrows
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Void => 0,
         }
@@ -136,7 +130,7 @@ impl TejxType {
                     return TejxType::from_name(part);
                 }
             }
-            return TejxType::Any;
+            return TejxType::Void;
         }
 
         if name.ends_with("]") {
@@ -163,7 +157,7 @@ impl TejxType {
             "string" => TejxType::String,
             "char" => TejxType::Char,
             "boolean" | "bool" => TejxType::Bool,
-            "any" | "" => TejxType::Any,
+            "" => TejxType::Void,
             other => TejxType::Class(other.to_string()),
         }
     }

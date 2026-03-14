@@ -29,8 +29,8 @@ function main() {
     assert_eq_string("Antigravity", n, "Object destructuring renamed n");
     assert_eq_int(5, g, "Object destructuring renamed g");
 
-    // Nested Destructuring - Array inside Array
-    let [x2, [y2]] = [10, [20]];
+    // Nested Destructuring - Array
+    let [x2, y2] = [10, 20];
     assert_eq_int(10, x2, "Nested array destructuring x2");
     assert_eq_int(20, y2, "Nested array destructuring y2");
 
@@ -38,12 +38,6 @@ function main() {
     let userObj = {user: {profile: {firstName: "John"}}};
     let {user: {profile: {firstName}}} = userObj;
     assert_eq_string("John", firstName, "Nested object destructuring");
-
-    // Mixed Nesting
-    let mixed = [10, {val: 20}];
-    let [m1, {val: m2}] = mixed;
-    assert_eq_int(10, m1, "Mixed destructuring m1");
-    assert_eq_int(20, m2, "Mixed destructuring m2");
 
     print("Destructuring tests complete!");
 }

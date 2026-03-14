@@ -211,6 +211,7 @@ pub struct MIRFunction {
     pub variables: std::collections::HashMap<String, TejxType>, // variable types
     pub blocks: Vec<BasicBlock>,
     pub entry_block: usize, // index into blocks
+    pub is_extern: bool,
 }
 
 impl MIRFunction {
@@ -221,6 +222,7 @@ impl MIRFunction {
             variables: std::collections::HashMap::new(),
             blocks: Vec::new(),
             entry_block: 0,
+            is_extern: false,
         }
     }
 }

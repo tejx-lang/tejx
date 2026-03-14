@@ -1,3 +1,4 @@
+import {delay} from "std:time";
 async function foo(x: int): int {
     print("Inside foo start, x =", x);
     let res = x + 10;
@@ -11,13 +12,13 @@ async function test(): void {
     print("Got promise from foo");
     let val = await p;
     print("Awaited foo, result =", val);
-    assert(val == 15);
+    assert(val == 15,"Async test failed!");
     print("Async test passed!");
 }
 
 async function main() {
     await test();
     print("Waiting for async test to complete...");
-    rt_sleep(100);
+    await delay(100);
     print("Main thread finishing.");
 }

@@ -1,5 +1,5 @@
 // tests/timer_test.tx
-import { setTimeout, setInterval, clearInterval, clearTimeout } from "std:time";
+import { setTimeout, setInterval, clearInterval, clearTimeout, delay } from "std:time";
 
 function timeoutCallback() {
     print("Timeout executed!");
