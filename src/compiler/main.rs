@@ -4,8 +4,6 @@ pub mod backend;
 pub mod common;
 pub mod frontend;
 pub mod middle;
-#[path = "../../wasm/src/wasm_codegen.rs"]
-mod wasm_codegen;
 
 use std::env;
 use std::fs;
@@ -21,7 +19,6 @@ use crate::middle::lowering::Lowering;
 use crate::middle::mir::lowering::MIRLowering;
 use crate::middle::mir::opt as mir_opt;
 use crate::middle::semantic::TypeChecker;
-use wasm_codegen::WasmCodeGen;
 
 // The runtime library is resolved at runtime from the filesystem
 
@@ -31,7 +28,6 @@ fn main() {
     let mut async_enabled = true;
     let mut emit_mir = false;
     let mut emit_llvm = false;
-    let mut target_wasm = false;
     let mut compile_only = false;
     let mut unsafe_arrays = false;
     let mut output_name = None;
@@ -92,19 +88,7 @@ fn main() {
                     process::exit(1);
                 }
             }
-            "--target" => {
-                if i + 1 < args.len() {
-                    if args[i + 1] == "wasm" {
-                        target_wasm = true;
-                    }
-                    i += 1;
-                }
-            }
-            _ if arg.starts_with("--target=") => {
-                if arg.ends_with("wasm") {
-                    target_wasm = true;
-                }
-            }
+
             _ if arg.starts_with("-") => {
                 eprintln!(
                     "Unknown option: {}. Run 'tejxc --help' for all options.",
@@ -257,30 +241,6 @@ fn main() {
         }
     }
 
-    if target_wasm {
-        let mut wasm_codegen = WasmCodeGen::new();
-        let wat = wasm_codegen.generate_wat(&mir_functions);
-
-        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|err| {
-            eprintln!("WAT to WASM conversion failed: {}", err);
-            process::exit(1);
-        });
-
-        let output_wasm = if let Some(pos) = filename.rfind('.') {
-            format!("{}.wasm", &filename[..pos])
-        } else {
-            "a.wasm".to_string()
-        };
-
-        fs::write(&output_wasm, wasm_bytes).unwrap_or_else(|err| {
-            eprintln!("Error writing WASM file: {}", err);
-            process::exit(1);
-        });
-
-        println!("Successfully compiled to {}", output_wasm);
-        return;
-    }
-
     let mut codegen = CodeGen::new();
     codegen.unsafe_arrays = unsafe_arrays;
     codegen.class_fields = lowering_result.class_fields;
@@ -356,7 +316,6 @@ fn print_help() {
     println!("  --disable-async         Disable async/await features");
     println!("  --emit-mir              Print MIR to stderr");
     println!("  --emit-llvm             Print LLVM IR to stderr");
-    println!("  --target <target>       Specify target (e.g., wasm)");
     println!("  --stdlib-path <path>    Path to standard library (lib/ directory)");
     println!("  --runtime-path <path>   Path to runtime library (tejx_rt.a)");
     println!();
