@@ -1,7 +1,12 @@
 use crate::middle::mir::{MIRFunction, MIRInstruction, MIRValue};
-use crate::common::types::TejxType;
 
 pub struct MIROptimizer {}
+
+impl Default for MIROptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MIROptimizer {
     pub fn new() -> Self {

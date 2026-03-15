@@ -50,7 +50,7 @@ impl Lowering {
             }
         }
 
-        // 2. Implicitly import other core functionality (array, string, object) 
+        // 2. Implicitly import other core functionality (array, string, object)
         // ONLY for modules outside of the library's core directory to avoid cycles.
         let is_in_lib_core = if let Ok(canon_file) = std::fs::canonicalize(&filename) {
             if let Ok(canon_core) = std::fs::canonicalize(&core_dir) {
@@ -59,14 +59,15 @@ impl Lowering {
                 false
             }
         } else {
-            filename.contains(&format!("/{}", CORE_DIR)) || filename.contains(&format!("{}/", CORE_DIR))
+            filename.contains(&format!("/{}", CORE_DIR))
+                || filename.contains(&format!("{}/", CORE_DIR))
         };
 
         if !is_in_lib_core {
-            for core_file in ["array.tx", "string.tx", "object.tx"] {
+            for core_file in ["array.tx", "string.tx"] {
                 let path = core_dir.join(core_file);
                 let path_str = path.to_string_lossy().to_string();
-                
+
                 let mut already_imports = false;
                 for stmt in &statements {
                     if let Statement::ImportDecl { source, .. } = stmt {
@@ -76,7 +77,7 @@ impl Lowering {
                         }
                     }
                 }
-                
+
                 if !already_imports {
                     statements.insert(
                         0,
@@ -108,8 +109,7 @@ impl Lowering {
                 let is_default = *_is_default;
                 let source_str = source.clone();
 
-                let path = if source_str.starts_with("std:") {
-                    let mod_name = &source_str[4..];
+                let path = if let Some(mod_name) = source_str.strip_prefix("std:") {
                     let base = self.stdlib_path.borrow().clone();
                     // Search strictly in lib/std/
                     base.join(STD_DIR).join(format!("{}.tx", mod_name))

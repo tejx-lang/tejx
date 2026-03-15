@@ -21,14 +21,13 @@ impl CodeGen {
             self.emit_line(&format!("{} = call i64 @rt_len(i64 {})", res_tmp, obj_val));
             used_fast = true;
         } else {
-            let mut resolved_info = None;
             if let TejxType::Class(class_name, _) = obj.get_type() {
                 let lookup_name = if class_name.contains('<') {
                     class_name.split('<').next().unwrap()
                 } else {
                     &class_name
                 };
-                resolved_info = self.class_fields.get(lookup_name).and_then(|fields| {
+                let resolved_info = self.class_fields.get(lookup_name).and_then(|fields| {
                     fields.iter().position(|(f, _)| f == member).map(|pos| {
                         let mut offset = 0;
                         for (_, ty) in &fields[..pos] {
@@ -178,15 +177,13 @@ impl CodeGen {
         }
 
         let mut used_fast_store = false;
-        let mut resolved_info = None;
-
         if let TejxType::Class(class_name, _) = obj.get_type() {
             let lookup_name = if class_name.contains('<') {
                 class_name.split('<').next().unwrap()
             } else {
                 &class_name
             };
-            resolved_info = self.class_fields.get(lookup_name).and_then(|fields| {
+            let resolved_info = self.class_fields.get(lookup_name).and_then(|fields| {
                 fields.iter().position(|(f, _)| f == member).map(|pos| {
                     let mut offset = 0;
                     for (_, ty) in &fields[..pos] {

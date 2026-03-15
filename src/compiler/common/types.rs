@@ -26,7 +26,7 @@ pub enum TejxType {
     Any,
 }
 
-pub(crate) fn split_top_level<'a>(input: &'a str, sep: char) -> Vec<&'a str> {
+pub(crate) fn split_top_level(input: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut depth_angle = 0usize;
@@ -38,27 +38,19 @@ pub(crate) fn split_top_level<'a>(input: &'a str, sep: char) -> Vec<&'a str> {
         match ch {
             '<' => depth_angle += 1,
             '>' => {
-                if depth_angle > 0 {
-                    depth_angle -= 1;
-                }
+                depth_angle = depth_angle.saturating_sub(1);
             }
             '{' => depth_brace += 1,
             '}' => {
-                if depth_brace > 0 {
-                    depth_brace -= 1;
-                }
+                depth_brace = depth_brace.saturating_sub(1);
             }
             '[' => depth_bracket += 1,
             ']' => {
-                if depth_bracket > 0 {
-                    depth_bracket -= 1;
-                }
+                depth_bracket = depth_bracket.saturating_sub(1);
             }
             '(' => depth_paren += 1,
             ')' => {
-                if depth_paren > 0 {
-                    depth_paren -= 1;
-                }
+                depth_paren = depth_paren.saturating_sub(1);
             }
             _ => {}
         }
@@ -87,21 +79,15 @@ pub(crate) fn find_top_level_generic_bounds(input: &str) -> Option<(usize, usize
         match ch {
             '{' => depth_brace += 1,
             '}' => {
-                if depth_brace > 0 {
-                    depth_brace -= 1;
-                }
+                depth_brace = depth_brace.saturating_sub(1);
             }
             '[' => depth_bracket += 1,
             ']' => {
-                if depth_bracket > 0 {
-                    depth_bracket -= 1;
-                }
+                depth_bracket = depth_bracket.saturating_sub(1);
             }
             '(' => depth_paren += 1,
             ')' => {
-                if depth_paren > 0 {
-                    depth_paren -= 1;
-                }
+                depth_paren = depth_paren.saturating_sub(1);
             }
             '<' => {
                 if depth_brace == 0 && depth_bracket == 0 && depth_paren == 0 && depth_angle == 0 {
@@ -204,14 +190,14 @@ impl TejxType {
         match node {
             crate::frontend::ast::TypeNode::Named(name) => TejxType::from_name(name),
             crate::frontend::ast::TypeNode::Generic(name, args) => {
-                let parsed_args = args.iter().map(|a| TejxType::from_node(a)).collect();
+                let parsed_args = args.iter().map(TejxType::from_node).collect();
                 TejxType::Class(name.clone(), parsed_args)
             }
             crate::frontend::ast::TypeNode::Array(inner) => {
                 TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
             }
             crate::frontend::ast::TypeNode::Function(params, ret) => {
-                let parsed_params = params.iter().map(|p| TejxType::from_node(p)).collect();
+                let parsed_params = params.iter().map(TejxType::from_node).collect();
                 TejxType::Function(parsed_params, Box::new(TejxType::from_node(ret)))
             }
             crate::frontend::ast::TypeNode::Object(members) => {
@@ -219,7 +205,7 @@ impl TejxType {
                 TejxType::Object(parsed_members)
             }
             crate::frontend::ast::TypeNode::Union(types) => {
-                let parsed_types: Vec<_> = types.iter().map(|t| TejxType::from_node(t)).collect();
+                let parsed_types: Vec<_> = types.iter().map(TejxType::from_node).collect();
                 if parsed_types.len() == 1 {
                     parsed_types.into_iter().next().unwrap()
                 } else if parsed_types.is_empty() {
@@ -292,7 +278,7 @@ impl TejxType {
             let mut depth_bracket = 0usize;
             let mut depth_paren = 0usize;
 
-            let mut flush_prop = |buf: &str, props: &mut Vec<(String, bool, TejxType)>| {
+            let flush_prop = |buf: &str, props: &mut Vec<(String, bool, TejxType)>| {
                 let p = buf.trim();
                 if p.is_empty() {
                     return;
@@ -317,9 +303,7 @@ impl TejxType {
                         current.push(ch);
                     }
                     '}' => {
-                        if depth_brace > 0 {
-                            depth_brace -= 1;
-                        }
+                        depth_brace = depth_brace.saturating_sub(1);
                         current.push(ch);
                     }
                     '<' => {
@@ -327,9 +311,7 @@ impl TejxType {
                         current.push(ch);
                     }
                     '>' => {
-                        if depth_angle > 0 {
-                            depth_angle -= 1;
-                        }
+                        depth_angle = depth_angle.saturating_sub(1);
                         current.push(ch);
                     }
                     '[' => {
@@ -337,9 +319,7 @@ impl TejxType {
                         current.push(ch);
                     }
                     ']' => {
-                        if depth_bracket > 0 {
-                            depth_bracket -= 1;
-                        }
+                        depth_bracket = depth_bracket.saturating_sub(1);
                         current.push(ch);
                     }
                     '(' => {
@@ -347,9 +327,7 @@ impl TejxType {
                         current.push(ch);
                     }
                     ')' => {
-                        if depth_paren > 0 {
-                            depth_paren -= 1;
-                        }
+                        depth_paren = depth_paren.saturating_sub(1);
                         current.push(ch);
                     }
                     ';' | ',' if depth_brace == 0

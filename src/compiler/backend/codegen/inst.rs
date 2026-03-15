@@ -17,7 +17,7 @@ impl CodeGen {
             MIRInstruction::Move { dst, src, .. } => {
                 let val = self.resolve_value(src);
                 let src_ty = src.get_type();
-                self.emit_store_variable(dst, &val, &src_ty);
+                self.emit_store_variable(dst, &val, src_ty);
 
                 // Propagate array data pointer tracking across variable copies
                 if let MIRValue::Variable { name: src_name, .. } = src {
@@ -130,16 +130,14 @@ impl CodeGen {
                     let val_str = self.resolve_value(v);
                     let final_val = self.emit_abi_cast(&val_str, v.get_type(), &func.return_type);
                     self.emit_line(&format!("ret {} {}", ret_llvm_ty, final_val));
+                } else if ret_llvm_ty == "void" {
+                    self.emit_line("ret void");
+                } else if ret_llvm_ty == "float" || ret_llvm_ty == "double" {
+                    self.emit_line(&format!("ret {} 0.0", ret_llvm_ty));
+                } else if ret_llvm_ty.ends_with('*') {
+                    self.emit_line(&format!("ret {} null", ret_llvm_ty));
                 } else {
-                    if ret_llvm_ty == "void" {
-                        self.emit_line("ret void");
-                    } else if ret_llvm_ty == "float" || ret_llvm_ty == "double" {
-                        self.emit_line(&format!("ret {} 0.0", ret_llvm_ty));
-                    } else if ret_llvm_ty.ends_with('*') {
-                        self.emit_line(&format!("ret {} null", ret_llvm_ty));
-                    } else {
-                        self.emit_line(&format!("ret {} 0", ret_llvm_ty)); // fallback
-                    }
+                    self.emit_line(&format!("ret {} 0", ret_llvm_ty)); // fallback
                 }
             }
             MIRInstruction::Call {
@@ -241,8 +239,6 @@ impl CodeGen {
         self.temp_counter += 1;
         let tmp = format!("%tmp{}", self.temp_counter);
 
-        let unwrap_ty = |ty: &TejxType| -> TejxType { ty.clone() };
-
         // Use op_width to determine the type of the operation
         let mut is_string_op = matches!(op_width, TejxType::String)
             || matches!(l_ty, TejxType::String)
@@ -257,11 +253,10 @@ impl CodeGen {
             op,
             TokenType::EqualEqual
                 | TokenType::BangEqual
-        ) {
-            if matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String) {
+        )
+            && (matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String)) {
                 is_string_op = true;
             }
-        }
 
         let is_numeric_op = !is_string_op
             && !is_any_op
@@ -1244,37 +1239,35 @@ impl CodeGen {
                                 .unwrap_or(false)
                         {
                             final_callee = "f_Thread_join".to_string();
-                        } else {
-                            if let Some(ty) = func.variables.get(base) {
-                                if let Some(builtin_callee) =
-                                    builtins::method_callee(ty, method)
-                                {
-                                    final_callee = builtin_callee;
-                                } else {
-                                    // Resolve instance type to get class name dynamically
-                                    let mut class_name = base.to_string();
-                                    match ty {
-                                        TejxType::Class(name, _) => {
-                                            if name.contains('<') {
-                                                // Generic class like Map<string, CacheNode>
-                                                // Extract base class name before '<'
-                                                class_name = name
-                                                    .split('<')
-                                                    .next()
-                                                    .unwrap_or(name)
-                                                    .to_string();
-                                            } else {
-                                                class_name = name.clone();
-                                            }
+                        } else if let Some(ty) = func.variables.get(base) {
+                            if let Some(builtin_callee) =
+                                builtins::method_callee(ty, method)
+                            {
+                                final_callee = builtin_callee;
+                            } else {
+                                // Resolve instance type to get class name dynamically
+                                let mut class_name = base.to_string();
+                                match ty {
+                                    TejxType::Class(name, _) => {
+                                        if name.contains('<') {
+                                            // Generic class like Map<string, CacheNode>
+                                            // Extract base class name before '<'
+                                            class_name = name
+                                                .split('<')
+                                                .next()
+                                                .unwrap_or(name)
+                                                .to_string();
+                                        } else {
+                                            class_name = name.clone();
                                         }
-                                        TejxType::Any => class_name = "Any".to_string(),
-                                        _ => {}
                                     }
-                                    if class_name == "Any" {
-                                        // For performance, we could devirtualize, but for now we prioritize
-                                        // correctness with dynamic dispatch for all class methods to support overriding.
-                                        final_callee = format!("virtual_call_{}", method);
-                                    }
+                                    TejxType::Any => class_name = "Any".to_string(),
+                                    _ => {}
+                                }
+                                if class_name == "Any" {
+                                    // For performance, we could devirtualize, but for now we prioritize
+                                    // correctness with dynamic dispatch for all class methods to support overriding.
+                                    final_callee = format!("virtual_call_{}", method);
                                 }
                             }
                         }
@@ -1786,11 +1779,12 @@ impl CodeGen {
         let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
         let mut arg_types = vec!["i64".to_string()]; // First arg is always env
         let mut param_tys: Vec<TejxType> = Vec::new();
-        let mut ret_ty = TejxType::Int64;
-        if let TejxType::Function(params, ret) = &callee_ty {
+        let _ret_ty = if let TejxType::Function(params, ret) = &callee_ty {
             param_tys = params.clone();
-            ret_ty = (**ret).clone();
-        }
+            (**ret).clone()
+        } else {
+            TejxType::Int64
+        };
         // Lambdas/closures use the Any/i64 ABI for return values.
         let call_ret_ty = TejxType::Any;
         for (idx, _) in args.iter().enumerate() {
@@ -1823,7 +1817,7 @@ impl CodeGen {
                 val = self.emit_box_string(&val);
             }
 
-            let casted = self.emit_abi_cast(&val, &arg_ty, &param_ty);
+            let casted = self.emit_abi_cast(&val, arg_ty, &param_ty);
             if Self::is_gc_managed(arg_ty) {
                 self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
                 self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");

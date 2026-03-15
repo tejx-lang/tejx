@@ -66,6 +66,12 @@ pub struct LoweringResult {
     pub class_methods: HashMap<String, Vec<String>>,
 }
 
+impl Default for Lowering {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Lowering {
     pub fn new() -> Self {
         Lowering {
@@ -254,7 +260,7 @@ impl Lowering {
                         self.captured_vars_by_owner
                             .borrow_mut()
                             .entry(owner)
-                            .or_insert_with(HashSet::new)
+                            .or_default()
                             .insert(mangled.clone());
                     }
                 }
@@ -269,7 +275,7 @@ impl Lowering {
         self.captured_vars_by_owner
             .borrow_mut()
             .entry(name)
-            .or_insert_with(HashSet::new);
+            .or_default();
     }
 
     fn pop_env_owner(&self) {
@@ -553,7 +559,7 @@ impl Lowering {
                     ..
                 } => {
                     if let BindingNode::Identifier(name) = pattern {
-                        let ty = TejxType::from_node(&type_annotation);
+                        let ty = TejxType::from_node(type_annotation);
                         self.define(name.clone(), ty);
                     }
                 }
@@ -561,7 +567,7 @@ impl Lowering {
                     let mut class_methods = self.class_methods.borrow_mut();
                     let methods = class_methods
                         .entry(ext_decl._target_type.to_string())
-                        .or_insert_with(Vec::new);
+                        .or_default();
                     for method in &ext_decl._methods {
                         let mangled = if method.name.starts_with("f_") {
                             method.name.clone()
@@ -655,7 +661,7 @@ impl Lowering {
                 } => {
                     // Register first for this scope
                     if let BindingNode::Identifier(name) = pattern {
-                        let ty = TejxType::from_node(&type_annotation);
+                        let ty = TejxType::from_node(type_annotation);
                         self.define(name.clone(), ty);
                     }
 
@@ -694,7 +700,7 @@ impl Lowering {
 
         let mut entry_body_stmts = main_stmts;
 
-        if let Some(_) = main_func_idx {
+        if main_func_idx.is_some() {
             // Call the main function (f_main)
             let main_ret_ty = self
                 .user_functions
@@ -775,12 +781,12 @@ impl Lowering {
         });
         functions.push(HIRStatement::Function {
             async_params: None,
-            line: line,
+            line,
             name: TEJX_MAIN.to_string(),
             params: vec![],
             _return_type: TejxType::Void,
             body: Box::new(HIRStatement::Block {
-                line: line,
+                line,
                 statements: entry_body_stmts,
             }),
             is_extern: false,

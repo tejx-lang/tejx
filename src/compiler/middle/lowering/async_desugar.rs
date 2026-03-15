@@ -40,7 +40,7 @@ impl Lowering {
 
         functions.push(HIRStatement::Function {
             async_params: Some(params.to_vec()),
-            line: line,
+            line,
             name: format!("f_{}", func.name),
             params: mangled_params,
             _return_type: TejxType::Int64,
@@ -84,34 +84,34 @@ impl Lowering {
             initializer: None,
             ty: TejxType::Int64,
             _is_const: false,
-            line: line,
+            line,
         });
         *self.current_async_promise_id.borrow_mut() = Some(promise_id_var.clone());
 
         // 3. Lower original body
         let inner_body = self.lower_statement(body).unwrap_or(HIRStatement::Block {
-            line: line,
+            line,
             statements: vec![],
         });
 
         // 4. Wrap in Try/Catch
         let try_block = HIRStatement::Block {
-            line: line,
+            line,
             statements: vec![
                 inner_body,
                 HIRStatement::ExpressionStmt {
-                    line: line,
+                    line,
                     expr: HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: RT_PROMISE_RESOLVE.to_string(),
                         args: vec![
                             HIRExpression::Variable {
-                                line: line,
+                                line,
                                 name: promise_id_var.clone(),
                                 ty: TejxType::Int64,
                             },
                             HIRExpression::Literal {
-                                line: line,
+                                line,
                                 value: "0".to_string(),
                                 ty: TejxType::Int64,
                             },
@@ -120,9 +120,9 @@ impl Lowering {
                     },
                 },
                 HIRStatement::ExpressionStmt {
-                    line: line,
+                    line,
                     expr: HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: TEJX_DEC_ASYNC_OPS.to_string(),
                         args: vec![],
                         ty: TejxType::Void,
@@ -132,21 +132,21 @@ impl Lowering {
         };
 
         let catch_block = HIRStatement::Block {
-            line: line,
+            line,
             statements: vec![
                 HIRStatement::ExpressionStmt {
-                    line: line,
+                    line,
                     expr: HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: RT_PROMISE_REJECT.to_string(),
                         args: vec![
                             HIRExpression::Variable {
-                                line: line,
+                                line,
                                 name: promise_id_var.clone(),
                                 ty: TejxType::Int64,
                             },
                             HIRExpression::Variable {
-                                line: line,
+                                line,
                                 name: "err".to_string(),
                                 ty: TejxType::Class("Error".to_string(), vec![]),
                             },
@@ -155,9 +155,9 @@ impl Lowering {
                     },
                 },
                 HIRStatement::ExpressionStmt {
-                    line: line,
+                    line,
                     expr: HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: TEJX_DEC_ASYNC_OPS.to_string(),
                         args: vec![],
                         ty: TejxType::Void,
@@ -167,7 +167,7 @@ impl Lowering {
         };
 
         worker_stmts.push(HIRStatement::Try {
-            line: line,
+            line,
             try_block: Box::new(try_block),
             catch_var: Some("err".to_string()),
             catch_block: Box::new(catch_block),
@@ -175,7 +175,7 @@ impl Lowering {
         });
 
         let final_body = HIRStatement::Block {
-            line: line,
+            line,
             statements: worker_stmts,
         };
 
@@ -192,7 +192,7 @@ impl Lowering {
             body: Box::new(final_body),
             is_extern: false,
             async_params: Some(params.to_vec()),
-            line: line,
+            line,
         };
 
         // --- Wrapper Body construction ---
@@ -201,10 +201,10 @@ impl Lowering {
 
         // let p = Promise_new();
         wrapper_stmts.push(HIRStatement::VarDecl {
-            line: line,
+            line,
             name: p_var.clone(),
             initializer: Some(HIRExpression::Call {
-                line: line,
+                line,
                 callee: RT_PROMISE_NEW.to_string(),
                 args: vec![],
                 ty: TejxType::Int64,
@@ -216,17 +216,17 @@ impl Lowering {
         // let ctx = [p, 0 /*state*/, params...];
         let mut args_elems = vec![
             HIRExpression::Call {
-                line: line,
+                line,
                 callee: RT_PROMISE_CLONE.to_string(),
                 args: vec![HIRExpression::Variable {
-                    line: line,
+                    line,
                     name: p_var.clone(),
                     ty: TejxType::Int64,
                 }],
                 ty: TejxType::Int64,
             },
             HIRExpression::Literal {
-                line: line,
+                line,
                 value: "0".to_string(),
                 ty: TejxType::Int32,
             },
@@ -235,7 +235,7 @@ impl Lowering {
         for (pname, pty) in params {
             let (mangled, _) = self.lookup(pname).unwrap_or((pname.clone(), pty.clone()));
             args_elems.push(HIRExpression::Variable {
-                line: line,
+                line,
                 name: mangled,
                 ty: pty.clone(),
             });
@@ -245,7 +245,7 @@ impl Lowering {
         // Large async functions can generate many temps; keep this generous.
         for _ in 0..512 {
             args_elems.push(HIRExpression::Literal {
-                line: line,
+                line,
                 value: "0".to_string(),
                 ty: TejxType::Int32,
             });
@@ -254,10 +254,10 @@ impl Lowering {
         let ctx_var = format!("__ctx_{}", line);
         let ctx_ty = TejxType::DynamicArray(Box::new(TejxType::Int64));
         wrapper_stmts.push(HIRStatement::VarDecl {
-            line: line,
+            line,
             name: ctx_var.clone(),
             initializer: Some(HIRExpression::ArrayLiteral {
-                line: line,
+                line,
                 elements: args_elems,
                 ty: ctx_ty.clone(),
                 sized_allocation: None,
@@ -268,9 +268,9 @@ impl Lowering {
 
         // tejx_inc_async_ops();
         wrapper_stmts.push(HIRStatement::ExpressionStmt {
-            line: line,
+            line,
             expr: HIRExpression::Call {
-                line: line,
+                line,
                 callee: TEJX_INC_ASYNC_OPS.to_string(),
                 args: vec![],
                 ty: TejxType::Void,
@@ -279,18 +279,18 @@ impl Lowering {
 
         // tejx_enqueue_task(worker_ptr, ctx);
         wrapper_stmts.push(HIRStatement::ExpressionStmt {
-            line: line,
+            line,
             expr: HIRExpression::Call {
-                line: line,
+                line,
                 callee: TEJX_ENQUEUE_TASK.to_string(),
                 args: vec![
                     HIRExpression::Literal {
-                        line: line,
+                        line,
                         value: format!("@{}", worker_name),
                         ty: TejxType::Int64,
                     },
                     HIRExpression::Variable {
-                        line: line,
+                        line,
                         name: ctx_var,
                         ty: ctx_ty.clone(),
                     },
@@ -301,9 +301,9 @@ impl Lowering {
 
         // return p;
         wrapper_stmts.push(HIRStatement::Return {
-            line: line,
+            line,
             value: Some(HIRExpression::Variable {
-                line: line,
+                line,
                 name: p_var,
                 ty: TejxType::Int64,
             }),
@@ -316,7 +316,7 @@ impl Lowering {
                 statements: vec![],
             }, // Dummy struct
             HIRStatement::Block {
-                line: line,
+                line,
                 statements: wrapper_stmts,
             },
         )

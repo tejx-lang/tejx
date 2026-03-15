@@ -65,14 +65,14 @@ impl TypeChecker {
                     if sym.generic_params.is_empty() && !generics.is_empty() {
                         return false;
                     }
-                    if sym.generic_params.len() != generics.len() && sym.generic_params.len() > 0 {
+                    if sym.generic_params.len() != generics.len() && !sym.generic_params.is_empty() {
                         // We enforce generic counts only if the class actually declared some.
                         return false;
                     }
                     if !sym.generic_params.is_empty() && !generics.is_empty() {
                         for (gp, concrete) in sym.generic_params.iter().zip(generics.iter()) {
                             if let Some(bound) = &gp.bound {
-                                let bound_ty = TejxType::from_node(&bound);
+                                let bound_ty = TejxType::from_node(bound);
                                 // We cannot do full `is_assignable` if it requires &mut self, but wait!
                                 // `is_assignable` takes `&self`!
                                 if !self.is_assignable(&bound_ty, concrete) {
@@ -175,7 +175,7 @@ impl TypeChecker {
             if let TejxType::Class(name, gen) = t {
                 if gen.is_empty()
                     && name.len() <= 2
-                    && name.chars().next().map_or(false, |c| c.is_uppercase())
+                    && name.chars().next().is_some_and(|c| c.is_uppercase())
                 {
                     return true;
                 }
@@ -188,18 +188,16 @@ impl TypeChecker {
 
         // Option<T> check
         if let TejxType::Class(name, gen) = expected {
-            if name == "Option" && gen.len() == 1 {
-                if a_name == "None" || self.are_types_compatible(&gen[0], actual) {
+            if name == "Option" && gen.len() == 1
+                && (a_name == "None" || self.are_types_compatible(&gen[0], actual)) {
                     return true;
                 }
-            }
         }
         if let TejxType::Class(name, gen) = actual {
-            if name == "Option" && gen.len() == 1 {
-                if e_name == "None" || self.are_types_compatible(expected, &gen[0]) {
+            if name == "Option" && gen.len() == 1
+                && (e_name == "None" || self.are_types_compatible(expected, &gen[0])) {
                     return true;
                 }
-            }
         }
 
         // Resolve aliases
@@ -227,13 +225,12 @@ impl TypeChecker {
         let resolved_expected = resolve_type(expected);
         let resolved_actual = resolve_type(actual);
 
-        if resolved_expected != *expected || resolved_actual != *actual {
-            if resolved_expected == resolved_actual {
+        if (resolved_expected != *expected || resolved_actual != *actual)
+            && resolved_expected == resolved_actual {
                 return true;
             }
             // Let's re-eval with resolved if they are different
             // But to avoid recursion, we just check structurally below on the resolved types
-        }
 
         let expected = &resolved_expected;
         let actual = &resolved_actual;
@@ -330,14 +327,13 @@ impl TypeChecker {
         let e_str = expected.to_name();
 
         if let TejxType::Class(n, g) = actual {
-            if n == "[]" && g.is_empty() {
-                if matches!(
+            if n == "[]" && g.is_empty()
+                && matches!(
                     expected,
                     TejxType::DynamicArray(_) | TejxType::FixedArray(_, _) | TejxType::Slice(_)
                 ) {
                     return true;
                 }
-            }
         }
 
         // Inheritance check
@@ -380,8 +376,8 @@ impl TypeChecker {
                     self.are_types_compatible(e_ret, a_ret)
                 };
 
-                if ret_ok {
-                    if a_params.len() <= e_params.len() {
+                if ret_ok
+                    && a_params.len() <= e_params.len() {
                         let mut all_params_ok = true;
                         for (ep, ap) in e_params.iter().zip(a_params.iter()) {
                             if !self.are_types_compatible(ep, ap)
@@ -396,7 +392,6 @@ impl TypeChecker {
                             return true;
                         }
                     }
-                }
             }
         }
 
@@ -602,8 +597,8 @@ impl TypeChecker {
                 _ => {}
             }
 
-            if min.is_some() && max.is_some() {
-                if v < min.unwrap() || v > max.unwrap() {
+            if min.is_some() && max.is_some()
+                && (v < min.unwrap() || v > max.unwrap()) {
                     self.report_error_detailed(
                         format!(
                             "Numeric literal '{}' is out of bounds for type '{}'",
@@ -619,7 +614,6 @@ impl TypeChecker {
                         )),
                     );
                 }
-            }
         }
     }
 }

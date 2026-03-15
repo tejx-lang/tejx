@@ -38,6 +38,12 @@ pub struct CodeGen {
     current_arena: Option<String>,
 }
 
+impl Default for CodeGen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodeGen {
     pub(crate) fn get_aligned_offset(current: usize, ty: &TejxType) -> usize {
         let size = ty.size();

@@ -106,7 +106,6 @@ export function sizeof<T>(val: T): int {
     return rt_sizeof(val);
 }
 
-// Object moved to object.tx
 
 export function parseFloat(s: string): float { return rt_to_number(s); }
 
@@ -205,6 +204,9 @@ function _promise_all_attach<T>(
     });
 }
 
+function String(v: any): string {
+    return rt_to_string(v);
+}
 
 function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
     if (v == None) return "None";
@@ -298,3 +300,25 @@ export function rt_box_number_internal(val: float): float {
 }
 
 
+
+export class Object {
+    static keys(obj: any): string[] {
+        return rt_Object_keys(obj);
+    }
+
+    static values(obj: any): any[] {
+        return rt_Object_values(obj);
+    }
+
+    static entries(obj: any): any[] {
+        return rt_Object_entries(obj);
+    }
+
+    static assign(target: any, source: any): any {
+        return rt_Object_assign(target, source);
+    }
+
+    static freeze(obj: any): any {
+        return rt_Object_freeze(obj);
+    }
+}

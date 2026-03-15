@@ -53,7 +53,7 @@ impl Lowering {
                 }
                 self._exit_scope();
                 Some(HIRStatement::Block {
-                    line: line,
+                    line,
                     statements: hir_stmts,
                 })
             }
@@ -67,7 +67,7 @@ impl Lowering {
                 let expected_ty = if type_annotation.to_string().is_empty() {
                     None
                 } else {
-                    Some(self.resolve_alias_type(&TejxType::from_node(&type_annotation)))
+                    Some(self.resolve_alias_type(&TejxType::from_node(type_annotation)))
                 };
 
                 let prev_expected = self.current_expected_type.borrow_mut().take();
@@ -101,13 +101,13 @@ impl Lowering {
                 self.lower_binding_pattern(pattern, init, &ty, *is_const, &mut stmts);
                 // Use Sequence to avoid creating a new scope, allowing variables to be visible in the containing block
                 Some(HIRStatement::Sequence {
-                    line: line,
+                    line,
                     statements: stmts,
                 })
             }
             Statement::ExpressionStmt { _expression, .. } => {
                 let expr = self.lower_expression(_expression);
-                Some(HIRStatement::ExpressionStmt { line: line, expr })
+                Some(HIRStatement::ExpressionStmt { line, expr })
             }
             Statement::ClassDeclaration(class_decl) => {
                 self.scan_variadic_class(class_decl);
@@ -125,7 +125,7 @@ impl Lowering {
                     None
                 } else {
                     Some(HIRStatement::Sequence {
-                        line: line,
+                        line,
                         statements: init_stmts,
                     })
                 }
@@ -136,7 +136,7 @@ impl Lowering {
                 let cond = self.lower_expression(condition);
                 let body_hir = self.lower_statement_as_block(body);
                 Some(HIRStatement::Loop {
-                    line: line,
+                    line,
                     condition: cond,
                     body: Box::new(body_hir),
                     increment: None,
@@ -159,17 +159,15 @@ impl Lowering {
                                 outer_stmts.push(h);
                             }
                         }
-                    } else {
-                        if let Some(h) = self.lower_statement(init_stmt) {
-                            outer_stmts.push(h);
-                        }
+                    } else if let Some(h) = self.lower_statement(init_stmt) {
+                        outer_stmts.push(h);
                     }
                 }
                 let cond = condition
                     .as_ref()
                     .map(|c| self.lower_expression(c))
                     .unwrap_or(HIRExpression::Literal {
-                        line: line,
+                        line,
                         value: "true".to_string(),
                         ty: TejxType::Bool,
                     });
@@ -178,11 +176,11 @@ impl Lowering {
 
                 let inc = increment.as_ref().map(|e| {
                     let expr = self.lower_expression(e);
-                    Box::new(HIRStatement::ExpressionStmt { line: line, expr })
+                    Box::new(HIRStatement::ExpressionStmt { line, expr })
                 });
 
                 outer_stmts.push(HIRStatement::Loop {
-                    line: line,
+                    line,
                     condition: cond,
                     body: Box::new(body_hir),
                     increment: inc,
@@ -192,7 +190,7 @@ impl Lowering {
                 self._exit_scope();
 
                 Some(HIRStatement::Block {
-                    line: line,
+                    line,
                     statements: outer_stmts,
                 })
             }
@@ -222,7 +220,7 @@ impl Lowering {
 
                     let arr_name = format!("__arr_{}", var_name);
                     stmts.push(HIRStatement::VarDecl {
-                        line: line,
+                        line,
                         name: arr_name.clone(),
                         initializer: Some(iter_expr),
                         ty: array_ty.clone(),
@@ -232,13 +230,13 @@ impl Lowering {
                     // 2. Length
                     let len_name = format!("__len_{}", var_name);
                     stmts.push(HIRStatement::VarDecl {
-                        line: line,
+                        line,
                         name: len_name.clone(),
                         initializer: Some(HIRExpression::Call {
-                            line: line,
+                            line,
                             callee: RT_LEN.to_string(),
                             args: vec![HIRExpression::Variable {
-                                line: line,
+                                line,
                                 name: arr_name.clone(),
                                 ty: array_ty.clone(),
                             }],
@@ -251,7 +249,7 @@ impl Lowering {
                     // 3. Index
                     let idx_name = format!("__idx_{}", var_name);
                     stmts.push(HIRStatement::VarDecl {
-                        line: line,
+                        line,
                         name: idx_name.clone(),
                         initializer: Some(HIRExpression::Literal {
                             line: 0,
@@ -265,15 +263,15 @@ impl Lowering {
                     // 4. Loop
                     // Condition: idx < len
                     let cond = HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: idx_name.clone(),
                             ty: TejxType::Int32,
                         }),
                         op: TokenType::Less,
                         right: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: len_name,
                             ty: TejxType::Int32,
                         }),
@@ -285,21 +283,21 @@ impl Lowering {
 
                     let elem_ty = array_ty.get_array_element_type();
                     let val_expr = HIRExpression::IndexAccess {
-                        line: line,
+                        line,
                         target: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: arr_name,
                             ty: array_ty.clone(),
                         }),
                         index: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: idx_name.clone(),
                             ty: TejxType::Int32,
                         }),
                         ty: elem_ty.clone(),
                     };
                     body_stmts.push(HIRStatement::VarDecl {
-                        line: line,
+                        line,
                         name: var_name.clone(),
                         initializer: Some(val_expr),
                         ty: elem_ty.clone(),
@@ -314,24 +312,24 @@ impl Lowering {
 
                     // Increment: idx = idx + 1
                     let inc_stmt = Box::new(HIRStatement::ExpressionStmt {
-                        line: line,
+                        line,
                         expr: HIRExpression::Assignment {
-                            line: line,
+                            line,
                             target: Box::new(HIRExpression::Variable {
-                                line: line,
+                                line,
                                 name: idx_name.clone(),
                                 ty: TejxType::Int32,
                             }),
                             value: Box::new(HIRExpression::BinaryExpr {
-                                line: line,
+                                line,
                                 left: Box::new(HIRExpression::Variable {
-                                    line: line,
+                                    line,
                                     name: idx_name.clone(),
                                     ty: TejxType::Int32,
                                 }),
                                 op: TokenType::Plus,
                                 right: Box::new(HIRExpression::Literal {
-                                    line: line,
+                                    line,
                                     value: "1".to_string(),
                                     ty: TejxType::Int32,
                                 }),
@@ -342,10 +340,10 @@ impl Lowering {
                     });
 
                     stmts.push(HIRStatement::Loop {
-                        line: line,
+                        line,
                         condition: cond,
                         body: Box::new(HIRStatement::Block {
-                            line: line,
+                            line,
                             statements: body_stmts,
                         }),
                         increment: Some(inc_stmt),
@@ -353,7 +351,7 @@ impl Lowering {
                     });
 
                     Some(HIRStatement::Block {
-                        line: line,
+                        line,
                         statements: stmts,
                     })
                 } else {
@@ -379,7 +377,7 @@ impl Lowering {
                 let then_hir = self
                     .lower_statement(then_branch)
                     .unwrap_or(HIRStatement::Block {
-                        line: line,
+                        line,
                         statements: vec![],
                     });
                 self._exit_scope();
@@ -392,7 +390,7 @@ impl Lowering {
                         }
                     }
                     let res = self.lower_statement(e).unwrap_or(HIRStatement::Block {
-                        line: line,
+                        line,
                         statements: vec![],
                     });
                     self._exit_scope();
@@ -400,7 +398,7 @@ impl Lowering {
                 });
 
                 Some(HIRStatement::If {
-                    line: line,
+                    line,
                     condition: cond,
                     then_branch: Box::new(then_hir),
                     else_branch: else_hir.map(Box::new),
@@ -412,7 +410,7 @@ impl Lowering {
                     let mut stmts = Vec::new();
 
                     // Prevent double evaluation of function calls or complex expressions
-                    let is_pure = val.as_ref().map_or(true, |v| {
+                    let is_pure = val.as_ref().is_none_or(|v| {
                         matches!(
                             v,
                             HIRExpression::Variable { .. } | HIRExpression::Literal { .. }
@@ -501,16 +499,16 @@ impl Lowering {
                         };
 
                     stmts.push(HIRStatement::Return {
-                        line: line,
+                        line,
                         value: return_expr,
                     });
                     Some(HIRStatement::Block {
-                        line: line,
+                        line,
                         statements: stmts,
                     })
                 } else {
                     Some(HIRStatement::Return {
-                        line: line,
+                        line,
                         value: val,
                     })
                 }
@@ -547,13 +545,13 @@ impl Lowering {
                     hir_cases.push(HIRCase {
                         value: val,
                         body: Box::new(HIRStatement::Block {
-                            line: line,
+                            line,
                             statements: stmts,
                         }),
                     });
                 }
                 Some(HIRStatement::Switch {
-                    line: line,
+                    line,
                     condition: cond,
                     cases: hir_cases,
                 })
@@ -568,7 +566,7 @@ impl Lowering {
                 let try_hir = self
                     .lower_statement(_try_block)
                     .unwrap_or(HIRStatement::Block {
-                        line: line,
+                        line,
                         statements: vec![],
                     });
                 let mut catch_var_mangled = None;
@@ -583,7 +581,7 @@ impl Lowering {
                     let res = self
                         .lower_statement(_catch_block)
                         .unwrap_or(HIRStatement::Block {
-                            line: line,
+                            line,
                             statements: vec![],
                         });
                     self._exit_scope();
@@ -594,7 +592,7 @@ impl Lowering {
                     .and_then(|f| self.lower_statement(f));
 
                 Some(HIRStatement::Try {
-                    line: line,
+                    line,
                     try_block: Box::new(try_hir),
                     catch_var: catch_var_mangled,
                     catch_block: Box::new(catch_hir),
@@ -604,7 +602,7 @@ impl Lowering {
             Statement::ThrowStmt { _expression, .. } => {
                 let val = self.lower_expression(_expression);
                 Some(HIRStatement::Throw {
-                    line: line,
+                    line,
                     value: val,
                 })
             }
@@ -639,7 +637,7 @@ impl Lowering {
                     initializer: Some(hir_lambda),
                     ty: fn_ty,
                     _is_const: false,
-                    line: line,
+                    line,
                 })
             }
             _ => None,

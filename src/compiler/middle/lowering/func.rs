@@ -25,7 +25,7 @@ impl Lowering {
                 }
                 if generics.is_empty() {
                     let looks_like_generic_param = name.len() <= 2
-                        && name.chars().next().map_or(false, |c| c.is_uppercase())
+                        && name.chars().next().is_some_and(|c| c.is_uppercase())
                         && name.chars().all(|c| c.is_alphanumeric());
                     !looks_like_generic_param
                 } else {
@@ -119,7 +119,7 @@ impl Lowering {
         obj_type: &TejxType,
         callee_name: &str,
     ) -> TejxType {
-        let type_name = ret_ty.to_name();
+        let _type_name = ret_ty.to_name();
 
         // Find base class name from object type
         let obj_full = obj_type.to_name();
@@ -191,8 +191,7 @@ impl Lowering {
 
     fn sanitize_monomorph_part(&self, raw: &str) -> String {
         raw.replace("[]", "_arr")
-            .replace('<', "_")
-            .replace('>', "_")
+            .replace(['<', '>'], "_")
             .replace(", ", "_")
             .replace(',', "_")
             .replace(" | ", "_or_")
@@ -201,13 +200,11 @@ impl Lowering {
             .replace('&', "_")
             .replace("{ ", "_obj_")
             .replace(" }", "_")
-            .replace('{', "_")
-            .replace('}', "_")
+            .replace(['{', '}'], "_")
             .replace(": ", "_")
             .replace(':', "_")
             .replace("; ", "_")
-            .replace(';', "_")
-            .replace(' ', "_")
+            .replace([';', ' '], "_")
     }
 
     pub(crate) fn monomorphized_name(&self, base_name: &str, concrete_args: &[TejxType]) -> String {
@@ -445,7 +442,7 @@ impl Lowering {
         let body = self
             .lower_statement(&func.body)
             .unwrap_or(HIRStatement::Block {
-                line: line,
+                line,
                 statements: vec![],
             });
 
@@ -454,7 +451,7 @@ impl Lowering {
 
         functions.push(HIRStatement::Function {
             async_params: None,
-            line: line,
+            line,
             name,
             params: mangled_params,
             _return_type: return_type,

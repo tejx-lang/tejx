@@ -200,7 +200,7 @@ fn main() {
 
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
-    if let Err(_) = type_checker.check(&merged_program, &filename) {
+    if type_checker.check(&merged_program, &filename).is_err() {
         eprintln!("Type Checking Failed:");
         for diag in &type_checker.diagnostics {
             diag.report(&contents);
@@ -347,7 +347,7 @@ fn main() {
 fn print_help() {
     println!("tejxc - TejX Compiler");
     println!("Usage: tejxc [options] <input_files>");
-    println!("");
+    println!();
     println!("Options:");
     println!("  -h, --help              Show this help message");
     println!("  -v, --version           Show version information");
@@ -359,7 +359,7 @@ fn print_help() {
     println!("  --target <target>       Specify target (e.g., wasm)");
     println!("  --stdlib-path <path>    Path to standard library (lib/ directory)");
     println!("  --runtime-path <path>   Path to runtime library (tejx_rt.a)");
-    println!("");
+    println!();
     println!("Examples:");
     println!("  tejxc main.tx                        Compile and link main.tx");
     println!("  tejxc -o myapp main.tx util.tx       Compile and link multiple files");

@@ -22,15 +22,15 @@ function test_numeric_conversions() {
 function test_string_conversions() {
     print("--- String Conversions ---");
     
-    // Float to String (Using rt_to_string or implicit via print)
+    // Float to String (Using String or implicit via print)
     let f: float = 123.45;
-    let s: string = rt_to_string(f);
+    let s: string = String(f);
     print("float to string:", s);
     assert_eq_string("123.45", s, "Float to string conversion");
     
     // Int to String
     let i: int = 999;
-    let s2: string = rt_to_string(i);
+    let s2: string = String(i);
     print("int to string:", s2);
     assert_eq_string("999", s2, "Int to string conversion");
     

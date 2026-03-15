@@ -61,13 +61,20 @@ pub struct TypeChecker {
     pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
 }
 
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeChecker {
     pub fn new() -> Self {
         let globals = HashMap::new();
         let class_members = HashMap::new();
         let class_hierarchy = HashMap::new();
         // Standard library symbols are now loaded from the prelude and explicit imports.
-        let checker = TypeChecker {
+        
+        TypeChecker {
             scopes: vec![globals],
             current_class: None,
             current_function_return: None,
@@ -87,8 +94,7 @@ impl TypeChecker {
             current_expected_type: None,
             generic_instantiations: HashMap::new(),
             function_instantiations: HashMap::new(),
-        };
-        checker
+        }
     }
 
     pub fn check(&mut self, program: &Program, filename: &str) -> Result<(), ()> {

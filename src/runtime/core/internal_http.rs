@@ -66,34 +66,34 @@ pub unsafe extern "C" fn rt_http_request_async(url: i64, method: i64, body: i64)
             Ok(response) => match response.text().await {
                 Ok(text) => unsafe {
                     let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    let task_args = rt_Array_new_fixed(2, 8);
                     rt_array_set_fast(task_args, 0, actual_pid);
                     let boxed = Box::new(text);
                     let ptr = Box::into_raw(boxed) as i64;
                     rt_array_set_fast(task_args, 1, ptr);
                     crate::event_loop::tejx_enqueue_task(
-                        rt_http_request_resolver_worker as i64,
+                        rt_http_request_resolver_worker as *const () as i64,
                         task_args,
                     );
                 },
                 Err(_) => unsafe {
                     let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                    let mut task_args = rt_Array_new_fixed(2, 8);
+                    let task_args = rt_Array_new_fixed(2, 8);
                     rt_array_set_fast(task_args, 0, actual_pid);
                     rt_array_set_fast(task_args, 1, 0);
                     crate::event_loop::tejx_enqueue_task(
-                        rt_http_request_resolver_worker as i64,
+                        rt_http_request_resolver_worker as *const () as i64,
                         task_args,
                     );
                 },
             },
             Err(_) => unsafe {
                 let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-                let mut task_args = rt_Array_new_fixed(2, 8);
+                let task_args = rt_Array_new_fixed(2, 8);
                 rt_array_set_fast(task_args, 0, actual_pid);
                 rt_array_set_fast(task_args, 1, 0);
                 crate::event_loop::tejx_enqueue_task(
-                    rt_http_request_resolver_worker as i64,
+                    rt_http_request_resolver_worker as *const () as i64,
                     task_args,
                 );
             },

@@ -1020,7 +1020,7 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
         if !cancelled {
             unsafe {
                 let cb = crate::event_loop::tejx_get_global_handle(handle);
-                crate::event_loop::tejx_enqueue_task(rt_timer_worker as i64, cb);
+                crate::event_loop::tejx_enqueue_task(rt_timer_worker as *const () as i64, cb);
             }
         } else {
             CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
@@ -1055,7 +1055,7 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
 
             unsafe {
                 let cb = crate::event_loop::tejx_get_global_handle(handle);
-                crate::event_loop::tejx_enqueue_task(rt_timer_worker as i64, cb);
+                crate::event_loop::tejx_enqueue_task(rt_timer_worker as *const () as i64, cb);
             }
         }
     });
@@ -1094,7 +1094,7 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
                 let task_args = rt_Array_new_fixed(2, 8);
                 rt_array_set_fast(task_args, 0, actual_pid);
                 rt_array_set_fast(task_args, 1, 0);
-                crate::event_loop::tejx_enqueue_task(rt_promise_resolver_worker as i64, task_args);
+                crate::event_loop::tejx_enqueue_task(rt_promise_resolver_worker as *const () as i64, task_args);
             }
         } else {
             CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
@@ -1223,14 +1223,15 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
     rt_push_root(&mut c);
     rt_push_root(&mut a);
 
-    let mut ptr_val = 0;
-    let mut env = 0;
+    let ptr_val;
+    let env;
 
     if (c as u64) >= (HEAP_OFFSET as u64) {
         ptr_val = rt_get_closure_ptr(c);
         env = rt_get_closure_env(c);
     } else {
         ptr_val = c;
+        env = 0;
     }
 
     // Ensure ptr_val is unboxed if it's a heap object
@@ -1274,14 +1275,15 @@ pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
     rt_push_root(&mut c);
     rt_push_root(&mut a);
 
-    let mut ptr_val = 0;
-    let mut env = 0;
+    let ptr_val;
+    let env;
 
     if (c as u64) >= (HEAP_OFFSET as u64) {
         ptr_val = rt_get_closure_ptr(c);
         env = rt_get_closure_env(c);
     } else {
         ptr_val = c;
+        env = 0;
     }
 
     // Ensure ptr_val is unboxed if it's a heap object
@@ -1356,16 +1358,17 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
     let mut c = closure;
     rt_push_root(&mut c);
 
-    let mut ptr_val = 0;
-    let mut env = 0;
     let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
-
-    if !is_raw_ptr {
-        ptr_val = rt_get_closure_ptr(c);
-        env = rt_get_closure_env(c);
+    let ptr_val = if !is_raw_ptr {
+        rt_get_closure_ptr(c)
     } else {
-        ptr_val = c;
-    }
+        c
+    };
+    let env = if !is_raw_ptr {
+        rt_get_closure_env(c)
+    } else {
+        0
+    };
 
     // Ensure ptr_val is unboxed if it's a heap object
     let mut raw_func_ptr = ptr_val;
@@ -1445,7 +1448,7 @@ pub unsafe extern "C" fn rt_map_set_fast(this: i64, key: i64, val: i64) {
         }
     }
 
-    let mut unboxed_val = val;
+    let unboxed_val = val;
     if (this as u64) >= (HEAP_OFFSET as u64) {
         let tag = *((this - HEAP_OFFSET) as *mut i64);
         if tag == TAG_ARRAY {

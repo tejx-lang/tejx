@@ -24,7 +24,7 @@ pub struct ObjectHeader {
 #[no_mangle]
 pub static mut EDEN_START: *mut u8 = 0 as *mut u8;
 #[no_mangle]
-pub static mut EDEN_TOP: std::sync::atomic::AtomicPtr<u8> =
+pub static EDEN_TOP: std::sync::atomic::AtomicPtr<u8> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 #[no_mangle]
 pub static mut EDEN_END: *mut u8 = 0 as *mut u8;

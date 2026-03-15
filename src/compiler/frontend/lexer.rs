@@ -102,7 +102,7 @@ impl Lexer {
 
             if c.is_alphabetic() || c == '_' {
                 tokens.push(self.read_identifier());
-            } else if c.is_digit(10) {
+            } else if c.is_ascii_digit() {
                 tokens.push(self.read_number());
             } else if c == '"' || c == '\'' {
                 tokens.push(self.read_string(c));
@@ -407,13 +407,13 @@ impl Lexer {
     fn read_number(&mut self) -> Token {
         let start_col = self.column;
         let mut value = String::new();
-        while !self.is_at_end() && self.peek(0).is_digit(10) {
+        while !self.is_at_end() && self.peek(0).is_ascii_digit() {
             value.push(self.advance());
         }
 
-        if self.peek(0) == '.' && self.peek(1).is_digit(10) {
+        if self.peek(0) == '.' && self.peek(1).is_ascii_digit() {
             value.push(self.advance());
-            while !self.is_at_end() && self.peek(0).is_digit(10) {
+            while !self.is_at_end() && self.peek(0).is_ascii_digit() {
                 value.push(self.advance());
             }
         }

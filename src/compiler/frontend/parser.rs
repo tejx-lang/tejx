@@ -199,13 +199,13 @@ impl Parser {
         }
 
         if declarations.len() == 1 {
-            return declarations.pop().unwrap();
+            declarations.pop().unwrap()
         } else {
-            return Statement::BlockStmt {
+            Statement::BlockStmt {
                 statements: declarations,
                 _line: start_token.line,
                 _col: start_token.column,
-            };
+            }
         }
     }
 
@@ -289,7 +289,7 @@ impl Parser {
                 }
             }
             self.consume(TokenType::CloseBracket, "Expected ']'");
-            return BindingNode::ArrayBinding { elements, rest };
+            BindingNode::ArrayBinding { elements, rest }
         } else if self.check(TokenType::OpenBrace) {
             // Object destructuring
             self.advance();
@@ -310,24 +310,24 @@ impl Parser {
                 }
             }
             self.consume(TokenType::CloseBrace, "Expected '}'");
-            return BindingNode::ObjectBinding { entries };
+            BindingNode::ObjectBinding { entries }
         } else if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
             let name = self
                 .consume_identifier("Expected binding pattern")
                 .value
                 .clone();
-            return BindingNode::Identifier(name);
+            BindingNode::Identifier(name)
         } else {
             let t = self.peek().clone();
             self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                format!("Expected binding pattern"),
+                "Expected binding pattern".to_string(),
                 t.line,
                 t.column,
                 self.filename.clone(),
             ));
             // Advance to prevent infinite loops if we get stuck on an invalid pattern
             self.advance();
-            return BindingNode::Identifier("__error__".to_string());
+            BindingNode::Identifier("__error__".to_string())
         }
     }
 
@@ -483,8 +483,8 @@ impl Parser {
 
         let mut members = Vec::new();
         let mut methods = Vec::new();
-        let mut getters = Vec::new();
-        let mut setters = Vec::new();
+        let getters = Vec::new();
+        let setters = Vec::new();
         let mut constructor = None;
 
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
@@ -573,7 +573,7 @@ impl Parser {
                 if self.check(TokenType::Identifier) {
                     let after_ident = self.current + 1;
                     if after_ident < self.tokens.len() {
-                        let next_tt = self.tokens[after_ident].token_type.clone();
+                        let next_tt = self.tokens[after_ident].token_type;
                         if next_tt == TokenType::Comma || next_tt == TokenType::Greater {
                             is_generic = true;
                         }
@@ -659,7 +659,7 @@ impl Parser {
                         _col: 0,
                     },
                     _access: access.clone(),
-                    is_static: is_static,
+                    is_static,
                     _is_abstract: is_abstract_member,
                 });
             } else {
@@ -1048,13 +1048,7 @@ impl Parser {
                     .consume_identifier("Expected property name")
                     .value
                     .clone();
-                let mut optional = "";
-                let is_opt = if self.match_token(TokenType::Question) {
-                    optional = "?";
-                    true
-                } else {
-                    false
-                };
+                let is_opt = self.match_token(TokenType::Question);
                 self.consume(TokenType::Colon, "Expected ':'");
                 let val_type = self.parse_type_annotation();
                 member_nodes.push((key, is_opt, val_type));
@@ -1163,7 +1157,7 @@ impl Parser {
             } else {
                 let t = self.peek().clone();
                 self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                    format!("Expected type"),
+                    "Expected type".to_string(),
                     t.line,
                     t.column,
                     self.filename.clone(),
@@ -1340,8 +1334,8 @@ impl Parser {
         // Check for 'for (let x of y)' - simplified peek logic
         let mut is_for_of = false;
         let start_pos = self.current;
-        if self.match_token(TokenType::Let) || self.match_token(TokenType::Const) {
-            if self.check(TokenType::Identifier) {
+        if (self.match_token(TokenType::Let) || self.match_token(TokenType::Const))
+            && self.check(TokenType::Identifier) {
                 self.advance(); // consume ident
                 if self.match_token(TokenType::Colon) {
                     self.parse_type_annotation();
@@ -1350,7 +1344,6 @@ impl Parser {
                     is_for_of = true;
                 }
             }
-        }
         self.current = start_pos; // Reset for actual parsing
 
         if is_for_of {
@@ -2157,38 +2150,38 @@ impl Parser {
         match token.token_type {
             TokenType::Number => {
                 self.advance();
-                return Expression::NumberLiteral {
+                Expression::NumberLiteral {
                     value: token.value.parse().unwrap_or(0.0),
                     _is_float: token.value.contains('.'),
                     _line: token.line,
                     _col: token.column,
-                };
+                }
             }
             TokenType::String => {
                 self.advance();
-                return Expression::StringLiteral {
+                Expression::StringLiteral {
                     value: token.value,
                     _line: token.line,
                     _col: token.column,
-                };
+                }
             }
             TokenType::TemplateString => {
                 self.advance();
-                return self.parse_template_string(token);
+                self.parse_template_string(token)
             }
             TokenType::Identifier => {
                 if self.check_next(TokenType::Arrow) {
                     return self.parse_lambda();
                 }
                 self.advance();
-                return Expression::Identifier {
+                Expression::Identifier {
                     name: token.value,
                     _line: token.line,
                     _col: token.column,
-                };
+                }
             }
             TokenType::OpenBracket => {
-                return self.parse_array_literal();
+                self.parse_array_literal()
             }
             TokenType::OpenParen => {
                 // Check if this is a lambda: (a, b) => ...
@@ -2217,10 +2210,10 @@ impl Parser {
                 self.advance();
                 let expr = self.parse_expression();
                 self.consume(TokenType::CloseParen, "Expected ')'");
-                return expr;
+                expr
             }
             TokenType::OpenBrace => {
-                return self.parse_object_literal();
+                self.parse_object_literal()
             }
             _ => {
                 let err_token = token.clone();

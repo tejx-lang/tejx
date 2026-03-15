@@ -8,7 +8,7 @@ impl TypeChecker {
         name.starts_with("$MISSING_GENERIC_")
             || name == "$0"
             || (name.len() <= 2
-                && name.chars().next().map_or(false, |c| c.is_uppercase())
+                && name.chars().next().is_some_and(|c| c.is_uppercase())
                 && name.chars().all(|c| c.is_alphanumeric()))
     }
 
@@ -637,11 +637,10 @@ impl TypeChecker {
                     return Ok(TejxType::from_name("<inferred>"));
                 }
                 // Built-in 'length' property for arrays, strings, and slices
-                if member == "length" {
-                    if obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice() {
+                if member == "length"
+                    && (obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice()) {
                         return Ok(TejxType::Int32);
                     }
-                }
                 if let Some(builtin_ty) = self.builtin_member_function_type(&obj_ty, member) {
                     return Ok(builtin_ty);
                 }
@@ -1034,7 +1033,7 @@ impl TypeChecker {
                     }
                 }
                 if call_generic_params.is_empty() && !member_lookup_resolved {
-                    let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                    let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
                     if let Some(s) = self.lookup(func_name) {
                         call_generic_params = s.generic_params.clone();
                         call_generic_owner = func_name.to_string();
@@ -1071,7 +1070,7 @@ impl TypeChecker {
 
                 // If `s_params` is still empty, fallback to looking up just the method name
                 if !_signature_found {
-                    let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                    let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
                     if let Some(s) = self.lookup(func_name) {
                         s_params = s.params.iter().map(|p| p.to_name()).collect();
                         is_variadic = s.is_variadic;
@@ -1081,7 +1080,7 @@ impl TypeChecker {
 
                 let mut param_offset = 0;
                 if let Expression::MemberAccessExpr { .. } = &**callee {
-                    if s_params.len() > 0 && s_params.len() >= args.len() + 1 {
+                    if !s_params.is_empty() && s_params.len() > args.len() {
                         param_offset = 1;
                     }
                 }
@@ -1343,9 +1342,7 @@ impl TypeChecker {
                     let lambda_ctx_params = if matches!(arg, Expression::LambdaExpr { .. }) {
                         if target_type.starts_with("function:") || target_type.contains("=>") {
                             let (ret_sig, params, _) = self.parse_signature(target_type.clone());
-                            let ret_ty = ret_sig
-                                .splitn(2, ':')
-                                .nth(1)
+                            let ret_ty = ret_sig.split_once(':').map(|x| x.1)
                                 .unwrap_or("void")
                                 .to_string();
                             let mut func_ty = TejxType::Function(
@@ -1429,12 +1426,12 @@ impl TypeChecker {
                                     if let Some(sym) = self.lookup(t) {
                                         sym.ty.to_name() == "<inferred>"
                                             && t.len() <= 2
-                                            && t.chars().next().map_or(false, |c| c.is_uppercase())
+                                            && t.chars().next().is_some_and(|c| c.is_uppercase())
                                     } else {
                                         false
                                     }
                                 };
-                                let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                                let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
                                 let original_param_is_generic =
                                     if let Some(sym) = self.lookup(func_name) {
                                         if adjusted_i < sym.params.len() {
@@ -1443,7 +1440,7 @@ impl TypeChecker {
                                                 && orig
                                                     .chars()
                                                     .next()
-                                                    .map_or(false, |c| c.is_uppercase())
+                                                    .is_some_and(|c| c.is_uppercase())
                                                 && orig.chars().all(|c| c.is_alphanumeric())
                                         } else {
                                             false
@@ -1481,7 +1478,7 @@ impl TypeChecker {
                             return true;
                         }
                         t.len() <= 2
-                            && t.chars().next().map_or(false, |c| c.is_uppercase())
+                            && t.chars().next().is_some_and(|c| c.is_uppercase())
                             && t.chars().all(|c| c.is_alphanumeric())
                     };
                     if is_generic_param_check(&target_type) && arg_type != "<inferred>" {
@@ -1489,7 +1486,7 @@ impl TypeChecker {
                     }
                 }
 
-                let func_name = callee_str.split('.').last().unwrap_or(&callee_str);
+                let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
                 if explicit_type_args_valid {
                     if !call_generic_params.is_empty() {
                         if let Some(explicit_args) = explicit_type_args.clone() {
@@ -2169,7 +2166,7 @@ impl TypeChecker {
                         );
                     } else if args.len() < expected_arg_types.len() {
                         let missing = &expected_arg_types[args.len()..];
-                        if !missing.iter().all(|t| is_optional_param(t)) {
+                        if !missing.iter().all(is_optional_param) {
                             self.report_error_detailed(
                                 format!(
                                     "Constructor for '{}' expects {} argument(s), but {} were provided",

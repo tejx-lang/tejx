@@ -2,7 +2,6 @@
 // ============
 
 import { assert_eq_int, assert_eq_string, assert_ne_int } from "../utils.tx";
-import { Object } from "std:object";
 
 function main() {
     print("--- Object Static Methods ---");

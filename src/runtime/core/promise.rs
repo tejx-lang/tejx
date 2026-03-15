@@ -74,7 +74,7 @@ pub unsafe extern "C" fn rt_promise_resolve(p: i64, v_val: i64) {
                 rt_array_set_fast(task_args, 0, cb_resolve);
                 rt_array_set_fast(task_args, 1, v_v);
                 rt_array_set_fast(task_args, 2, next_p);
-                tejx_enqueue_task(rt_promise_callback_worker as i64, task_args);
+                tejx_enqueue_task(rt_promise_callback_worker as *const () as i64, task_args);
                 rt_pop_roots(1); // task_args
             }
 
@@ -157,7 +157,7 @@ pub unsafe extern "C" fn rt_promise_reject(p: i64, v_err: i64) {
                 rt_array_set_fast(task_args, 0, cb_reject);
                 rt_array_set_fast(task_args, 1, v_e);
                 rt_array_set_fast(task_args, 2, next_p);
-                tejx_enqueue_task(rt_promise_rejection_worker as i64, task_args);
+                tejx_enqueue_task(rt_promise_rejection_worker as *const () as i64, task_args);
                 rt_pop_roots(1); // task_args
             }
 
@@ -234,7 +234,7 @@ pub unsafe extern "C" fn rt_promise_then(p: i64, cb_resolve: i64, cb_reject: i64
         rt_array_set_fast(task_args, 0, v_cb_res);
         rt_array_set_fast(task_args, 1, val);
         rt_array_set_fast(task_args, 2, v_new_p);
-        tejx_enqueue_task(rt_promise_callback_worker as i64, task_args);
+        tejx_enqueue_task(rt_promise_callback_worker as *const () as i64, task_args);
         rt_pop_roots(2); // task_args, val
     } else if state == 2 {
         // Rejected: Enqueue rejection microtask
@@ -245,7 +245,7 @@ pub unsafe extern "C" fn rt_promise_then(p: i64, cb_resolve: i64, cb_reject: i64
         rt_array_set_fast(task_args, 0, v_cb_rej);
         rt_array_set_fast(task_args, 1, err);
         rt_array_set_fast(task_args, 2, v_new_p);
-        tejx_enqueue_task(rt_promise_rejection_worker as i64, task_args);
+        tejx_enqueue_task(rt_promise_rejection_worker as *const () as i64, task_args);
         rt_pop_roots(2); // task_args, err
     }
 

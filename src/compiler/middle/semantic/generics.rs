@@ -11,7 +11,7 @@ impl TypeChecker {
                 let args: Vec<TejxType> = split_top_level(inner, ',')
                     .into_iter()
                     .filter(|a| !a.is_empty())
-                    .map(|arg_ty| TejxType::from_name(arg_ty))
+                    .map(TejxType::from_name)
                     .collect();
 
                 self.generic_instantiations
@@ -43,8 +43,7 @@ impl TypeChecker {
                     self.register_instantiation(&arg.to_name(), line, col);
                 }
             }
-        } else if type_name.ends_with("[]") {
-            let base = &type_name[..type_name.len() - 2];
+        } else if let Some(base) = type_name.strip_suffix("[]") {
             self.register_instantiation(base, line, col);
         }
     }

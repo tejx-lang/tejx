@@ -462,8 +462,7 @@ impl CodeGen {
         match val {
             MIRValue::Constant { value, ty } => {
                 // Handle "new Class" hack
-                if value.starts_with("@") {
-                    let name = &value[1..];
+                if let Some(name) = value.strip_prefix("@") {
                     let count = self.function_param_counts.get(name).cloned().unwrap_or(1); // Default to 1 for workers
                     let args = vec!["i64"; count].join(", ");
                     return format!("ptrtoint (i64 ({})* @{} to i64)", args, name);
@@ -678,8 +677,8 @@ impl CodeGen {
 
                 // Existing logic for function names used as values
                 let mut target = name.clone();
-                if name.starts_with("f_") {
-                    let real_name = &name[2..]; // strip f_
+                if let Some(real_name) = name.strip_prefix("f_") {
+                    // strip f_
                     if self.declared_functions.contains(real_name) {
                         target = real_name.to_string();
                     }
@@ -858,7 +857,7 @@ impl CodeGen {
             }
         }
 
-        let byte_len = content.as_bytes().len() + 1;
+        let byte_len = content.len() + 1;
 
         self.global_buffer.push_str(&format!(
             "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",

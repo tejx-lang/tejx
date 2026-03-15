@@ -242,7 +242,7 @@ impl Lowering {
             let mut hir_body =
                 self.lower_statement(&func_decl.body)
                     .unwrap_or(HIRStatement::Block {
-                        line: line,
+                        line,
                         statements: vec![],
                     });
 
@@ -285,13 +285,13 @@ impl Lowering {
                             let hir_init = self.lower_expression(f_init);
                             *self.current_expected_type.borrow_mut() = prev_expected;
                             injections.push(HIRStatement::ExpressionStmt {
-                                 line: line,
+                                 line,
                                  expr: HIRExpression::Assignment {
-                                     line: line,
+                                     line,
                                      target: Box::new(HIRExpression::MemberAccess {
-                                         line: line,
+                                         line,
                                          target: Box::new(HIRExpression::Variable {
-                                             line: line,
+                                             line,
                                              name: mangled_this.clone(),
                                              ty: TejxType::Class(class_decl.name.clone(), vec![]),
                                          }),
@@ -329,7 +329,7 @@ impl Lowering {
                 functions.push(_state_struct);
                 functions.push(HIRStatement::Function {
                     async_params: None,
-                    line: line,
+                    line,
                     name: mangled_name,
                     params: mangled_params,
                     _return_type: TejxType::Int64,
@@ -342,7 +342,7 @@ impl Lowering {
                 let mangled_name = format!("f_{}_{}", class_decl.name.replace("[", "_").replace("]", "_"), func_decl.name);
                 functions.push(HIRStatement::Function {
                     async_params: None,
-                    line: line,
+                    line,
                     name: mangled_name,
                     params: mangled_params,
                     _return_type: return_type,
@@ -354,36 +354,34 @@ impl Lowering {
 
         // Lower getters
         for getter in &class_decl._getters {
-            let mut params = vec![("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![]))];
+            let params = [("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![]))];
             let name = format!("f_{}_get_{}", class_decl.name, getter._name);
             let return_type =
                 self.resolve_alias_type(&TejxType::from_node(&getter._return_type));
             self.push_env_owner(name.clone());
             self.enter_scope();
             let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
-            let hir_body = self.lower_statement(&getter._body).unwrap_or(HIRStatement::Block { line: line, statements: vec![] });
+            let hir_body = self.lower_statement(&getter._body).unwrap_or(HIRStatement::Block { line, statements: vec![] });
             self._exit_scope();
             self.pop_env_owner();
-            functions.push(HIRStatement::Function { async_params: None, line: line, name, params: mangled_params, _return_type: return_type, body: Box::new(hir_body), is_extern: false });
+            functions.push(HIRStatement::Function { async_params: None, line, name, params: mangled_params, _return_type: return_type, body: Box::new(hir_body), is_extern: false });
         }
 
         // Lower setters
         for setter in &class_decl._setters {
-            let mut params = vec![
-                ("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![])),
+            let params = [("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![])),
                 (
                     setter._param_name.clone(),
                     self.resolve_alias_type(&TejxType::from_node(&setter._param_type)),
-                )
-            ];
+                )];
             let name = format!("f_{}_set_{}", class_decl.name, setter._name);
             self.push_env_owner(name.clone());
             self.enter_scope();
             let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
-            let hir_body = self.lower_statement(&setter._body).unwrap_or(HIRStatement::Block { line: line, statements: vec![] });
+            let hir_body = self.lower_statement(&setter._body).unwrap_or(HIRStatement::Block { line, statements: vec![] });
             self._exit_scope();
             self.pop_env_owner();
-            functions.push(HIRStatement::Function { async_params: None, line: line, name, params: mangled_params, _return_type: TejxType::Void, body: Box::new(hir_body), is_extern: false });
+            functions.push(HIRStatement::Function { async_params: None, line, name, params: mangled_params, _return_type: TejxType::Void, body: Box::new(hir_body), is_extern: false });
         }
 
         // Lower static fields
@@ -393,10 +391,10 @@ impl Lowering {
                 let hir_init = self.lower_expression(f_init);
                 let mangled_name = format!("g_{}_{}", class_decl.name, f_name);
                 main_stmts.push(HIRStatement::ExpressionStmt {
-                    line: line,
+                    line,
                     expr: HIRExpression::Assignment {
-                        line: line,
-                        target: Box::new(HIRExpression::Variable { line: line, name: mangled_name, ty: f_ty.clone() }),
+                        line,
+                        target: Box::new(HIRExpression::Variable { line, name: mangled_name, ty: f_ty.clone() }),
                         value: Box::new(hir_init),
                         ty: TejxType::Int64,
                     },
@@ -412,11 +410,11 @@ impl Lowering {
                 // Static fields are mangled as g_Class_Field
                 let mangled_name = format!("g_{}_{}", class_decl.name, f_name);
                 main_stmts.push(HIRStatement::ExpressionStmt {
-                    line: line,
+                    line,
                     expr: HIRExpression::Assignment {
-                        line: line,
+                        line,
                         target: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: mangled_name,
                             ty: f_ty.clone(),
                         }),
@@ -477,7 +475,7 @@ impl Lowering {
             let hir_body = self
                 .lower_statement(&func_decl.body)
                 .unwrap_or(HIRStatement::Block {
-                    line: line,
+                    line,
                     statements: vec![],
                 });
 
@@ -486,7 +484,7 @@ impl Lowering {
 
             functions.push(HIRStatement::Function {
                 async_params: None,
-                line: line,
+                line,
                 name,
                 params: mangled_params,
                 _return_type: return_type,

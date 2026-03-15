@@ -7,7 +7,7 @@ use std::path::PathBuf;
 ///   ├── bin/tejxc
 ///   ├── runtime/tejx_rt.a
 ///   └── lib/
-///       ├── core/   (prelude.tx, array.tx, string.tx, object.tx)
+///       ├── core/   (prelude.tx, array.tx, string.tx)
 ///       └── std/    (math.tx, collections.tx, fs.tx, ...)
 
 // Default subdirectory names
@@ -16,7 +16,6 @@ pub const CORE_DIR: &str = "core";
 pub const STD_DIR: &str = "std";
 pub const RUNTIME_DIR: &str = "runtime";
 pub const RUNTIME_LIB_NAME: &str = "tejx_rt.a";
-
 
 // Environment variable names
 // (REMOVED: TEJX_STDLIB_PATH and TEJX_RUNTIME_PATH are no longer supported)
@@ -36,7 +35,10 @@ pub fn resolve_stdlib_path(explicit: Option<&str>) -> PathBuf {
     // Installed mode: /usr/local/tejx/bin/tejxc → /usr/local/tejx/lib
     if let Ok(exe) = std::env::current_exe() {
         if let Some(bin_dir) = exe.parent() {
-            let installed_lib = bin_dir.parent().map(|p| p.join(LIB_DIR)).unwrap_or_default();
+            let installed_lib = bin_dir
+                .parent()
+                .map(|p| p.join(LIB_DIR))
+                .unwrap_or_default();
             if installed_lib.exists() {
                 return installed_lib;
             }

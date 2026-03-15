@@ -77,11 +77,10 @@ impl CodeGen {
                         }
                         MIRInstruction::Move { dst, src, .. } => {
                             if let MIRValue::Variable { name, .. } = src {
-                                if name == &current_var {
-                                    if !check_vars.contains(dst) {
+                                if name == &current_var
+                                    && !check_vars.contains(dst) {
                                         check_vars.push(dst.clone());
                                     }
-                                }
                             }
                         }
                         _ => {}
@@ -107,7 +106,7 @@ impl CodeGen {
                         return true;
                     }
                     if callee == RT_CLASS_NEW && !dst.is_empty() && !self.does_escape(func, dst) {
-                        let class_name = match args.get(0) {
+                        let class_name = match args.first() {
                             Some(MIRValue::Constant { value, .. }) => {
                                 value.trim_matches('"').to_string()
                             }
@@ -422,7 +421,7 @@ impl CodeGen {
 
         // Generate main wrapper if tejx_main exists
         if has_tejx_main {
-            self.buffer.push_str("\n");
+            self.buffer.push('\n');
             self.buffer
                 .push_str(&format!("declare i32 @{}(i32, i8**)\n", TEJX_RUNTIME_MAIN));
             self.buffer

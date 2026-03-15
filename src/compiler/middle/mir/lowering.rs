@@ -580,12 +580,11 @@ impl MIRLowering {
         if let Some(aps) = async_params {
             for (pname, _pty) in aps {
                 let mangled = self.resolve_variable(pname);
-                if !mangled.is_empty() {
-                    if !added.contains(&mangled) {
+                if !mangled.is_empty()
+                    && !added.contains(&mangled) {
                         self.async_locals.push(mangled.clone());
                         added.insert(mangled.clone());
                     }
-                }
             }
         }
 
@@ -1627,8 +1626,8 @@ impl MIRLowering {
                     }
                     TokenType::Comma => {
                         let _l = self.lower_expression(left);
-                        let r = self.lower_expression(right);
-                        r
+                        
+                        self.lower_expression(right)
                     }
                     TokenType::PipePipe => {
                         // Short-circuit OR: left || right
@@ -1684,7 +1683,7 @@ impl MIRLowering {
                             line: 0,
                             dst: temp.clone(),
                             left: l.clone(),
-                            op: op.clone(),
+                            op: *op,
                             right: r,
                             op_width: ty.clone(),
                         });
@@ -1774,7 +1773,7 @@ impl MIRLowering {
                 }
 
                 // Check if this is a UFCS/runtime array mutation that might reallocate
-                let is_ufcs = final_callee.starts_with("rt_array_push")
+                let _is_ufcs = final_callee.starts_with("rt_array_push")
                     || final_callee.starts_with("rt_array_unshift")
                     || final_callee.starts_with("rt_array_splice")
                     || final_callee.contains(".push")
@@ -1793,8 +1792,8 @@ impl MIRLowering {
                             .clone();
 
                         // Fix: prevent primitive boxing for typed arrays by overriding target type
-                        if args.len() >= 1 {
-                            if let Some(arr_ty) = args.get(0).map(|a| a.get_type()) {
+                        if !args.is_empty() {
+                            if let Some(arr_ty) = args.first().map(|a| a.get_type()) {
                                 if arr_ty.is_array() {
                                     if (final_callee.ends_with("_push")
                                         || final_callee.ends_with("_unshift")
@@ -1860,7 +1859,7 @@ impl MIRLowering {
                     || final_callee == "rt_array_unshift";
 
                 if is_array_mut {
-                    let arr_val = mir_args.get(0).cloned();
+                    let arr_val = mir_args.first().cloned();
                     if let Some(arr_val) = arr_val {
                         let arr_ty = arr_val.get_type();
                         let new_arr_tmp = self.new_temp(arr_ty.clone());
@@ -1871,7 +1870,7 @@ impl MIRLowering {
                             args: mir_args,
                         });
 
-                        if let Some(first_arg) = args.get(0) {
+                        if let Some(first_arg) = args.first() {
                             match first_arg {
                                 HIRExpression::Variable { name, .. } => {
                                     self.emit(MIRInstruction::Move {
@@ -1941,12 +1940,12 @@ impl MIRLowering {
                     args: mir_args,
                 });
 
-                let result_val = MIRValue::Variable {
+                
+
+                MIRValue::Variable {
                     name: raw_temp.clone(),
                     ty: ty.clone(),
-                };
-
-                result_val
+                }
             }
             HIRExpression::IndirectCall {
                 callee, args, ty, ..
@@ -2248,8 +2247,8 @@ impl MIRLowering {
                 let obj_ty = obj.get_type();
 
                 // Special handling for 'length' on arrays, strings, and slices
-                if member == "length" {
-                    if matches!(obj_ty, TejxType::String) || obj_ty.is_array() || obj_ty.is_slice()
+                if member == "length"
+                    && (matches!(obj_ty, TejxType::String) || obj_ty.is_array() || obj_ty.is_slice())
                     {
                         let temp = self.new_temp(TejxType::Int32);
                         self.emit(MIRInstruction::Call {
@@ -2263,7 +2262,6 @@ impl MIRLowering {
                             ty: TejxType::Int32,
                         };
                     }
-                }
 
                 let temp = self.new_temp(ty.clone());
                 self.emit(MIRInstruction::LoadMember {
@@ -2313,7 +2311,7 @@ impl MIRLowering {
                 let arr_temp = self.new_temp(ty.clone());
 
                 let initial_size = if let Some(size_hir) = sized_allocation {
-                    self.lower_expression(&*size_hir)
+                    self.lower_expression(size_hir)
                 } else {
                     MIRValue::Constant {
                         value: elements.len().to_string(),
@@ -2355,7 +2353,7 @@ impl MIRLowering {
                 });
 
                 let unused = self.new_temp(TejxType::Void);
-                for (i, e) in elements.into_iter().enumerate() {
+                for (i, e) in elements.iter().enumerate() {
                     let elem_ty = ty.get_array_element_type();
                     let mut val = self.lower_expression(e);
                     val = self.auto_box(val, &elem_ty);

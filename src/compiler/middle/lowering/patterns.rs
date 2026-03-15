@@ -18,7 +18,7 @@ impl Lowering {
             BindingNode::Identifier(name) => {
                 let mangled = self.define(name.clone(), ty.clone());
                 stmts.push(HIRStatement::VarDecl {
-                    line: line,
+                    line,
                     name: mangled,
                     initializer,
                     ty: ty.clone(),
@@ -35,7 +35,7 @@ impl Lowering {
                 *self.lambda_counter.borrow_mut() += 1;
 
                 stmts.push(HIRStatement::VarDecl {
-                    line: line,
+                    line,
                     name: tmp_id.clone(),
                     initializer,
                     ty: ty.clone(),
@@ -51,14 +51,14 @@ impl Lowering {
 
                 for (i, el) in elements.iter().enumerate() {
                     let el_init = HIRExpression::IndexAccess {
-                        line: line,
+                        line,
                         target: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: tmp_id.clone(),
                             ty: ty.clone(),
                         }),
                         index: Box::new(HIRExpression::Literal {
-                            line: line,
+                            line,
                             value: i.to_string(),
                             ty: TejxType::Int32,
                         }),
@@ -71,16 +71,16 @@ impl Lowering {
                     // handle rest ...tail
                     // let tail = rt_array_slice(tmp, elements.len(), tmp.length())
                     let slice_init = HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: "rt_array_slice".to_string(),
                         args: vec![
                             HIRExpression::Variable {
-                                line: line,
+                                line,
                                 name: tmp_id.clone(),
                                 ty: ty.clone(),
                             },
                             HIRExpression::Literal {
-                                line: line,
+                                line,
                                 value: elements.len().to_string(),
                                 ty: TejxType::Int32,
                             },
@@ -111,7 +111,7 @@ impl Lowering {
                 *self.lambda_counter.borrow_mut() += 1;
 
                 stmts.push(HIRStatement::VarDecl {
-                    line: line,
+                    line,
                     name: tmp_id.clone(),
                     initializer,
                     ty: ty.clone(),
@@ -139,9 +139,9 @@ impl Lowering {
                     }
 
                     let el_init = HIRExpression::MemberAccess {
-                        line: line,
+                        line,
                         target: Box::new(HIRExpression::Variable {
-                            line: line,
+                            line,
                             name: tmp_id.clone(),
                             ty: ty.clone(),
                         }),

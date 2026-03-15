@@ -824,10 +824,10 @@ impl Lowering {
                                         }
                                     }
                                 }
+                                    let mut n_args = vec![obj_hir];
+                                    n_args.extend(hir_args.clone());
+                                    final_args = n_args;
                                 }
-                                let mut n_args = vec![obj_hir];
-                                n_args.extend(hir_args.clone());
-                                final_args = n_args;
                                 // resolved = true;
                             }
                         }

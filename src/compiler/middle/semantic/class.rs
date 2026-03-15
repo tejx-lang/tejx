@@ -242,7 +242,7 @@ impl TypeChecker {
                             params: Vec::new(),
                             min_params: None,
                             is_variadic: false,
-                            aliased_type: { Some(TejxType::from_node(&_type_def)) },
+                            aliased_type: { Some(TejxType::from_node(_type_def)) },
                             generic_params: Vec::new(),
                         },
                     );

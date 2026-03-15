@@ -101,8 +101,8 @@ impl Diagnostic {
 
             let inline_label = self.label.as_deref().unwrap_or(&self.message);
             eprintln!(
-                "  \x1b[34m{} |\x1b[0m {}{}{}\x1b[0m {}{}\x1b[0m",
-                pad, sev_color, pointer, sev_color, inline_label, ""
+                "  \x1b[34m{} |\x1b[0m {}{}{}\x1b[0m {}\x1b[0m",
+                pad, sev_color, pointer, sev_color, inline_label
             );
             eprintln!("  \x1b[34m{} |\x1b[0m", pad);
 

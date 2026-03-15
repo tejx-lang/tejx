@@ -26,7 +26,7 @@ impl TypeChecker {
                 if let Some(expr) = initializer {
                     let prev_expected = self.current_expected_type.take();
                     let prev_lambda_ctx = self.lambda_context_params.take();
-                    if ty_str != "any" && ty_str != "" {
+                    if ty_str != "any" && !ty_str.is_empty() {
                         let expected_ty = TejxType::from_name(&ty_str);
                         self.current_expected_type = Some(expected_ty.clone());
                         if let TejxType::Function(params, _) = expected_ty {
@@ -70,7 +70,7 @@ impl TypeChecker {
                         );
                     }
 
-                    if ty_str != "any" && ty_str != "" {
+                    if ty_str != "any" && !ty_str.is_empty() {
                         self.check_numeric_bounds(
                             expr,
                             &TejxType::from_name(&ty_str),
@@ -137,31 +137,29 @@ impl TypeChecker {
                     };
 
                     let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col);
+                } else if !has_explicit_type {
+                    self.report_error_detailed(
+                        "Type annotation required for uninitialized variable".to_string(),
+                        *line,
+                        *_col,
+                        "E0101",
+                        Some("Provide an explicit type (e.g., 'let x: int;')"),
+                    );
+                    let _ = self.define_pattern(
+                        pattern,
+                        "{unknown}".to_string(),
+                        *is_const,
+                        *line,
+                        *_col,
+                    );
                 } else {
-                    if !has_explicit_type {
-                        self.report_error_detailed(
-                            "Type annotation required for uninitialized variable".to_string(),
-                            *line,
-                            *_col,
-                            "E0101",
-                            Some("Provide an explicit type (e.g., 'let x: int;')"),
-                        );
-                        let _ = self.define_pattern(
-                            pattern,
-                            "{unknown}".to_string(),
-                            *is_const,
-                            *line,
-                            *_col,
-                        );
-                    } else {
-                        let _ = self.define_pattern(
-                            pattern,
-                            type_annotation.to_string(),
-                            *is_const,
-                            *line,
-                            *_col,
-                        );
-                    }
+                    let _ = self.define_pattern(
+                        pattern,
+                        type_annotation.to_string(),
+                        *is_const,
+                        *line,
+                        *_col,
+                    );
                 }
                 Ok(())
             }
@@ -405,8 +403,8 @@ impl TypeChecker {
                 // Removed self.define(...) because collect_declarations already inserted the symbol WITH correctly parsed generic parameters.
 
                 // Verify parent exists
-                if !class_decl._parent_name.is_empty() {
-                    if self.lookup(&class_decl._parent_name).is_none() {
+                if !class_decl._parent_name.is_empty()
+                    && self.lookup(&class_decl._parent_name).is_none() {
                         self.report_error_detailed(
                             format!("Parent class '{}' not found", class_decl._parent_name),
                             class_decl._line,
@@ -415,11 +413,10 @@ impl TypeChecker {
                             Some("Ensure the parent class is defined before the child class"),
                         );
                     }
-                }
 
                 // Verify interface implementation
                 for interface_name in &class_decl._implemented_protocols {
-                    if let Some(_) = self.lookup(interface_name) {
+                    if self.lookup(interface_name).is_some() {
                         let required_methods = self.interfaces.get(interface_name).cloned();
                         if let Some(req_methods) = required_methods {
                             let mut class_method_names = Vec::new();
@@ -471,7 +468,7 @@ impl TypeChecker {
                         member_ty_str = "<inferred>".to_string();
                     }
                     if member_ty_str != "any"
-                        && member_ty_str != ""
+                        && !member_ty_str.is_empty()
                         && !self.is_valid_type(&TejxType::from_name(&member_ty_str))
                     {
                         self.report_error_detailed(
@@ -488,7 +485,7 @@ impl TypeChecker {
                     if let Some(init) = &member._initializer {
                         let prev_expected = self.current_expected_type.take();
                         let prev_lambda_ctx = self.lambda_context_params.take();
-                        if member_ty_str != "any" && member_ty_str != "" {
+                        if member_ty_str != "any" && !member_ty_str.is_empty() {
                             let expected_ty = TejxType::from_name(&member_ty_str);
                             self.current_expected_type = Some(expected_ty.clone());
                             if let TejxType::Function(params, _) = expected_ty {
@@ -501,7 +498,7 @@ impl TypeChecker {
                         self.lambda_context_params = prev_lambda_ctx;
 
                         if member_ty_str != "any"
-                            && member_ty_str != ""
+                            && !member_ty_str.is_empty()
                             && !self.are_types_compatible(
                                 &TejxType::from_name(&member_ty_str),
                                 &TejxType::from_name(&init_type),
@@ -546,7 +543,7 @@ impl TypeChecker {
                         }
 
                         if param_ty != "any"
-                            && param_ty != ""
+                            && !param_ty.is_empty()
                             && !self.is_valid_type(&TejxType::from_name(&param_ty))
                         {
                             self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));

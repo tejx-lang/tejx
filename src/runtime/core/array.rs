@@ -372,7 +372,7 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
     val
 }
 #[no_mangle]
-pub unsafe extern "C" fn rt_array_set_fast(mut id: i64, index: i64, val: i64) -> i64 {
+pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64 {
     if (id as u64) < (HEAP_OFFSET as u64) {
         let msg = rt_string_from_c_str(
             "RuntimeError: Null pointer dereference in array assignment\0".as_ptr() as *const _,

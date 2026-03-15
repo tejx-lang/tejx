@@ -26,10 +26,10 @@ impl TypeNode {
                 let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
                 format!("{}<{}>", n, args_str)
             }
-            TypeNode::Array(t) => format!("{}[]", t.to_string()),
+            TypeNode::Array(t) => format!("{}[]", t),
             TypeNode::Function(args, ret) => {
                 let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
-                format!("({}) => {}", args_str, ret.to_string())
+                format!("({}) => {}", args_str, ret)
             }
             TypeNode::Object(members) => {
                 let m_str = members.iter().map(|(k, opt, t)| {
