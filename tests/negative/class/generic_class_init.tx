@@ -1,0 +1,19 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic class initialization without proper constructor call.
+
+class Array<T> {
+    arr: T[] = [];
+
+    constructor(arr: T[]) {
+        this.arr = arr;
+    }
+
+    getArr(): T[] {
+        return this.arr;
+    }
+}
+
+function main() {
+    // This should give compilation issue if no array is given to constructor
+    let arr2 = new Array<int>(); 
+}

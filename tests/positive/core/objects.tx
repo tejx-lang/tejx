@@ -1,0 +1,70 @@
+
+import {assert_eq_int,assert_eq_string,assert_ne_string,assert_eq_none} from "../utils.tx";
+function main(){
+
+
+    let user = {
+        name: "TejX",
+        age: 1,
+        active: true,
+        address: { city: "Metropolis", zip: 12345 }
+    };
+
+    assert_eq_string("TejX", user.name, "Object property");
+    assert_ne_string("", user.name, "Object name not empty");
+    assert_eq_string("Metropolis", user.address.city, "Nested object property");
+    assert_ne_string("", user.address.city, "Nested city not empty");
+    print(typeof(user));
+
+    user.name="Tejx2";
+    user.age=2;
+    user.active=false;
+    user.address.city="Metropolis2";
+    user.address.zip=123452;
+
+    assert_eq_string("Tejx2", user.name, "Object property");
+    assert_ne_string("", user.name, "Object name not empty");
+    assert_eq_string("Metropolis2", user.address.city, "Nested object property");
+    assert_ne_string("", user.address.city, "Nested city not empty");
+    print(typeof(user));
+
+    let user2:{name:string,age:int,active:bool,address:{city:string,zip:int}} = {
+        name: "TejX",
+        age: 1,
+        active: true,
+        address: { city: "Metropolis", zip: 12345 }
+    };
+
+    assert_eq_string("TejX", user2.name, "Object property");
+    assert_ne_string("", user2.name, "Object name not empty");
+    assert_eq_string("Metropolis", user2.address.city, "Nested object property");
+    assert_ne_string("", user2.address.city, "Nested city not empty");
+    print(typeof(user2));
+
+    let user3:{
+        name:string,
+        age:Option<int>,
+        active:bool,
+        address:{city:string,zip:int}
+    } = {
+        name: "TejX",
+        active: true,
+        address: { city: "Metropolis", zip: 12345 }
+    };
+
+    assert_eq_string("TejX", user3.name, "Object property");
+    assert_ne_string("", user3.name, "Object name not empty");
+    assert_eq_string("Metropolis", user3.address.city, "Nested object property");
+    assert_ne_string("", user3.address.city, "Nested city not empty");
+    assert_eq_none(user3.age, "Object property");
+    print(typeof(user3));
+
+    user3.age = 1;
+    assert_eq_int(1, user3.age, "Object property");
+    print(typeof(user3));
+
+    del user3.age;
+    assert_eq_none(user3.age, "Object property");
+    print(typeof(user3));
+
+}

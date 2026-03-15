@@ -10,7 +10,7 @@ class CustomError extends Error {
     }
 }
 
-function process(x: int32) {
+function process(x: int32): int32 {
     if (x < 0) {
         throw new CustomError("Negative input", 400);
     }
@@ -87,5 +87,41 @@ function main() {
     test_basic_throws();
     test_nested_try_catch();
     test_loop_error();
+    test_validation();
     print("=== ERROR TESTS COMPLETE ===");
+}
+
+// --- Validation Logic (from modern_capabilities.tx) ---
+
+class ValidationResult {
+    isValid: boolean;
+    error: string;
+    constructor(valid: boolean, err: string) {
+        this.isValid = valid;
+        this.error = err;
+    }
+}
+
+function validate(input: string): ValidationResult {
+    if (input.length() == 0) {
+        return new ValidationResult(false, "Empty string");
+    }
+    if (input == "error") {
+        return new ValidationResult(false, "Invalid keyword");
+    }
+    return new ValidationResult(true, "");
+}
+
+function test_validation() {
+    print("--- Validation Tests ---");
+    let r1 = validate("hello");
+    assert_true(r1.isValid, "Valid input");
+
+    let r2 = validate("");
+    assert_true(!r2.isValid, "Empty input not valid");
+    assert_eq_string("Empty string", r2.error, "Empty input error msg");
+
+    let r3 = validate("error");
+    assert_true(!r3.isValid, "Error keyword not valid");
+    assert_eq_string("Invalid keyword", r3.error, "Error keyword error msg");
 }

@@ -1,0 +1,327 @@
+// ==========================================
+// INTERNAL STRINGIFY HELPERS
+// ==========================================
+function escapeString(str: string): string {
+    let res = "\"";
+    let len = str.length();
+    for (let i = 0; i < len; i++) {
+        let ch = str[i];
+        if (ch == "\"") res = res + "\\\"";
+        else if (ch == "\\") res = res + "\\\\";
+        else if (ch == "\b") res = res + "\\b";
+        else if (ch == "\f") res = res + "\\f";
+        else if (ch == "\n") res = res + "\\n";
+        else if (ch == "\r") res = res + "\\r";
+        else if (ch == "\t") res = res + "\\t";
+        else res = res + ch;
+    }
+    return res + "\"";
+}
+
+function serialize(val: any, out: string[], seen: any[], indent: string, gap: string) {
+    // A. Custom Serialization Protocol (Native dynamic lookup)
+    if (typeof(val) == "object" && val != None) {
+        if (typeof(val["toJSON"]) == "function") {
+            val = val.toJSON();
+        }
+    }
+
+    // B. Base Cases
+    if (val == None) {
+        out.push("null");
+        return;
+    }
+
+    let ty = typeof(val);
+    if (ty == "string") {
+        out.push(escapeString(val as string));
+        return;
+    }
+    if (ty == "int" || ty == "float" || ty == "bool") {
+        out.push( rt_to_string(val)); 
+        return;
+    }
+ 
+
+    // C. Cycle Detection (Native pointer equality '==')
+    if (ty == "object" || rt_is_array(val)) {
+        let seenLen = seen.length();
+        for (let i = 0; i < seenLen; i++) {
+            // In high-level languages, '==' on objects compares memory addresses
+            if (seen[i] == val) { 
+                out.push("\"[Circular Reference]\"");
+                return;
+            }
+        }
+        seen.push(val);
+    }
+
+    let step = indent + gap;
+    let isPretty = gap.length() > 0;
+
+    // D. Array Serialization (Native Array object)
+    if (rt_is_array(val)) {
+        let arr = val as any[];
+        let len = arr.length();
+        if (len == 0) {
+            out.push("[]");
+        } else {
+            out.push("[");
+            if (isPretty) out.push("\n");
+            for (let i = 0; i < len; i++) {
+                if (isPretty) out.push(step);
+                serialize(arr[i], out, seen, step, gap);
+                if (i < len - 1) {
+                    out.push(",");
+                    if (isPretty) out.push("\n");
+                }
+            }
+            if (isPretty) {
+                out.push("\n");
+                out.push(indent);
+            }
+            out.push("]");
+        }
+        seen.pop();
+        return;
+    }
+
+    // E. Object Serialization (Native Object keys)
+    if (ty == "object") {
+        let keys = Object.keys(val); 
+        let len = keys.length();
+        if (len == 0) {
+            out.push("{}");
+        } else {
+            out.push("{");
+            if (isPretty) out.push("\n");
+            let added = false;
+            for (let i = 0; i < len; i++) {
+                let k = keys[i];
+                if (k == "toString" || k == "constructor" || k == "__proto__") continue;
+                
+                let childVal: any = val[k];
+                if (typeof(childVal) == "function" || childVal == undefined) continue;
+
+                if (added) {
+                    out.push(",");
+                    if (isPretty) out.push("\n");
+                }
+                
+                if (isPretty) out.push(step);
+                out.push(escapeString(k));
+                out.push(isPretty ? ": " : ":");
+                
+                serialize(childVal, out, seen, step, gap);
+                added = true;
+            }
+            if (isPretty && added) {
+                out.push("\n");
+                out.push(indent);
+            }
+            out.push("}");
+        }
+        seen.pop();
+        return;
+    }
+
+    out.push("null");
+}
+
+// ==========================================
+// PUBLIC API: stringify
+// ==========================================
+export function stringify(val: any, space: any = None): string {
+    let out: string[] = [];
+    let seen: any[] = [];
+    let gap = "";
+
+    if (typeof(space) == "number") {
+        let spaces = space as float;
+        if (spaces > 10) spaces = 10;
+        for (let i = 0; i < spaces; i++) gap = gap + " ";
+    } else if (typeof(space) == "string") {
+        gap = space as string;
+        if (gap.length() > 10) gap = gap.substring(0, 10); // Native substring
+    }
+
+    serialize(val, out, seen, "", gap);
+
+    // Use native array join instead of looping for max speed
+    return out.join(""); 
+}
+
+// ==========================================
+// PUBLIC API: parse
+// ==========================================
+export function parse(s: string): any {
+    let index = 0;
+    let len = s.length();
+
+    function skipWhitespace() {
+        while (index < len) {
+            let ch = s[index];
+            // print("skipWhitespace: index=", index, " ch='", ch, "'");
+            if (ch == " " || ch == "\n" || ch == "\t" || ch == "\r") {
+                index++;
+            } else {
+                break;
+            }
+        }
+    }
+
+
+    function parseString(): string {
+        index++; // skip "
+        let res = ""; 
+        while (index < len) {
+            let ch = s[index];
+            if (ch == "\"") {
+                index++;
+                return res;
+            }
+            if (ch == "\\") {
+                index++;
+                if (index < len) {
+                    let esc = s[index];
+                    if (esc == "\"") res = res + "\"";
+                    else if (esc == "\\") res = res + "\\";
+                    else if (esc == "/") res = res + "/";
+                    else if (esc == "b") res = res + "\b";
+                    else if (esc == "f") res = res + "\f";
+                    else if (esc == "n") res = res + "\n";
+                    else if (esc == "r") res = res + "\r";
+                    else if (esc == "t") res = res + "\t";
+                    else res = res + esc;
+                }
+            } else {
+                res = res + ch;
+            }
+            index++;
+        }
+        // Native Error throwing
+        throw new Error("SyntaxError: Unterminated string in JSON");
+    }
+
+    function parseNumber(): float {
+        let start = index;
+        if (index < len && s[index] == "-") index++;
+        
+        while (index < len) {
+            let ch = s[index];
+            if ((ch >= "0" && ch <= "9") || ch == "." || ch == "e" || ch == "E" || ch == "+" || ch == "-") {
+                index++;
+            } else {
+                break;
+            }
+        }
+        
+        if (start == index) throw new Error("SyntaxError: Expected number");
+        
+        let numStr = s.substring(start, index); // Native substring
+        return parseFloat(numStr);              // Native global parse function
+    }
+
+    function parseArray(): any[] {
+        index++; // skip [
+        let res: any[] = [];
+        skipWhitespace();
+        
+        if (index < len && s[index] == "]") { 
+            index++; 
+            return res; 
+        }
+        
+        while (index < len) {
+            let item: any = parseValue();
+            res.push(item);
+            skipWhitespace();
+            
+            let ch = s[index];
+            if (ch == ",") {
+                index++;
+            } else if (ch == "]") {
+                index++;
+                return res;
+            } else {
+                throw new Error("SyntaxError: Expected ',' or ']' after array element");
+            }
+        }
+        throw new Error("SyntaxError: Unterminated array");
+    }
+
+    function parseObject(): any {
+        index++; // skip {
+        let res: any = {};
+        skipWhitespace();
+        
+        if (index < len && s[index] == "}") { 
+            index++; 
+            return res; 
+        }
+
+        while (index < len) {
+            skipWhitespace();
+            if (s[index] != "\"") throw new Error("SyntaxError: Expected string key in object");
+            
+            let key = parseString(); 
+            skipWhitespace();
+            
+            if (s[index] != ":") throw new Error("SyntaxError: Expected ':' after property key");
+            index++; 
+            
+            let val: any = parseValue();
+            res[key] = val; 
+            
+            skipWhitespace();
+            let ch = s[index];
+            if (ch == ",") {
+                index++;
+            } else if (ch == "}") {
+                index++;
+                return res;
+            } else {
+                throw new Error("SyntaxError: Expected ',' or '}' after property value");
+            }
+        }
+        throw new Error("SyntaxError: Unterminated object");
+    }
+
+    function parseLiteral(word: string, returnValue: any): any {
+        let wordLen = word.length();
+        let slice = s.substring(index, index + wordLen); // Native substring
+        if (slice == word) {
+            index = index + wordLen;
+            return returnValue;
+        }
+        throw new Error("SyntaxError: Unexpected token at index " + rt_to_string(index));
+    }
+
+    function parseValue(): any {
+        skipWhitespace();
+        if (index >= len) throw new Error("SyntaxError: Unexpected end of JSON input");
+
+        let ch = " ";
+        if (index < len) ch = s[index];
+        if (ch == "{") return parseObject();
+        if (ch == "[") return parseArray();
+        if (ch == "\"") return parseString();
+        
+        if (ch == "t") return parseLiteral("true", true);
+        if (ch == "f") return parseLiteral("false", false);
+        if (ch == "n") return parseLiteral("null", None); 
+        
+        if ((ch >= "0" && ch <= "9") || ch == "-") return parseNumber();
+
+        throw new Error("SyntaxError: Unexpected token '" + ch + "'");
+    }
+
+    let result: any = parseValue();
+    
+    skipWhitespace();
+    if (index < len) {
+        throw new Error("SyntaxError: Unexpected data after JSON payload");
+    }
+
+    return result;
+}

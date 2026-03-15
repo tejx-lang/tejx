@@ -1,0 +1,58 @@
+import { assert_eq_int } from "../utils.tx";
+
+
+class Test {
+    a:int;
+    b:int;
+}
+function main() {
+
+
+    let smallInt16:int16 = 10;
+    assert_eq_int( 2,sizeof(smallInt16), "Size of smallInt16 should be 2");
+    let normalInt:int = 10;
+    assert_eq_int( 4,sizeof(normalInt), "Size of normalInt should be 4");
+
+    let normalInt32:int32 = 10;
+    assert_eq_int( 4,sizeof(normalInt32), "Size of normalInt32 should be 4");
+
+    let normalInt64:int64 = 10;
+    assert_eq_int( 8,sizeof(normalInt64), "Size of normalInt64 should be 8");
+
+
+    let normalInt128:int128 = 10;
+    assert_eq_int( 16,sizeof(normalInt128), "Size of normalInt128 should be 16");
+
+    let normalFloat32:float32 = 10.5;
+    assert_eq_int( 4,sizeof(normalFloat32), "Size of normalFloat32 should be 4");
+
+    let normalFloat = 10.5;
+    assert_eq_int( 4,sizeof(normalFloat), "Size of normalFloat should be 4");
+
+    let normalFloat64:float64 = 10.5;
+    assert_eq_int( 8,sizeof(normalFloat64), "Size of normalFloat64 should be 8");
+
+    let boolKey=true;
+    assert_eq_int( 1,sizeof(boolKey), "Size of boolKey should be 1");
+   
+    let boolKey2=false;
+    assert_eq_int( 1,sizeof(boolKey2), "Size of boolKey2 should be 1");
+
+    let charKey:char='a';
+    assert_eq_int( 4,sizeof(charKey), "Size of charKey should be 4");
+
+    let stringKey:string = "hello";
+    assert_eq_int( 8,sizeof(stringKey), "Size of stringKey should be 8");
+
+    let arrayKey = [1, 2, 3];
+    assert_eq_int( 8,sizeof(arrayKey), "Size of arrayKey should be 8");
+
+    let objectKey = { x: 1, y: 2 };
+    assert_eq_int( 16,sizeof(objectKey), "Size of objectKey should be 16");
+
+    let functionKey = (a: int, b: int) => a + b;
+    assert_eq_int( 16,sizeof(functionKey), "Size of functionKey should be 16");
+
+    let classKey = new Test();
+    assert_eq_int( 8,sizeof(classKey), "Size of classKey should be 8");
+}

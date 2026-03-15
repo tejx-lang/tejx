@@ -1,0 +1,19 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test defining a class inside a function.
+
+function main() {
+    class Array<T> {
+        arr: T[];
+
+        getArr(): T[] {
+            return this.arr;
+        }
+        push(val: T) {
+            this.arr.push(val);
+        }
+    }
+    
+    let arr2 = new Array<int>();
+    arr2.push(1);
+    print(arr2.getArr());
+}

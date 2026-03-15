@@ -1,0 +1,13 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test incompatible method override (return type mismatch).
+
+class Base {
+    move(distance: int): void {}
+}
+
+class Derived extends Base {
+    // Error: return type mismatch (string vs void)
+    move(distance: int): string { return "ok"; } 
+}
+
+function main() {}

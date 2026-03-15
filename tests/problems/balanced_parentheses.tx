@@ -2,17 +2,17 @@ import { Stack } from "std:collections";
 
 function assert(condition: bool, message: string): void {
   if (!condition) {
-    print("❌ ASSERT FAILED: ", message);
+    print("❌ FAIL: ", message);
   } else {
     print("✅ PASS: ", message);
   }
 }
 
 function isBalanced(expr: string): bool {
-  let s: Stack<char> = new Stack();
+  let s: Stack<char> = new Stack<char>();
   print("Checking expr:", expr);
   
-  for (let i = 0; i < expr.length; i++) {
+  for (let i = 0; i < expr.length(); i++) {
     let c = expr[i];
     if (c == "(" || c == "[" || c == "{") {
       s.push(c);

@@ -11,9 +11,10 @@ async function test_http_sync() {
     let url = "http://example.com";
     print("GET Sync: ", url);
     let res = http.getSync(url);
+    assert_true(res != "", "Response received");
     if (res != "") {
-        print("Success Sync. Length: ", res.length);
-        assert_true(res.length > 0, "Response received");
+        print("Success Sync. Length: ", res.length());
+        assert_true(res.length() > 0, "Response received");
     } else {
         print("WARN: HTTP Sync request failed or empty (network issue?)");
     }
@@ -24,9 +25,10 @@ async function test_http_async() {
     let url = "http://example.com";
     print("GET Async: ", url);
     let res = await http.get(url);
+    assert_true(res != "", "Response received");
     if (res != "") {
-        print("Success Async. Length: ", res.length);
-        assert_true(res.length > 0, "Async Response received");
+        print("Success Async. Length: ", res.length());
+        assert_true(res.length() > 0, "Async Response received");
     } else {
         print("WARN: HTTP Async request failed or empty");
     }
@@ -36,8 +38,8 @@ function test_tcp_connect() {
     print("--- TCP Connect ---");
     let stream = net.connect("google.com:80");
     print("Connect result: ", stream);
-    
-    if (stream != -1) {
+    assert_true(stream != None, "TCP Connect success");
+    if (stream != None) {
         print("Connected to google.com:80");
         net.close(stream);
         assert_true(true, "TCP Connect success");
@@ -53,11 +55,7 @@ async function test_parallel_requests() {
     let p2 = http.get(url);
     
     let results = await Promise.all([p1, p2]);
-    if (results.length == 2) {
-         print("Parallel fetch done.");
-         // if one failed, length might be 0 string.
-         // assert mechanics mainly.
-    }
+    assert_eq_int(results.length(), 2, "Parallel fetch done");
 }
 
 async function test_404() {
@@ -65,7 +63,8 @@ async function test_404() {
     let url = "http://google.com/this-page-definitely-does-not-exist-123";
     let res = await http.get(url);
     // 404 usually returns a body (error page).
-    print("404 Response Length: ", res.length);
+    print("404 Response Length: ", res.length());
+    assert_true(res.length() > 0, "404 Response received");
 }
 
 async function test_dns_fail() {
@@ -73,10 +72,10 @@ async function test_dns_fail() {
     let url = "http://this-domain-is-fake-and-should-fail-12345.com";
     try {
         await http.get(url);
-        print("Unexpected success for bad DNS");
+        assert_true(false, "Unexpected success for bad DNS");
     } catch (e) {
         print("Caught expected error for bad DNS: ", e);
-        // assert_true(true, "Caught DNS error");
+        assert_true(true, "Caught DNS error");
     }
 }
 

@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test invalid out of length assign on arrays.
+
+function main() {
+    let arr: int[] = [1, 3, 4];
+    
+ 
+    // Case 1: out-of-bounds update
+    arr[10] = 123;
+
+
+}

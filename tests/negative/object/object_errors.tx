@@ -1,0 +1,15 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test reading non-existent properties from an object and type mismatch in update.
+
+function main() {
+    let obj = {
+        name: "praveen",
+        age: 21
+    };
+    
+    // Case 1: Read non-existent property
+    print(obj.unknownField);
+
+    // Case 2: Type mismatch in update
+    obj.age = "twenty-one";
+}

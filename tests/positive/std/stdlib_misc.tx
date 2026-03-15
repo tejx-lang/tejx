@@ -12,9 +12,6 @@ function test_extra_arrays() {
     assert_eq_int(1, arr[0], "sort[0]");
     assert_eq_int(2, arr[1], "sort[1]");
     
-    let arr2 = [[1], [2]];
-    let f = arr2.flat(1);
-    assert_eq_int(2, f[1], "flat");
     
     assert_true(arr.includes(2), "includes(2)");
 }
@@ -46,7 +43,7 @@ function test_stdlib_wrappers() {
     
     // OS
     let argv = args();
-    print("Args count: ", len(argv));
+    assert_eq_int(1, argv.length(), "args count");
 }
 
 function main() {

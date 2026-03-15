@@ -1,0 +1,16 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test super() must be first in constructor.
+
+class Base {
+    constructor(x: int) {}
+}
+
+class Derived extends Base {
+    y: int;
+    constructor() {
+        this.y = 10;
+        super(5); // Error: super() must be first in constructor
+    }
+}
+
+function main() {}

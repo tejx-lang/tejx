@@ -1,0 +1,15 @@
+export function exit(code: int): void {
+    rt_exit(code);
+}
+
+export function env(key: string): string {
+    return rt_getenv(key);
+}
+
+export function args(): string[] {
+    return rt_args();
+}
+
+// Aliases
+export function argv(): string[] { return args(); }
+export function getEnv(key: string): string { return env(key); }

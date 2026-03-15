@@ -1,0 +1,82 @@
+export class Thread {
+    private _data: int64;
+    private _cb: any;
+    private _args: any[];
+
+    constructor(cb: any, args: any[]) {
+        rt_Thread_constructor(this, cb, args);
+        rt_Thread_start(this);
+    }
+
+    start(): void {
+        rt_Thread_start(this);
+    }
+
+    join(): void {
+        rt_Thread_join(this);
+    }
+}
+
+export class Atomic {
+    private _data: int64;
+    constructor(val: int) {
+        rt_Atomic_constructor(this, val);
+    }
+
+    add(val: int): int { return rt_Atomic_add(this, val); }
+    sub(val: int): int { return rt_Atomic_sub(this, val); }
+    load(): int { return rt_Atomic_load(this); }
+    store(val: int): void { rt_Atomic_store(this, val); }
+    exchange(val: int): int { return rt_Atomic_exchange(this, val); }
+    compareExchange(expected: int, desired: int): int { 
+        return rt_Atomic_compareExchange(this, expected, desired); 
+    }
+}
+
+export class Condition {
+    private _data: int64;
+    constructor() {
+        rt_Condition_constructor(this);
+    }
+    wait(mutex: Mutex): void { rt_Condition_wait(this, mutex); }
+    notify(): void { rt_Condition_notify(this); }
+    notifyAll(): void { rt_Condition_notifyAll(this); }
+}
+
+export class Mutex {
+    private _data: int64;
+    constructor() {
+        rt_Mutex_constructor(this);
+    }
+
+    lock(): void {
+        rt_Mutex_acquire(this);
+    }
+
+    unlock(): void {
+        rt_Mutex_release(this);
+    }
+}
+
+export class SharedQueue<T> {
+    private _data: T[];
+    constructor() {
+        rt_SharedQueue_constructor(this);
+    }
+
+    enqueue(val: T): void {
+        rt_SharedQueue_enqueue(this, val);
+    }
+
+    dequeue(): T {
+        return rt_SharedQueue_dequeue(this);
+    }
+
+    size(): int {
+        return rt_SharedQueue_size(this);
+    }
+
+    isEmpty(): bool {
+        return rt_SharedQueue_size(this) == 0;
+    }
+}

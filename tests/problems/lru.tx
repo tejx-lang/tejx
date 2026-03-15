@@ -1,3 +1,5 @@
+import { Map } from "std:collections";
+
 class CacheNode {
   key: string;
   val: int;

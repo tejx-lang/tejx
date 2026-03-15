@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test rest parameter type mismatch in call.
+
+function sum(...numbers: int[]): int {
+    return 0; 
+}
+
+function main() {
+    sum(1, "2", 3); // Error: string in int[] rest param
+}

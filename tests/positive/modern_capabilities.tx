@@ -1,4 +1,5 @@
 import {floor} from "std:math";
+import {assert_eq_int, assert_eq_string,assert_true,assert_false} from "./utils.tx";
 // Modern Capabilities Test Suite
 // Covers: Advanced OOP, Functional Patterns, Error Handling, Algorithms
 // ====================================================================
@@ -33,26 +34,26 @@ class Button extends Element {
 // 3. Data Structures: Stack Implementation
 // ----------------------------------------
 
-class Stack {
-    items: object[] = [];
+class Stack<T> {
+    items: T[] = [];
     
-    push(item: object): void {
+    push(item: T): void {
         let list = this.items;
         list.push(item);
     }
     
-    pop(): object | None {
+    pop(): T | None {
         let list = this.items;
         return list.pop();
     }
     
-    peek(): object | None {
-        if (this.items.length == 0) return None;
-        return this.items[this.items.length - 1];
+    peek(): T | None {
+        if (this.items.length() == 0) return None;
+        return this.items[this.items.length() - 1];
     }
     
     isEmpty(): bool {
-        if (this.items.length == 0) {
+        if (this.items.length() == 0) {
             return true;
         }
         return false;
@@ -64,7 +65,7 @@ class Stack {
 
 function binarySearch(arr: int32[], target: int32): int32 {
     let left = 0;
-    let right = arr.length - 1;
+    let right = arr.length() - 1;
     
     while (left <= right) {
         let mid = floor((left + right) / 2);
@@ -93,7 +94,7 @@ class ValidationResult {
 }
 
 function validate(input: string): ValidationResult {
-    if (input.length == 0) {
+    if (input.length() == 0) {
         return new ValidationResult(false, "Empty string");
     }
     if (input == "error") {
@@ -109,7 +110,7 @@ function main() {
 
     let btn = new Button(1, "Submit");
     print("Deep Inheritance: Expected: Button['Submit'] -> Element(button) -> Node(1)");
-    print("Actual: ", btn.describe());
+    assert_eq_string(btn.describe(), "Button['Submit'] -> Element(button) -> Node(1)", "Deep Inheritance");
 
     // Polymorphism
     print("\n--- Polymorphism: Mixed Collection ---");
@@ -136,44 +137,45 @@ function main() {
     let squares = evens.map(n => n * n);
 
     let sumSquares = 0;
-    for (let i = 0; i < squares.length; i = i + 1) {
+    for (let i = 0; i < squares.length(); i = i + 1) {
         sumSquares = sumSquares + squares[i];
     }
 
-    print("Even Squares Sum: Expected: 220, Actual: ", sumSquares);
+    assert_eq_int(sumSquares, 220, "Even Squares Sum");
     // (2^2 + 4^2 + 6^2 + 8^2 + 10^2) = 4 + 16 + 36 + 64 + 100 = 220
 
 
     print("\n--- Data Structures: Generic-like Stack ---");
 
-    let stack = new Stack();
+    let stack = new Stack<int>();
     stack.push(10);
     stack.push(20);
     stack.push(30);
 
-    print("Peek: Expected: 30, Actual: ", stack.peek());
-    print("Pop: Expected: 30, Actual: ", stack.pop());
-    print("Pop: Expected: 20, Actual: ", stack.pop());
-    print("IsEmpty: Expected: false, Actual: ", stack.isEmpty());
+    assert_eq_int(stack.peek(), 30, "Peek");
+    assert_eq_int(stack.pop(), 30, "Pop");
+    assert_eq_int(stack.pop(), 20, "Pop");
+    assert_false(stack.isEmpty(), "IsEmpty");
     stack.pop(); // 10
-    print("IsEmpty after clearing: Expected: true, Actual: ", stack.isEmpty());
+    assert_true(stack.isEmpty(), "IsEmpty after clearing");
 
 
     print("\n--- Algorithms: Binary Search ---");
 
     let sorted = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-    print("Search 40: Expected: 3, Actual: ", binarySearch(sorted, 40));
-    print("Search 90: Expected: 8, Actual: ", binarySearch(sorted, 90));
-    print("Search 25 (Missing): Expected: -1, Actual: ", binarySearch(sorted, 25));
+    assert_eq_int(binarySearch(sorted, 40), 3, "Binary Search");
+    assert_eq_int(binarySearch(sorted, 90), 8, "Binary Search");
+    assert_eq_int(binarySearch(sorted, 25), -1, "Binary Search");
 
 
     print("\n--- Error Handling Logic ---");
 
     let r1 = validate("hello");
-    print("Valid input: Expected: true, Actual: ", r1.isValid);
+    assert_true(r1.isValid, "Valid input");
 
     let r2 = validate("");
-    print("Empty input: Expected: false, Error: Empty string. Actual: ", r2.isValid, ", ", r2.error);
+    assert_false(r2.isValid, "Empty input");
+    assert_eq_string(r2.error, "Empty string", "Error message");
 
 
     print("\n=== Modern Capabilities Test Complete ===");

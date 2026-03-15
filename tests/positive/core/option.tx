@@ -1,0 +1,35 @@
+import { assert_eq_int, assert_true, assert_false } from "../utils.tx";
+
+function get_value(exists: bool): Option<int> {
+    if (exists) {
+        return 42;
+    }
+    return None;
+}
+
+function test_option_basic() {
+    print("--- Option Basic ---");
+    let x: Option<int> = 10;
+    let y: Option<int> = None;
+    
+    assert_true(x != None, "x is not None");
+    assert_true(y == None, "y is None");
+}
+
+function test_option_narrowing() {
+    print("--- Option Narrowing ---");
+    let val = get_value(true);
+    
+    if (val != None) {
+        // In theory, narrowing should allow using it as int
+        let n: int = val; 
+        assert_eq_int(42, n, "Value narrowed from Option<int>");
+    }
+}
+
+function main() {
+    print("=== OPTION TESTS START ===");
+    test_option_basic();
+    test_option_narrowing();
+    print("=== OPTION TESTS COMPLETE ===");
+}

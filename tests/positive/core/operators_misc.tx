@@ -1,6 +1,6 @@
 // Operators & Typeof Tests
 // ========================
-import { assert_eq_string } from "../utils.tx";
+import { assert_eq_string, assert_eq_int } from "../utils.tx";
 
 function main() {
     print("=== OPERATORS MISC START ===");
@@ -8,16 +8,23 @@ function main() {
     // Typeof
     let i = 10;
     let s = "str";
-    let b = true;
+    let c = true;
     
     // Note: assertions depend on implementation return values
     // Using string matching if possible, else print
-    print("typeof 10: ", typeof(i));
-    print("typeof 'str': ", typeof(s));
-    print("typeof true: ", typeof(b));
+    assert_eq_string("int", typeof(i), "typeof(i) should be int");
+    assert_eq_string(typeof(s), "string", "typeof(s) should be string");
+    assert_eq_string(typeof(c), "bool", "typeof(c) should be bool");
     
-    // Sizeof
-    // console.log("sizeof int: " + sizeof(i));
+
+    // Bitwise (from bitwise.tx)
+    print("--- Bitwise ---");
+    let a = 5;  // 0101
+    let b = 3;  // 0011
+    assert_eq_int(a & b, 1, "a & b should be 1");
+    assert_eq_int(a | b, 7, "a | b should be 7");
+    assert_eq_int(a ^ b, 6, "a ^ b should be 6");
+    assert_eq_int(a << 1, 10, "a << 1 should be 10");
     
     print("=== OPERATORS MISC COMPLETE ===");
 }

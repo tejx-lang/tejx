@@ -1,0 +1,737 @@
+// Collections standard library for TejX
+
+export class Stack<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    push(val: T): void {
+        this.items.push(val);
+    }
+
+    pop(): T {
+        return this.items.pop();
+    }
+
+    peek(): T {
+        if (this.items.length() == 0) return None;
+        return this.items[this.items.length() - 1];
+    }
+
+    size(): int {
+        return this.items.length();
+    }
+
+    isEmpty(): bool {
+        return this.items.length() == 0;
+    }
+
+    clear(): void {
+        this.items = [];
+    }
+}
+
+export class Queue<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    enqueue(val: T): void {
+        this.items.push(val);
+    }
+
+    dequeue(): T {
+        if (this.items.length() == 0) return None;
+        // Simple shift implementation in TejX
+        let val = this.items[0];
+        let newItems: T[] = [];
+        for (let i = 1; i < this.items.length(); i++) {
+            newItems.push(this.items[i]);
+        }
+        this.items = newItems;
+        return val;
+    }
+
+    peek(): T {
+        if (this.items.length() == 0) return None;
+        return this.items[0];
+    }
+
+    size(): int {
+        return this.items.length();
+    }
+
+    isEmpty(): bool {
+        return this.items.length() == 0;
+    }
+
+    clear(): void {
+        this.items = [];
+    }
+}
+
+let __tejx_map_next_id: int64 = 1;
+
+// Map implementation is pure TejX (open addressing, O(1) avg).
+export class Map<K, V> {
+    private _keys: any[];
+    private _values: any[];
+    private _states: int[];
+    private _size: int;
+    private _used: int;
+    private _cap: int;
+
+    constructor() {
+        this._cap = 16;
+        this._size = 0;
+        this._used = 0;
+        this._keys = [];
+        this._values = [];
+        this._states = [];
+        for (let i = 0; i < this._cap; i++) {
+            this._keys.push(None);
+            this._values.push(None);
+            this._states.push(0); // 0=empty, 1=filled, 2=deleted
+        }
+    }
+
+    private hashString(s: string): int {
+        let h = 0;
+        let alphabet: string = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:-/ .";
+        for (let i = 0; i < s.length(); i++) {
+            let ch = s[i];
+            let idx = alphabet.indexOf(ch);
+            if (idx < 0) idx = 0;
+            h = h * 131 + idx + 1;
+        }
+        if (h < 0) h = 0 - h;
+        return h;
+    }
+
+    private hashKey(key: any): int {
+        if (key == None) return 0;
+        let ty = typeof(key);
+        if (ty == "string") return this.hashString(key as string);
+        if (ty == "int" || ty == "int64") return key as int;
+        if (ty == "float" || ty == "float64") return (key as int);
+        if (ty == "bool") return (key == true ? 1 : 0);
+
+        if (ty == "object" || ty == "function") {
+            let existing: any = key["__tejx_map_id__"];
+            if (existing == None || existing == 0) {
+                key["__tejx_map_id__"] = __tejx_map_next_id;
+                existing = __tejx_map_next_id;
+                __tejx_map_next_id = __tejx_map_next_id + 1;
+            }
+            return existing as int;
+        }
+
+        // Fallback: stringify
+        let s = rt_to_string(key);
+        return this.hashString(s);
+    }
+
+    private findSlot(key: any): int {
+        let hash = this.hashKey(key);
+        let cap = this._cap;
+        let idx = hash % cap;
+        if (idx < 0) idx = 0 - idx;
+        let tomb = -1;
+        while (true) {
+            let st = this._states[idx];
+            if (st == 0) {
+                if (tomb >= 0) return tomb;
+                return idx;
+            }
+            if (st == 1 && this._keys[idx] == key) return idx;
+            if (st == 2 && tomb < 0) tomb = idx;
+            idx = idx + 1;
+            if (idx >= cap) idx = 0;
+        }
+    }
+
+    private findIndex(key: any): int {
+        let hash = this.hashKey(key);
+        let cap = this._cap;
+        let idx = hash % cap;
+        if (idx < 0) idx = 0 - idx;
+        while (true) {
+            let st = this._states[idx];
+            if (st == 0) return -1;
+            if (st == 1 && this._keys[idx] == key) return idx;
+            idx = idx + 1;
+            if (idx >= cap) idx = 0;
+        }
+    }
+
+    private ensureCapacity(): void {
+        if (this._used * 10 >= this._cap * 7) {
+            this.resize(this._cap * 2);
+        }
+    }
+
+    private resize(newCap: int): void {
+        let oldKeys: any[] = this._keys;
+        let oldValues: any[] = this._values;
+        let oldStates: int[] = this._states;
+        let oldCap: int = this._cap;
+
+        this._cap = newCap;
+        this._size = 0;
+        this._used = 0;
+        this._keys = [];
+        this._values = [];
+        this._states = [];
+        for (let i = 0; i < this._cap; i++) {
+            this._keys.push(None);
+            this._values.push(None);
+            this._states.push(0);
+        }
+
+        for (let i = 0; i < oldCap; i++) {
+            if (oldStates[i] == 1) {
+                this.set(oldKeys[i] as K, oldValues[i] as V);
+            }
+        }
+    }
+
+    set(key: K, val: V): void {
+        this.ensureCapacity();
+        let idx = this.findSlot(key);
+        if (this._states[idx] == 1) {
+            this._values[idx] = val;
+            return;
+        }
+        if (this._states[idx] == 0) {
+            this._used = this._used + 1;
+        }
+        this._keys[idx] = key;
+        this._values[idx] = val;
+        this._states[idx] = 1;
+        this._size = this._size + 1;
+    }
+
+    get(key: K): V {
+        let idx = this.findIndex(key);
+        if (idx < 0) return None;
+        let v: V = this._values[idx];
+        return v;
+    }
+
+    put(key: K, val: V): void {
+        this.set(key, val);
+    }
+
+    at(key: K): V {
+        return this.get(key);
+    }
+
+    has(key: K): bool {
+        return this.findIndex(key) >= 0;
+    }
+
+    delete(key: K): bool {
+        let idx = this.findIndex(key);
+        if (idx < 0) return false;
+        this._states[idx] = 2;
+        this._keys[idx] = None;
+        this._values[idx] = None;
+        this._size = this._size - 1;
+        return true;
+    }
+
+    keys(): K[] {
+        let out: K[] = [];
+        for (let i = 0; i < this._cap; i++) {
+            if (this._states[i] == 1) {
+                out.push(this._keys[i] as K);
+            }
+        }
+        return out;
+    }
+
+    values(): V[] {
+        let out: V[] = [];
+        for (let i = 0; i < this._cap; i++) {
+            if (this._states[i] == 1) {
+                out.push(this._values[i] as V);
+            }
+        }
+        return out;
+    }
+
+    size(): int {
+        return this._size;
+    }
+
+    isEmpty(): bool {
+        return this._size == 0;
+    }
+
+    clear(): void {
+        this._cap = 16;
+        this._size = 0;
+        this._used = 0;
+        this._keys = [];
+        this._values = [];
+        this._states = [];
+        for (let i = 0; i < this._cap; i++) {
+            this._keys.push(None);
+            this._values.push(None);
+            this._states.push(0);
+        }
+    }
+}
+
+export class Set<T> {
+    private _map: Map<T, int>;
+
+    constructor() {
+        this._map = new Map<T, int>();
+    }
+
+    add(val: T): void {
+        this._map.set(val, 1);
+    }
+
+    has(val: T): bool {
+        return this._map.has(val);
+    }
+
+    delete(val: T): bool {
+        return this._map.delete(val);
+    }
+
+    values(): T[] {
+        return this._map.keys();
+    }
+
+    size(): int {
+        return this._map.size();
+    }
+
+    isEmpty(): bool {
+        return this._map.isEmpty();
+    }
+
+    clear(): void {
+        this._map.clear();
+    }
+}
+
+// --- Heap implementations in TejX ---
+export class MinHeap<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    insert(val: T): void {
+        this.items.push(val);
+        this.bubbleUp(this.items.length() - 1);
+    }
+
+    extractMin(): T {
+        if (this.items.length() == 0) return None;
+        if (this.items.length() == 1) return this.items.pop();
+
+        let min = this.items[0];
+        this.items[0] = this.items.pop();
+        this.bubbleDown(0);
+        return min;
+    }
+
+    private bubbleUp(index: int): void {
+        while (index > 0) {
+            print("bubbleUp idx: " + ("" + index));
+            let parent = (index - 1) / 2;
+            print("parent idx: " + ("" + parent));
+            let v_idx = this.items[index];
+            let v_parent = this.items[parent];
+            print("v_idx: " + ("" + v_idx) + ", v_parent: " + ("" + v_parent));
+            if (v_idx < v_parent) {
+                print("swapping...");
+                let temp = this.items[index];
+                this.items[index] = this.items[parent];
+                print("assigned parent to index");
+                this.items[parent] = temp;
+                print("assigned temp to parent");
+                index = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    private bubbleDown(index: int): void {
+        while (true) {
+            let left = 2 * index + 1;
+            let right = 2 * index + 2;
+            let smallest = index;
+
+            if (left < this.items.length() && this.items[left] < this.items[smallest]) {
+                smallest = left;
+            }
+            if (right < this.items.length() && this.items[right] < this.items[smallest]) {
+                smallest = right;
+            }
+
+            if (smallest != index) {
+                let temp = this.items[index];
+                this.items[index] = this.items[smallest];
+                this.items[smallest] = temp;
+                index = smallest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    size(): int { return this.items.length(); }
+    isEmpty(): bool { return this.items.length() == 0; }
+}
+
+export class MaxHeap<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    insert(val: T): void {
+        this.items.push(val);
+        this.bubbleUp(this.items.length() - 1);
+    }
+
+    // Alias for test compatibility
+    insertMax(val: T): void {
+        this.items.push(val);
+        this.bubbleUp(this.items.length() - 1);
+    }
+
+    extractMax(): T {
+        if (this.items.length() == 0) return None;
+        if (this.items.length() == 1) return this.items.pop();
+
+        let max = this.items[0];
+        this.items[0] = this.items.pop();
+        this.bubbleDown(0);
+        return max;
+    }
+
+    private bubbleUp(index: int): void {
+        while (index > 0) {
+            let parent = (index - 1) / 2;
+            if (this.items[index] > this.items[parent]) {
+                let temp = this.items[index];
+                this.items[index] = this.items[parent];
+                this.items[parent] = temp;
+                index = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    private bubbleDown(index: int): void {
+        while (true) {
+            let left = 2 * index + 1;
+            let right = 2 * index + 2;
+            let largest = index;
+
+            if (left < this.items.length() && this.items[left] > this.items[largest]) {
+                largest = left;
+            }
+            if (right < this.items.length() && this.items[right] > this.items[largest]) {
+                largest = right;
+            }
+
+            if (largest != index) {
+                let temp = this.items[index];
+                this.items[index] = this.items[largest];
+                this.items[largest] = temp;
+                index = largest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    size(): int { return this.items.length(); }
+    isEmpty(): bool { return this.items.length() == 0; }
+}
+
+export class PriorityQueue<T> {
+    private heap: MinHeap<T>;
+
+    constructor() {
+        this.heap = new MinHeap<T>();
+    }
+
+    insert(val: T): void { this.heap.insert(val); }
+    extractMin(): T { return this.heap.extractMin(); }
+    enqueue(val: T): void { this.heap.insert(val); }
+    dequeue(): T { return this.heap.extractMin(); }
+    size(): int { return this.heap.size(); }
+    isEmpty(): bool { return this.heap.isEmpty(); }
+}
+
+// --- OrderedMap: Map that preserves insertion order ---
+export class OrderedMap<K, V> {
+    private _keys: K[];
+    private _vals: V[];
+
+    constructor() {
+        this._keys = [];
+        this._vals = [];
+    }
+
+    put(key: K, val: V): void {
+        for (let i = 0; i < this._keys.length(); i++) {
+            if (this._keys[i] == key) {
+                this._vals[i] = val;
+                return;
+            }
+        }
+        this._keys.push(key);
+        this._vals.push(val);
+    }
+
+    set(key: K, val: V): void {
+        this.put(key, val);
+    }
+
+    at(key: K): V {
+        for (let i = 0; i < this._keys.length(); i++) {
+            if (this._keys[i] == key) {
+                return this._vals[i];
+            }
+        }
+        return None;
+    }
+
+    get(key: K): V {
+        return this.at(key);
+    }
+
+    has(key: K): bool {
+        for (let i = 0; i < this._keys.length(); i++) {
+            if (this._keys[i] == key) return true;
+        }
+        return false;
+    }
+
+    delete(key: K): bool {
+        for (let i = 0; i < this._keys.length(); i++) {
+            if (this._keys[i] == key) {
+                // Shift remaining elements
+                let newKeys: K[] = [];
+                let newVals: V[] = [];
+                for (let j = 0; j < this._keys.length(); j++) {
+                    if (j != i) {
+                        newKeys.push(this._keys[j]);
+                        newVals.push(this._vals[j]);
+                    }
+                }
+                this._keys = newKeys;
+                this._vals = newVals;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    keys(): K[] {
+        return this._keys;
+    }
+
+    values(): V[] {
+        return this._vals;
+    }
+
+    size(): int {
+        return this._keys.length();
+    }
+
+    isEmpty(): bool {
+        return this._keys.length() == 0;
+    }
+
+    clear(): void {
+        this._keys = [];
+        this._vals = [];
+    }
+}
+
+// --- OrderedSet: Set that preserves insertion order ---
+export class OrderedSet<T> {
+    private _items: T[];
+
+    constructor() {
+        this._items = [];
+    }
+
+    add(val: T): void {
+        for (let i = 0; i < this._items.length(); i++) {
+            if (this._items[i] == val) return;
+        }
+        this._items.push(val);
+    }
+
+    has(val: T): bool {
+        for (let i = 0; i < this._items.length(); i++) {
+            if (this._items[i] == val) return true;
+        }
+        return false;
+    }
+
+    delete(val: T): bool {
+        let newItems: T[] = [];
+        let found = false;
+        for (let i = 0; i < this._items.length(); i++) {
+            if (this._items[i] == val) {
+                found = true;
+            } else {
+                newItems.push(this._items[i]);
+            }
+        }
+        this._items = newItems;
+        return found;
+    }
+
+    values(): T[] {
+        return this._items;
+    }
+
+    size(): int {
+        return this._items.length();
+    }
+
+    isEmpty(): bool {
+        return this._items.length() == 0;
+    }
+
+    clear(): void {
+        this._items = [];
+    }
+}
+
+// --- BloomFilter: Probabilistic membership test ---
+export class BloomFilter {
+    private bits: int[];
+    private numHashes: int;
+    private bitSize: int;
+
+    constructor(size: int, numHashes: int) {
+        this.bitSize = size;
+        this.numHashes = numHashes;
+        this.bits = [];
+        for (let i = 0; i < size; i++) {
+            this.bits.push(0);
+        }
+    }
+
+    private hash1(val: string): int {
+        let h = 0;
+        for (let i = 0; i < val.length(); i++) {
+            h = h * 31 + i + 1;
+        }
+        if (h < 0) h = 0 - h;
+        return h % this.bitSize;
+    }
+
+    private hash2(val: string): int {
+        let h = 0;
+        for (let i = 0; i < val.length(); i++) {
+            h = h * 37 + i + 7;
+        }
+        if (h < 0) h = 0 - h;
+        return h % this.bitSize;
+    }
+
+    add(val: string): void {
+        let h1 = this.hash1(val);
+        let h2 = this.hash2(val);
+        for (let i = 0; i < this.numHashes; i++) {
+            let idx = (h1 + i * h2) % this.bitSize;
+            if (idx < 0) idx = 0 - idx;
+            this.bits[idx] = 1;
+        }
+    }
+
+    contains(val: string): bool {
+        let h1 = this.hash1(val);
+        let h2 = this.hash2(val);
+        for (let i = 0; i < this.numHashes; i++) {
+            let idx = (h1 + i * h2) % this.bitSize;
+            if (idx < 0) idx = 0 - idx;
+            if (this.bits[idx] == 0) return false;
+        }
+        return true;
+    }
+}
+
+// --- Trie: Prefix tree for string key lookup ---
+// Uses a flat array-based approach for TejX compatibility
+export class Trie {
+    private trieKeys: string[];
+    private trieVals: int[];
+
+    constructor() {
+        this.trieKeys = [];
+        this.trieVals = [];
+    }
+
+    addPath(key: string, val: int): void {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
+            if (this.trieKeys[i] == key) {
+                this.trieVals[i] = val;
+                return;
+            }
+        }
+        this.trieKeys.push(key);
+        this.trieVals.push(val);
+    }
+
+    find(key: string): int {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
+            if (this.trieKeys[i] == key) {
+                return this.trieVals[i];
+            }
+        }
+        return 0;
+    }
+
+    has(key: string): bool {
+        for (let i = 0; i < this.trieKeys.length(); i++) {
+            if (this.trieKeys[i] == key) return true;
+        }
+        return false;
+    }
+
+    remove(key: string): bool {
+        let newKeys: string[] = [];
+        let newVals: int[] = [];
+        let found = false;
+        for (let i = 0; i < this.trieKeys.length(); i++) {
+            if (this.trieKeys[i] == key) {
+                found = true;
+            } else {
+                newKeys.push(this.trieKeys[i]);
+                newVals.push(this.trieVals[i]);
+            }
+        }
+        this.trieKeys = newKeys;
+        this.trieVals = newVals;
+        return found;
+    }
+
+    size(): int {
+        return this.trieKeys.length();
+    }
+}

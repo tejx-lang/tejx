@@ -21,7 +21,7 @@ function main() {
     // assert_eq(undefined/0, obj?.missing); // Value check harder without undefined constant
 
     // Nullish Coalescing
-    let nothing = None;
+    let nothing: string | None = None;
     let val = nothing ?? "Default";
     assert_eq_string("Default", val, "Nullish default");
     
@@ -38,6 +38,20 @@ function main() {
     let merged = { ...p, ...j };
     assert_eq_string("Alice", merged.name, "Spread merge name");
     assert_eq_string("Dev", merged.title, "Spread merge title");
+
+    // Functional Patterns: Map/Filter Chain (from modern_capabilities.tx)
+    print("--- Functional Patterns ---");
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    
+    // Chain: Filter even -> Map square
+    let evens = numbers.filter(n => n % 2 == 0);
+    let squares = evens.map(n => n * n);
+
+    let sumSquares = 0;
+    for (let i = 0; i < squares.length(); i = i + 1) {
+        sumSquares = sumSquares + squares[i];
+    }
+    assert_eq_int(220, sumSquares, "Even squares sum (2^2 + 4^2 + 6^2 + 8^2 + 10^2)");
     
     print("=== MODERN SYNTAX COMPLETE ===");
 }

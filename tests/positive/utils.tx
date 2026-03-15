@@ -41,6 +41,14 @@ export function assert_true(cond: bool, msg: string) {
     }
 }
 
+export function assert(cond: bool, msg: string) {
+    if (cond) {
+        print("✅ PASS: " + msg);
+    } else {
+        print("❌ FAIL: " + msg);
+    }
+}
+
 export function assert_false(cond: bool, msg: string) {
     if (!cond) {
         print("✅ PASS: " + msg + " - Expected: false, Actual: false");
@@ -72,5 +80,15 @@ export function assert_ne_string(notExpected: string, actual: string, msg: strin
         print("❌ FAIL: " + msg);
         print("   Should NOT be: '" + notExpected + "'");
         print("   Actual:        '" + actual + "'");
+    }
+}
+
+export function assert_eq_none(actual: Option<int>, msg: string) {
+    if (actual == None) {
+        print("✅ PASS: " + msg + " - Expected: None, Actual: None");
+    } else {
+        print("❌ FAIL: " + msg);
+        print("   Expected: None");
+        print("   Actual:   " + actual);
     }
 }

@@ -1,0 +1,85 @@
+export class TcpStream {
+    private id: int64;
+
+    constructor(id: int64) {
+        this.id = id;
+    }
+
+    send(data: string): bool {
+        return rt_net_send(this.id, data) > 0;
+    }
+
+    receive(max_len: int): string {
+        return rt_net_receive(this.id, max_len);
+    }
+
+    close(): void {
+        if (this.id <= 0) return;
+        let res = rt_net_close(this.id);
+        if (res == -1) {
+            throw new Error("Invalid stream");
+        }
+        this.id = 0;
+    }
+}
+
+export namespace net {
+    export function connect(addr: string): TcpStream | None {
+        let id = rt_net_connect(addr);
+        if (id == -1) return None;
+        return new TcpStream(id);
+    }
+
+    export function close(stream: TcpStream | int64 | None): void {
+        if (stream == None) return;
+        if (stream instanceof TcpStream) {
+            stream.close();
+        } else {
+            let id: int64 = stream as int64;
+            if (id <= 0) return;
+            let res = rt_net_close(id);
+            if (res == -1) {
+                throw new Error("Invalid stream");
+            }
+        }
+    }
+}
+
+
+// --- HTTP / HTTPS ---
+
+export namespace http {
+    export function getSync(url: string): string {
+        return rt_http_request(url, "GET", "");
+    }
+
+    export function postSync(url: string, body: string): string {
+        return rt_http_request(url, "POST", body);
+    }
+
+    export async function get(url: string): Promise<string> {
+        return rt_http_request_async(url, "GET", "");
+    }
+
+    export async function post(url: string, body: string): Promise<string> {
+        return rt_http_request_async(url, "POST", body);
+    }
+}
+
+export namespace https {
+    export function getSync(url: string): string {
+        return http.getSync(url);
+    }
+
+    export function postSync(url: string, body: string): string {
+        return http.postSync(url, body);
+    }
+
+    export async function get(url: string): Promise<string> {
+        return http.get(url);
+    }
+
+    export async function post(url: string, body: string): Promise<string> {
+        return http.post(url, body);
+    }
+}

@@ -10,9 +10,9 @@ function main() {
     let d = new Date();
     let iso = d.toISOString();
      // Simple check if it returns a string with "T" (basic ISO check)
-    // assert_true(len(iso) > 0, "toISOString returns string"); // len(string) might not work directly inside assert_true due to type?
+    // assert_true(iso.length() > 0, "toISOString returns string"); // string.length() might not work directly inside assert_true due to type?
 
-    if (len(iso) > 0) {
+    if (iso.length() > 0) {
          print("✅ PASS: toISOString returns content: " + iso);
     } else {
          print("❌ FAIL: toISOString returned empty");

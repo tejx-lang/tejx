@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test explicit casting between unrelated types.
+
+class Point { x: int; y: int; }
+class Color { r: int; g: int; b: int; }
+
+function main() {
+    let p = new Point();
+    let c = p as Color; // Error: Cannot cast Point to Color
+}

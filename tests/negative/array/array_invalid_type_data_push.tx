@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test invalid type data push on arrays.
+
+function main() {
+    let arr: int[] = [1, 3, 4];
+    
+ 
+    // Case 1: invalid type data push
+    arr.push("34");
+
+
+}

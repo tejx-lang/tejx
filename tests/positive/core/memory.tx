@@ -158,14 +158,14 @@ function test_array_memory() {
 
     // Array allocation
     let arr = [10, 20, 30];
-    assert_eq_int(3, len(arr), "Array len");
+    assert_eq_int(3, arr.length(), "Array len");
     assert_eq_int(10, arr[0], "Array[0]");
     assert_eq_int(30, arr[2], "Array[2]");
 
     // Array in block
     {
         let temp = [100, 200];
-        assert_eq_int(2, len(temp), "Temp array len");
+        assert_eq_int(2, temp.length(), "Temp array len");
         assert_eq_int(100, temp[0], "Temp array[0]");
     }
     // temp array freed
@@ -173,14 +173,14 @@ function test_array_memory() {
     // Array modification
     let arr2 = [1, 2, 3];
     arr2.push(4);
-    assert_eq_int(4, len(arr2), "Array push len");
-    assert_ne_int(3, len(arr2), "Push changed length");
+    assert_eq_int(4, arr2.length(), "Array push len");
+    assert_ne_int(3, arr2.length(), "Push changed length");
     assert_eq_int(4, arr2[3], "Pushed value");
 
     let popped = arr2.pop();
     assert_eq_int(4, popped, "Popped value");
-    assert_eq_int(3, len(arr2), "Post-pop len");
-    assert_ne_int(4, len(arr2), "Pop changed length");
+    assert_eq_int(3, arr2.length(), "Post-pop len");
+    assert_ne_int(4, arr2.length(), "Pop changed length");
 }
 
 // --- Test: Object Field Updates ---
@@ -249,7 +249,7 @@ function test_nested_objects() {
 
     // Object with array field
     let config = { items: [1, 2, 3], name: "Config" };
-    assert_eq_int(3, len(config.items), "Object array field len");
+    assert_eq_int(3, config.items.length(), "Object array field len");
     assert_eq_string("Config", config.name, "Object string field");
     assert_ne_string("X", config.name, "Object name not X");
 }

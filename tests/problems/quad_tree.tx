@@ -3,6 +3,11 @@ class Rectangle {
   constructor(x: float, y: float, w: float, h: float) { /* ... */ }
 }
 
+type Point = {
+  x: float;
+  y: float;
+};
+
 class Quadtree {
   boundary: Rectangle;
   capacity: int;

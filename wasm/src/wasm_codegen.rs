@@ -1,6 +1,6 @@
-use crate::mir::*;
-use crate::token::TokenType;
-use crate::types::TejxType;
+use crate::middle::mir::*;
+use crate::frontend::token::TokenType;
+use crate::common::types::TejxType;
 
 pub struct WasmCodeGen {
     buffer: String,
@@ -184,7 +184,7 @@ impl WasmCodeGen {
                 }
             }
             // Check locals
-            for (var_name, _) in &func.variables {
+            for var_name in func.variables.keys() {
                 if var_name.starts_with("g_") {
                     globals.insert(var_name.clone());
                 }
@@ -277,19 +277,6 @@ impl WasmCodeGen {
                     self.add_string_if_const(val);
                 }
             }
-            MIRInstruction::ObjectLiteral { entries, .. } => {
-                for (name, val) in entries {
-                    if !self.string_constants.contains(name) {
-                        self.string_constants.push(name.clone());
-                    }
-                    self.add_string_if_const(val);
-                }
-            }
-            MIRInstruction::ArrayLiteral { elements, .. } => {
-                for el in elements {
-                    self.add_string_if_const(el);
-                }
-            }
             MIRInstruction::LoadMember { member, obj, .. } => {
                 if !self.string_constants.contains(member) {
                     self.string_constants.push(member.clone());
@@ -318,9 +305,7 @@ impl WasmCodeGen {
                     self.add_string_if_const(arg);
                 }
             }
-            MIRInstruction::Cast { src, .. } => self.add_string_if_const(src),
             MIRInstruction::Throw { value, .. } => self.add_string_if_const(value),
-            MIRInstruction::Free { value, .. } => self.add_string_if_const(value),
             _ => {}
         }
     }
@@ -347,7 +332,7 @@ impl WasmCodeGen {
                 self.add_global_if_var(right, globals);
             }
             MIRInstruction::Call { dst, args, .. } => {
-                if dst != "" && dst.starts_with("g_") {
+                if !dst.is_empty() && dst.starts_with("g_") {
                     globals.insert(dst.clone());
                 }
                 for arg in args {
@@ -359,22 +344,6 @@ impl WasmCodeGen {
                     globals.insert(dst.clone());
                 }
                 self.add_global_if_var(src, globals);
-            }
-            MIRInstruction::ObjectLiteral { dst, entries, .. } => {
-                if dst.starts_with("g_") {
-                    globals.insert(dst.clone());
-                }
-                for (_, val) in entries {
-                    self.add_global_if_var(val, globals);
-                }
-            }
-            MIRInstruction::ArrayLiteral { dst, elements, .. } => {
-                if dst.starts_with("g_") {
-                    globals.insert(dst.clone());
-                }
-                for el in elements {
-                    self.add_global_if_var(el, globals);
-                }
             }
             MIRInstruction::LoadMember { dst, obj, .. } => {
                 if dst.starts_with("g_") {
@@ -409,7 +378,6 @@ impl WasmCodeGen {
                 self.add_global_if_var(src, globals);
             }
             MIRInstruction::Throw { value, .. } => self.add_global_if_var(value, globals),
-            MIRInstruction::Free { value, .. } => self.add_global_if_var(value, globals),
             _ => {}
         }
     }
@@ -428,11 +396,10 @@ impl WasmCodeGen {
 
     fn add_string_if_const(&mut self, val: &MIRValue) {
         if let MIRValue::Constant { value, ty } = val {
-            if matches!(ty, TejxType::String) {
-                if !self.string_constants.contains(value) {
+            if matches!(ty, TejxType::String)
+                && !self.string_constants.contains(value) {
                     self.string_constants.push(value.clone());
                 }
-            }
         }
     }
 
@@ -449,7 +416,7 @@ impl WasmCodeGen {
         self.emit("(result i64)\n");
 
         // Local variables
-        for (var_name, _ty) in &func.variables {
+        for var_name in func.variables.keys() {
             if !func.params.contains(var_name) && !self.local_func_names.contains_key(var_name) {
                 self.emit_line(&format!("(local ${} i64)", var_name));
             }
@@ -621,14 +588,14 @@ impl WasmCodeGen {
                         self.emit_line("call $print_raw");
                     }
                     self.emit_line("call $print_newline");
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_line("i64.const 0");
                         self.emit_set(dst);
                     }
                 } else if callee == "rt_box_number" {
                     self.push_raw_float(&args[0]);
                     self.emit_line("call $rt_box_number");
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -636,7 +603,7 @@ impl WasmCodeGen {
                 } else if callee == "rt_box_int" {
                     self.push_raw_int(&args[0]);
                     self.emit_line("call $rt_box_int");
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -651,7 +618,7 @@ impl WasmCodeGen {
                     } else {
                         self.push_boxed(&args[0]);
                     }
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -672,7 +639,7 @@ impl WasmCodeGen {
                         self.emit_line("call $rt_to_boolean");
                     }
                     self.emit_line("call $rt_box_boolean");
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -680,7 +647,7 @@ impl WasmCodeGen {
                 } else if callee == "rt_to_number" {
                     self.push_boxed(&args[0]);
                     self.emit_line("call $rt_to_number");
-                    if dst != "" {
+                    if !dst.is_empty() {
                         // We must box it back to i64 because our locals are all i64
                         self.emit_line("call $rt_box_number");
                         self.emit_set(dst);
@@ -719,7 +686,7 @@ impl WasmCodeGen {
                         self.emit_line(&format!("call $f_{}", callee_name));
                     }
 
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -748,7 +715,7 @@ impl WasmCodeGen {
                         self.push_boxed(arg);
                     }
                     self.emit_line(&format!("call ${}", func_name));
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -770,7 +737,7 @@ impl WasmCodeGen {
                         params
                     ));
 
-                    if dst != "" {
+                    if !dst.is_empty() {
                         self.emit_set(dst);
                     } else {
                         self.emit_line("drop");
@@ -807,27 +774,6 @@ impl WasmCodeGen {
                 self.emit_line(&format!("  i32.const {}", false_target));
                 self.emit_set("state");
                 self.emit_line("end");
-            }
-            MIRInstruction::ObjectLiteral { dst, entries, .. } => {
-                self.emit_line("call $m_new");
-                self.emit_set(dst);
-                for (name, val) in entries {
-                    self.emit_get(dst);
-                    self.push_string_const_ptr(name);
-                    self.push_boxed(val);
-                    self.emit_line("call $m_set");
-                    self.emit_line("drop");
-                }
-            }
-            MIRInstruction::ArrayLiteral { dst, elements, .. } => {
-                self.emit_line("call $a_new");
-                self.emit_set(dst);
-                for val in elements {
-                    self.emit_get(dst);
-                    self.push_boxed(val);
-                    self.emit_line("call $Array_push");
-                    self.emit_line("drop");
-                }
             }
             MIRInstruction::LoadMember {
                 dst, obj, member, ..
@@ -881,10 +827,6 @@ impl WasmCodeGen {
                     }
                 }
                 self.emit_set(dst);
-            }
-            MIRInstruction::Free { value, .. } => {
-                self.push_boxed(value);
-                self.emit_line("call $rt_free");
             }
             _ => {
                 self.emit_line(&format!(";; Unsupported instruction: {:?}", inst));

@@ -5,7 +5,7 @@ import { assert_eq_int, assert_true, assert_ne_int } from "../utils.tx";
 
 function sumVariadic(...nums: int32[]): int32 {
     let total = 0;
-    for (let i = 0; i < nums.length; i = i + 1) {
+    for (let i = 0; i < nums.length(); i = i + 1) {
         total = total + nums[i];
     }
     return total;

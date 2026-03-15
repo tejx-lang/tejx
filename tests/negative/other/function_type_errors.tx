@@ -1,0 +1,29 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Comprehensive test for function and lambda type mismatches.
+
+function add(a: int, b: int): int {
+    return a + b;
+}
+
+function main() {
+    // 1. Argument Count Mismatch
+    add(1); // Error: too few
+    add(1, 2, 3); // Error: too many
+
+    // 2. Argument Type Mismatch
+    add(1, "2"); // Error: string to int
+
+    // 3. Function Assignment Mismatch
+    let f1: (int, int) => int = add;
+    f1 = (a: string, b: string) => 1; // Error: type mismatch
+
+    // 4. Return Type Mismatch in Lambda
+    let f2: () => string = () => {
+        return 123; // Error: int to string
+    };
+
+    // 5. Void Return Mismatch
+    let f3: () => void = () => {
+        return "not void"; // Error: string to void
+    };
+}

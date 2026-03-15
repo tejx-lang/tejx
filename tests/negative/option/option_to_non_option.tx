@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test assigning None to a non-nullable type.
+
+function main() {
+    let x: int = None; // Error: Type mismatch
+}

@@ -1,0 +1,14 @@
+export function toUpperCase(s: string): string { return rt_String_toUpperCase(s); }
+export function toLowerCase(s: string): string { return rt_String_toLowerCase(s); }
+export function trim(s: string): string { return rt_String_trim(s); }
+export function trimStart(s: string): string { return rt_String_trimStart(s); }
+export function trimEnd(s: string): string { return rt_String_trimEnd(s); }
+export function substring(s: string, start: int, end: int): string { return rt_String_substring(s, start, end); }
+export function split(s: string, sep: string): string[] { return rt_String_split(s, sep); }
+export function startsWith(s: string, prefix: string): bool { return rt_String_startsWith(s, prefix); }
+export function endsWith(s: string, suffix: string): bool { return rt_String_endsWith(s, suffix); }
+export function indexOf(s: string, search: string): int { return rt_String_indexOf(s, search) as int; }
+export function padStart(s: string, len: int, pad: string): string { return rt_String_padStart(s, len, pad); }
+export function padEnd(s: string, len: int, pad: string): string { return rt_String_padEnd(s, len, pad); }
+export function repeat(s: string, count: int): string { return rt_String_repeat(s, count); }
+export function replace(s: string, search: string, replacement: string): string { return rt_String_replace(s, search, replacement); }
