@@ -2166,6 +2166,36 @@ impl Parser {
                     _col: token.column,
                 }
             }
+            TokenType::CharLiteral => {
+                self.advance();
+                let char_val = if token.value.is_empty() {
+                    '\0'
+                } else if token.value.chars().count() == 1 {
+                    token.value.chars().next().unwrap()
+                } else {
+                    // Very simple escape handling for char
+                    if token.value.starts_with('\\') && token.value.len() == 2 {
+                        match token.value.chars().nth(1).unwrap() {
+                            'n' => '\n',
+                            'r' => '\r',
+                            't' => '\t',
+                            '0' => '\0',
+                            '\\' => '\\',
+                            '\'' => '\'',
+                            '\"' => '\"',
+                            c => c,
+                        }
+                    } else {
+                        // fallback to first char or \0 if somehow multi-byte unescaped
+                        token.value.chars().next().unwrap_or('\0')
+                    }
+                };
+                Expression::CharLiteral {
+                    value: char_val,
+                    _line: token.line,
+                    _col: token.column,
+                }
+            }
             TokenType::TemplateString => {
                 self.advance();
                 self.parse_template_string(token)

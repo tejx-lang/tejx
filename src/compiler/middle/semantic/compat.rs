@@ -246,10 +246,8 @@ impl TypeChecker {
             }
         }
 
-        // char is compatible with string
-        if (expected == &TejxType::String && actual == &TejxType::Char)
-            || (expected == &TejxType::Char && actual == &TejxType::String)
-        {
+        // char is compatible with string (promotion), but string is not compatible with char
+        if expected == &TejxType::String && actual == &TejxType::Char {
             return true;
         }
 

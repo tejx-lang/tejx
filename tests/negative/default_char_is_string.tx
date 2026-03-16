@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Un-typed single quote expression falls back to String, incompatible with Char expecting expressions.
+function main() {
+    let c = 'a';
+    let d: char = c;
+}

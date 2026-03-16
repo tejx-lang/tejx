@@ -480,7 +480,29 @@ pub unsafe extern "C" fn rt_to_string_int(v: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string_float(v: f64) -> i64 {
     let mut buf = [0u8; 64];
-    sprintf(buf.as_mut_ptr() as *mut _, "%g\0".as_ptr() as *const _, v);
+    sprintf(buf.as_mut_ptr() as *mut _, "%.15f\0".as_ptr() as *const _, v);
+    
+    // Trim trailing zeros from the formatted float like %g does, but without entering scientific notation
+    let mut len = strlen(buf.as_ptr() as *const _);
+    let mut has_dot = false;
+    for i in 0..len {
+        if buf[i] == b'.' {
+            has_dot = true;
+            break;
+        }
+    }
+    if has_dot {
+        while len > 0 && buf[len - 1] == b'0' {
+            len -= 1;
+            buf[len] = 0;
+        }
+        if len > 0 && buf[len - 1] == b'.' {
+            buf[len] = b'0';
+            len += 1;
+            buf[len] = 0;
+        }
+    }
+    
     rt_string_from_c_str(buf.as_ptr() as *const _)
 }
 
@@ -491,6 +513,18 @@ pub unsafe extern "C" fn rt_to_string_boolean(v: i64) -> i64 {
     } else {
         rt_string_from_c_str("false\0".as_ptr() as *const _)
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_box_char(c: i32) -> i64 {
+    let size = 1;
+    let ptr = gc_allocate(size as usize);
+    let header = rt_get_header(ptr);
+    (*header).type_id = TAG_CHAR as u16;
+    (*header).length = 1;
+
+    *(ptr as *mut u8) = c as u8;
+    (ptr as i64) + HEAP_OFFSET
 }
 
 #[no_mangle]
@@ -560,9 +594,17 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     } else {
         // Handle unboxed primitives (direct i64 representation)
         if in_offset_range {
-            // Large value, not a GC pointer -> Assume it's a bitcasted f64
-            let n = f64::from_bits(v as u64);
-            res_id = rt_to_string_float(n);
+            // Large value, not a GC pointer.
+            // A bitcasted f64 has an exponent in bits 52-62.
+            // If the exponent is 0, it's a subnormal or 0 (but 0 < HEAP_OFFSET).
+            let exp = (v as u64 & 0x7FF0000000000000) >> 52;
+            if exp > 0 && exp < 2047 && (v as u64) > 0x3FF0000000000000 {
+                // Heuristically a float
+                let n = f64::from_bits(v as u64);
+                res_id = rt_to_string_float(n);
+            } else {
+                res_id = rt_to_string_int(v);
+            }
         } else {
             // Normal small integer
             res_id = rt_to_string_int(v);

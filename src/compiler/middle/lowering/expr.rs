@@ -85,7 +85,11 @@ impl Lowering {
                     }
                     (s, TejxType::Float32)
                 } else {
-                    (format!("{:.0}", value), TejxType::Int32)
+                    if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
+                        (format!("{:.0}", value), TejxType::Int64)
+                    } else {
+                        (format!("{:.0}", value), TejxType::Int32)
+                    }
                 };
                 HIRExpression::Literal {
                     line: line,
@@ -93,10 +97,26 @@ impl Lowering {
                     ty,
                 }
             }
-            Expression::StringLiteral { value, .. } => HIRExpression::Literal {
+            Expression::StringLiteral { value, .. } => {
+                let ty = if let Some(expected) = self.current_expected_type.borrow().clone() {
+                    if matches!(expected, TejxType::Char) {
+                        TejxType::Char
+                    } else {
+                        TejxType::String
+                    }
+                } else {
+                    TejxType::String
+                };
+                HIRExpression::Literal {
+                    line: line,
+                    value: value.clone(),
+                    ty,
+                }
+            }
+            Expression::CharLiteral { value, .. } => HIRExpression::Literal {
                 line: line,
-                value: value.clone(),
-                ty: TejxType::String,
+                value: value.to_string(), // Keep it as string internally since HIR Literal holds strings 
+                ty: TejxType::Char,
             },
             Expression::BooleanLiteral { value, .. } => HIRExpression::Literal {
                 line: line,

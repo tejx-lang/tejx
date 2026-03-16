@@ -1,0 +1,10 @@
+// EXPECTED: PASS
+// Description: String can be assigned to char type if length is 1 or escape code.
+function main() {
+    let a: char = "h";
+    let b:char="h"
+    print(a,typeof(a));
+    assert_true(a==b,"a is not equal to b");
+    assert_eq_string("char",typeof(a),"type of a is not char");
+
+}

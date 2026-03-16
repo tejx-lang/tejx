@@ -29,11 +29,16 @@ pub static TOKIO_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 #[no_mangle]
 pub static ASYNC_OPS: AtomicI64 = AtomicI64::new(0);
 
+// Notify to wake up the blocked event loop when a task is enqueued
+pub static TASK_NOTIFY: LazyLock<tokio::sync::Notify> =
+    LazyLock::new(|| tokio::sync::Notify::const_new());
+
 #[no_mangle]
 pub unsafe extern "C" fn tejx_enqueue_task(worker: i64, args: i64) {
     TASK_QUEUE.with(|q| {
         q.borrow_mut().push_back((worker, args));
     });
+    TASK_NOTIFY.notify_one();
 }
 
 #[no_mangle]
@@ -63,18 +68,17 @@ pub unsafe extern "C" fn tejx_run_event_loop_step() -> bool {
     }
 
     // Process Tokio tasks to pull next events (I/O, timers, etc) into the Tejx queue
-    // We use `spawn` and `block_on` a short sleep to ensure the runtime's scheduler
-    // gets a chance to poll other tasks, as `yield_now` within `block_on` might not
-    // be sufficient to give CPU time to tasks spawned on the runtime's scheduler.
+    // Instead of busy-waiting with sleep, we block the thread until TASK_NOTIFY is
+    // triggered by a background task enqueueing a callback via `tejx_enqueue_task`.
     TOKIO_RT.block_on(async {
-        // Spawn a task that yields and then sleeps briefly.
-        // This ensures the runtime's scheduler is actively polled.
-        tokio::task::spawn(async {
-            tokio::task::yield_now().await;
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        })
-        .await
-        .ok(); // Await the spawned task to ensure it runs
+        // Yield to the Tokio scheduler so any ready tasks execute immediately
+        tokio::task::yield_now().await;
+
+        // If no microtasks were produced during the yield, wait for a signal
+        // from a background worker (e.g., I/O networking threads)
+        if TASK_QUEUE.with(|q| q.borrow().is_empty()) {
+            TASK_NOTIFY.notified().await;
+        }
     });
 
     // Check again after Tokio polled

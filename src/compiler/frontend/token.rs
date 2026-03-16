@@ -61,6 +61,7 @@ pub enum TokenType {
     Identifier,
     Number,
     String,
+    CharLiteral,
     TemplateString,
     True,
     False,

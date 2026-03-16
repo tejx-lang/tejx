@@ -186,6 +186,27 @@ impl CodeGen {
             return boxed;
         }
 
+        if dst_is_any && matches!(src_ty, TejxType::Char) {
+            self.declare_runtime_fn("rt_box_char", "i64 @rt_box_char(i32)");
+            let mut c_val = val_name.to_string();
+            if src_llvm != "i32" {
+                self.temp_counter += 1;
+                let c_cast = format!("%c_cast_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = trunc {} {} to i32",
+                    c_cast, src_llvm, val_name
+                ));
+                c_val = c_cast;
+            }
+            self.temp_counter += 1;
+            let boxed = format!("%boxed_char_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_box_char(i32 {})",
+                boxed, c_val
+            ));
+            return boxed;
+        }
+
         if src_is_any && (dst_ty.is_numeric() || matches!(dst_ty, TejxType::Bool)) {
             if matches!(dst_ty, TejxType::Bool) {
                 self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
@@ -553,6 +574,16 @@ impl CodeGen {
 
                 if matches!(ty, TejxType::Void) && value == "0" {
                     return "0".to_string();
+                }
+
+                if matches!(ty, TejxType::Char) {
+                    if let Ok(i) = value.parse::<i64>() {
+                        return format!("{}", i);
+                    } else if !value.is_empty() {
+                        // In case it's a raw string character like "a" or something that isn't single quoted
+                        let c = value.chars().next().unwrap() as u32;
+                        return format!("{}", c);
+                    }
                 }
 
                 let raw_ptr = self.emit_string_constant(value);

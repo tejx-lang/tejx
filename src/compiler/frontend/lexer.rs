@@ -483,8 +483,8 @@ impl Lexer {
         } else {
             self.advance(); // Skip closing quote
         }
-
-        Token::new(TokenType::String, value, start_line, start_col)
+        let token_type = TokenType::String;
+        Token::new(token_type, value, start_line, start_col)
     }
 
     fn read_template_string(&mut self) -> Token {

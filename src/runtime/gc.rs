@@ -3,7 +3,7 @@ use super::*;
 // --- GC Memory System Constants ---
 pub const YOUNG_GEN_SIZE: usize = 16 * 1024 * 1024; // 16MB Eden
 pub const SURVIVOR_SIZE: usize = 2 * 1024 * 1024; // 2MB each
-pub const OLD_GEN_SIZE: usize = 64 * 1024 * 1024; // 64MB Old Gen
+pub const OLD_GEN_SIZE: usize = 256 * 1024 * 1024; // 256MB Old Gen
 pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB
 
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
@@ -1112,6 +1112,12 @@ pub unsafe fn minor_gc_locked() {
 
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
         current = current.add(size);
+    }
+
+    // 1c. Scan all LOS objects (they can store references to Young Gen)
+    for i in 0..LOS_COUNT {
+        let header = LOS_OBJECTS[i] as *mut ObjectHeader;
+        scan_object_fields(header);
     }
 
     // 2. Cheney's scan

@@ -184,6 +184,11 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
+    CharLiteral {
+        value: char,
+        _line: usize,
+        _col: usize,
+    },
     BooleanLiteral {
         value: bool,
         _line: usize,
@@ -491,6 +496,7 @@ impl Expression {
                 }
             }
             Expression::StringLiteral { .. } => "String".to_string(),
+            Expression::CharLiteral { .. } => "(char)".to_string(),
             Expression::NumberLiteral { .. } => "(number)".to_string(),
             Expression::BooleanLiteral { .. } => "(bool)".to_string(),
             Expression::ArrayLiteral { .. } => "(array)".to_string(),
@@ -506,6 +512,7 @@ impl Expression {
         match self {
             Expression::NumberLiteral { _line, .. } => *_line,
             Expression::StringLiteral { _line, .. } => *_line,
+            Expression::CharLiteral { _line, .. } => *_line,
             Expression::BooleanLiteral { _line, .. } => *_line,
             Expression::Identifier { _line, .. } => *_line,
             Expression::BinaryExpr { _line, .. } => *_line,

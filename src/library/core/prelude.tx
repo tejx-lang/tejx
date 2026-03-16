@@ -209,8 +209,8 @@ function String(v: any): string {
 }
 
 function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
-    if (v == None) return "None";
     let ty: string = typeof(v);
+    if (rt_str_equals(ty, "None")) return "None";
     
     if (rt_str_equals(ty, "string")) {
         let s: string = v as string;

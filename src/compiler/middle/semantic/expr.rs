@@ -301,12 +301,36 @@ impl TypeChecker {
                     }
                 }
                 if value.fract() == 0.0 {
-                    Ok(TejxType::Int32)
+                    if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
+                        Ok(TejxType::Int64)
+                    } else {
+                        Ok(TejxType::Int32)
+                    }
                 } else {
                     Ok(TejxType::Float32)
                 }
             }
-            Expression::StringLiteral { .. } => Ok(TejxType::String),
+            Expression::StringLiteral { value, _line, _col } => {
+                if let Some(expected) = &self.current_expected_type {
+                    if matches!(expected, TejxType::Char) {
+                        let is_escape = value.starts_with('\\') && value.len() == 2;
+                        if value.len() == 1 || is_escape || value.is_empty() {
+                            return Ok(TejxType::Char);
+                        } else {
+                            self.report_error_detailed(
+                                "String too long to be a character".to_string(),
+                                *_line,
+                                *_col,
+                                "E0106",
+                                Some("A character literal must contain exactly one character"),
+                            );
+                            return Ok(TejxType::Char);
+                        }
+                    }
+                }
+                Ok(TejxType::String)
+            }
+            Expression::CharLiteral { .. } => Ok(TejxType::Char),
             Expression::BooleanLiteral { .. } => Ok(TejxType::Bool),
             Expression::NoneLiteral { .. } => Ok(TejxType::from_name("None")),
             Expression::SomeExpr { value, .. } => {
@@ -468,24 +492,37 @@ impl TypeChecker {
                 let left_type = self.check_expression(left)?;
                 let right_type = self.check_expression(right)?;
 
+                let is_comparison = matches!(
+                    op,
+                    TokenType::EqualEqual
+                        | TokenType::BangEqual
+                        | TokenType::Less
+                        | TokenType::LessEqual
+                        | TokenType::Greater
+                        | TokenType::GreaterEqual
+                );
+
+                if is_comparison {
+                    let compatible = self.are_types_compatible(&left_type, &right_type) || self.are_types_compatible(&right_type, &left_type);
+                    let both_numeric = left_type.is_numeric() && right_type.is_numeric();
+                    
+                    if !compatible && !both_numeric {
+                        self.report_error_detailed(
+                            format!("Cannot compare values of different types: '{}' and '{}'", left_type.to_name(), right_type.to_name()),
+                            *_line,
+                            *_col,
+                            "E0106",
+                            Some("Both operands must be of the same type or both must be numeric"),
+                        );
+                        return Ok(TejxType::from_name("<inferred>"));
+                    }
+                }
+
                 if left_type == TejxType::String || right_type == TejxType::String {
                     if matches!(op, TokenType::Plus) {
                         return Ok(TejxType::String);
                     }
-                    if matches!(
-                        op,
-                        TokenType::EqualEqual
-                            | TokenType::BangEqual
-                    ) {
-                        return Ok(TejxType::Bool);
-                    }
-                    if matches!(
-                        op,
-                        TokenType::Less
-                            | TokenType::Greater
-                            | TokenType::LessEqual
-                            | TokenType::GreaterEqual
-                    ) {
+                    if is_comparison {
                         return Ok(TejxType::Bool);
                     }
                     self.report_error_detailed(
@@ -504,15 +541,7 @@ impl TypeChecker {
                 }
 
                 if left_type.is_numeric() && right_type.is_numeric() {
-                    if matches!(
-                        op,
-                        TokenType::EqualEqual
-                            | TokenType::BangEqual
-                            | TokenType::Less
-                            | TokenType::LessEqual
-                            | TokenType::Greater
-                            | TokenType::GreaterEqual
-                    ) {
+                    if is_comparison {
                         return Ok(TejxType::Bool);
                     }
 
@@ -534,18 +563,7 @@ impl TypeChecker {
                 }
 
                 // Boolean result for comparisons and logic
-                if matches!(
-                    op,
-                    TokenType::EqualEqual
-                        | TokenType::BangEqual
-                        | TokenType::Less
-                        | TokenType::LessEqual
-                        | TokenType::Greater
-                        | TokenType::GreaterEqual
-                        | TokenType::AmpersandAmpersand
-                        | TokenType::PipePipe
-                        | TokenType::Instanceof
-                ) {
+                if is_comparison || matches!(op, TokenType::AmpersandAmpersand | TokenType::PipePipe | TokenType::Instanceof) {
                     return Ok(TejxType::Bool);
                 }
 

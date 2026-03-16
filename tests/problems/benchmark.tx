@@ -315,6 +315,18 @@ function bench_float_to_int(): float {
     return sum * 1.0 + 0.1;
 }
 
+
+// 24. Sum of 1 billion
+
+function bench_sum_billion(): float {
+    let sum: int64 = 0;
+    let limit: int64 = 1000000000;
+    for(let i:int64=0;i<limit;i++){
+        sum = sum + i;
+    }
+    return sum * 1.0
+}
+
 // --- Benchmark Runner ---
 function run(name: string, fn: () => float): void {
     let s = now();
@@ -348,5 +360,6 @@ function main(): float {
         run("21. Hard: N-Queens", bench_nqueens);
         run("22. Hard: Ackermann", bench_ackermann);
         run("23. Regress: Float-to-Int", bench_float_to_int);
+        run("24. Sum of 1 billion", bench_sum_billion);
    
 }

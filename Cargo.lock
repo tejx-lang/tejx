@@ -1298,6 +1298,7 @@ dependencies = [
 name = "tejx-rt"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reqwest 0.12.28",
  "tokio",
 ]
