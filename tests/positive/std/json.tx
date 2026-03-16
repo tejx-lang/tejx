@@ -4,6 +4,15 @@
 import {parse, stringify} from "std:json";
 import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
+type objType = {
+    x: int,
+    y: string,
+    z: int[],
+    w: {
+        nested: bool
+    }
+};
+
 function main() {
     print("--- JSON Tests ---");
 
@@ -19,8 +28,8 @@ function main() {
         print("Stringified: ", json_str);
 
         // Test parsing
-        let parsed = parse(json_str);
-        
+        let parsed = parse(json_str) as objType;
+
         assert_eq_int(10, parsed["x"], "Parsed x (index)");
         assert_eq_string("hello", parsed["y"], "Parsed y (index)");
         

@@ -324,7 +324,7 @@ function bench_sum_billion(): float {
     for(let i:int64=0;i<limit;i++){
         sum = sum + i;
     }
-    return sum * 1.0
+    return sum * 1.0;
 }
 
 // --- Benchmark Runner ---

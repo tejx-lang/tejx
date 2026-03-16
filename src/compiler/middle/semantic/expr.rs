@@ -173,7 +173,8 @@ impl TypeChecker {
         if receiver.is_array() || receiver.is_slice() {
             let elem = receiver.get_array_element_type();
             let u = TejxType::Class("U".to_string(), vec![]);
-            let is_fixed_or_slice = matches!(receiver, TejxType::FixedArray(_, _) | TejxType::Slice(_));
+            let is_fixed_or_slice =
+                matches!(receiver, TejxType::FixedArray(_, _) | TejxType::Slice(_));
             if is_fixed_or_slice && matches!(member, "push" | "pop" | "shift" | "unshift") {
                 return None;
             }
@@ -447,30 +448,38 @@ impl TypeChecker {
                 }
             }
             Expression::CastExpr {
-                expr, target_type, _line, _col
+                expr,
+                target_type,
+                _line,
+                _col,
             } => {
                 let expr_type = self.check_expression(expr)?;
                 let dest_type = TejxType::from_node(target_type);
-                
+
                 let expr_name = expr_type.to_name();
                 let dest_name = dest_type.to_name();
-                
+
                 if expr_type == TejxType::Any || dest_type == TejxType::Any {
                     return Ok(dest_type);
                 }
-                
+
                 if expr_type.is_numeric() && dest_type.is_numeric() {
                     return Ok(dest_type);
                 }
-                
+
                 // Allow upcasts and downcasts
                 let is_upcast = self.are_types_compatible(&dest_type, &expr_type);
                 let is_downcast = self.are_types_compatible(&expr_type, &dest_type);
-                
+
                 let is_string_char = (expr_type == TejxType::String && dest_type == TejxType::Char)
-                                  || (expr_type == TejxType::Char && dest_type == TejxType::String);
-                                  
-                if !is_upcast && !is_downcast && !is_string_char && expr_name != "<inferred>" && dest_name != "<inferred>" {
+                    || (expr_type == TejxType::Char && dest_type == TejxType::String);
+
+                if !is_upcast
+                    && !is_downcast
+                    && !is_string_char
+                    && expr_name != "<inferred>"
+                    && dest_name != "<inferred>"
+                {
                     self.report_error_detailed(
                         format!("Cannot cast '{}' to '{}'", expr_name, dest_name),
                         *_line,
@@ -479,7 +488,7 @@ impl TypeChecker {
                         Some("Types are completely unrelated and cannot be casted"),
                     );
                 }
-                
+
                 Ok(dest_type)
             }
             Expression::BinaryExpr {
@@ -503,12 +512,17 @@ impl TypeChecker {
                 );
 
                 if is_comparison {
-                    let compatible = self.are_types_compatible(&left_type, &right_type) || self.are_types_compatible(&right_type, &left_type);
+                    let compatible = self.are_types_compatible(&left_type, &right_type)
+                        || self.are_types_compatible(&right_type, &left_type);
                     let both_numeric = left_type.is_numeric() && right_type.is_numeric();
-                    
+
                     if !compatible && !both_numeric {
                         self.report_error_detailed(
-                            format!("Cannot compare values of different types: '{}' and '{}'", left_type.to_name(), right_type.to_name()),
+                            format!(
+                                "Cannot compare values of different types: '{}' and '{}'",
+                                left_type.to_name(),
+                                right_type.to_name()
+                            ),
                             *_line,
                             *_col,
                             "E0106",
@@ -563,7 +577,12 @@ impl TypeChecker {
                 }
 
                 // Boolean result for comparisons and logic
-                if is_comparison || matches!(op, TokenType::AmpersandAmpersand | TokenType::PipePipe | TokenType::Instanceof) {
+                if is_comparison
+                    || matches!(
+                        op,
+                        TokenType::AmpersandAmpersand | TokenType::PipePipe | TokenType::Instanceof
+                    )
+                {
                     return Ok(TejxType::Bool);
                 }
 
@@ -608,20 +627,29 @@ impl TypeChecker {
                                     if !info.is_static {
                                         self.report_error_detailed(format!("Member '{}' is not static", member), *_line, *_col, "E0116", Some("Access this member on an instance, not the class itself"));
                                     }
-                                    
+
                                     let is_accessible = match info.access {
                                         AccessLevel::Public => true,
                                         AccessLevel::Private => {
-                                            self.current_class.as_ref().map(|c| c.split('<').next().unwrap_or(c)) == Some(name)
-                                        },
+                                            self.current_class
+                                                .as_ref()
+                                                .map(|c| c.split('<').next().unwrap_or(c))
+                                                == Some(name)
+                                        }
                                         AccessLevel::Protected => {
                                             if let Some(current) = &self.current_class {
-                                                let current_base = current.split('<').next().unwrap_or(current);
+                                                let current_base =
+                                                    current.split('<').next().unwrap_or(current);
                                                 let mut is_subclass = current_base == name;
                                                 let mut curr = current_base.to_string();
                                                 while !is_subclass {
-                                                    if let Some(parent) = self.class_hierarchy.get(&curr) {
-                                                        if parent == name { is_subclass = true; break; }
+                                                    if let Some(parent) =
+                                                        self.class_hierarchy.get(&curr)
+                                                    {
+                                                        if parent == name {
+                                                            is_subclass = true;
+                                                            break;
+                                                        }
                                                         curr = parent.clone();
                                                     } else {
                                                         break;
@@ -633,7 +661,7 @@ impl TypeChecker {
                                             }
                                         }
                                     };
-                                    
+
                                     if !is_accessible {
                                         self.report_error_detailed(
                                             format!("Member '{}' is {} and cannot be accessed here", member, if info.access == AccessLevel::Private { "private" } else { "protected" }),
@@ -693,16 +721,23 @@ impl TypeChecker {
                             let is_accessible = match info.access {
                                 AccessLevel::Public => true,
                                 AccessLevel::Private => {
-                                    self.current_class.as_ref().map(|c| c.split('<').next().unwrap_or(c)) == Some(obj_base)
-                                },
+                                    self.current_class
+                                        .as_ref()
+                                        .map(|c| c.split('<').next().unwrap_or(c))
+                                        == Some(obj_base)
+                                }
                                 AccessLevel::Protected => {
                                     if let Some(current) = &self.current_class {
-                                        let current_base = current.split('<').next().unwrap_or(current);
+                                        let current_base =
+                                            current.split('<').next().unwrap_or(current);
                                         let mut is_subclass = current_base == obj_base;
                                         let mut curr = current_base.to_string();
                                         while !is_subclass {
                                             if let Some(parent) = self.class_hierarchy.get(&curr) {
-                                                if parent == obj_base { is_subclass = true; break; }
+                                                if parent == obj_base {
+                                                    is_subclass = true;
+                                                    break;
+                                                }
                                                 curr = parent.clone();
                                             } else {
                                                 break;
@@ -714,7 +749,7 @@ impl TypeChecker {
                                     }
                                 }
                             };
-                            
+
                             if !is_accessible {
                                 self.report_error_detailed(
                                     format!("Member '{}' is {} and cannot be accessed here", member, if info.access == AccessLevel::Private { "private" } else { "protected" }),
@@ -749,9 +784,10 @@ impl TypeChecker {
                 }
                 // Built-in 'length' property for arrays, strings, and slices
                 if member == "length"
-                    && (obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice()) {
-                        return Ok(TejxType::Int32);
-                    }
+                    && (obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice())
+                {
+                    return Ok(TejxType::Int32);
+                }
                 if let Some(builtin_ty) = self.builtin_member_function_type(&obj_ty, member) {
                     return Ok(builtin_ty);
                 }
@@ -784,17 +820,20 @@ impl TypeChecker {
 
                 // --- UFCS Lookup ---
                 // If not found as a member, check if there is a global function name(obj, ...)
-                let allow_ufcs = (obj_ty.is_array() || obj_ty.is_slice() || obj_ty == TejxType::String)
-                    && obj_type != "any"
-                    && obj_type != "<inferred>"
-                    && !obj_type.is_empty();
+                let allow_ufcs =
+                    (obj_ty.is_array() || obj_ty.is_slice() || obj_ty == TejxType::String)
+                        && obj_type != "any"
+                        && obj_type != "<inferred>"
+                        && !obj_type.is_empty();
                 if allow_ufcs {
                     if let Some(s) = self.lookup(member) {
                         if let TejxType::Function(_, ref ret) = s.ty {
                             if !s.params.is_empty() {
                                 let first_param = &s.params[0];
-                                let is_compat = self
-                                    .are_types_compatible(first_param, &TejxType::from_name(&obj_type));
+                                let is_compat = self.are_types_compatible(
+                                    first_param,
+                                    &TejxType::from_name(&obj_type),
+                                );
                                 if is_compat {
                                     // Full ty
                                     let full_ty = TejxType::Function(s.params.clone(), ret.clone());
@@ -825,7 +864,8 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        hint.as_deref().or(Some("Check the property name or define it in the class")),
+                        hint.as_deref()
+                            .or(Some("Check the property name or define it in the class")),
                     );
                 }
                 Ok(TejxType::from_name("<inferred>"))
@@ -940,9 +980,13 @@ impl TypeChecker {
                 if let Expression::MemberAccessExpr { object, member, .. } = &**target {
                     if let Ok(obj_type_struct) = self.check_expression(object) {
                         let obj_type = obj_type_struct.to_name();
-                        
+
                         // Check built-in readonly properties like .length
-                        if member == "length" && (obj_type_struct.is_array() || obj_type_struct.is_slice() || obj_type_struct == TejxType::String) {
+                        if member == "length"
+                            && (obj_type_struct.is_array()
+                                || obj_type_struct.is_slice()
+                                || obj_type_struct == TejxType::String)
+                        {
                             self.report_error_detailed(
                                 format!("Cannot assign to read-only property '{}'", member),
                                 *_line,
@@ -951,7 +995,7 @@ impl TypeChecker {
                                 Some("The 'length' property of arrays and strings is read-only"),
                             );
                         }
-                        
+
                         // Check instance members
                         if let Some(info) = self.resolve_instance_member(&obj_type, member) {
                             if info.is_readonly {
@@ -992,15 +1036,25 @@ impl TypeChecker {
                             }
                         }
                     }
-                } else if let Expression::ArrayAccessExpr { target: arr_target, index: arr_index, _line: arr_line, _col: arr_col } = &**target {
+                } else if let Expression::ArrayAccessExpr {
+                    target: arr_target,
+                    index: arr_index,
+                    _line: arr_line,
+                    _col: arr_col,
+                } = &**target
+                {
                     if let Ok(arr_ty) = self.check_expression(arr_target) {
                         let mut unwrapped = arr_ty.to_name();
                         if unwrapped.contains('|') {
-                            unwrapped = unwrapped.split('|').map(|s| s.trim().to_string()).find(|s| s != "None" && !s.is_empty()).unwrap_or(unwrapped);
+                            unwrapped = unwrapped
+                                .split('|')
+                                .map(|s| s.trim().to_string())
+                                .find(|s| s != "None" && !s.is_empty())
+                                .unwrap_or(unwrapped);
                         }
                         let parsed = TejxType::from_name(&unwrapped);
                         let mut array_length: Option<usize> = None;
-                        
+
                         if let TejxType::FixedArray(_, size) = &parsed {
                             array_length = Some(*size);
                         } else if parsed.is_array() {
@@ -1012,17 +1066,23 @@ impl TypeChecker {
                                 }
                             }
                         }
-                        
+
                         if let Some(size) = array_length {
                             let mut const_index: Option<i64> = None;
                             match arr_index.as_ref() {
                                 Expression::NumberLiteral { value, .. } => {
-                                    if value.fract() == 0.0 { const_index = Some(*value as i64); }
+                                    if value.fract() == 0.0 {
+                                        const_index = Some(*value as i64);
+                                    }
                                 }
                                 Expression::UnaryExpr { op, right, .. } => {
                                     if matches!(op, TokenType::Minus) {
-                                        if let Expression::NumberLiteral { value, .. } = right.as_ref() {
-                                            if value.fract() == 0.0 { const_index = Some(-(*value as i64)); }
+                                        if let Expression::NumberLiteral { value, .. } =
+                                            right.as_ref()
+                                        {
+                                            if value.fract() == 0.0 {
+                                                const_index = Some(-(*value as i64));
+                                            }
                                         }
                                     }
                                 }
@@ -1031,8 +1091,14 @@ impl TypeChecker {
                             if let Some(idx) = const_index {
                                 if idx < 0 || (idx as usize) >= size {
                                     self.report_error_detailed(
-                                        format!("Array index {} out of bounds for array length {}", idx, size),
-                                        *arr_line, *arr_col, "E0100", Some("Use a valid index within the array bounds")
+                                        format!(
+                                            "Array index {} out of bounds for array length {}",
+                                            idx, size
+                                        ),
+                                        *arr_line,
+                                        *arr_col,
+                                        "E0100",
+                                        Some("Use a valid index within the array bounds"),
                                     );
                                 }
                             }
@@ -1235,9 +1301,7 @@ impl TypeChecker {
                         if let TejxType::Class(base, args) = receiver_ty {
                             if let Some(sym) = self.lookup(&base) {
                                 for (gp, arg) in sym.generic_params.iter().zip(args.iter()) {
-                                    generic_map
-                                        .entry(gp.name.clone())
-                                        .or_insert(arg.to_name());
+                                    generic_map.entry(gp.name.clone()).or_insert(arg.to_name());
                                 }
                             }
                         }
@@ -1261,31 +1325,33 @@ impl TypeChecker {
                     }
                 }
 
-                let parse_type_string =
-                    |tc: &TypeChecker, ty_str: &str| -> TejxType {
-                        if ty_str.starts_with("function:") || ty_str.contains("=>") {
-                            let (ret, params, _) = tc.parse_signature(ty_str.to_string());
-                            let parts: Vec<&str> = ret.split(':').collect();
-                            let actual_ret = if parts.len() >= 2 { parts[1] } else { &ret };
-                            TejxType::Function(
-                                params.iter().map(|p| TejxType::from_name(p)).collect(),
-                                Box::new(TejxType::from_name(actual_ret)),
-                            )
-                        } else {
-                            TejxType::from_name(ty_str)
-                        }
-                    };
+                let parse_type_string = |tc: &TypeChecker, ty_str: &str| -> TejxType {
+                    if ty_str.starts_with("function:") || ty_str.contains("=>") {
+                        let (ret, params, _) = tc.parse_signature(ty_str.to_string());
+                        let parts: Vec<&str> = ret.split(':').collect();
+                        let actual_ret = if parts.len() >= 2 { parts[1] } else { &ret };
+                        TejxType::Function(
+                            params.iter().map(|p| TejxType::from_name(p)).collect(),
+                            Box::new(TejxType::from_name(actual_ret)),
+                        )
+                    } else {
+                        TejxType::from_name(ty_str)
+                    }
+                };
 
-                let apply_bindings_to_type_str =
-                    |tc: &TypeChecker, ty_str: &str, bindings: &HashMap<String, TejxType>| -> String {
-                        let parsed = parse_type_string(tc, ty_str);
-                        parsed.substitute_generics(bindings).to_name()
-                    };
+                let apply_bindings_to_type_str = |tc: &TypeChecker,
+                                                  ty_str: &str,
+                                                  bindings: &HashMap<String, TejxType>|
+                 -> String {
+                    let parsed = parse_type_string(tc, ty_str);
+                    parsed.substitute_generics(bindings).to_name()
+                };
 
                 let mut explicit_generic_bindings: HashMap<String, TejxType> = HashMap::new();
                 let mut explicit_type_args_valid = false;
-                let explicit_type_args =
-                    type_args.as_ref().map(|args| args.iter().map(TejxType::from_node).collect::<Vec<_>>());
+                let explicit_type_args = type_args
+                    .as_ref()
+                    .map(|args| args.iter().map(TejxType::from_node).collect::<Vec<_>>());
                 let explicit_type_args_used = explicit_type_args.is_some();
                 if let Some(explicit_args) = explicit_type_args.as_ref() {
                     if call_generic_params.is_empty() {
@@ -1353,7 +1419,9 @@ impl TypeChecker {
                                 }
                             }
                             explicit_generic_bindings.insert(gp.name.clone(), concrete.clone());
-                            generic_map.entry(gp.name.clone()).or_insert_with(|| concrete.to_name());
+                            generic_map
+                                .entry(gp.name.clone())
+                                .or_insert_with(|| concrete.to_name());
                         }
                     }
                 }
@@ -1363,11 +1431,8 @@ impl TypeChecker {
                         .iter()
                         .map(|p| apply_bindings_to_type_str(self, p, &explicit_generic_bindings))
                         .collect();
-                    return_type = apply_bindings_to_type_str(
-                        self,
-                        &return_type,
-                        &explicit_generic_bindings,
-                    );
+                    return_type =
+                        apply_bindings_to_type_str(self, &return_type, &explicit_generic_bindings);
                 }
 
                 if param_offset == 1 {
@@ -1384,7 +1449,9 @@ impl TypeChecker {
                         if receiver_ty.is_array() || receiver_ty.is_slice() {
                             let inner = receiver_ty.get_array_element_type().to_name();
                             if Self::is_unresolved_generic_name(first_param) {
-                                generic_map.entry(first_param.clone()).or_insert(inner.clone());
+                                generic_map
+                                    .entry(first_param.clone())
+                                    .or_insert(inner.clone());
                             } else if first_param.ends_with("[]") {
                                 let base = &first_param[..first_param.len() - 2];
                                 if Self::is_unresolved_generic_name(base) {
@@ -1518,7 +1585,9 @@ impl TypeChecker {
                     let lambda_ctx_params = if matches!(arg, Expression::LambdaExpr { .. }) {
                         if target_type.starts_with("function:") || target_type.contains("=>") {
                             let (ret_sig, params, _) = self.parse_signature(target_type.clone());
-                            let ret_ty = ret_sig.split_once(':').map(|x| x.1)
+                            let ret_ty = ret_sig
+                                .split_once(':')
+                                .map(|x| x.1)
                                 .unwrap_or("void")
                                 .to_string();
                             let mut func_ty = TejxType::Function(
@@ -1609,7 +1678,7 @@ impl TypeChecker {
                                 };
                                 let expected_has_unresolved =
                                     Self::contains_unresolved_generic_type(&expected_obj);
-                                let actual_has_unresolved = 
+                                let actual_has_unresolved =
                                     Self::contains_unresolved_generic_type(&actual_obj);
                                 if !is_generic_param(&target_type)
                                     && !is_generic_param(&arg_type)
@@ -1643,7 +1712,9 @@ impl TypeChecker {
                             && t.chars().all(|c| c.is_alphanumeric())
                     };
                     if is_generic_param_check(&target_type) && arg_type != "<inferred>" {
-                        generic_map.entry(target_type.clone()).or_insert(arg_type.clone());
+                        generic_map
+                            .entry(target_type.clone())
+                            .or_insert(arg_type.clone());
                     }
                 }
 
@@ -1661,41 +1732,38 @@ impl TypeChecker {
                     let mut concrete_args = Vec::new();
                     let mut missing_inference = None;
                     for gp in &call_generic_params {
-                        let inferred_from_receiver = if let Some(existing) =
-                            generic_map.get(&gp.name)
-                        {
-                            Some(existing.clone())
-                        } else if let Some(existing) = generic_map
-                            .get(&format!("$MISSING_GENERIC_{}", concrete_args.len()))
-                        {
-                            Some(existing.clone())
-                        } else if let Expression::MemberAccessExpr { object, .. } =
-                            &**callee
-                        {
-                            self.check_expression(object).ok().and_then(|receiver_ty| {
-                                match gp.name.as_str() {
-                                    "T" if receiver_ty.is_array() || receiver_ty.is_slice() => {
-                                        Some(receiver_ty.get_array_element_type().to_name())
-                                    }
-                                    "T" => {
-                                        let receiver_name = receiver_ty.to_name();
-                                        if receiver_name.starts_with("Promise<")
-                                            && receiver_name.ends_with('>')
-                                        {
-                                            Some(
-                                                receiver_name[8..receiver_name.len() - 1]
-                                                    .to_string(),
-                                            )
-                                        } else {
-                                            None
+                        let inferred_from_receiver =
+                            if let Some(existing) = generic_map.get(&gp.name) {
+                                Some(existing.clone())
+                            } else if let Some(existing) = generic_map
+                                .get(&format!("$MISSING_GENERIC_{}", concrete_args.len()))
+                            {
+                                Some(existing.clone())
+                            } else if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                                self.check_expression(object)
+                                    .ok()
+                                    .and_then(|receiver_ty| match gp.name.as_str() {
+                                        "T" if receiver_ty.is_array() || receiver_ty.is_slice() => {
+                                            Some(receiver_ty.get_array_element_type().to_name())
                                         }
-                                    }
-                                    _ => None,
-                                }
-                            })
-                        } else {
-                            None
-                        };
+                                        "T" => {
+                                            let receiver_name = receiver_ty.to_name();
+                                            if receiver_name.starts_with("Promise<")
+                                                && receiver_name.ends_with('>')
+                                            {
+                                                Some(
+                                                    receiver_name[8..receiver_name.len() - 1]
+                                                        .to_string(),
+                                                )
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    })
+                            } else {
+                                None
+                            };
 
                         if let Some(concrete) = inferred_from_receiver.as_ref() {
                             generic_map
@@ -1822,7 +1890,7 @@ impl TypeChecker {
                             0, // Ideally we have line/col for entries, but entries might not have them individualy
                             0,
                             "E0111",
-                            Some("Each key in an object literal must be unique")
+                            Some("Each key in an object literal must be unique"),
                         );
                     }
                     let val_ty = self.check_expression(val_expr)?;
@@ -2119,17 +2187,17 @@ impl TypeChecker {
                     }
                 };
 
-                let mut return_type = if callee_type.starts_with("function:")
-                    || callee_type.contains("=>")
-                {
-                    let (ret, _, _) = self.parse_signature(callee_type.clone());
-                    ret
-                } else {
-                    callee_type.clone()
-                };
+                let mut return_type =
+                    if callee_type.starts_with("function:") || callee_type.contains("=>") {
+                        let (ret, _, _) = self.parse_signature(callee_type.clone());
+                        ret
+                    } else {
+                        callee_type.clone()
+                    };
 
                 if let Some(explicit_args) = type_args.as_ref() {
-                    let mut call_generic_params: Vec<crate::frontend::ast::GenericParam> = Vec::new();
+                    let mut call_generic_params: Vec<crate::frontend::ast::GenericParam> =
+                        Vec::new();
                     if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
                         if let Ok(obj_type) = self.check_expression(object) {
                             if let Some(info) =
@@ -2174,9 +2242,7 @@ impl TypeChecker {
                         );
                     } else {
                         let mut bindings: HashMap<String, TejxType> = HashMap::new();
-                        for (gp, concrete) in
-                            call_generic_params.iter().zip(explicit_args.iter())
-                        {
+                        for (gp, concrete) in call_generic_params.iter().zip(explicit_args.iter()) {
                             let concrete_ty = TejxType::from_node(concrete);
                             if !self.is_valid_type(&concrete_ty) {
                                 self.report_error_detailed(
@@ -2282,10 +2348,8 @@ impl TypeChecker {
                     } else if let TejxType::Class(sig, _) = &info.ty {
                         if sig.starts_with("function:") || sig.contains("=>") {
                             let (_ret, params, _) = self.parse_signature(sig.clone());
-                            expected_arg_types = params
-                                .iter()
-                                .map(|p| TejxType::from_name(p))
-                                .collect();
+                            expected_arg_types =
+                                params.iter().map(|p| TejxType::from_name(p)).collect();
                         }
                     }
                 }
@@ -2297,7 +2361,8 @@ impl TypeChecker {
                     } else {
                         None
                     };
-                    let actual = self.with_expected_type(expected_ty, |s| s.check_expression(arg))?;
+                    let actual =
+                        self.with_expected_type(expected_ty, |s| s.check_expression(arg))?;
                     actual_arg_types.push(actual);
                 }
 
@@ -2320,10 +2385,7 @@ impl TypeChecker {
                             *_line,
                             *_col,
                             "E0109",
-                            Some(&format!(
-                                "Provide {} argument(s)",
-                                expected_arg_types.len()
-                            )),
+                            Some(&format!("Provide {} argument(s)", expected_arg_types.len())),
                         );
                     } else if args.len() < expected_arg_types.len() {
                         let missing = &expected_arg_types[args.len()..];
@@ -2354,10 +2416,8 @@ impl TypeChecker {
                     if let Some(expected) = self.current_expected_type.as_ref() {
                         if let TejxType::Class(exp_name, exp_generics) = expected {
                             if exp_name == &effective_class_name && !exp_generics.is_empty() {
-                                let args = exp_generics
-                                    .iter()
-                                    .map(|t| t.to_name())
-                                    .collect::<Vec<_>>();
+                                let args =
+                                    exp_generics.iter().map(|t| t.to_name()).collect::<Vec<_>>();
                                 inferred_class_name =
                                     format!("{}<{}>", effective_class_name, args.join(", "));
                                 inferred = true;
@@ -2372,9 +2432,8 @@ impl TypeChecker {
                             if !expected_arg_types.is_empty() {
                                 let mut bindings: std::collections::HashMap<String, String> =
                                     std::collections::HashMap::new();
-                                for (formal, actual) in expected_arg_types
-                                    .iter()
-                                    .zip(actual_arg_types.iter())
+                                for (formal, actual) in
+                                    expected_arg_types.iter().zip(actual_arg_types.iter())
                                 {
                                     Self::collect_generic_bindings_from_types(
                                         formal,
