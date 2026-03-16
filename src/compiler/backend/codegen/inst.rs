@@ -1,9 +1,9 @@
 use super::*;
 use crate::common::builtins;
 use crate::common::intrinsics::*;
-use crate::middle::mir::*;
-use crate::frontend::token::TokenType;
 use crate::common::types::TejxType;
+use crate::frontend::token::TokenType;
+use crate::middle::mir::*;
 
 impl CodeGen {
     pub(crate) fn gen_instruction_v2(
@@ -249,14 +249,11 @@ impl CodeGen {
             || matches!(r_ty, TejxType::Any);
 
         // If it's a comparison and either side is String, it's a string op
-        if matches!(
-            op,
-            TokenType::EqualEqual
-                | TokenType::BangEqual
-        )
-            && (matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String)) {
-                is_string_op = true;
-            }
+        if matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
+            && (matches!(l_ty, TejxType::String) || matches!(r_ty, TejxType::String))
+        {
+            is_string_op = true;
+        }
 
         let is_numeric_op = !is_string_op
             && !is_any_op
@@ -388,29 +385,63 @@ impl CodeGen {
                     "{} = call i64 @rt_str_concat_v2(i64 {}, i64 {})",
                     tmp, l_val, r_val
                 ));
-            } else if matches!(op, TokenType::EqualEqual)
-            {
-                self.declare_runtime_fn("rt_str_equals", "i32 @rt_str_equals(i64, i64)");
+            } else if matches!(
+                op,
+                TokenType::EqualEqual
+                    | TokenType::BangEqual
+                    | TokenType::Less
+                    | TokenType::LessEqual
+                    | TokenType::Greater
+                    | TokenType::GreaterEqual
+            ) {
+                let rt_fn = if matches!(op, TokenType::EqualEqual | TokenType::BangEqual) {
+                    "rt_str_equals"
+                } else {
+                    "rt_str_compare"
+                };
+                self.declare_runtime_fn(rt_fn, &format!("i32 @{}(i64, i64)", rt_fn));
                 self.temp_counter += 1;
-                let eq_res = format!("%eq_res{}", self.temp_counter);
+                let raw_res = format!("%raw_res{}", self.temp_counter);
                 self.emit_line(&format!(
-                    "{} = call i32 @rt_str_equals(i64 {}, i64 {})",
-                    eq_res, l_val, r_val
+                    "{} = call i32 @{}(i64 {}, i64 {})",
+                    raw_res, rt_fn, l_val, r_val
                 ));
-                self.emit_line(&format!("{} = zext i32 {} to i64", tmp, eq_res));
-            } else if matches!(op, TokenType::BangEqual)
-            {
-                self.declare_runtime_fn("rt_str_equals", "i32 @rt_str_equals(i64, i64)");
-                self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
-                let eq_res_32 = format!("%eq_res32_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i32 @rt_str_equals(i64 {}, i64 {})",
-                    eq_res_32, l_val, r_val
-                ));
-                let eq_tmp = format!("%eq{}", self.temp_counter);
-                self.emit_line(&format!("{} = zext i32 {} to i64", eq_tmp, eq_res_32));
-                self.temp_counter += 1;
-                self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", tmp, eq_tmp));
+
+                let bool_res = if rt_fn == "rt_str_compare" {
+                    let pred = match op {
+                        TokenType::Less => "slt",
+                        TokenType::LessEqual => "sle",
+                        TokenType::Greater => "sgt",
+                        TokenType::GreaterEqual => "sge",
+                        _ => "eq",
+                    };
+                    self.temp_counter += 1;
+                    let cmp_res = format!("%cmp_res{}", self.temp_counter);
+                    self.emit_line(&format!("{} = icmp {} i32 {}, 0", cmp_res, pred, raw_res));
+                    self.temp_counter += 1;
+                    let b = format!("%b{}", self.temp_counter);
+                    self.emit_line(&format!("{} = zext i1 {} to i8", b, cmp_res));
+                    b
+                } else {
+                    self.temp_counter += 1;
+                    let b = format!("%b{}", self.temp_counter);
+                    self.emit_line(&format!("{} = trunc i32 {} to i8", b, raw_res));
+                    if matches!(op, TokenType::BangEqual) {
+                        self.declare_runtime_fn("rt_not", "i64 @rt_not(i64)");
+                        let b_i64 = self.emit_abi_cast(&b, &TejxType::Bool, &TejxType::Int64);
+                        self.temp_counter += 1;
+                        let not_res = format!("%not_res{}", self.temp_counter);
+                        self.emit_line(&format!("{} = call i64 @rt_not(i64 {})", not_res, b_i64));
+                        self.emit_abi_cast(&not_res, &TejxType::Int64, &TejxType::Bool)
+                    } else {
+                        b
+                    }
+                };
+
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+                let final_tmp = self.emit_abi_cast(&bool_res, &TejxType::Bool, dst_ty);
+                self.emit_store_variable(dst, &final_tmp, dst_ty);
+                return;
             } else {
                 // Fallback numeric addition on strings
                 self.emit_line(&format!("{} = add i64 {}, {}", tmp, l_val, r_val));
@@ -507,10 +538,7 @@ impl CodeGen {
                     ));
                     self.temp_counter += 1;
                     let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = zext i1 {} to i8",
-                        cmp_bool, cmp_res
-                    ));
+                    self.emit_line(&format!("{} = zext i1 {} to i8", cmp_bool, cmp_res));
                     let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                     self.emit_store_variable(dst, &final_res, dst_ty);
                 } else {
@@ -563,11 +591,7 @@ impl CodeGen {
                     _ => (false, "fadd", ""),
                 };
 
-                let is_equality = matches!(
-                    op,
-                    TokenType::EqualEqual
-                        | TokenType::BangEqual
-                );
+                let is_equality = matches!(op, TokenType::EqualEqual | TokenType::BangEqual);
 
                 if is_any_op && is_equality {
                     let l_eval =
@@ -607,10 +631,7 @@ impl CodeGen {
                     ));
                     self.temp_counter += 1;
                     let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = zext i1 {} to i8",
-                        cmp_bool, cmp_res
-                    ));
+                    self.emit_line(&format!("{} = zext i1 {} to i8", cmp_bool, cmp_res));
                     let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                     self.emit_store_variable(dst, &final_res, dst_ty);
                 } else {
@@ -654,10 +675,7 @@ impl CodeGen {
                 ));
                 self.temp_counter += 1;
                 let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = zext i1 {} to i8",
-                    cmp_bool, cmp_res
-                ));
+                self.emit_line(&format!("{} = zext i1 {} to i8", cmp_bool, cmp_res));
                 let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                 self.emit_store_variable(dst, &final_res, dst_ty);
             } else {
@@ -671,10 +689,7 @@ impl CodeGen {
         }
 
         if temp_root_count > 0 {
-            self.emit_line(&format!(
-                "call void @rt_pop_roots(i64 {})",
-                temp_root_count
-            ));
+            self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
         }
     }
 
@@ -1383,10 +1398,7 @@ impl CodeGen {
                             let tmp_root = format!("%arg_root_{}", self.temp_counter);
                             self.alloca_buffer
                                 .push_str(&format!("  {} = alloca i64\n", tmp_root));
-                            self.emit_line(&format!(
-                                "store i64 {}, i64* {}",
-                                casted, tmp_root
-                            ));
+                            self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
                             self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
                             temp_root_count += 1;
                         }
@@ -1563,10 +1575,7 @@ impl CodeGen {
             }
 
             if temp_root_count > 0 {
-                self.emit_line(&format!(
-                    "call void @rt_pop_roots(i64 {})",
-                    temp_root_count
-                ));
+                self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
             }
 
             let mut final_val = result_tmp.clone();
@@ -1750,10 +1759,7 @@ impl CodeGen {
             let tmp_root = format!("%callee_root_{}", self.temp_counter);
             self.alloca_buffer
                 .push_str(&format!("  {} = alloca i64\n", tmp_root));
-            self.emit_line(&format!(
-                "store i64 {}, i64* {}",
-                callee_val, tmp_root
-            ));
+            self.emit_line(&format!("store i64 {}, i64* {}", callee_val, tmp_root));
             self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
             temp_root_count += 1;
         }
@@ -1788,10 +1794,7 @@ impl CodeGen {
         // Lambdas/closures use the Any/i64 ABI for return values.
         let call_ret_ty = TejxType::Any;
         for (idx, _) in args.iter().enumerate() {
-            let ty = param_tys
-                .get(idx)
-                .cloned()
-                .unwrap_or(TejxType::Int64);
+            let ty = param_tys.get(idx).cloned().unwrap_or(TejxType::Int64);
             arg_types.push(Self::get_llvm_type(&ty).to_string());
         }
         while arg_types.len() < 5 {
@@ -1808,10 +1811,7 @@ impl CodeGen {
         for (idx, arg) in args.iter().enumerate() {
             let mut val = self.resolve_value(arg);
             let arg_ty = arg.get_type();
-            let param_ty = param_tys
-                .get(idx)
-                .cloned()
-                .unwrap_or(TejxType::Int64);
+            let param_ty = param_tys.get(idx).cloned().unwrap_or(TejxType::Int64);
 
             if matches!(arg_ty, TejxType::String) && val.starts_with("ptrtoint") {
                 val = self.emit_box_string(&val);
@@ -1849,10 +1849,7 @@ impl CodeGen {
         }
 
         if temp_root_count > 0 {
-            self.emit_line(&format!(
-                "call void @rt_pop_roots(i64 {})",
-                temp_root_count
-            ));
+            self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
         }
 
         if !dst.is_empty() && ret_llvm != "void" {
@@ -1935,14 +1932,8 @@ impl CodeGen {
                 if target_llvm == "float" {
                     self.temp_counter += 1;
                     let d_val = format!("%d_val{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i64 {} to double",
-                        d_val, num_val
-                    ));
-                    self.emit_line(&format!(
-                        "{} = fptrunc double {} to float",
-                        tmp, d_val
-                    ));
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, num_val));
+                    self.emit_line(&format!("{} = fptrunc double {} to float", tmp, d_val));
                 } else {
                     self.emit_line(&format!(
                         "{} = bitcast i64 {} to {}",

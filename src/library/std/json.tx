@@ -301,7 +301,7 @@ export function parse(s: string): any {
         skipWhitespace();
         if (index >= len) throw new Error("SyntaxError: Unexpected end of JSON input");
 
-        let ch = " ";
+        let ch: string = " ";
         if (index < len) ch = s[index];
         if (ch == "{") return parseObject();
         if (ch == "[") return parseArray();

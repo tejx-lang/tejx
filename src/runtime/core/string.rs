@@ -367,6 +367,33 @@ pub unsafe extern "C" fn rt_str_at(id: i64, index: i64) -> i64 {
     rt_string_from_c_str(buf.as_ptr() as *const _)
 }
 #[no_mangle]
+pub unsafe extern "C" fn rt_str_compare(a: i64, b: i64) -> i32 {
+    if a == b {
+        return 0;
+    }
+    let parts_a = get_str_parts(a);
+    let parts_b = get_str_parts(b);
+
+    if let (Some((d1, l1)), Some((d2, l2))) = (parts_a, parts_b) {
+        let min_len = if l1 < l2 { l1 } else { l2 };
+        if min_len > 0 {
+            let res = memcmp(d1 as *const _, d2 as *const _, min_len as usize);
+            if res != 0 {
+                return if res < 0 { -1 } else { 1 };
+            }
+        }
+        if l1 == l2 {
+            0
+        } else if l1 < l2 {
+            -1
+        } else {
+            1
+        }
+    } else {
+        0
+    }
+}
+#[no_mangle]
 pub unsafe extern "C" fn rt_str_equals(a: i64, b: i64) -> i32 {
     if a == b {
         return 1;

@@ -27,6 +27,7 @@ impl TypeChecker {
                             is_variadic: false,
                             aliased_type: None,
                             generic_params: class_decl.generic_params.clone(),
+                            literal_length: None,
                         },
                     );
                 }
@@ -51,10 +52,10 @@ impl TypeChecker {
                                 &class_decl.generic_params,
                             )),
                             is_static: m._is_static,
-                            access: if m._access == crate::frontend::ast::AccessModifier::Private {
-                                AccessLevel::Private
-                            } else {
-                                AccessLevel::Public
+                            access: match m._access {
+                                crate::frontend::ast::AccessModifier::Private => AccessLevel::Private,
+                                crate::frontend::ast::AccessModifier::Protected => AccessLevel::Protected,
+                                _ => AccessLevel::Public,
                             },
                             is_readonly: false,
                             generic_params: Vec::new(),
@@ -101,10 +102,10 @@ impl TypeChecker {
                         MemberInfo {
                             ty: TejxType::from_name(&parameterized_type),
                             is_static: method.is_static,
-                            access: if method._access == crate::frontend::ast::AccessModifier::Private {
-                                AccessLevel::Private
-                            } else {
-                                AccessLevel::Public
+                            access: match method._access {
+                                crate::frontend::ast::AccessModifier::Private => AccessLevel::Private,
+                                crate::frontend::ast::AccessModifier::Protected => AccessLevel::Protected,
+                                _ => AccessLevel::Public,
                             },
                             is_readonly: true, // Methods are readonly
                             generic_params: method.func.generic_params.clone(),
@@ -154,16 +155,14 @@ impl TypeChecker {
                         }
                         param_types.push(p_ty);
                     }
-                    let p_str = param_types.join(",");
-                    let sig_str = if p_str.is_empty() {
-                        "function:void".to_string()
-                    } else {
-                        format!("function:void:{}", p_str)
-                    };
+                    let mut params = Vec::new();
+                    for p in &param_types {
+                        params.push(TejxType::from_name(p));
+                    }
                     members.insert(
                         "constructor".to_string(),
                         MemberInfo {
-                            ty: TejxType::from_name(&sig_str),
+                            ty: TejxType::Function(params, Box::new(TejxType::Void)),
                             is_static: false,
                             access: AccessLevel::Public,
                             is_readonly: true,
@@ -224,6 +223,7 @@ impl TypeChecker {
                             is_variadic,
                             aliased_type: None,
                             generic_params: func.generic_params.clone(),
+                            literal_length: None,
                         },
                     );
                 }
@@ -244,6 +244,7 @@ impl TypeChecker {
                             is_variadic: false,
                             aliased_type: { Some(TejxType::from_node(_type_def)) },
                             generic_params: Vec::new(),
+                            literal_length: None,
                         },
                     );
                 }

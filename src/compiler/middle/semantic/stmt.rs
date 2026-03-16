@@ -136,7 +136,11 @@ impl TypeChecker {
                         ty_str
                     };
 
-                    let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col);
+                    let mut literal_length = None;
+                    if let Expression::ArrayLiteral { elements, .. } = expr.as_ref() {
+                        literal_length = Some(elements.len());
+                    }
+                    let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col, literal_length);
                 } else if !has_explicit_type {
                     self.report_error_detailed(
                         "Type annotation required for uninitialized variable".to_string(),
@@ -151,6 +155,7 @@ impl TypeChecker {
                         *is_const,
                         *line,
                         *_col,
+                        None,
                     );
                 } else {
                     let _ = self.define_pattern(
@@ -159,6 +164,7 @@ impl TypeChecker {
                         *is_const,
                         *line,
                         *_col,
+                        None,
                     );
                 }
                 Ok(())
@@ -374,6 +380,7 @@ impl TypeChecker {
                             is_variadic,
                             aliased_type: None,
                             generic_params: func.generic_params.clone(),
+                            literal_length: None,
                         },
                     );
                 }
@@ -434,6 +441,54 @@ impl TypeChecker {
                     }
                 }
 
+                if !class_decl._parent_name.is_empty() {
+                    let mut current_parent = class_decl._parent_name.clone();
+                    while !current_parent.is_empty() && current_parent != "<inferred>" {
+                        if let Some(parent_members) = self.class_members.get(&current_parent).cloned() {
+                            for m in &class_decl.methods {
+                                if let Some(parent_m) = parent_members.get(&m.func.name) {
+                                    let mut param_types = Vec::new();
+                                    for p in &m.func.params {
+                                        let mut pt = p.type_name.to_string();
+                                        if pt.is_empty() { pt = "<inferred>".to_string(); }
+                                        param_types.push(pt);
+                                    }
+                                    let p_str = param_types.join(",");
+                                    let rt_str = if m.func.return_type.to_string().is_empty() {
+                                        "void".to_string()
+                                    } else {
+                                        m.func.return_type.to_string()
+                                    };
+                                    let sig_str = if param_types.is_empty() {
+                                        format!("function:{}", rt_str)
+                                    } else {
+                                        format!("function:{}:{}", rt_str, p_str)
+                                    };
+                                    
+                                    let derived_ty = TejxType::from_name(&sig_str);
+
+                                    // Check that child method signature is compatible with parent's
+                                    let is_compat = self.are_types_compatible(&parent_m.ty, &derived_ty);
+                                    if !is_compat {
+                                        self.report_error_detailed(
+                                            format!("Method '{}' overrides parent method but signature is incompatible", m.func.name),
+                                            m.func._line,
+                                            m.func._col,
+                                            "E0100",
+                                            Some(&format!("Expected signature compatible with: {}", parent_m.ty.to_name())),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(next_parent) = self.class_hierarchy.get(&current_parent) {
+                            current_parent = next_parent.clone();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
                 self.enter_scope();
                 let mut this_type = class_decl.name.clone();
                 if !class_decl.generic_params.is_empty() {
@@ -453,8 +508,37 @@ impl TypeChecker {
                     self.define("super".to_string(), class_decl._parent_name.clone());
                 }
 
+                let type_string_contains = |ty_str: &str, param: &str| -> bool {
+                    let mut last_pos = 0;
+                    let p_len = param.len();
+                    while let Some(idx) = ty_str[last_pos..].find(param) {
+                        let abs_idx = last_pos + idx;
+                        let before_char = if abs_idx > 0 { ty_str[..abs_idx].chars().last() } else { None };
+                        let after_char = ty_str[abs_idx + p_len..].chars().next();
+                        let is_word_start = match before_char { Some(c) => !c.is_alphanumeric() && c != '_', None => true };
+                        let is_word_end = match after_char { Some(c) => !c.is_alphanumeric() && c != '_', None => true };
+                        if is_word_start && is_word_end { return true; }
+                        last_pos = abs_idx + p_len;
+                    }
+                    false
+                };
+
                 for member in &class_decl._members {
                     let mut member_ty_str = member._type_name.to_string();
+                    if member._is_static {
+                        for gp in &class_decl.generic_params {
+                            if type_string_contains(&member_ty_str, &gp.name) {
+                                self.report_error_detailed(
+                                    format!("Static member '{}' cannot reference class type parameter '{}'", member._name, gp.name),
+                                    class_decl._line,
+                                    class_decl._col,
+                                    "E0122",
+                                    Some("Static members are shared among all instances, and do not belong to a specific generic instantiation"),
+                                );
+                            }
+                        }
+                    }
+
                     if member_ty_str.is_empty() {
                         self.report_error_detailed(
                             format!("Type annotation required for member '{}'", member._name),
@@ -522,6 +606,29 @@ impl TypeChecker {
                 }
 
                 for method in &class_decl.methods {
+                    if method.is_static {
+                        let mut all_types = String::new();
+                        for p in &method.func.params {
+                            all_types.push_str(&p.type_name.to_string());
+                            all_types.push(',');
+                        }
+                        all_types.push_str(&method.func.return_type.to_string());
+                        
+                        for gp in &class_decl.generic_params {
+                            if !method.func.generic_params.iter().any(|mgp| mgp.name == gp.name) {
+                                if type_string_contains(&all_types, &gp.name) {
+                                    self.report_error_detailed(
+                                        format!("Static method '{}' cannot reference class type parameter '{}'", method.func.name, gp.name),
+                                        class_decl._line,
+                                        class_decl._col,
+                                        "E0122",
+                                        Some("Static methods are shared among all instances, and do not belong to a specific generic instantiation"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     self.enter_scope();
                     // Register method-level generic params as valid types
                     for gp in &method.func.generic_params {
@@ -576,6 +683,60 @@ impl TypeChecker {
                     }
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some(TejxType::Void);
+
+                    if !class_decl._parent_name.is_empty() {
+                        let mut needs_super = false;
+                        let mut current_parent = class_decl._parent_name.clone();
+                        while !current_parent.is_empty() && current_parent != "<inferred>" {
+                            if let Some(parent_members) = self.class_members.get(&current_parent) {
+                                if parent_members.contains_key("constructor") {
+                                    needs_super = true;
+                                    break;
+                                }
+                            }
+                            if let Some(next_parent) = self.class_hierarchy.get(&current_parent) {
+                                current_parent = next_parent.clone();
+                            } else {
+                                break;
+                            }
+                        }
+                        let is_implicit = constructor._line == class_decl._line && constructor._col == class_decl._col;
+
+                        if let Statement::BlockStmt { statements, .. } = &*constructor.body {
+                            let mut has_super_first = is_implicit;
+                            for (i, stmt) in statements.iter().enumerate() {
+                                if let Statement::ExpressionStmt { _expression: expr, .. } = stmt {
+                                    if let Expression::CallExpr { callee, .. } = &**expr {
+                                        if let Expression::SuperExpr { .. } = &**callee {
+                                            if i == 0 {
+                                                has_super_first = true;
+                                            } else {
+                                                self.report_error_detailed(
+                                                    "super() must be first in constructor".to_string(),
+                                                    constructor._line,
+                                                    constructor._col,
+                                                    "E0111",
+                                                    Some("Move the super() call to the top of the constructor block")
+                                                );
+                                                has_super_first = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if !has_super_first && needs_super {
+                                self.report_error_detailed(
+                                    "Missing super() call in derived class constructor".to_string(),
+                                    constructor._line,
+                                    constructor._col,
+                                    "E0111",
+                                    Some("Call super() with appropriate arguments before initializing derived class members")
+                                );
+                            }
+                        }
+                    }
+
                     self.check_statement(&constructor.body)?;
                     self.current_function_return = prev_return;
                     self.exit_scope();
@@ -820,10 +981,11 @@ impl TypeChecker {
         is_const: bool,
         line: usize,
         col: usize,
+        literal_length: Option<usize>,
     ) -> Result<(), ()> {
         match pattern {
             BindingNode::Identifier(name) => {
-                self.define_variable(name.clone(), type_name, is_const, line, col);
+                self.define_variable(name.clone(), type_name, is_const, line, col, literal_length);
             }
             BindingNode::ArrayBinding { elements, rest } => {
                 let parsed = TejxType::from_name(&type_name);
@@ -835,7 +997,7 @@ impl TypeChecker {
                 };
 
                 for el in elements {
-                    let _ = self.define_pattern(el, inner_type.clone(), is_const, line, col);
+                    let _ = self.define_pattern(el, inner_type.clone(), is_const, line, col, None);
                 }
                 if let Some(rest_pattern) = rest {
                     let rest_type = if inner_type == "<inferred>" {
@@ -849,6 +1011,7 @@ impl TypeChecker {
                         is_const,
                         line,
                         col,
+                        None,
                     );
                 }
             }
@@ -868,7 +1031,7 @@ impl TypeChecker {
                             prop_ty = self.substitute_generics(&info.ty.to_name(), &type_name);
                         }
                     }
-                    let _ = self.define_pattern(target, prop_ty, is_const, line, col);
+                    let _ = self.define_pattern(target, prop_ty, is_const, line, col, None);
                 }
             }
         }

@@ -423,10 +423,40 @@ impl TypeChecker {
                 }
             }
             Expression::CastExpr {
-                expr, target_type, ..
+                expr, target_type, _line, _col
             } => {
-                let _expr_type = self.check_expression(expr)?;
-                Ok(TejxType::from_node(target_type))
+                let expr_type = self.check_expression(expr)?;
+                let dest_type = TejxType::from_node(target_type);
+                
+                let expr_name = expr_type.to_name();
+                let dest_name = dest_type.to_name();
+                
+                if expr_type == TejxType::Any || dest_type == TejxType::Any {
+                    return Ok(dest_type);
+                }
+                
+                if expr_type.is_numeric() && dest_type.is_numeric() {
+                    return Ok(dest_type);
+                }
+                
+                // Allow upcasts and downcasts
+                let is_upcast = self.are_types_compatible(&dest_type, &expr_type);
+                let is_downcast = self.are_types_compatible(&expr_type, &dest_type);
+                
+                let is_string_char = (expr_type == TejxType::String && dest_type == TejxType::Char)
+                                  || (expr_type == TejxType::Char && dest_type == TejxType::String);
+                                  
+                if !is_upcast && !is_downcast && !is_string_char && expr_name != "<inferred>" && dest_name != "<inferred>" {
+                    self.report_error_detailed(
+                        format!("Cannot cast '{}' to '{}'", expr_name, dest_name),
+                        *_line,
+                        *_col,
+                        "E0106",
+                        Some("Types are completely unrelated and cannot be casted"),
+                    );
+                }
+                
+                Ok(dest_type)
             }
             Expression::BinaryExpr {
                 left,
@@ -560,6 +590,42 @@ impl TypeChecker {
                                     if !info.is_static {
                                         self.report_error_detailed(format!("Member '{}' is not static", member), *_line, *_col, "E0116", Some("Access this member on an instance, not the class itself"));
                                     }
+                                    
+                                    let is_accessible = match info.access {
+                                        AccessLevel::Public => true,
+                                        AccessLevel::Private => {
+                                            self.current_class.as_ref().map(|c| c.split('<').next().unwrap_or(c)) == Some(name)
+                                        },
+                                        AccessLevel::Protected => {
+                                            if let Some(current) = &self.current_class {
+                                                let current_base = current.split('<').next().unwrap_or(current);
+                                                let mut is_subclass = current_base == name;
+                                                let mut curr = current_base.to_string();
+                                                while !is_subclass {
+                                                    if let Some(parent) = self.class_hierarchy.get(&curr) {
+                                                        if parent == name { is_subclass = true; break; }
+                                                        curr = parent.clone();
+                                                    } else {
+                                                        break;
+                                                    }
+                                                }
+                                                is_subclass
+                                            } else {
+                                                false
+                                            }
+                                        }
+                                    };
+                                    
+                                    if !is_accessible {
+                                        self.report_error_detailed(
+                                            format!("Member '{}' is {} and cannot be accessed here", member, if info.access == AccessLevel::Private { "private" } else { "protected" }),
+                                            *_line,
+                                            *_col,
+                                            "E0106",
+                                            Some("Check the member's visibility modifier in the class definition"),
+                                        );
+                                    }
+
                                     return Ok(TejxType::from_name(
                                         &self.substitute_generics(&info.ty.to_name(), name),
                                     ));
@@ -603,16 +669,43 @@ impl TypeChecker {
                     if info.is_static {
                         self.report_error_detailed(format!("Static member '{}' accessed on instance", member), *_line, *_col, "E0116", Some("Access static members using the class name, e.g., ClassName.member"));
                     }
-                    if info.access == AccessLevel::Private {
-                        if let Some(current) = &self.current_class {
-                            let current_base = current.split('<').next().unwrap_or(current);
-                            let obj_base = obj_type.split('<').next().unwrap_or(&obj_type);
-                            if current_base != obj_base && !obj_type.starts_with("function") {
-                                // Check hierarchy if needed, but for now simple check
-                                self.report_error_detailed(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_base), *_line, *_col, "E0106", Some("Mark the member as 'public' in the class definition, or access it from within the class"));
+                    if info.access != AccessLevel::Public {
+                        let obj_base = obj_type.split('<').next().unwrap_or(&obj_type);
+                        if !obj_base.starts_with("function") {
+                            let is_accessible = match info.access {
+                                AccessLevel::Public => true,
+                                AccessLevel::Private => {
+                                    self.current_class.as_ref().map(|c| c.split('<').next().unwrap_or(c)) == Some(obj_base)
+                                },
+                                AccessLevel::Protected => {
+                                    if let Some(current) = &self.current_class {
+                                        let current_base = current.split('<').next().unwrap_or(current);
+                                        let mut is_subclass = current_base == obj_base;
+                                        let mut curr = current_base.to_string();
+                                        while !is_subclass {
+                                            if let Some(parent) = self.class_hierarchy.get(&curr) {
+                                                if parent == obj_base { is_subclass = true; break; }
+                                                curr = parent.clone();
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                        is_subclass
+                                    } else {
+                                        false
+                                    }
+                                }
+                            };
+                            
+                            if !is_accessible {
+                                self.report_error_detailed(
+                                    format!("Member '{}' is {} and cannot be accessed here", member, if info.access == AccessLevel::Private { "private" } else { "protected" }),
+                                    *_line,
+                                    *_col,
+                                    "E0106",
+                                    Some("Check the member's visibility modifier in the class definition"),
+                                );
                             }
-                        } else {
-                            self.report_error_detailed(format!("Member '{}' is private and can only be accessed within class '{}'", member, obj_type), *_line, *_col, "E0106", Some("Mark the member as 'public' in the class definition, or access it from within the class"));
                         }
                     }
                     return Ok(TejxType::from_name(
@@ -827,7 +920,20 @@ impl TypeChecker {
 
                 // Check for readonly member assignment (getters without setters)
                 if let Expression::MemberAccessExpr { object, member, .. } = &**target {
-                    if let Ok(obj_type) = self.check_expression(object).map(|t| t.to_name()) {
+                    if let Ok(obj_type_struct) = self.check_expression(object) {
+                        let obj_type = obj_type_struct.to_name();
+                        
+                        // Check built-in readonly properties like .length
+                        if member == "length" && (obj_type_struct.is_array() || obj_type_struct.is_slice() || obj_type_struct == TejxType::String) {
+                            self.report_error_detailed(
+                                format!("Cannot assign to read-only property '{}'", member),
+                                *_line,
+                                *_col,
+                                "E0104",
+                                Some("The 'length' property of arrays and strings is read-only"),
+                            );
+                        }
+                        
                         // Check instance members
                         if let Some(info) = self.resolve_instance_member(&obj_type, member) {
                             if info.is_readonly {
@@ -843,7 +949,13 @@ impl TypeChecker {
                             if let TejxType::Object(props) = TejxType::from_name(&obj_type) {
                                 let exists = props.iter().any(|(name, _, _)| name == member);
                                 if !exists {
-                                    // Structural objects are open: allow dynamic property additions.
+                                    self.report_error_detailed(
+                                        format!("Property '{}' does not exist on type '{}'", member, obj_type),
+                                        *_line,
+                                        *_col,
+                                        "E0105",
+                                        Some("Cannot add dynamic properties to structural objects in statically typed context"),
+                                    );
                                 }
                             }
                             // Static access??
@@ -858,6 +970,52 @@ impl TypeChecker {
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                } else if let Expression::ArrayAccessExpr { target: arr_target, index: arr_index, _line: arr_line, _col: arr_col } = &**target {
+                    if let Ok(arr_ty) = self.check_expression(arr_target) {
+                        let mut unwrapped = arr_ty.to_name();
+                        if unwrapped.contains('|') {
+                            unwrapped = unwrapped.split('|').map(|s| s.trim().to_string()).find(|s| s != "None" && !s.is_empty()).unwrap_or(unwrapped);
+                        }
+                        let parsed = TejxType::from_name(&unwrapped);
+                        let mut array_length: Option<usize> = None;
+                        
+                        if let TejxType::FixedArray(_, size) = &parsed {
+                            array_length = Some(*size);
+                        } else if parsed.is_array() {
+                            if let Expression::Identifier { name, .. } = &**arr_target {
+                                if let Some(sym) = self.lookup(name) {
+                                    if let Some(len) = sym.literal_length {
+                                        array_length = Some(len);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if let Some(size) = array_length {
+                            let mut const_index: Option<i64> = None;
+                            match arr_index.as_ref() {
+                                Expression::NumberLiteral { value, .. } => {
+                                    if value.fract() == 0.0 { const_index = Some(*value as i64); }
+                                }
+                                Expression::UnaryExpr { op, right, .. } => {
+                                    if matches!(op, TokenType::Minus) {
+                                        if let Expression::NumberLiteral { value, .. } = right.as_ref() {
+                                            if value.fract() == 0.0 { const_index = Some(-(*value as i64)); }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            if let Some(idx) = const_index {
+                                if idx < 0 || (idx as usize) >= size {
+                                    self.report_error_detailed(
+                                        format!("Array index {} out of bounds for array length {}", idx, size),
+                                        *arr_line, *arr_col, "E0100", Some("Use a valid index within the array bounds")
+                                    );
                                 }
                             }
                         }
@@ -1431,29 +1589,14 @@ impl TypeChecker {
                                         false
                                     }
                                 };
-                                let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
-                                let original_param_is_generic =
-                                    if let Some(sym) = self.lookup(func_name) {
-                                        if adjusted_i < sym.params.len() {
-                                            let orig = sym.params[adjusted_i].to_name();
-                                            orig.len() <= 2
-                                                && orig
-                                                    .chars()
-                                                    .next()
-                                                    .is_some_and(|c| c.is_uppercase())
-                                                && orig.chars().all(|c| c.is_alphanumeric())
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    };
                                 let expected_has_unresolved =
                                     Self::contains_unresolved_generic_type(&expected_obj);
+                                let actual_has_unresolved = 
+                                    Self::contains_unresolved_generic_type(&actual_obj);
                                 if !is_generic_param(&target_type)
                                     && !is_generic_param(&arg_type)
-                                    && !original_param_is_generic
                                     && !expected_has_unresolved
+                                    && !actual_has_unresolved
                                 {
                                     self.report_error_detailed(
                                         format!(

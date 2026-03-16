@@ -19,7 +19,8 @@ impl Lowering {
 
         // Resolve standard paths
         let stdlib_path = self.stdlib_path.borrow();
-        let core_dir = stdlib_path.join(CORE_DIR);
+        let core_dir = std::fs::canonicalize(stdlib_path.join(CORE_DIR))
+            .unwrap_or_else(|_| stdlib_path.join(CORE_DIR));
 
         // 1. Implicitly import prelude if this isn't the prelude itself
         let is_prelude = filename.ends_with("prelude.tx") || filename.contains("prelude.tx");

@@ -513,6 +513,7 @@ impl Parser {
             }
 
             if self.match_token(TokenType::Constructor) {
+                let constructor_start = self.previous().clone();
                 // Constructor
                 self.consume(TokenType::OpenParen, "Expected '('");
                 let mut params = Vec::new();
@@ -551,8 +552,8 @@ impl Parser {
                     _is_async: false,
                     is_extern: false,
                     generic_params: Vec::new(),
-                    _line: start.line,
-                    _col: start.column,
+                    _line: constructor_start.line,
+                    _col: constructor_start.column,
                 });
                 continue;
             }

@@ -254,7 +254,7 @@ impl TypeChecker {
         }
 
         if expected.is_numeric() && actual.is_numeric() {
-            // TejX allows wide implicit casts across numerics
+            // TejX allows wide implicit casts across numerics (e.g. float to int)
             return true;
         }
 

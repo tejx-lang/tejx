@@ -16,6 +16,7 @@ use std::collections::HashMap;
 pub enum AccessLevel {
     Public,
     Private,
+    Protected,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +37,7 @@ pub struct Symbol {
     pub is_variadic: bool,
     pub aliased_type: Option<TejxType>,
     pub generic_params: Vec<crate::frontend::ast::GenericParam>,
+    pub literal_length: Option<usize>,
 }
 
 pub struct TypeChecker {
@@ -175,6 +177,7 @@ impl TypeChecker {
                     is_variadic,
                     aliased_type: None,
                     generic_params: Vec::new(),
+                    literal_length: None,
                 },
             );
         }
@@ -215,6 +218,7 @@ impl TypeChecker {
                     is_variadic,
                     aliased_type: None,
                     generic_params: Vec::new(),
+                    literal_length: None,
                 },
             );
         }
@@ -227,6 +231,7 @@ impl TypeChecker {
         is_const: bool,
         line: usize,
         col: usize,
+        literal_length: Option<usize>,
     ) {
         // Parse signature first, as it only needs an immutable borrow of self
         let (_, final_params, is_variadic) = self.parse_signature(type_name.clone());
@@ -264,6 +269,7 @@ impl TypeChecker {
                     is_variadic,
                     aliased_type: None,
                     generic_params: Vec::new(),
+                    literal_length,
                 },
             );
         }

@@ -147,7 +147,7 @@ export class Promise<T> {
     }
 
     catchError<U>(onReject: (e: Error) => U): Promise<U> {
-        return rt_promise_then(this, 0 as (v: T) => U, onReject);
+        return rt_promise_then(this, 0 as any as (v: T) => U, onReject);
     }
 
     static resolve<T>(v: T): Promise<T> {
