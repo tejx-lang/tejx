@@ -208,7 +208,7 @@ impl CodeGen {
         &self,
         func: &MIRFunction,
         value: &MIRValue,
-        cache: &mut HashMap<String, bool>,
+        _cache: &mut HashMap<String, bool>,
         visiting: &mut HashSet<String>,
     ) -> bool {
         matches!(value.get_type(), TejxType::Class(_, _))
@@ -527,17 +527,6 @@ impl CodeGen {
         visiting.remove(var_name);
         cache.insert(var_name.to_string(), result);
         result
-    }
-
-    pub(crate) fn can_use_fixed_object_layout(&self, func: &MIRFunction, var_name: &str) -> bool {
-        let Some(target_key) = func
-            .variables
-            .get(var_name)
-            .and_then(Self::fixed_layout_shape_key)
-        else {
-            return false;
-        };
-        self.can_use_fixed_object_layout_for_key(func, var_name, &target_key)
     }
 
     pub(crate) fn can_use_fixed_object_layout_for_ty(

@@ -99,11 +99,18 @@ impl Diagnostic {
                 pointer.push('^');
             }
 
-            let inline_label = self.label.as_deref().unwrap_or(&self.message);
-            eprintln!(
-                "  \x1b[34m{} |\x1b[0m {}{}{}\x1b[0m {}\x1b[0m",
-                pad, sev_color, pointer, sev_color, inline_label
-            );
+            if let Some(inline_label) = self
+                .label
+                .as_deref()
+                .filter(|label| *label != self.message)
+            {
+                eprintln!(
+                    "  \x1b[34m{} |\x1b[0m {}{}{}\x1b[0m {}\x1b[0m",
+                    pad, sev_color, pointer, sev_color, inline_label
+                );
+            } else {
+                eprintln!("  \x1b[34m{} |\x1b[0m {}{}\x1b[0m", pad, sev_color, pointer);
+            }
             eprintln!("  \x1b[34m{} |\x1b[0m", pad);
 
             // Hint line

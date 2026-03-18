@@ -236,14 +236,37 @@ impl TypeChecker {
                         None,
                     );
                 } else {
-                    if matches!(TejxType::from_name(&type_annotation.to_string()), TejxType::Object(_)) {
-                        self.report_error_detailed(
-                            "Object-typed variables must be initialized at declaration".to_string(),
-                            *line,
-                            *_col,
-                            "E0101",
-                            Some("Provide an object literal or other initializer when declaring this object"),
-                        );
+                    let declared_ty = TejxType::from_node(type_annotation);
+                    match declared_ty {
+                        TejxType::Object(_) => {
+                            self.report_error_detailed(
+                                "Object-typed variables must be initialized at declaration"
+                                    .to_string(),
+                                *line,
+                                *_col,
+                                "E0101",
+                                Some(
+                                    "Provide an object literal or other initializer when declaring this object",
+                                ),
+                            );
+                        }
+                        TejxType::Optional(_) | TejxType::DynamicArray(_) => {}
+                        _ => {
+                            let ty_name = type_annotation.to_string();
+                            self.report_error_detailed(
+                                format!(
+                                    "Variables of type '{}' must be initialized at declaration",
+                                    ty_name
+                                ),
+                                *line,
+                                *_col,
+                                "E0101",
+                                Some(&format!(
+                                    "Provide an initializer (e.g., 'let x: {} = ...') or use Optional<{}> if None is allowed",
+                                    ty_name, ty_name
+                                )),
+                            );
+                        }
                     }
                     let _ = self.define_pattern(
                         pattern,

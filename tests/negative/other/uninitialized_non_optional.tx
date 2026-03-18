@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Non-optional variables must be initialized at declaration.
+
+function main() {
+    let integer: int;
+}

@@ -657,7 +657,7 @@ impl TypeChecker {
                 if matches!(TejxType::from_name(&obj_type), TejxType::Optional(_)) {
                     self.report_error_detailed(
                         format!(
-                            "Cannot access member '{}' on optional type '{}'",
+                            "Cannot access member '{}' because value of type '{}' may be None",
                             member, obj_type
                         ),
                         *_line,
