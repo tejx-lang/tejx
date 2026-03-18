@@ -428,6 +428,20 @@ impl CodeGen {
         let res_tmp = format!("%val{}", self.temp_counter);
 
         if matches!(obj.get_type(), TejxType::String) {
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            if matches!(dst_ty, TejxType::Char) {
+                self.declare_runtime_fn(
+                    "rt_String_charCodeAt",
+                    "i32 @rt_String_charCodeAt(i64, i64)",
+                );
+                self.emit_line(&format!(
+                    "{} = call i32 @rt_String_charCodeAt(i64 {}, i64 {})",
+                    res_tmp, obj_val, idx_val
+                ));
+                self.emit_store_variable(dst, &res_tmp, dst_ty);
+                return;
+            }
+
             self.declare_runtime_fn(
                 "rt_String_substring",
                 "i64 @rt_String_substring(i64, i64, i64)",
@@ -439,7 +453,6 @@ impl CodeGen {
                 "{} = call i64 @rt_String_substring(i64 {}, i64 {}, i64 {})",
                 res_tmp, obj_val, idx_val, idx_next
             ));
-            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
             let casted = self.emit_abi_cast(&res_tmp, &TejxType::String, dst_ty);
             self.emit_store_variable(dst, &casted, dst_ty);
             return;

@@ -124,6 +124,15 @@ pub unsafe extern "C" fn rt_String_substring(arg_s: i64, start: i64, end: i64) -
     res
 }
 #[no_mangle]
+pub unsafe extern "C" fn rt_String_charCodeAt(s: i64, index: i64) -> i32 {
+    if let Some((data, len)) = get_str_parts(s) {
+        if index >= 0 && index < len {
+            return *data.add(index as usize) as i32;
+        }
+    }
+    0
+}
+#[no_mangle]
 pub unsafe extern "C" fn rt_String_split(s: i64, sep: i64) -> i64 {
     let mut v_s = s;
     let mut v_sep = sep;

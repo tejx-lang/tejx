@@ -209,6 +209,20 @@ impl CodeGen {
             return val_name.to_string();
         }
 
+        if matches!(src_ty, TejxType::String) && matches!(dst_ty, TejxType::Char) {
+            self.declare_runtime_fn(
+                "rt_String_charCodeAt",
+                "i32 @rt_String_charCodeAt(i64, i64)",
+            );
+            self.temp_counter += 1;
+            let char_val = format!("%char_at_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i32 @rt_String_charCodeAt(i64 {}, i64 0)",
+                char_val, val_name
+            ));
+            return char_val;
+        }
+
         if dst_is_any && matches!(src_ty, TejxType::String) && val_name.starts_with("ptrtoint") {
             return self.emit_box_string(val_name);
         }

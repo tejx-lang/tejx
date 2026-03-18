@@ -1772,6 +1772,18 @@ impl CodeGen {
                                 ));
                                 final_reg = bits_i64;
                             }
+                        } else if matches!(elem_ty, TejxType::Bool) {
+                            let b_val = self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Bool);
+                            self.temp_counter += 1;
+                            let bits_i64 = format!("%arr_bool_bits64_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = zext i8 {} to i64", bits_i64, b_val));
+                            final_reg = bits_i64;
+                        } else if matches!(elem_ty, TejxType::Char) {
+                            let c_val = self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Char);
+                            self.temp_counter += 1;
+                            let bits_i64 = format!("%arr_char_bits64_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = zext i32 {} to i64", bits_i64, c_val));
+                            final_reg = bits_i64;
                         }
                     }
                 }
@@ -1784,7 +1796,11 @@ impl CodeGen {
                     Self::get_llvm_type(arg_ty).to_string()
                 };
 
-                let casted = if array_value_arg && array_elem_ty.as_ref().is_some_and(|ty| ty.is_float()) {
+                let casted = if array_value_arg
+                    && array_elem_ty
+                        .as_ref()
+                        .is_some_and(|ty| ty.is_float() || matches!(ty, TejxType::Bool | TejxType::Char))
+                {
                     final_reg.clone()
                 } else if is_math_fn || final_callee == "rt_to_string_float" {
                     self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float64)
