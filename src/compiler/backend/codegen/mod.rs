@@ -18,6 +18,7 @@ pub struct CodeGen {
     declared_functions: HashSet<String>,
     defined_functions: HashSet<String>,
     function_param_counts: HashMap<String, usize>,
+    function_param_types: HashMap<String, Vec<TejxType>>,
     declared_globals: HashSet<String>,
     string_constant_cache: HashMap<String, (String, usize)>,
     boxed_string_cache: HashMap<String, String>,
@@ -36,6 +37,7 @@ pub struct CodeGen {
     volatile_locals: bool,
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
+    pub class_parents: HashMap<String, String>,
     pub type_id_map: HashMap<String, u32>,
     closure_adapters: HashMap<String, String>,
     pub object_shape_names: HashMap<String, String>,
@@ -92,6 +94,7 @@ impl CodeGen {
     pub(crate) fn is_gc_managed(ty: &TejxType) -> bool {
         match ty {
             TejxType::Class(_, _)
+            | TejxType::Optional(_)
             | TejxType::FixedArray(_, _)
             | TejxType::DynamicArray(_)
             | TejxType::Function(_, _)
@@ -99,7 +102,6 @@ impl CodeGen {
             | TejxType::Any
             | TejxType::Slice(_)
             | TejxType::Object(_) => true,
-            TejxType::Union(types) => types.iter().any(Self::is_gc_managed),
             _ => false,
         }
     }
@@ -115,6 +117,7 @@ impl CodeGen {
             declared_functions: HashSet::new(),
             defined_functions: HashSet::new(),
             function_param_counts: HashMap::new(),
+            function_param_types: HashMap::new(),
             declared_globals: HashSet::new(),
             string_constant_cache: HashMap::new(),
             boxed_string_cache: HashMap::new(),
@@ -133,6 +136,7 @@ impl CodeGen {
             volatile_locals: false,
             class_fields: HashMap::new(),
             class_methods: HashMap::new(),
+            class_parents: HashMap::new(),
             type_id_map: HashMap::new(),
             closure_adapters: HashMap::new(),
             object_shape_names: HashMap::new(),
@@ -183,5 +187,28 @@ impl CodeGen {
         self.buffer.push_str("  ");
         self.buffer.push_str(code);
         self.buffer.push('\n');
+    }
+
+    pub(crate) fn class_matches_instanceof(&self, class_name: &str, target_class: &str) -> bool {
+        let mut current = Some(class_name.to_string());
+        while let Some(name) = current {
+            if name == target_class {
+                return true;
+            }
+            current = self.class_parents.get(&name).cloned();
+        }
+        false
+    }
+
+    pub(crate) fn instanceof_type_ids(&self, target_class: &str) -> Vec<u32> {
+        let mut type_ids = Vec::new();
+        for (class_name, type_id) in &self.type_id_map {
+            if self.class_matches_instanceof(class_name, target_class) {
+                type_ids.push(*type_id);
+            }
+        }
+        type_ids.sort_unstable();
+        type_ids.dedup();
+        type_ids
     }
 }

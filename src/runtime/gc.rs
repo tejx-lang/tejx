@@ -157,6 +157,13 @@ pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
     roots.get(slot).copied().unwrap_or(0)
 }
 
+pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
+    let mut roots = STATIC_ROOTS.lock().unwrap();
+    if let Some(root) = roots.get_mut(slot) {
+        *root = val;
+    }
+}
+
 unsafe fn mark_static_roots() {
     let roots = STATIC_ROOTS.lock().unwrap();
     for &root in roots.iter() {

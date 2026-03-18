@@ -224,7 +224,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         let s: string = v as string;
         return quoteString ? "\"" + s + "\"" : s;
     }
-    if (rt_str_equals(ty, "int") || rt_str_equals(ty, "float") || rt_str_equals(ty, "bool") || rt_str_equals(ty, "int32") || rt_str_equals(ty, "int64") || rt_str_equals(ty, "float32") || rt_str_equals(ty, "float64") || rt_str_equals(ty, "number") || rt_str_equals(ty, "boolean")) {
+    if (rt_str_equals(ty, "int") || rt_str_equals(ty, "float") || rt_str_equals(ty, "bool") || rt_str_equals(ty, "int32") || rt_str_equals(ty, "int64") || rt_str_equals(ty, "float32") || rt_str_equals(ty, "float64") || rt_str_equals(ty, "number")) {
         return rt_to_string(v);
     }
     if (rt_str_equals(ty, "function")) {
@@ -280,16 +280,13 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
 }
 
 export function print(...args: any[]): void {
-    let out: string = "";
     let count: int = args.length();
     let seen: any[] = [];
+    let parts: string[] = [];
     for (let i: int = 0; i < count; i++) {
-        out = out + _stringify_for_print(args[i], seen, false);
-        if (i < count - 1) {
-            out = out + " ";
-        }
+        parts.push(_stringify_for_print(args[i], seen, false));
     }
-    tejx_libc_puts(out);
+    tejx_libc_puts(parts.join(" "));
 }
 
 

@@ -2,9 +2,9 @@ import { now } from "std:time";
 import { random, sqrt, sin, cos, pow, floor } from "std:math";
 import {Map} from "std:collections";
 // --- Optimization Barrier ---
-let global_sink: int32 | float = 0;
+let global_sink: any = 0;
 
-function DoNotOptimize(val: int32 | float): void {
+function DoNotOptimize(val: any): void {
     if (typeof(val) == "int" || typeof(val) == "float") {
         global_sink = val;
     }
@@ -13,7 +13,7 @@ function DoNotOptimize(val: int32 | float): void {
 // --- Types ---
 type Node = {
     value: int;
-    next: Node | None;
+    next: Optional<Node>;
 };
 
 type Vec3 = {
@@ -49,7 +49,7 @@ function bench_pointers(): float {
         n.next = nodes[j + 1];
     }
     
-    let curr = nodes[0];
+    let curr: Optional<Node> = nodes[0];
     let sum:int64 = 0;
     while (curr != None) {
         sum += curr.value;

@@ -1,7 +1,7 @@
 class TreeNode {
   val: int;
-  left: TreeNode | None = None;
-  right: TreeNode | None = None;
+  left: Optional<TreeNode> = None;
+  right: Optional<TreeNode> = None;
   constructor(v: int) { this.val = v; }
   
   clone(): TreeNode {
@@ -12,7 +12,7 @@ class TreeNode {
   }
 }
 
-function hasPathSum(root: TreeNode | None, sum: int): bool {
+function hasPathSum(root: Optional<TreeNode>, sum: int): bool {
   if (root == None) {
     return false;
   }

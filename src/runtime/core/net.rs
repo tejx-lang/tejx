@@ -7,12 +7,7 @@ pub unsafe extern "C" fn rt_net_connect(addr: i64) -> i64 {
                 let boxed = Box::new(stream);
                 Box::into_raw(boxed) as i64
             }
-            Err(_) => {
-                if address.contains("google.com:80") {
-                    return -2;
-                }
-                -1
-            }
+            Err(_) => -1,
         }
     } else {
         -1

@@ -35,10 +35,10 @@ impl Lowering {
             TejxType::FixedArray(inner, _) | TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
                 self.is_concrete_type(inner)
             }
+            TejxType::Optional(inner) => self.is_concrete_type(inner),
             TejxType::Function(params, ret) => {
                 params.iter().all(|param| self.is_concrete_type(param)) && self.is_concrete_type(ret)
             }
-            TejxType::Union(types) => types.iter().all(|ty| self.is_concrete_type(ty)),
             TejxType::Object(props) => props
                 .iter()
                 .all(|(_, _, prop_ty)| self.is_concrete_type(prop_ty)),
@@ -279,9 +279,15 @@ impl Lowering {
                     self.collect_generic_bindings(formal_ret, actual_ret, generic_params, bindings);
                 }
             }
-            TejxType::Union(formal_members) => {
-                for formal_member in formal_members {
-                    self.collect_generic_bindings(formal_member, actual, generic_params, bindings);
+            TejxType::Optional(formal_inner) => {
+                match actual {
+                    TejxType::Optional(actual_inner) => {
+                        self.collect_generic_bindings(formal_inner, actual_inner, generic_params, bindings);
+                    }
+                    other if other.to_name() != "None" => {
+                        self.collect_generic_bindings(formal_inner, other, generic_params, bindings);
+                    }
+                    _ => {}
                 }
             }
             TejxType::Object(formal_props) => {
@@ -383,6 +389,7 @@ impl Lowering {
                 }
                 TypeNode::Array(inner) => contains_generic(inner, generic_names),
                 TypeNode::SizedArray(inner, _) => contains_generic(inner, generic_names),
+                TypeNode::Optional(inner) => contains_generic(inner, generic_names),
                 TypeNode::Function(params, ret) => {
                     params
                         .iter()
@@ -392,7 +399,7 @@ impl Lowering {
                 TypeNode::Object(members) => members
                     .iter()
                     .any(|(_, _, member_ty)| contains_generic(member_ty, generic_names)),
-                TypeNode::Union(types) | TypeNode::Intersection(types) => {
+                TypeNode::Intersection(types) => {
                     types.iter().any(|ty| contains_generic(ty, generic_names))
                 }
                 TypeNode::Any => false,

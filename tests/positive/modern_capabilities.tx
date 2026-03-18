@@ -42,12 +42,12 @@ class Stack<T> {
         list.push(item);
     }
     
-    pop(): T | None {
+    pop(): Optional<T> {
         let list = this.items;
         return list.pop();
     }
     
-    peek(): T | None {
+    peek(): Optional<T> {
         if (this.items.length() == 0) return None;
         return this.items[this.items.length() - 1];
     }
@@ -85,9 +85,9 @@ function binarySearch(arr: int32[], target: int32): int32 {
 // -------------------------------
 
 class ValidationResult {
-    isValid: boolean;
+    isValid: bool;
     error: string;
-    constructor(valid: boolean, err: string) {
+    constructor(valid: bool, err: string) {
         this.isValid = valid;
         this.error = err;
     }
@@ -152,9 +152,24 @@ function main() {
     stack.push(20);
     stack.push(30);
 
-    assert_eq_int(stack.peek(), 30, "Peek");
-    assert_eq_int(stack.pop(), 30, "Pop");
-    assert_eq_int(stack.pop(), 20, "Pop");
+    let peeked = stack.peek();
+    assert_true(peeked != None, "Peek returned value");
+    if (peeked != None) {
+        assert_eq_int(30, peeked, "Peek");
+    }
+
+    let popped1 = stack.pop();
+    assert_true(popped1 != None, "First pop returned value");
+    if (popped1 != None) {
+        assert_eq_int(30, popped1, "Pop");
+    }
+
+    let popped2 = stack.pop();
+    assert_true(popped2 != None, "Second pop returned value");
+    if (popped2 != None) {
+        assert_eq_int(20, popped2, "Pop");
+    }
+
     assert_false(stack.isEmpty(), "IsEmpty");
     stack.pop(); // 10
     assert_true(stack.isEmpty(), "IsEmpty after clearing");

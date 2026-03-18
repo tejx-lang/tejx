@@ -21,7 +21,7 @@ function main() {
     // assert_eq(undefined/0, obj?.missing); // Value check harder without undefined constant
 
     // Nullish Coalescing
-    let nothing: string | None = None;
+    let nothing: Optional<string> = None;
     let val = nothing ?? "Default";
     assert_eq_string("Default", val, "Nullish default");
     

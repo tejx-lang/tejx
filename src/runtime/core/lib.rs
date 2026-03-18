@@ -28,7 +28,7 @@ pub mod gc;
 pub use gc::{
     gc_allocate, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
     rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pop_roots, rt_push_root, rt_register_thread,
-    rt_unregister_thread, rt_write_barrier,
+    rt_set_static_root, rt_unregister_thread, rt_write_barrier,
     ObjectHeader,
 };
 use std::collections::{HashMap, HashSet};
@@ -607,10 +607,13 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     rt_push_root(&mut v);
     rt_push_root(&mut res_id);
 
-    // Robust pointer check: within the HEAP_OFFSET range AND verified by GC.
-    let body_ptr_probe = (v - HEAP_OFFSET) as *mut u8;
-    let in_offset_range = v >= HEAP_OFFSET;
-    let is_gc = in_offset_range && rt_is_gc_body_ptr_exact(body_ptr_probe);
+    // Match rt_typeof: values boxed in Any/object/array slots should still stringify
+    // correctly even if the stricter "exact body" check fails.
+    let is_gc = if v >= HEAP_OFFSET {
+        rt_is_gc_ptr((v - HEAP_OFFSET) as *mut u8)
+    } else {
+        false
+    };
     let is_stack = v >= STACK_OFFSET && v < HEAP_OFFSET;
     let is_ptr = is_gc || is_stack;
 
@@ -666,7 +669,9 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
         }
     } else {
         // Handle unboxed primitives (direct i64 representation)
-        if looks_like_unboxed_float_bits(v) {
+        if v == 0 {
+            res_id = rt_string_from_c_str("None\0".as_ptr() as *const _);
+        } else if looks_like_unboxed_float_bits(v) {
             let n = f64::from_bits(v as u64);
             res_id = rt_to_string_float(n);
         } else {
@@ -1348,6 +1353,10 @@ pub unsafe extern "C" fn rt_get_closure_ptr(closure: i64) -> i64 {
     let body_ptr_probe = (closure - HEAP_OFFSET) as *mut u8;
     if (closure >= HEAP_OFFSET) && rt_is_gc_ptr(body_ptr_probe) {
         let h = rt_get_header(body_ptr_probe);
+        if (*h).type_id == TAG_INT as u16 {
+            let inner = *(body_ptr_probe as *mut i64);
+            return rt_get_closure_ptr(inner);
+        }
         if (*h).type_id == TAG_FUNCTION as u16 || (*h).type_id == TAG_ARRAY as u16 {
             // It's a standard Closure (stored as an array where elem 0 is the func ptr)
             let mut res = rt_array_get_fast(closure, 0);
@@ -1373,6 +1382,10 @@ pub unsafe extern "C" fn rt_get_closure_env(closure: i64) -> i64 {
         let body_ptr_probe = (closure - HEAP_OFFSET) as *mut u8;
         if rt_is_gc_ptr(body_ptr_probe) {
             let h = rt_get_header(body_ptr_probe);
+            if (*h).type_id == TAG_INT as u16 {
+                let inner = *(body_ptr_probe as *mut i64);
+                return rt_get_closure_env(inner);
+            }
             if (*h).type_id == TAG_FUNCTION as u16 || (*h).type_id == TAG_ARRAY as u16 {
                 return rt_array_get_fast(closure, 1);
             }
@@ -1432,6 +1445,56 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
 
     rt_pop_roots(2);
     result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_call_closure_void(closure: i64, arg: i64) {
+    let mut c = closure;
+    let mut a = arg;
+    rt_push_root(&mut c);
+    rt_push_root(&mut a);
+
+    let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
+    let ptr_val;
+    let env;
+
+    if !is_raw_ptr {
+        ptr_val = rt_get_closure_ptr(c);
+        env = rt_get_closure_env(c);
+    } else {
+        ptr_val = c;
+        env = 0;
+    }
+
+    let mut raw_func_ptr = ptr_val;
+    if raw_func_ptr >= HEAP_OFFSET {
+        let body = (raw_func_ptr - HEAP_OFFSET) as *mut u8;
+        let h = rt_get_header(body);
+        if (*h).type_id == TAG_INT as u16 {
+            raw_func_ptr = *(body as *mut i64);
+        }
+    }
+
+    if raw_func_ptr == 0 {
+        rt_pop_roots(2);
+        return;
+    }
+
+    if is_raw_ptr {
+        let func: unsafe extern "C" fn(i64, i64, i64, i64) =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64)>(
+                raw_func_ptr as *const (),
+            );
+        func(a, 0, 0, 0);
+    } else {
+        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) = std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(i64, i64, i64, i64, i64),
+        >(raw_func_ptr as *const ());
+        func(env, a, 0, 0, 0);
+    }
+
+    rt_pop_roots(2);
 }
 
 #[no_mangle]
@@ -1693,6 +1756,8 @@ pub unsafe extern "C" fn f_any_unlock(m: i64) {
 struct ThreadData {
     handle: Option<std::thread::JoinHandle<()>>,
     started: bool,
+    cb_slot: usize,
+    args_slot: usize,
 }
 
 
@@ -1773,6 +1838,9 @@ pub unsafe extern "C" fn rt_instanceof(obj: i64, _class_name: i64) -> i64 {
 pub unsafe extern "C" fn rt_eq(a: i64, b: i64) -> i64 {
     if a == b {
         return BOOL_TRUE;
+    }
+    if a == 0 || b == 0 {
+        return BOOL_FALSE;
     }
     let a_is_gc = if a >= HEAP_OFFSET {
         rt_is_gc_ptr((a - HEAP_OFFSET) as *mut u8)
@@ -1918,8 +1986,8 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
     };
 
     if !is_heap && !is_stack {
-        if val >= BOOL_FALSE && val <= BOOL_TRUE {
-            return rt_string_from_c_str("bool\0".as_ptr() as *const _);
+        if val == 0 {
+            return rt_string_from_c_str("None\0".as_ptr() as *const _);
         } else if looks_like_unboxed_float_bits(val) {
             return rt_string_from_c_str("float\0".as_ptr() as *const _);
         } else {
@@ -2059,13 +2127,44 @@ pub unsafe extern "C" fn rt_box_boolean(b: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_box_int(n: i64) -> i64 {
+    let body = gc_allocate(8);
+    let header = rt_get_header(body);
+    (*header).type_id = TAG_INT as u16;
+    (*header).length = 0;
+    *(body as *mut i64) = n;
+    (body as i64) + HEAP_OFFSET
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_box_float(f: f64) -> i64 {
-    let body = gc_allocate(16);
+    let body = gc_allocate(8);
     let header = rt_get_header(body);
     (*header).type_id = TAG_FLOAT as u16;
     (*header).length = 0;
     *(body as *mut f64) = f;
     (body as i64) + HEAP_OFFSET
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_box_number(f: f64) -> i64 {
+    rt_box_float(f)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_unbox_int(v: i64) -> i64 {
+    if v >= HEAP_OFFSET {
+        let body = (v - HEAP_OFFSET) as *mut u8;
+        if rt_is_gc_ptr(body) && (*rt_get_header(body)).type_id == TAG_INT as u16 {
+            return *(body as *const i64);
+        }
+    }
+    v
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_unbox_number(v: i64) -> f64 {
+    rt_to_number(v)
 }
 
 #[no_mangle]
@@ -2184,31 +2283,58 @@ pub unsafe extern "C" fn rt_object_new() -> i64 {
 }
 
 pub unsafe fn rt_is_object(val: i64) -> bool {
-    if val < HEAP_OFFSET {
+    let body = rt_object_body_ptr(val);
+    if body.is_null() {
         return false;
     }
-    let body = (val - HEAP_OFFSET) as *mut u8;
-    rt_is_gc_ptr(body) && (*rt_get_header(body)).type_id == TAG_OBJECT as u16
+    (*rt_get_header(body)).type_id == TAG_OBJECT as u16
+}
+
+#[inline]
+unsafe fn rt_object_body_ptr(obj: i64) -> *mut u8 {
+    if obj >= HEAP_OFFSET {
+        let body = (obj - HEAP_OFFSET) as *mut u8;
+        if rt_is_gc_ptr(body) {
+            return body;
+        }
+        return std::ptr::null_mut();
+    }
+    if obj >= STACK_OFFSET {
+        return (obj - STACK_OFFSET) as *mut u8;
+    }
+    std::ptr::null_mut()
 }
 
 pub unsafe fn rt_object_keys_array(obj: i64) -> i64 {
-    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let body = rt_object_body_ptr(obj);
+    if body.is_null() {
+        return 0;
+    }
     *(body.offset(OBJECT_KEYS_OFFSET) as *const i64)
 }
 
 pub unsafe fn rt_object_values_array(obj: i64) -> i64 {
-    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let body = rt_object_body_ptr(obj);
+    if body.is_null() {
+        return 0;
+    }
     *(body.offset(OBJECT_VALUES_OFFSET) as *const i64)
 }
 
 pub unsafe fn rt_object_set_arrays(obj: i64, keys: i64, values: i64) {
-    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let body = rt_object_body_ptr(obj);
+    if body.is_null() {
+        return;
+    }
     *(body.offset(OBJECT_KEYS_OFFSET) as *mut i64) = keys;
     *(body.offset(OBJECT_VALUES_OFFSET) as *mut i64) = values;
 }
 
 pub unsafe fn rt_object_refresh_meta(obj: i64) {
-    let body = (obj - HEAP_OFFSET) as *mut u8;
+    let body = rt_object_body_ptr(obj);
+    if body.is_null() {
+        return;
+    }
     let keys = rt_object_keys_array(obj);
     let len = rt_len(keys);
     *(body.offset(OBJECT_SIZE_OFFSET) as *mut i64) = len;
@@ -2231,7 +2357,7 @@ pub unsafe fn rt_object_find_key_index(obj: i64, key: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_property(obj: i64, key: i64) -> i64 {
-    if (obj as u64) < (HEAP_OFFSET as u64) {
+    if (obj as u64) < (STACK_OFFSET as u64) {
         let msg = rt_string_from_c_str(
             "RuntimeError: Null pointer dereference in property access\0".as_ptr() as *const _,
         );
@@ -2249,7 +2375,7 @@ pub unsafe extern "C" fn rt_get_property(obj: i64, key: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
-    if (obj as u64) < (HEAP_OFFSET as u64) {
+    if (obj as u64) < (STACK_OFFSET as u64) {
         let msg = rt_string_from_c_str(
             "RuntimeError: Null pointer dereference in property assignment\0".as_ptr() as *const _,
         );
@@ -2342,14 +2468,23 @@ pub unsafe fn rt_map_set_cap(map: i64, cap: i64) {
     *(body.offset(MAP_CAP_OFFSET) as *mut i64) = cap;
 }
 
-pub unsafe fn rt_tag_of(val: i64) -> i64 {
-    if val >= HEAP_OFFSET {
-        let body = (val - HEAP_OFFSET) as *mut u8;
-        if rt_is_gc_ptr(body) {
-            return (*rt_get_header(body)).type_id as i64;
-        }
+#[no_mangle]
+pub unsafe extern "C" fn rt_tag_of(val: i64) -> i64 {
+    let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
+    let is_heap = if val >= HEAP_OFFSET {
+        rt_is_gc_ptr((val - HEAP_OFFSET) as *mut u8)
+    } else {
+        false
+    };
+    if !is_heap && !is_stack {
+        return -1;
     }
-    -1
+    let body = if is_heap {
+        (val - HEAP_OFFSET) as *mut u8
+    } else {
+        (val - STACK_OFFSET) as *mut u8
+    };
+    (*rt_get_header(body)).type_id as i64
 }
 
 fn rt_mix64(mut x: u64) -> u64 {
@@ -2670,4 +2805,35 @@ pub unsafe extern "C" fn rt_optional_chain(obj: i64, _op: *const u8) -> i64 {
         return 0;
     }
     obj
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_rust_string(val: i64) -> String {
+        unsafe { i64_to_rust_str(val).expect("runtime string") }
+    }
+
+    #[test]
+    fn prints_none_and_bools_correctly() {
+        unsafe {
+            rt_init_gc();
+
+            assert_eq!(to_rust_string(rt_to_string(0)), "None");
+            assert_eq!(to_rust_string(rt_typeof(0)), "None");
+
+            let boxed_false = rt_box_boolean(0);
+            let boxed_true = rt_box_boolean(1);
+            let boxed_zero = rt_box_int(0);
+
+            assert_eq!(to_rust_string(rt_to_string(boxed_false)), "false");
+            assert_eq!(to_rust_string(rt_to_string(boxed_true)), "true");
+            assert_eq!(to_rust_string(rt_typeof(boxed_false)), "bool");
+            assert_eq!(to_rust_string(rt_typeof(boxed_true)), "bool");
+
+            assert_eq!(to_rust_string(rt_to_string(boxed_zero)), "0");
+            assert_eq!(to_rust_string(rt_typeof(boxed_zero)), "int");
+        }
+    }
 }

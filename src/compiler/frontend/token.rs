@@ -41,7 +41,8 @@ pub enum TokenType {
     Throw, // Error handling
     Some,
     None,
-    Option, // Option types
+    Option,   // Legacy Option<T> spelling
+    Optional, // Optional<T> types
     Del,
     Interface,
     TypeAlias, // Property accessors

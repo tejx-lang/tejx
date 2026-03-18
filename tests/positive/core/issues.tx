@@ -46,7 +46,7 @@ function greet(name: string, age: int): string {
 function test_doc_verification() {
     print("--- Documentation Verification ---");
     let scores: int[] = [1, 2, 3];
-    let nickname: string | None = "Ace";
+    let nickname: Optional<string> = "Ace";
     nickname = None;
 
     let cache = new Map<string, int>();

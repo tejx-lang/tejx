@@ -5,10 +5,7 @@ import { assert_eq_int, assert_true } from "../utils.tx";
 
 async function test_http_sync() {
     print("--- HTTP Sync ---");
-    // External call, might fail if offline. We can't strictly assert success content, 
-    // but we can assert call mechanics.
-    // Use widely available endpoint.
-    let url = "http://example.com";
+    let url = "https://example.com";
     print("GET Sync: ", url);
     let res = http.getSync(url);
     assert_true(res != "", "Response received");
@@ -22,7 +19,7 @@ async function test_http_sync() {
 
 async function test_http_async() {
     print("--- HTTP Async ---");
-    let url = "http://example.com";
+    let url = "https://example.com";
     print("GET Async: ", url);
     let res = await http.get(url);
     assert_true(res != "", "Response received");
@@ -36,21 +33,21 @@ async function test_http_async() {
 
 function test_tcp_connect() {
     print("--- TCP Connect ---");
-    let stream = net.connect("google.com:80");
+    let stream = net.connect("example.com:80");
     print("Connect result: ", stream);
     assert_true(stream != None, "TCP Connect success");
     if (stream != None) {
-        print("Connected to google.com:80");
+        print("Connected to example.com:80");
         net.close(stream);
         assert_true(true, "TCP Connect success");
     } else {
-        print("WARN: TCP Connect failed (network issue?)");
+        print("WARN: TCP Connect failed");
     }
 }
 
 async function test_parallel_requests() {
     print("--- Parallel Requests ---");
-    let url = "http://example.com";
+    let url = "https://example.com";
     let p1 = http.get(url);
     let p2 = http.get(url);
     
@@ -60,7 +57,7 @@ async function test_parallel_requests() {
 
 async function test_404() {
     print("--- HTTP 404 ---");
-    let url = "http://google.com/this-page-definitely-does-not-exist-123";
+    let url = "https://example.com/this-page-definitely-does-not-exist-123";
     let res = await http.get(url);
     // 404 usually returns a body (error page).
     print("404 Response Length: ", res.length());
@@ -69,7 +66,7 @@ async function test_404() {
 
 async function test_dns_fail() {
     print("--- DNS Failure ---");
-    let url = "http://this-domain-is-fake-and-should-fail-12345.com";
+    let url = "https://tejx-net-test.invalid";
     try {
         await http.get(url);
         assert_true(false, "Unexpected success for bad DNS");

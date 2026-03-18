@@ -4,7 +4,7 @@
 import { assert_eq_int, assert_true } from "./utils.tx";
 class Node {
     value: int32;
-    next: Node | None;
+    next: Optional<Node>;
 
     constructor(val: int32) {
         this.value = val;
@@ -30,10 +30,12 @@ function main() {
     // Traversal
     print("Traversing (Destructive):");
     
-    let current: Node | None = head;
+    let current: Optional<Node> = head;
     // head is moved to current. head is now Moved.
     assert_true(current != None, "Current is not None");
-    assert_eq_int(current.value, 1, "Node value");
+    if (current != None) {
+        assert_eq_int(1, current.value, "Node value");
+    }
 
     while (current != None) {
         

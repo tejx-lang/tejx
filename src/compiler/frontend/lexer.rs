@@ -68,6 +68,7 @@ impl Lexer {
         keywords.insert("Some".to_string(), TokenType::Some);
         keywords.insert("None".to_string(), TokenType::None);
         keywords.insert("Option".to_string(), TokenType::Option);
+        keywords.insert("Optional".to_string(), TokenType::Optional);
         keywords.insert("import".to_string(), TokenType::Import);
         keywords.insert("export".to_string(), TokenType::Export);
         keywords.insert("from".to_string(), TokenType::From);

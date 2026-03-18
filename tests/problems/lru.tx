@@ -3,8 +3,8 @@ import { Map } from "std:collections";
 class CacheNode {
   key: string;
   val: int;
-  next: CacheNode | None = None;
-  prev: CacheNode | None = None;
+  next: Optional<CacheNode> = None;
+  prev: Optional<CacheNode> = None;
   constructor(k: string, v: int) { this.key = k; this.val = v; }
 }
 

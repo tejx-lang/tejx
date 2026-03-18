@@ -2523,7 +2523,7 @@ impl MIRLowering {
             }
             HIRExpression::NoneLiteral { .. } => MIRValue::Constant {
                 value: "0".to_string(),
-                ty: TejxType::Int64,
+                ty: TejxType::Void,
             },
             HIRExpression::SomeExpr { value, .. } => self.lower_expression(value),
         }

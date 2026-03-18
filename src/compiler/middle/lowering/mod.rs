@@ -64,6 +64,7 @@ pub struct LoweringResult {
     pub captured_vars_by_function: HashMap<String, HashSet<String>>,
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
+    pub class_parents: HashMap<String, String>,
 }
 
 impl Default for Lowering {
@@ -112,6 +113,68 @@ impl Lowering {
             env_owner_stack: RefCell::new(Vec::new()),
             captured_vars_by_owner: RefCell::new(HashMap::new()),
             lambda_env_owner: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn infer_top_level_initializer_type(&self, expr: &Expression) -> TejxType {
+        match expr {
+            Expression::NumberLiteral { value, .. } => {
+                if value.fract() == 0.0 {
+                    if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
+                        TejxType::Int64
+                    } else {
+                        TejxType::Int32
+                    }
+                } else {
+                    TejxType::Float32
+                }
+            }
+            Expression::StringLiteral { .. } => TejxType::String,
+            Expression::CharLiteral { .. } => TejxType::Char,
+            Expression::BooleanLiteral { .. } => TejxType::Bool,
+            Expression::NoneLiteral { .. } => TejxType::Any,
+            Expression::Identifier { name, .. } => self
+                .lookup(name)
+                .map(|(_, ty)| ty)
+                .unwrap_or(TejxType::Any),
+            Expression::MemberAccessExpr { object, member, .. } => {
+                let object_ty = self.infer_top_level_initializer_type(object);
+                if let TejxType::Object(props) = object_ty {
+                    props
+                        .into_iter()
+                        .find(|(name, _, _)| name == member)
+                        .map(|(_, _, ty)| ty)
+                        .unwrap_or(TejxType::Any)
+                } else {
+                    TejxType::Any
+                }
+            }
+            Expression::ArrayLiteral { ty, .. } => ty
+                .borrow()
+                .as_ref()
+                .map(|name| TejxType::from_name(name))
+                .unwrap_or_else(|| TejxType::DynamicArray(Box::new(TejxType::Any))),
+            Expression::ObjectLiteralExpr {
+                entries, _spreads, ..
+            } => {
+                let mut props = Vec::new();
+                for (key, value) in entries {
+                    props.push((key.clone(), false, self.infer_top_level_initializer_type(value)));
+                }
+                for spread in _spreads {
+                    if let TejxType::Object(spread_props) =
+                        self.infer_top_level_initializer_type(spread)
+                    {
+                        for (name, optional, ty) in spread_props {
+                            if !props.iter().any(|(existing, _, _)| existing == &name) {
+                                props.push((name, optional, ty));
+                            }
+                        }
+                    }
+                }
+                TejxType::Object(props)
+            }
+            _ => TejxType::Any,
         }
     }
 
@@ -228,12 +291,9 @@ impl Lowering {
                         .collect(),
                     Box::new(resolve_inner(ctx, ret, depth + 1)),
                 ),
-                TejxType::Union(types) => TejxType::Union(
-                    types
-                        .iter()
-                        .map(|t| resolve_inner(ctx, t, depth + 1))
-                        .collect(),
-                ),
+                TejxType::Optional(inner) => {
+                    TejxType::Optional(Box::new(resolve_inner(ctx, inner, depth + 1)))
+                }
                 TejxType::Object(props) => TejxType::Object(
                     props
                         .iter()
@@ -556,10 +616,18 @@ impl Lowering {
                 Statement::VarDeclaration {
                     pattern,
                     type_annotation,
+                    initializer,
                     ..
                 } => {
                     if let BindingNode::Identifier(name) = pattern {
-                        let ty = TejxType::from_node(type_annotation);
+                        let ty = if type_annotation.to_string().is_empty() {
+                            initializer
+                                .as_ref()
+                                .map(|expr| self.infer_top_level_initializer_type(expr))
+                                .unwrap_or(TejxType::Any)
+                        } else {
+                            TejxType::from_node(type_annotation)
+                        };
                         self.define(name.clone(), ty);
                     }
                 }
@@ -916,6 +984,7 @@ impl Lowering {
             captured_vars_by_function,
             class_fields,
             class_methods: self.class_methods.borrow().clone(),
+            class_parents: self.class_parents.borrow().clone(),
         }
     }
 }

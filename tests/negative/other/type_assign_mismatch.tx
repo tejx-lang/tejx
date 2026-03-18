@@ -2,11 +2,11 @@
 // Description: Verify that assigning incompatible class types causes a compile error.
 
 class Cat {
-    meow: boolean;
+    meow: bool;
 }
 
 class Dog {
-    bark: boolean;
+    bark: bool;
 }
 
 function main() {

@@ -25,10 +25,10 @@ impl TypeChecker {
             | TejxType::Void
             | TejxType::Any => true,
 
-            TejxType::Union(types) => types.iter().all(|t| self.is_valid_type(t)),
+            TejxType::Optional(inner) => self.is_valid_type(inner),
             TejxType::Class(name, generics) if generics.is_empty() => {
                 let name_str = name.as_str();
-                if name_str == "Option"
+                if name_str == "Optional"
                     || name_str == "Promise"
                     || name_str == "Ref"
                     || name_str == "Weak"
@@ -53,7 +53,7 @@ impl TypeChecker {
             }
             TejxType::Class(name, generics) => {
                 let name_str = name.as_str();
-                if name_str == "Option"
+                if name_str == "Optional"
                     || name_str == "Promise"
                     || name_str == "Ref"
                     || name_str == "Weak"
@@ -158,18 +158,6 @@ impl TypeChecker {
             return true;
         }
 
-        if let TejxType::Union(types) = actual {
-            if types.iter().any(|p| self.are_types_compatible(expected, p)) {
-                return true;
-            }
-        }
-
-        if let TejxType::Union(types) = expected {
-            if types.iter().any(|p| self.are_types_compatible(p, actual)) {
-                return true;
-            }
-        }
-
         // Generic wildcard: single uppercase letter mapped via Class
         let is_generic_wildcard = |t: &TejxType| -> bool {
             if let TejxType::Class(name, gen) = t {
@@ -186,18 +174,16 @@ impl TypeChecker {
             return true;
         }
 
-        // Option<T> check
-        if let TejxType::Class(name, gen) = expected {
-            if name == "Option" && gen.len() == 1
-                && (a_name == "None" || self.are_types_compatible(&gen[0], actual)) {
-                    return true;
-                }
-        }
-        if let TejxType::Class(name, gen) = actual {
-            if name == "Option" && gen.len() == 1
-                && (e_name == "None" || self.are_types_compatible(expected, &gen[0])) {
-                    return true;
-                }
+        if let TejxType::Optional(expected_inner) = expected {
+            if a_name == "None" {
+                return true;
+            }
+            if let TejxType::Optional(actual_inner) = actual {
+                return self.are_types_compatible(expected_inner, actual_inner);
+            }
+            if self.are_types_compatible(expected_inner, actual) {
+                return true;
+            }
         }
 
         // Resolve aliases
@@ -258,7 +244,7 @@ impl TypeChecker {
 
         if actual.to_name() == "None" {
             let e_name = expected.to_name();
-            if e_name.contains("| None") || e_name.starts_with("Option<") {
+            if e_name.starts_with("Optional<") {
                 return true;
             }
         }
@@ -406,8 +392,7 @@ impl TypeChecker {
             if let TejxType::Object(a_props) = actual {
                 let is_optional_type = |ty: &TejxType| -> bool {
                     match ty {
-                        TejxType::Class(name, gen) if name == "Option" && gen.len() == 1 => true,
-                        TejxType::Union(types) => types.iter().any(|t| t.to_name() == "None"),
+                        TejxType::Optional(_) => true,
                         _ => false,
                     }
                 };
@@ -458,8 +443,8 @@ impl TypeChecker {
                                 false
                             };
                             let mut ty_str = p[colon + 1..].trim().to_string();
-                            if is_opt && !ty_str.starts_with("Option<") {
-                                ty_str = format!("Option<{}>", ty_str);
+                            if is_opt && !ty_str.starts_with("Optional<") {
+                                ty_str = format!("Optional<{}>", ty_str);
                             }
                             expected_props.push((k, ty_str));
                         }
@@ -470,22 +455,18 @@ impl TypeChecker {
                         }
                     }
                     for (e_key, e_ty_str) in expected_props {
-                        let is_optional = e_ty_str.starts_with("Option<");
+                        let is_optional = e_ty_str.starts_with("Optional<");
                         let mut found = false;
                         for (a_key, _, a_type) in a_props {
                             if e_key == *a_key {
                                 found = true;
                                 let mut exp_ty = TejxType::from_name(&e_ty_str);
                                 let mut act_ty = a_type.clone();
-                                if let TejxType::Class(n, g) = &exp_ty {
-                                    if n == "Option" && g.len() == 1 {
-                                        exp_ty = g[0].clone();
-                                    }
+                                if let TejxType::Optional(inner) = &exp_ty {
+                                    exp_ty = (**inner).clone();
                                 }
-                                if let TejxType::Class(n, g) = a_type {
-                                    if n == "Option" && g.len() == 1 {
-                                        act_ty = g[0].clone();
-                                    }
+                                if let TejxType::Optional(inner) = a_type {
+                                    act_ty = (**inner).clone();
                                 }
                                 let is_compat = self.are_types_compatible(&exp_ty, &act_ty);
                                 if !is_compat {
@@ -506,7 +487,7 @@ impl TypeChecker {
                         }
                     }
                     for (e_key, e_info) in expected_members {
-                        let is_optional = e_info.ty.to_name().starts_with("Option<");
+                        let is_optional = matches!(&e_info.ty, TejxType::Optional(_));
                         let mut found = false;
                         for (a_key, _, a_type) in a_props {
                             if e_key == a_key {
@@ -531,23 +512,29 @@ impl TypeChecker {
         false
     }
 
-    pub(crate) fn strip_none_from_union(&self, type_name: &TejxType) -> TejxType {
-        if let TejxType::Union(types) = type_name {
-            let mut filtered = Vec::new();
-            for t in types {
-                if t.to_name() != "None" {
-                    filtered.push(t.clone());
-                }
-            }
-            if filtered.len() == 1 {
-                return filtered[0].clone();
-            } else if filtered.is_empty() {
-                return TejxType::Void;
-            } else {
-                return TejxType::Union(filtered);
-            }
+    pub(crate) fn unwrap_optional_type(&self, type_name: &TejxType) -> TejxType {
+        if let TejxType::Optional(inner) = type_name {
+            return (**inner).clone();
         }
         type_name.clone()
+    }
+
+    pub(crate) fn optional_requires_check_hint(
+        &self,
+        expected: &TejxType,
+        actual: &TejxType,
+    ) -> Option<String> {
+        if matches!(actual, TejxType::Optional(_))
+            && !matches!(expected, TejxType::Optional(_) | TejxType::Any)
+            && expected.to_name() != "None"
+        {
+            return Some(format!(
+                "Value of type '{}' may be None; check it is not None before using it as '{}'",
+                actual.to_name(),
+                expected.to_name()
+            ));
+        }
+        None
     }
 
     pub(crate) fn check_numeric_bounds(

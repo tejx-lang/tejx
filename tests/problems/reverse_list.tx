@@ -1,7 +1,7 @@
-import {assert_eq_int} from "../positive/utils.tx";
+import {assert_eq_int, assert_true} from "../positive/utils.tx";
 class Node {
   data: int;
-  next: Node | None;
+  next: Optional<Node>;
   constructor(val: int) { 
       this.data = val; 
       this.next = None;
@@ -9,14 +9,14 @@ class Node {
 }
 
 // Reverse a linked list
-function reverseList(head: Node | None): Node | None {
-  let prev: Node | None = None;
-  let current: Node | None = head;
-  let next: Node | None = None;
+function reverseList(head: Optional<Node>): Optional<Node> {
+  let prev: Optional<Node> = None;
+  let current: Optional<Node> = head;
+  let next: Optional<Node> = None;
 
 
   let loopCount = 0;
-  while (!(current == None)) {
+  while (current != None) {
     loopCount = loopCount + 1;
     
     if (loopCount > 5) {
@@ -47,26 +47,23 @@ function main(): void {
   print("New Head ID:", head);
 
   print("Reversed List Check:");
-     assert_eq_int(head.data, 3, "Head data is not 3");
-
   if (head != None) {
+      assert_eq_int(3, head.data, "Head data is not 3");
       if (head.data == 3) {
            // Traverse
            let second = head.next;
-            assert_eq_int(second.data, 2, "Second data is not 2");
-
            if (second != None) {
+             assert_eq_int(2, second.data, "Second data is not 2");
              let third = second.next;
-             assert_eq_int(third.data, 1, "Third data is not 1");
-
              if (third != None) { 
+               assert_eq_int(1, third.data, "Third data is not 1");
                assert_true(third.next == None, "Tail Next is NOT None!");
 
-                 if (third.next == None) {
-                  print("Tail Correct");
-                 } else {
-                     print("Tail Next is NOT None!");
-                 }
+               if (third.next == None) {
+                print("Tail Correct");
+               } else {
+                   print("Tail Next is NOT None!");
+               }
              }
            }
       } else {

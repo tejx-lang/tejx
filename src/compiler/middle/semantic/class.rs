@@ -22,6 +22,7 @@ impl TypeChecker {
                         Symbol {
                             ty: TejxType::from_name("class"),
                             is_const: false,
+                            is_narrowed: false,
                             params: Vec::new(),
                             min_params: None,
                             is_variadic: false,
@@ -214,6 +215,7 @@ impl TypeChecker {
                                 Box::new(TejxType::from_name(&final_ret)),
                             ),
                             is_const: false,
+                            is_narrowed: false,
                             params,
                             min_params: if has_defaults {
                                 Some(min_required)
@@ -239,6 +241,7 @@ impl TypeChecker {
                         Symbol {
                             ty: TejxType::from_name("type"),
                             is_const: true,
+                            is_narrowed: false,
                             params: Vec::new(),
                             min_params: None,
                             is_variadic: false,

@@ -43,7 +43,7 @@ function main(){
 
     let user3:{
         name:string,
-        age:Option<int>,
+        age:Optional<int>,
         active:bool,
         address:{city:string,zip:int}
     } = {
@@ -60,7 +60,11 @@ function main(){
     print(typeof(user3));
 
     user3.age = 1;
-    assert_eq_int(1, user3.age, "Object property");
+    let age = user3.age;
+    assert_true(age != None, "Object property set");
+    if (age != None) {
+        assert_eq_int(1, age, "Object property");
+    }
     print(typeof(user3));
 
     del user3.age;

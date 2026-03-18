@@ -11,15 +11,7 @@ function main() {
     let angle: float64 = 3.14159265358979 / 2.0; // PI/2
     // sin(PI/2) should be close to 1.0
     let s = sin(angle);
-    if (s > 0.99) {
-        if (s < 1.01) {
-             print("✅ PASS: sin(PI/2) ~ 1.0");
-        } else {
-             print("❌ FAIL: sin(PI/2) too high: " + s);
-        }
-    } else {
-        print("❌ FAIL: sin(PI/2) too low: " + s);
-    }
+    assert_true(s > 0.99 && s < 1.01, "sin(PI/2) ~ 1.0");
     
     // cos(0) should be 1.0
     assert_eq_float(1.0, cos(0), "cos(0)");
@@ -46,13 +38,5 @@ function main() {
 
     // Random Simulation
     let r = random();
-    if (r >= 0.0) {
-        if (r < 1.0) {
-            print("✅ PASS: Random number (0-1)");
-        } else {
-             print("❌ FAIL: Random number >= 1.0: " + r);
-        }
-    } else {
-        print("❌ FAIL: Random number < 0.0: " + r);
-    }
+    assert_true(r >= 0.0 && r < 1.0, "Random number (0-1)");
 }

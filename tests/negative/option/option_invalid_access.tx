@@ -1,9 +1,9 @@
 // EXPECTED: COMPILE_ERROR
-// Description: Test accessing member of Option without narrowing.
+// Description: Test accessing member of Optional without narrowing.
 
 type User = { name: string };
 
 function main() {
-    let u: Option<User> = None;
-    print(u.name); // Error: Cannot access 'name' on Option<User> (might be None)
+    let u: Optional<User> = None;
+    print(u.name); // Error: Cannot access 'name' on Optional<User> (might be None)
 }

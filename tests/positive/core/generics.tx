@@ -10,11 +10,11 @@ class Stack<T> {
         this.items.push(item);
     }
     
-    pop(): T | None {
+    pop(): Optional<T> {
         return this.items.pop();
     }
     
-    peek(): T | None {
+    peek(): Optional<T> {
         if (this.items.length() == 0) return None;
         return this.items[this.items.length() - 1];
     }

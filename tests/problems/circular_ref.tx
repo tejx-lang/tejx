@@ -1,6 +1,6 @@
 
 class Person {
-  friend: Person | None = None;
+  friend: Optional<Person> = None;
 }
 
 function leakTest(): void {

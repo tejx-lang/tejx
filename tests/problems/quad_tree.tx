@@ -15,10 +15,10 @@ class Quadtree {
   divided: bool = false;
   
   // Children
-  northWest: Quadtree | None = None;
-  northEast: Quadtree | None = None;
-  southWest: Quadtree | None = None;
-  southEast: Quadtree | None = None;
+  northWest: Optional<Quadtree> = None;
+  northEast: Optional<Quadtree> = None;
+  southWest: Optional<Quadtree> = None;
+  southEast: Optional<Quadtree> = None;
 
   subdivide(): void {
     // Logic to create 4 new Quadtrees for the quadrants

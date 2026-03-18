@@ -33,6 +33,7 @@ impl<'a> TypeSubstitutor<'a> {
                     self.substitute_type_node(arg);
                 }
             }
+            TypeNode::Optional(inner) => self.substitute_type_node(inner),
             TypeNode::Array(inner) => self.substitute_type_node(inner),
             TypeNode::SizedArray(inner, _) => self.substitute_type_node(inner),
             TypeNode::Function(params, ret) => {
@@ -46,7 +47,7 @@ impl<'a> TypeSubstitutor<'a> {
                     self.substitute_type_node(ty);
                 }
             }
-            TypeNode::Union(types) | TypeNode::Intersection(types) => {
+            TypeNode::Intersection(types) => {
                 for t in types {
                     self.substitute_type_node(t);
                 }

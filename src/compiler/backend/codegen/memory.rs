@@ -58,7 +58,7 @@ impl CodeGen {
             let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
                 || matches!(obj, MIRValue::Variable { name, ty, .. }
                     if Self::fixed_layout_object_type(ty).is_some()
-                        && self.can_use_fixed_object_layout(func, name));
+                        && self.can_use_fixed_object_layout_for_ty(func, name, ty));
             if allow_fixed_layout {
                 if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
                 let llvm_ty = Self::get_llvm_storage_type(&field_ty);
@@ -144,16 +144,7 @@ impl CodeGen {
 
         let needs_unboxing = !used_fast;
 
-        let final_res = if needs_unboxing && dst_ty.is_numeric() && !matches!(dst_ty, TejxType::Int64 | TejxType::Any) {
-            self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
-            self.temp_counter += 1;
-            let f_val = format!("%f_val_{}", self.temp_counter);
-            self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", f_val, res_tmp));
-            self.temp_counter += 1;
-            let i_val = format!("%i_val_{}", self.temp_counter);
-            self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
-            self.emit_abi_cast(&i_val, &TejxType::Int64, dst_ty)
-        } else if needs_unboxing && dst_ty.is_float() {
+        let final_res = if needs_unboxing && dst_ty.is_float() {
             self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
             self.temp_counter += 1;
             let f_val = format!("%f_val_{}", self.temp_counter);
@@ -162,6 +153,15 @@ impl CodeGen {
             let bc_val = format!("%bc_val_{}", self.temp_counter);
             self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
             bc_val
+        } else if needs_unboxing && dst_ty.is_numeric() {
+            self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
+            self.temp_counter += 1;
+            let f_val = format!("%f_val_{}", self.temp_counter);
+            self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", f_val, res_tmp));
+            self.temp_counter += 1;
+            let i_val = format!("%i_val_{}", self.temp_counter);
+            self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
+            self.emit_abi_cast(&i_val, &TejxType::Int64, dst_ty)
         } else if needs_unboxing && matches!(dst_ty, TejxType::Bool) {
             self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
             self.temp_counter += 1;
@@ -193,7 +193,7 @@ impl CodeGen {
         let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
             || matches!(obj, MIRValue::Variable { name, ty, .. }
                 if Self::fixed_layout_object_type(ty).is_some()
-                    && self.can_use_fixed_object_layout(func, name));
+                    && self.can_use_fixed_object_layout_for_ty(func, name, ty));
         if allow_fixed_layout {
             if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
             let llvm_ty = Self::get_llvm_storage_type(&field_ty);
@@ -494,7 +494,14 @@ impl CodeGen {
                 self.emit_store_variable(dst, &casted, dst_ty);
             }
         } else {
-            let casted = self.emit_abi_cast(&res_tmp, &TejxType::Int64, dst_ty);
+            let runtime_src_ty = if matches!(element_ty, TejxType::Any)
+                || matches!(element_ty, TejxType::Class(name, _) if name == "Any")
+            {
+                TejxType::Any
+            } else {
+                TejxType::Int64
+            };
+            let casted = self.emit_abi_cast(&res_tmp, &runtime_src_ty, dst_ty);
             self.emit_store_variable(dst, &casted, dst_ty);
         }
     }

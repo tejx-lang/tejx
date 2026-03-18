@@ -204,6 +204,10 @@ impl CodeGen {
         let dst_is_any = matches!(dst_ty, TejxType::Any)
             || matches!(dst_ty, TejxType::Class(name, _) if name == "Any");
 
+        if dst_is_any && matches!(src_ty, TejxType::Void) {
+            return "0".to_string();
+        }
+
         // Cannot cast to/from void — just pass through
         if src_llvm == "void" || dst_llvm == "void" {
             return val_name.to_string();
@@ -225,6 +229,32 @@ impl CodeGen {
 
         if dst_is_any && matches!(src_ty, TejxType::String) && val_name.starts_with("ptrtoint") {
             return self.emit_box_string(val_name);
+        }
+
+        if dst_is_any
+            && matches!(
+                src_ty,
+                TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
+            )
+        {
+            self.declare_runtime_fn("rt_box_int", "i64 @rt_box_int(i64)");
+            let i_val = self.emit_abi_cast(val_name, src_ty, &TejxType::Int64);
+            self.temp_counter += 1;
+            let boxed = format!("%boxed_int_{}", self.temp_counter);
+            self.emit_line(&format!("{} = call i64 @rt_box_int(i64 {})", boxed, i_val));
+            return boxed;
+        }
+
+        if dst_is_any && src_ty.is_float() {
+            self.declare_runtime_fn("rt_box_number", "i64 @rt_box_number(double)");
+            let f_val = self.emit_abi_cast(val_name, src_ty, &TejxType::Float64);
+            self.temp_counter += 1;
+            let boxed = format!("%boxed_num_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_box_number(double {})",
+                boxed, f_val
+            ));
+            return boxed;
         }
 
         if src_llvm == dst_llvm {
@@ -754,7 +784,12 @@ impl CodeGen {
                             "i1" | "i8" => Some(TejxType::Bool),
                             "i16" => Some(TejxType::Int16),
                             "i32" => Some(TejxType::Int32),
-                            "i64" => Some(TejxType::Int64),
+                            "i64" => Some(match ty {
+                                TejxType::Int16 | TejxType::Int32 | TejxType::Bool | TejxType::Char => {
+                                    TejxType::Int64
+                                }
+                                _ => ty.clone(),
+                            }),
                             "float" => Some(TejxType::Float32),
                             "double" => Some(TejxType::Float64),
                             _ => None,

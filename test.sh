@@ -47,6 +47,20 @@ run_with_timeout() {
     return "$exit_code"
 }
 
+output_has_assertion_failure() {
+    local out_file=$1
+    grep -Eq '❌ (FAIL|ASSERT FAILED)|AssertionFailed:' "$out_file"
+}
+
+runtime_timeout_for() {
+    local file=$1
+    case "$file" in
+        *"/tests/positive/std/net.tx") echo 20 ;;
+        *"/tests/positive/std/thread.tx"|*"/tests/problems/producer_consumer.tx") echo 15 ;;
+        *) echo 10 ;;
+    esac
+}
+
 print_header() {
     echo -e "${CYAN}============================================${NC}"
     echo -e "${CYAN}   TejX Test Runner: $1${NC}"
@@ -154,16 +168,34 @@ run_test_file() {
         if [ $compile_exit -eq 0 ]; then
             if [ -f "$binary" ]; then
                 echo -e "  Running $filename..."
-                "$binary" 2>&1 | tee "$out_file"
-                local run_exit=${PIPESTATUS[0]}
+                local timeout=$(runtime_timeout_for "$file")
+                run_with_timeout "$timeout" "$binary" > "$out_file" 2>&1
+                local run_exit=$?
+                cat "$out_file"
                 
-                if [ $run_exit -eq 0 ]; then
-                    echo -e "  ${GREEN}✅ PASS${NC}"
-                    PASSED=$((PASSED + 1))
-                else
-                    echo -e "  ${RED}❌ RUNTIME ERROR${NC} (exit: $run_exit)"
+                if [ $run_exit -eq 129 ] || [ $run_exit -eq 143 ]; then
+                    echo -e "  ${RED}❌ RUNTIME TIMEOUT${NC}"
                     FAILED=$((FAILED + 1))
-                    ERRORS+=("$rel_path (Runtime error)")
+                    ERRORS+=("$rel_path (Runtime timeout)")
+                elif [ $run_exit -eq 0 ]; then
+                    if output_has_assertion_failure "$out_file"; then
+                        echo -e "  ${RED}❌ ASSERTION FAILURE${NC}"
+                        FAILED=$((FAILED + 1))
+                        ERRORS+=("$rel_path (Assertion failed)")
+                    else
+                        echo -e "  ${GREEN}✅ PASS${NC}"
+                        PASSED=$((PASSED + 1))
+                    fi
+                else
+                    if output_has_assertion_failure "$out_file"; then
+                        echo -e "  ${RED}❌ ASSERTION FAILURE${NC} (exit: $run_exit)"
+                        FAILED=$((FAILED + 1))
+                        ERRORS+=("$rel_path (Assertion failed)")
+                    else
+                        echo -e "  ${RED}❌ RUNTIME ERROR${NC} (exit: $run_exit)"
+                        FAILED=$((FAILED + 1))
+                        ERRORS+=("$rel_path (Runtime error)")
+                    fi
                 fi
             else
                 echo -e "  ${GREEN}✅ PASS${NC} (compiled + linked)"

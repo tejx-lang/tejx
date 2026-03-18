@@ -21,11 +21,11 @@ impl TypeChecker {
             TejxType::DynamicArray(inner)
             | TejxType::FixedArray(inner, _)
             | TejxType::Slice(inner) => Self::contains_unresolved_generic_type(inner),
+            TejxType::Optional(inner) => Self::contains_unresolved_generic_type(inner),
             TejxType::Function(params, ret) => {
                 params.iter().any(Self::contains_unresolved_generic_type)
                     || Self::contains_unresolved_generic_type(ret)
             }
-            TejxType::Union(types) => types.iter().any(Self::contains_unresolved_generic_type),
             TejxType::Object(props) => props
                 .iter()
                 .any(|(_, _, ty)| Self::contains_unresolved_generic_type(ty)),
@@ -336,7 +336,7 @@ impl TypeChecker {
             Expression::NoneLiteral { .. } => Ok(TejxType::from_name("None")),
             Expression::SomeExpr { value, .. } => {
                 let inner = self.check_expression(value)?;
-                Ok(inner) // Transparent for now, or maybe wrap in Option<T>?
+                Ok(inner) // Transparent for now, or maybe wrap in Optional<T>?
             }
             Expression::UnaryExpr {
                 op,
@@ -499,7 +499,34 @@ impl TypeChecker {
                 _col,
             } => {
                 let left_type = self.check_expression(left)?;
-                let right_type = self.check_expression(right)?;
+                let right_type = if matches!(
+                    op,
+                    TokenType::AmpersandAmpersand | TokenType::PipePipe
+                ) {
+                    if let Some((name, then_ty, else_ty)) =
+                        self.get_narrowing_from_condition(left)
+                    {
+                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                            then_ty
+                        } else {
+                            else_ty
+                        };
+
+                        if !rhs_ty.is_empty() {
+                            self.enter_scope();
+                            self.define_narrowed(name, rhs_ty);
+                            let ty = self.check_expression(right)?;
+                            self.exit_scope();
+                            ty
+                        } else {
+                            self.check_expression(right)?
+                        }
+                    } else {
+                        self.check_expression(right)?
+                    }
+                } else {
+                    self.check_expression(right)?
+                };
 
                 let is_comparison = matches!(
                     op,
@@ -532,6 +559,23 @@ impl TypeChecker {
                         );
                         return Ok(TejxType::from_name("<inferred>"));
                     }
+                }
+
+                if matches!(op, TokenType::Instanceof) && matches!(left_type, TejxType::Optional(_))
+                {
+                    self.report_error_detailed(
+                        format!(
+                            "Cannot use 'instanceof' directly on optional type '{}'",
+                            left_type.to_name()
+                        ),
+                        *_line,
+                        *_col,
+                        "E0106",
+                        Some(
+                            "Check the value is not None first, e.g. 'if (x != None) { ... }'",
+                        ),
+                    );
+                    return Ok(TejxType::Bool);
                 }
 
                 if left_type == TejxType::String || right_type == TejxType::String {
@@ -608,6 +652,22 @@ impl TypeChecker {
                     if let Some(aliased) = &sym.aliased_type {
                         obj_type = aliased.to_name();
                     }
+                }
+
+                if matches!(TejxType::from_name(&obj_type), TejxType::Optional(_)) {
+                    self.report_error_detailed(
+                        format!(
+                            "Cannot access member '{}' on optional type '{}'",
+                            member, obj_type
+                        ),
+                        *_line,
+                        *_col,
+                        "E0105",
+                        Some(
+                            "Check the value is not None first, or use optional access '?.'",
+                        ),
+                    );
+                    return Ok(TejxType::from_name("<inferred>"));
                 }
 
                 // Special case for class names (static access)
@@ -898,6 +958,19 @@ impl TypeChecker {
                     }
                 }
 
+                if matches!(TejxType::from_name(&unwrapped_type), TejxType::Optional(_)) {
+                    self.report_error_detailed(
+                        format!("Cannot index optional type '{}'", unwrapped_type),
+                        *_line,
+                        *_col,
+                        "E0105",
+                        Some(
+                            "Check the value is not None first, or use optional access '?.[...]'",
+                        ),
+                    );
+                    return Ok(TejxType::from_name("<inferred>"));
+                }
+
                 if unwrapped_type.contains('|') {
                     unwrapped_type = unwrapped_type
                         .split('|')
@@ -969,7 +1042,7 @@ impl TypeChecker {
             } => {
                 let target_ty_obj = match target.as_ref() {
                     Expression::Identifier { name, .. } => {
-                        if let Some(s) = self.lookup(name) {
+                        if let Some(s) = self.lookup_assignment_target(name) {
                             Ok(s.ty.clone())
                         } else {
                             self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some("Check the spelling or ensure the variable is declared before use"));
@@ -982,7 +1055,7 @@ impl TypeChecker {
 
                 // Check for const reassignment
                 if let Expression::Identifier { name, .. } = &**target {
-                    if let Some(symbol) = self.lookup(name) {
+                    if let Some(symbol) = self.lookup_assignment_target(name) {
                         if symbol.is_const {
                             self.report_error_detailed(format!("Cannot reassign to constant variable '{}'", name), *_line, *_col, "E0104", Some("Variable was declared with 'const'; use 'let' instead if you need to reassign"));
                         }
@@ -1150,10 +1223,12 @@ impl TypeChecker {
                                 *_line,
                                 *_col,
                                 "E0100",
-                                Some(&format!(
-                                    "Consider converting with 'as {}' or change the variable type",
-                                    target_type
-                                )),
+                                self.optional_requires_check_hint(&target_ty_obj, &value_ty_obj)
+                                    .as_deref()
+                                    .or(Some(&format!(
+                                        "Consider converting with 'as {}' or change the variable type",
+                                        target_type
+                                    ))),
                             );
                         }
                     }
@@ -1298,12 +1373,9 @@ impl TypeChecker {
                 // Pre-fill generic bindings from the receiver type (e.g., Stack<int> -> T = int)
                 if let Expression::MemberAccessExpr { object, .. } = &**callee {
                     if let Ok(mut receiver_ty) = self.check_expression(object) {
-                        if let TejxType::Union(parts) = receiver_ty.clone() {
-                            if let Some(non_none) = parts
-                                .iter()
-                                .find(|t| t.to_name() != "None" && t.to_name() != "<inferred>")
-                            {
-                                receiver_ty = non_none.clone();
+                        if let TejxType::Optional(inner) = receiver_ty.clone() {
+                            if inner.to_name() != "<inferred>" {
+                                receiver_ty = (*inner).clone();
                             }
                         }
                         if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
@@ -1706,10 +1778,15 @@ impl TypeChecker {
                                         *_line,
                                         *_col,
                                         "E0108",
-                                        Some(&format!(
+                                        self.optional_requires_check_hint(
+                                            &expected_obj,
+                                            &actual_obj,
+                                        )
+                                        .as_deref()
+                                        .or(Some(&format!(
                                             "Pass a value of type '{}' or convert using 'as {}'",
                                             target_type, target_type
-                                        )),
+                                        ))),
                                     );
                                 }
                             }
@@ -1845,9 +1922,7 @@ impl TypeChecker {
                             let end = min_required + param_offset;
                             if end <= s_params.len() {
                                 for missing_param in &s_params[start..end] {
-                                    if !missing_param.starts_with("Option<")
-                                        && !missing_param.contains("| None")
-                                    {
+                                    if !missing_param.starts_with("Optional<") {
                                         all_missing_are_optional = false;
                                         break;
                                     }
@@ -2141,12 +2216,10 @@ impl TypeChecker {
             Expression::NullishCoalescingExpr { _left, _right, .. } => {
                 let left_ty = self.check_expression(_left)?.to_name();
                 let right_ty = self.check_expression(_right)?.to_name();
-                // Strip "Option<>" or "| None" from left_ty ideally, but
+                // Strip "Optional<>" from left_ty ideally, but
                 if left_ty != "<inferred>" {
-                    if left_ty.starts_with("Option<") {
-                        Ok(TejxType::from_name(&left_ty[7..left_ty.len() - 1]))
-                    } else if left_ty.ends_with(" | None") {
-                        Ok(TejxType::from_name(&left_ty[..left_ty.len() - 7]))
+                    if left_ty.starts_with("Optional<") {
+                        Ok(TejxType::from_name(&left_ty[9..left_ty.len() - 1]))
                     } else if left_ty == "None" {
                         Ok(TejxType::from_name(&right_ty))
                     } else {
@@ -2381,8 +2454,7 @@ impl TypeChecker {
 
                 let is_optional_param = |ty: &TejxType| -> bool {
                     match ty {
-                        TejxType::Class(name, gen) => name == "Option" && gen.len() == 1,
-                        TejxType::Union(types) => types.iter().any(|t| t.to_name() == "None"),
+                        TejxType::Optional(_) => true,
                         _ => false,
                     }
                 };

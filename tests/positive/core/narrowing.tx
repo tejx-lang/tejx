@@ -16,7 +16,7 @@ class Dog extends Animal {
     }
 }
 
-function processAnimal(a: Animal | None): void {
+function processAnimal(a: Optional<Animal>): void {
     if (a != None) {
         if (a instanceof Dog) {
             a.bark(); // narrow to Dog
@@ -29,13 +29,24 @@ function processAnimal(a: Animal | None): void {
     }
 }
 
+function processMaybeDog(a: Optional<Animal>): void {
+    if (a != None && a instanceof Dog) {
+        a.bark();
+        print(a.breed);
+    }
+}
+
 function main(): int {
     let d = new Dog("Buddy", "Golden Retriever");
     processAnimal(d);
+    processMaybeDog(d);
     
     let a = new Animal("Generic");
     processAnimal(a);
+    processMaybeDog(a);
     
-    processAnimal(None);
+    let noAnimal: Optional<Animal> = None;
+    processAnimal(noAnimal);
+    processMaybeDog(noAnimal);
     return 0;
 }

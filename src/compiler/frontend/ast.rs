@@ -10,11 +10,11 @@ pub struct Program {
 pub enum TypeNode {
     Named(String),
     Generic(String, Vec<TypeNode>),
+    Optional(Box<TypeNode>),
     Array(Box<TypeNode>),
     SizedArray(Box<TypeNode>, Box<Expression>),
     Function(Vec<TypeNode>, Box<TypeNode>),
     Object(Vec<(String, bool, TypeNode)>), // key, is_optional, value_type
-    Union(Vec<TypeNode>),
     Intersection(Vec<TypeNode>),
     Any,
 }
@@ -57,6 +57,7 @@ impl TypeNode {
                 let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
                 format!("{}<{}>", n, args_str)
             }
+            TypeNode::Optional(inner) => format!("Optional<{}>", inner),
             TypeNode::Array(t) => format!("{}[]", t),
             TypeNode::SizedArray(t, _) => format!("{}[]", t),
             TypeNode::Function(args, ret) => {
@@ -70,7 +71,6 @@ impl TypeNode {
                 }).collect::<Vec<_>>().join("; ");
                 format!("{{ {} }}", m_str)
             }
-            TypeNode::Union(types) => types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" | "),
             TypeNode::Intersection(types) => types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" & "),
             TypeNode::Any => "any".to_string(),
         }

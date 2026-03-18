@@ -16,6 +16,6 @@ function main() {
     obj3 = { a: { b: "1" } }; // Error: nested mismatch
 
     // 4. Union Type Mismatch (if supported in objects)
-    let obj4: { val: int | string } = { val: 10 };
-    obj4.val = true; // Error: bool not in int | string
+    let obj4: { val: Optional<int> } = { val: 10 };
+    obj4.val = true; // Error: bool is not compatible with Optional<int>
 }

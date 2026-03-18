@@ -1,6 +1,6 @@
 import { Map } from "std:collections";
 import {assert_eq_int} from "../positive/utils.tx";
-function findTwoSum(nums: int[], target: int): int[] | None {
+function findTwoSum(nums: int[], target: int): Optional<int[]> {
   // Map stores: Value -> Index
   let prevMap: Map<int, int> = new Map<int, int>();
   print("Type of prevMap");

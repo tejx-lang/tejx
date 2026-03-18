@@ -1,3 +1,5 @@
+import { assert_eq_int, assert_eq_string } from "./utils.tx";
+
 class Parent {
     p_val: int32;
     
@@ -34,16 +36,9 @@ function test_inheritance(): void {
     print("--- Testing Inheritance ---\n");
     let c = new Child(10, 20);
     c.show();
-    
-    if (c.p_val == 10) {
-        if (c.c_val == 20) {
-            print("✅ PASS: Inheritance field values correct\n");
-        } else {
-            print("❌ FAIL: Field values incorrect\n");
-        }
-    } else {
-        print("❌ FAIL: Field values incorrect\n");
-    }
+
+    assert_eq_int(10, c.p_val, "inheritance parent field");
+    assert_eq_int(20, c.c_val, "inheritance child field");
 }
 
 function test_structural_access(): void {
@@ -53,13 +48,8 @@ function test_structural_access(): void {
     
     print("Map property: ");
     print(obj.prop);
-    
-    
-    if (obj.prop == "Hello Map") {
-        print("✅ PASS: Map access correct\n");
-    } else {
-        print("❌ FAIL: Map values incorrect\n");
-    }
+
+    assert_eq_string("Hello Map", obj.prop, "map access");
 }
 
 function main(): void {

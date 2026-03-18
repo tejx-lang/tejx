@@ -9,9 +9,11 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::process;
+use std::collections::HashSet;
 
 use crate::backend::codegen::CodeGen;
 use crate::backend::linker::Linker;
+use crate::common::diagnostics::Diagnostic;
 use crate::frontend::ast;
 use crate::frontend::lexer::Lexer;
 use crate::frontend::parser::Parser;
@@ -21,6 +23,30 @@ use crate::middle::mir::opt as mir_opt;
 use crate::middle::semantic::TypeChecker;
 
 // The runtime library is resolved at runtime from the filesystem
+
+fn unique_diagnostics<'a, I>(diagnostics: I) -> Vec<Diagnostic>
+where
+    I: IntoIterator<Item = &'a Diagnostic>,
+{
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for diag in diagnostics {
+        let key = (
+            diag.file.clone(),
+            diag.line,
+            diag.col,
+            diag.length,
+            diag.code.clone(),
+            diag.message.clone(),
+            diag.hint.clone(),
+            diag.label.clone(),
+        );
+        if seen.insert(key) {
+            unique.push(diag.clone());
+        }
+    }
+    unique
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -174,8 +200,9 @@ fn main() {
     // Check for lowering errors (import validation happens in resolve_imports)
     {
         let diagnostics = lowering.diagnostics.borrow();
-        if !diagnostics.is_empty() {
-            for diag in diagnostics.iter() {
+        let unique = unique_diagnostics(diagnostics.iter());
+        if !unique.is_empty() {
+            for diag in &unique {
                 diag.report(&contents);
             }
             process::exit(1);
@@ -185,8 +212,9 @@ fn main() {
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
     if type_checker.check(&merged_program, &filename).is_err() {
+        let unique = unique_diagnostics(type_checker.diagnostics.iter());
         eprintln!("Type Checking Failed:");
-        for diag in &type_checker.diagnostics {
+        for diag in &unique {
             diag.report(&contents);
         }
         process::exit(1);
@@ -202,8 +230,9 @@ fn main() {
     // Check for lowering errors (import validation, etc.)
     {
         let diagnostics = lowering.diagnostics.borrow();
-        if !diagnostics.is_empty() {
-            for diag in diagnostics.iter() {
+        let unique = unique_diagnostics(diagnostics.iter());
+        if !unique.is_empty() {
+            for diag in &unique {
                 diag.report(&contents);
             }
             process::exit(1);
@@ -245,6 +274,7 @@ fn main() {
     codegen.unsafe_arrays = unsafe_arrays;
     codegen.class_fields = lowering_result.class_fields;
     codegen.class_methods = lowering_result.class_methods;
+    codegen.class_parents = lowering_result.class_parents;
     let llvm_code =
         codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars_by_function);
 

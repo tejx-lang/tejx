@@ -1,6 +1,6 @@
 import { assert_eq_int, assert_true, assert_false } from "../utils.tx";
 
-function get_value(exists: bool): Option<int> {
+function get_value(exists: bool): Optional<int> {
     if (exists) {
         return 42;
     }
@@ -8,28 +8,60 @@ function get_value(exists: bool): Option<int> {
 }
 
 function test_option_basic() {
-    print("--- Option Basic ---");
-    let x: Option<int> = 10;
-    let y: Option<int> = None;
+    print("--- Optional Basic ---");
+    let x: Optional<int> = 10;
+    let y: Optional<int> = None;
+    let z: Optional<int>;
     
     assert_true(x != None, "x is not None");
     assert_true(y == None, "y is None");
+    assert_true(z == None, "uninitialized Optional<int> defaults to None");
 }
 
 function test_option_narrowing() {
-    print("--- Option Narrowing ---");
+    print("--- Optional Narrowing ---");
     let val = get_value(true);
     
     if (val != None) {
         // In theory, narrowing should allow using it as int
         let n: int = val; 
-        assert_eq_int(42, n, "Value narrowed from Option<int>");
+        assert_eq_int(42, n, "Value narrowed from Optional<int>");
     }
+}
+
+function test_option_while_narrowing() {
+    print("--- Optional While Narrowing ---");
+    let val = get_value(true);
+    let seen = 0;
+    let keepRunning = true;
+
+    while (val != None && keepRunning) {
+        let n: int = val;
+        seen = n;
+        keepRunning = false;
+    }
+
+    assert_eq_int(42, seen, "While condition narrowing with &&");
+}
+
+function test_option_for_narrowing() {
+    print("--- Optional For Narrowing ---");
+    let val = get_value(true);
+    let seen = 0;
+
+    for (; val != None; val = None) {
+        let n: int = val;
+        seen = n;
+    }
+
+    assert_eq_int(42, seen, "For condition narrowing");
 }
 
 function main() {
     print("=== OPTION TESTS START ===");
     test_option_basic();
     test_option_narrowing();
+    test_option_while_narrowing();
+    test_option_for_narrowing();
     print("=== OPTION TESTS COMPLETE ===");
 }

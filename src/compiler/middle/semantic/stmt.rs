@@ -4,6 +4,79 @@ use crate::frontend::token::TokenType;
 use std::collections::HashMap;
 
 impl TypeChecker {
+    fn merge_then_narrowing(&self, left: &str, right: &str) -> String {
+        if left.is_empty() {
+            return right.to_string();
+        }
+        if right.is_empty() {
+            return left.to_string();
+        }
+        if left == "None" {
+            return right.to_string();
+        }
+        if right == "None" {
+            return left.to_string();
+        }
+        if left == right {
+            return left.to_string();
+        }
+
+        let left_ty = TejxType::from_name(left);
+        let right_ty = TejxType::from_name(right);
+        if self.are_types_compatible(&left_ty, &right_ty) {
+            return right.to_string();
+        }
+        if self.are_types_compatible(&right_ty, &left_ty) {
+            return left.to_string();
+        }
+
+        right.to_string()
+    }
+
+    fn combine_and_narrowing(
+        &self,
+        left: Option<(String, String, String)>,
+        right: Option<(String, String, String)>,
+    ) -> Option<(String, String, String)> {
+        match (left, right) {
+            (Some((name, then_ty, _)), None) | (None, Some((name, then_ty, _))) => {
+                Some((name, then_ty, String::new()))
+            }
+            (Some((left_name, left_then, _)), Some((right_name, right_then, _)))
+                if left_name == right_name =>
+            {
+                Some((
+                    left_name,
+                    self.merge_then_narrowing(&left_then, &right_then),
+                    String::new(),
+                ))
+            }
+            (Some((name, then_ty, _)), Some(_)) => Some((name, then_ty, String::new())),
+            _ => None,
+        }
+    }
+
+    fn statement_guarantees_exit(&self, stmt: &Statement) -> bool {
+        match stmt {
+            Statement::ReturnStmt { .. }
+            | Statement::ThrowStmt { .. }
+            | Statement::BreakStmt { .. }
+            | Statement::ContinueStmt { .. } => true,
+            Statement::BlockStmt { statements, .. } => statements
+                .iter()
+                .any(|statement| self.statement_guarantees_exit(statement)),
+            Statement::IfStmt {
+                then_branch,
+                else_branch: Some(else_branch),
+                ..
+            } => {
+                self.statement_guarantees_exit(then_branch)
+                    && self.statement_guarantees_exit(else_branch)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn check_statement(&mut self, stmt: &Statement) -> Result<(), ()> {
         match stmt {
             Statement::VarDeclaration {
@@ -116,10 +189,15 @@ impl TypeChecker {
                                 *line,
                                 *_col,
                                 "E0100",
-                                Some(&format!(
+                                self.optional_requires_check_hint(
+                                    &TejxType::from_name(&ty_str),
+                                    &TejxType::from_name(&init_type),
+                                )
+                                .as_deref()
+                                .or(Some(&format!(
                                     "Consider converting with 'as {}' or change the variable type",
                                     ty_str
-                                )),
+                                ))),
                             );
                         }
                     }
@@ -158,6 +236,15 @@ impl TypeChecker {
                         None,
                     );
                 } else {
+                    if matches!(TejxType::from_name(&type_annotation.to_string()), TejxType::Object(_)) {
+                        self.report_error_detailed(
+                            "Object-typed variables must be initialized at declaration".to_string(),
+                            *line,
+                            *_col,
+                            "E0101",
+                            Some("Provide an object literal or other initializer when declaring this object"),
+                        );
+                    }
                     let _ = self.define_pattern(
                         pattern,
                         type_annotation.to_string(),
@@ -220,6 +307,11 @@ impl TypeChecker {
                 ..
             } => {
                 let _ = self.check_expression(condition)?;
+                let then_exits = self.statement_guarantees_exit(then_branch);
+                let else_exits = else_branch
+                    .as_deref()
+                    .map(|stmt| self.statement_guarantees_exit(stmt))
+                    .unwrap_or(false);
 
                 // Attempt type narrowing
                 if let Some((name, narrowed_type, other_type)) =
@@ -228,7 +320,7 @@ impl TypeChecker {
                     // Then branch narrowing
                     self.enter_scope();
                     if !narrowed_type.is_empty() {
-                        self.define(name.clone(), narrowed_type);
+                        self.define_narrowed(name.clone(), narrowed_type.clone());
                     }
                     self.check_statement(then_branch)?;
                     self.exit_scope();
@@ -237,10 +329,16 @@ impl TypeChecker {
                     if let Some(else_stmt) = else_branch {
                         self.enter_scope();
                         if !other_type.is_empty() {
-                            self.define(name.clone(), other_type);
+                            self.define_narrowed(name.clone(), other_type.clone());
                         }
                         self.check_statement(else_stmt)?;
                         self.exit_scope();
+                    }
+
+                    if then_exits && !else_exits && !other_type.is_empty() {
+                        self.define_narrowed(name.clone(), other_type);
+                    } else if else_exits && !then_exits && !narrowed_type.is_empty() {
+                        self.define_narrowed(name.clone(), narrowed_type);
                     }
                 } else {
                     self.check_statement(then_branch)?;
@@ -257,6 +355,26 @@ impl TypeChecker {
                 self.loop_depth += 1;
 
                 // Two-pass check for move semantics in loops
+                if let Some((name, narrowed_type, _)) = self.get_narrowing_from_condition(condition)
+                {
+                    self.enter_scope();
+                    if !narrowed_type.is_empty() {
+                        self.define_narrowed(name.clone(), narrowed_type.clone());
+                    }
+                    let _ = self.check_statement(body);
+                    self.exit_scope();
+
+                    self.enter_scope();
+                    if !narrowed_type.is_empty() {
+                        self.define_narrowed(name, narrowed_type);
+                    }
+                    let res = self.check_statement(body);
+                    self.exit_scope();
+
+                    self.loop_depth -= 1;
+                    return res;
+                }
+
                 let _ = self.check_statement(body);
                 let res = self.check_statement(body);
 
@@ -287,13 +405,36 @@ impl TypeChecker {
                 }
 
                 self.loop_depth += 1;
+                let narrowing = condition
+                    .as_ref()
+                    .and_then(|cond_expr| self.get_narrowing_from_condition(cond_expr));
+
                 // Two-pass check for move semantics in loops
-                let _ = self.check_statement(body);
+                if let Some((name, narrowed_type, _)) = narrowing.clone() {
+                    self.enter_scope();
+                    if !narrowed_type.is_empty() {
+                        self.define_narrowed(name, narrowed_type);
+                    }
+                    let _ = self.check_statement(body);
+                    self.exit_scope();
+                } else {
+                    let _ = self.check_statement(body);
+                }
                 if let Some(inc_expr) = increment {
                     let _ = self.check_expression(inc_expr);
                 }
 
-                let res = self.check_statement(body);
+                let res = if let Some((name, narrowed_type, _)) = narrowing {
+                    self.enter_scope();
+                    if !narrowed_type.is_empty() {
+                        self.define_narrowed(name, narrowed_type);
+                    }
+                    let body_res = self.check_statement(body);
+                    self.exit_scope();
+                    body_res
+                } else {
+                    self.check_statement(body)
+                };
                 if let Some(inc_expr) = increment {
                     self.check_expression(inc_expr)?;
                 }
@@ -371,6 +512,7 @@ impl TypeChecker {
                                 Box::new(TejxType::from_name(&ret_ty)),
                             ),
                             is_const: false,
+                            is_narrowed: false,
                             min_params: if has_defaults {
                                 Some(min_required)
                             } else {
@@ -596,10 +738,15 @@ impl TypeChecker {
                                 class_decl._line,
                                 class_decl._col,
                                 "E0100",
-                                Some(&format!(
+                                self.optional_requires_check_hint(
+                                    &TejxType::from_name(&member_ty_str),
+                                    &TejxType::from_name(&init_type),
+                                )
+                                .as_deref()
+                                .or(Some(&format!(
                                     "Consider converting with 'as {}' or change the member type",
                                     member_ty_str
-                                )),
+                                ))),
                             );
                         }
                     }
@@ -1039,7 +1186,7 @@ impl TypeChecker {
     }
 
     pub(crate) fn get_narrowing_from_condition(
-        &self,
+        &mut self,
         condition: &Expression,
     ) -> Option<(String, String, String)> {
         match condition {
@@ -1056,6 +1203,40 @@ impl TypeChecker {
             Expression::BinaryExpr {
                 left, op, right, ..
             } => {
+                if *op == TokenType::AmpersandAmpersand || *op == TokenType::PipePipe {
+                    let left_narrowing = self.get_narrowing_from_condition(left);
+                    let right_narrowing = if let Some((ref name, ref then_ty, ref else_ty)) =
+                        left_narrowing
+                    {
+                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                            then_ty
+                        } else {
+                            else_ty
+                        };
+
+                        if !rhs_ty.is_empty() {
+                            self.enter_scope();
+                            self.define_narrowed(name.clone(), rhs_ty.clone());
+                            let narrowed = self.get_narrowing_from_condition(right);
+                            self.exit_scope();
+                            narrowed
+                        } else {
+                            self.get_narrowing_from_condition(right)
+                        }
+                    } else {
+                        self.get_narrowing_from_condition(right)
+                    };
+
+                    if *op == TokenType::AmpersandAmpersand {
+                        return self.combine_and_narrowing(left_narrowing, right_narrowing);
+                    }
+
+                    // OR short-circuits on the false branch of the left condition, so
+                    // use that branch only for RHS checking. The overall true branch can
+                    // represent multiple types, so keep it conservative here.
+                    return None;
+                }
+
                 if *op == TokenType::Instanceof {
                     if let (
                         Expression::Identifier { name: var_name, .. },
@@ -1065,6 +1246,9 @@ impl TypeChecker {
                     ) = (left.as_ref(), right.as_ref())
                     {
                         if let Some(sym) = self.lookup(var_name) {
+                            if matches!(sym.ty, TejxType::Optional(_)) {
+                                return None;
+                            }
                             let original_type = sym.ty.to_name();
                             return Some((var_name.clone(), type_name.clone(), original_type));
                         }
@@ -1091,11 +1275,8 @@ impl TypeChecker {
                 }
 
                 if let Some(sym) = self.lookup(&name) {
-                    let original_type = sym.ty.to_name().clone();
-                    if original_type.contains('|') {
-                        let non_none = self
-                            .strip_none_from_union(&TejxType::from_name(&original_type))
-                            .to_name();
+                    if let TejxType::Optional(_) = &sym.ty {
+                        let non_none = self.unwrap_optional_type(&sym.ty).to_name();
                         if is_not_none {
                             // then: non_none, else: None
                             return Some((name, non_none, "None".to_string()));

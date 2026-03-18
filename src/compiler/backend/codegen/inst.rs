@@ -237,6 +237,45 @@ impl CodeGen {
         let is_any_op = matches!(op_width, TejxType::Any)
             || matches!(l_ty, TejxType::Any)
             || matches!(r_ty, TejxType::Any);
+        let is_none_comparison = matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
+            && (matches!(l_ty, TejxType::Void) || matches!(r_ty, TejxType::Void));
+
+        if is_none_comparison {
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            let pred = match op {
+                TokenType::EqualEqual => "eq",
+                TokenType::BangEqual => "ne",
+                _ => unreachable!("checked above"),
+            };
+
+            let l_cast = if matches!(l_ty, TejxType::Void) {
+                "0".to_string()
+            } else {
+                self.emit_abi_cast(&l, l_ty, &TejxType::Int64)
+            };
+            let r_cast = if matches!(r_ty, TejxType::Void) {
+                "0".to_string()
+            } else {
+                self.emit_abi_cast(&r, r_ty, &TejxType::Int64)
+            };
+
+            self.temp_counter += 1;
+            let cmp_res = format!("%cmp_res{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = icmp {} i64 {}, {}",
+                cmp_res, pred, l_cast, r_cast
+            ));
+            self.temp_counter += 1;
+            let cmp_bool = format!("%cmp_bool{}", self.temp_counter);
+            self.emit_line(&format!("{} = zext i1 {} to i8", cmp_bool, cmp_res));
+            let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
+            self.emit_store_variable(dst, &final_res, dst_ty);
+
+            if temp_root_count > 0 {
+                self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
+            }
+            return;
+        }
 
         // If it's a comparison and either side is String, it's a string op
         if matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
@@ -883,6 +922,64 @@ impl CodeGen {
             return;
         }
 
+        if callee == "rt_instanceof" && args.len() == 2 {
+            if let MIRValue::Constant {
+                value,
+                ty: TejxType::String,
+            } = &args[1]
+            {
+                let target_class = value.trim_matches('"');
+                let matching_type_ids = self.instanceof_type_ids(target_class);
+                let obj_val = self.resolve_value(&args[0]);
+
+                self.declare_runtime_fn("rt_tag_of", "i64 @rt_tag_of(i64)");
+                self.temp_counter += 1;
+                let tag_tmp = format!("%instanceof_tag_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_tag_of(i64 {})",
+                    tag_tmp, obj_val
+                ));
+
+                let result_i64 = if matching_type_ids.is_empty() {
+                    "0".to_string()
+                } else {
+                    let mut merged_cmp: Option<String> = None;
+                    for type_id in matching_type_ids {
+                        self.temp_counter += 1;
+                        let cmp_tmp = format!("%instanceof_cmp_{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = icmp eq i64 {}, {}",
+                            cmp_tmp, tag_tmp, type_id
+                        ));
+                        merged_cmp = Some(if let Some(prev_cmp) = merged_cmp {
+                            self.temp_counter += 1;
+                            let or_tmp = format!("%instanceof_or_{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = or i1 {}, {}",
+                                or_tmp, prev_cmp, cmp_tmp
+                            ));
+                            or_tmp
+                        } else {
+                            cmp_tmp
+                        });
+                    }
+
+                    let cmp_result = merged_cmp.expect("instanceof comparisons must exist");
+                    self.temp_counter += 1;
+                    let i64_tmp = format!("%instanceof_i64_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = zext i1 {} to i64", i64_tmp, cmp_result));
+                    i64_tmp
+                };
+
+                if !dst.is_empty() {
+                    let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Bool);
+                    let final_val = self.emit_abi_cast(&result_i64, &TejxType::Int64, dst_ty);
+                    self.emit_store_variable(dst, &final_val, dst_ty);
+                }
+                return;
+            }
+        }
+
         if callee == "rt_box_number" {
             let float_val = self.resolve_float_value(&args[0]);
 
@@ -1238,7 +1335,7 @@ impl CodeGen {
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
             let use_fixed_layout = matches!(dst_ty, TejxType::Class(_, _))
                 || (Self::fixed_layout_object_type(dst_ty).is_some()
-                    && self.can_use_fixed_object_layout(func, dst));
+                    && self.can_use_fixed_object_layout_for_ty(func, dst, dst_ty));
             if use_fixed_layout {
                 if let Some((shape_name, fields)) = self.fixed_layout_shape(dst_ty) {
                 self.emit_fixed_layout_alloc(func, dst, &shape_name, &fields);
@@ -1609,12 +1706,33 @@ impl CodeGen {
                 || final_callee == "printf"
                 || final_callee == "malloc"
                 || final_callee == "free";
-            let is_runtime_any = is_runtime_fn && final_callee != "rt_str_equals";
+            let is_runtime_any = matches!(
+                final_callee.as_str(),
+                "rt_to_string"
+                    | "rt_typeof"
+                    | "rt_to_number"
+                    | "rt_to_number_v2"
+                    | "rt_to_boolean"
+                    | "rt_eq"
+                    | "rt_ne"
+                    | "rt_lt"
+                    | "rt_le"
+                    | "rt_gt"
+                    | "rt_ge"
+                    | "rt_not"
+                    | "rt_instanceof"
+            );
 
             let mut call_args_info: Vec<(MIRValue, String)> = Vec::new();
             let mut llvm_args = Vec::new();
             let mut llvm_decl_args = Vec::new();
             let mut temp_root_count = 0;
+            let expected_param_tys = if is_runtime_fn || final_callee.starts_with("virtual_call_") {
+                None
+            } else {
+                self.function_param_types.get(&final_callee).cloned()
+            };
+            let mut implicit_this_inserted = false;
 
             if is_instance_call {
                 // Peek at the first argument to see if it's already the instance
@@ -1630,6 +1748,7 @@ impl CodeGen {
                     .unwrap_or(false);
 
                 if !already_has_this {
+                    implicit_this_inserted = true;
                     if let Some(ptr) = self.value_map.get(&instance_var) {
                         let ptr_clone = ptr.clone();
                         self.temp_counter += 1;
@@ -1640,6 +1759,11 @@ impl CodeGen {
                             .get(&instance_var)
                             .cloned()
                             .unwrap_or(TejxType::Int64);
+                        let effective_arg_ty = expected_param_tys
+                            .as_ref()
+                            .and_then(|tys| tys.first())
+                            .cloned()
+                            .unwrap_or_else(|| instance_ty.clone());
                         let arg_mir = MIRValue::Variable {
                             name: instance_var.clone(),
                             ty: instance_ty,
@@ -1658,7 +1782,7 @@ impl CodeGen {
                         } else if is_runtime_fn {
                             "i64".to_string()
                         } else {
-                            Self::get_llvm_type(arg_mir.get_type()).to_string()
+                            Self::get_llvm_type(&effective_arg_ty).to_string()
                         };
 
                         let casted = if is_math_fn || final_callee == "rt_to_string_float" {
@@ -1669,11 +1793,13 @@ impl CodeGen {
                                 arg_mir.get_type(),
                                 &TejxType::Class("Any".to_string(), vec![]),
                             )
+                        } else if is_runtime_fn {
+                            self.emit_abi_cast(&final_reg, arg_mir.get_type(), &TejxType::Int64)
                         } else {
-                            final_reg.clone()
+                            self.emit_abi_cast(&final_reg, arg_mir.get_type(), &effective_arg_ty)
                         };
 
-                        if Self::is_gc_managed(arg_mir.get_type())
+                        if Self::is_gc_managed(&effective_arg_ty)
                             && !(final_callee == "rt_string_from_c_str"
                                 && matches!(arg_mir.get_type(), TejxType::String)
                                 && final_reg.starts_with("ptrtoint"))
@@ -1724,6 +1850,11 @@ impl CodeGen {
                 };
 
                 let arg_ty = arg.get_type();
+                let effective_arg_ty = expected_param_tys
+                    .as_ref()
+                    .and_then(|tys| tys.get(arg_index + usize::from(implicit_this_inserted)))
+                    .cloned()
+                    .unwrap_or_else(|| arg_ty.clone());
                 let mut final_reg = reg.clone();
 
                 // Ensure string literals are boxed when passed to runtime functions (except rt_string_from_c_str)
@@ -1793,7 +1924,7 @@ impl CodeGen {
                 } else if is_runtime_fn {
                     "i64".to_string()
                 } else {
-                    Self::get_llvm_type(arg_ty).to_string()
+                    Self::get_llvm_type(&effective_arg_ty).to_string()
                 };
 
                 let casted = if array_value_arg
@@ -1810,11 +1941,13 @@ impl CodeGen {
                         arg_ty,
                         &TejxType::Class("Any".to_string(), vec![]),
                     )
+                } else if is_runtime_fn {
+                    self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Int64)
                 } else {
-                    final_reg.clone()
+                    self.emit_abi_cast(&final_reg, arg_ty, &effective_arg_ty)
                 };
 
-                if Self::is_gc_managed(arg_ty)
+                if Self::is_gc_managed(&effective_arg_ty)
                     && !(final_callee == "rt_string_from_c_str"
                         && matches!(arg_ty, TejxType::String)
                         && final_reg.starts_with("ptrtoint"))

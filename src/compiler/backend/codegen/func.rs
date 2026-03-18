@@ -23,6 +23,7 @@ impl CodeGen {
                 format!("Array<{}>", Self::fixed_layout_field_key(inner))
             }
             TejxType::Slice(inner) => format!("slice<{}>", Self::fixed_layout_field_key(inner)),
+            TejxType::Optional(inner) => format!("Optional<{}>", Self::fixed_layout_field_key(inner)),
             TejxType::Function(params, ret) => {
                 let params = params
                     .iter()
@@ -30,14 +31,6 @@ impl CodeGen {
                     .collect::<Vec<_>>()
                     .join(",");
                 format!("fn({})->{}", params, Self::fixed_layout_field_key(ret))
-            }
-            TejxType::Union(types) => {
-                let parts = types
-                    .iter()
-                    .map(Self::fixed_layout_field_key)
-                    .collect::<Vec<_>>()
-                    .join("|");
-                format!("union({})", parts)
             }
             _ => ty.to_name(),
         }
@@ -82,17 +75,13 @@ impl CodeGen {
             }
             TejxType::FixedArray(inner, _)
             | TejxType::DynamicArray(inner)
-            | TejxType::Slice(inner) => self.register_object_shape_type(inner),
+            | TejxType::Slice(inner)
+            | TejxType::Optional(inner) => self.register_object_shape_type(inner),
             TejxType::Function(params, ret) => {
                 for param in params {
                     self.register_object_shape_type(param);
                 }
                 self.register_object_shape_type(ret);
-            }
-            TejxType::Union(types) => {
-                for inner in types {
-                    self.register_object_shape_type(inner);
-                }
             }
             TejxType::Class(_, generics) => {
                 for generic in generics {
@@ -219,7 +208,6 @@ impl CodeGen {
         &self,
         func: &MIRFunction,
         value: &MIRValue,
-        target_key: &str,
         cache: &mut HashMap<String, bool>,
         visiting: &mut HashSet<String>,
     ) -> bool {
@@ -229,17 +217,18 @@ impl CodeGen {
                 MIRValue::Variable { name, ty, .. }
                     if Self::fixed_layout_object_type(ty).is_some()
                         && if visiting.contains(name) {
-                            Self::fixed_layout_shape_key(ty).as_deref() == Some(target_key)
+                            true
                         } else {
-                            self.can_use_fixed_object_layout_inner(func, name, cache, visiting)
+                            self.can_use_fixed_object_layout_for_ty(func, name, ty)
                         }
-            )
+        )
     }
 
-    fn can_use_fixed_object_layout_inner(
+    fn can_use_fixed_object_layout_with_key(
         &self,
         func: &MIRFunction,
         var_name: &str,
+        target_key: &str,
         cache: &mut HashMap<String, bool>,
         visiting: &mut HashSet<String>,
     ) -> bool {
@@ -251,14 +240,6 @@ impl CodeGen {
         }
 
         let result = 'analysis: {
-            let Some(target_key) = func
-                .variables
-                .get(var_name)
-                .and_then(Self::fixed_layout_shape_key)
-            else {
-                break 'analysis false;
-            };
-
             if func.params.iter().any(|param| param == var_name) {
                 break 'analysis false;
             }
@@ -268,13 +249,13 @@ impl CodeGen {
                     .get(param)
                     .and_then(Self::fixed_layout_shape_key)
                     .as_ref()
-                    == Some(&target_key)
+                    == Some(&target_key.to_string())
                     || func
                         .variables
                         .get(param)
                         .map(|ty| {
                             Self::array_element_fixed_layout_shape_key(ty).as_ref()
-                                == Some(&target_key)
+                                == Some(&target_key.to_string())
                         })
                         .unwrap_or(false)
             });
@@ -323,13 +304,22 @@ impl CodeGen {
                             } if dst == &current_var => {
                                 found_definition = true;
                                 let parent_is_fixed_layout = self.value_uses_fixed_object_layout(
-                                    func, obj, &target_key, cache, visiting,
+                                    func, obj, cache, visiting,
                                 );
                                 let field_matches_shape =
                                     match self.resolve_fixed_field_info(obj.get_type(), member) {
                                         Some((_, field_ty)) => {
-                                            Self::fixed_layout_shape_key(&field_ty).as_ref()
-                                                == Some(&target_key)
+                                            Self::fixed_layout_shape_key(&field_ty)
+                                                .as_deref()
+                                                == Some(target_key)
+                                                || match &field_ty {
+                                                    TejxType::Optional(inner) => {
+                                                        Self::fixed_layout_shape_key(inner)
+                                                            .as_deref()
+                                                            == Some(target_key)
+                                                    }
+                                                    _ => false,
+                                                }
                                         }
                                         None => false,
                                     };
@@ -342,8 +332,8 @@ impl CodeGen {
                             MIRInstruction::LoadIndex { dst, obj, .. } if dst == &current_var => {
                                 found_definition = true;
                                 if Self::array_element_fixed_layout_shape_key(obj.get_type())
-                                    .as_ref()
-                                    == Some(&target_key)
+                                    .as_deref()
+                                    == Some(target_key)
                                 {
                                     has_trusted_source = true;
                                 } else {
@@ -387,8 +377,8 @@ impl CodeGen {
                                     .variables
                                     .get(dst)
                                     .and_then(Self::fixed_layout_shape_key)
-                                    .as_ref()
-                                    != Some(&target_key)
+                                    .as_deref()
+                                    != Some(target_key)
                                 {
                                     break 'analysis false;
                                 }
@@ -408,8 +398,8 @@ impl CodeGen {
                                 ..
                             } if name == &current_var => {
                                 if Self::array_element_fixed_layout_shape_key(obj.get_type())
-                                    .as_ref()
-                                    != Some(&target_key)
+                                    .as_deref()
+                                    != Some(target_key)
                                 {
                                     break 'analysis false;
                                 }
@@ -420,7 +410,7 @@ impl CodeGen {
                                 ..
                             } if name == &current_var => {
                                 if !self.value_uses_fixed_object_layout(
-                                    func, obj, &target_key, cache, visiting,
+                                    func, obj, cache, visiting,
                                 ) {
                                     break 'analysis false;
                                 }
@@ -443,8 +433,8 @@ impl CodeGen {
                                                     Self::array_element_fixed_layout_shape_key(
                                                         array_arg.get_type(),
                                                     )
-                                                    .as_ref()
-                                                        == Some(&target_key)
+                                                    .as_deref()
+                                                        == Some(target_key)
                                                 })
                                                 .unwrap_or(false))
                                             || (callee == "rt_array_set_fast"
@@ -455,8 +445,8 @@ impl CodeGen {
                                                         Self::array_element_fixed_layout_shape_key(
                                                             array_arg.get_type(),
                                                         )
-                                                        .as_ref()
-                                                            == Some(&target_key)
+                                                        .as_deref()
+                                                            == Some(target_key)
                                                     })
                                                     .unwrap_or(false));
 
@@ -540,19 +530,49 @@ impl CodeGen {
     }
 
     pub(crate) fn can_use_fixed_object_layout(&self, func: &MIRFunction, var_name: &str) -> bool {
+        let Some(target_key) = func
+            .variables
+            .get(var_name)
+            .and_then(Self::fixed_layout_shape_key)
+        else {
+            return false;
+        };
+        self.can_use_fixed_object_layout_for_key(func, var_name, &target_key)
+    }
+
+    pub(crate) fn can_use_fixed_object_layout_for_ty(
+        &self,
+        func: &MIRFunction,
+        var_name: &str,
+        ty: &TejxType,
+    ) -> bool {
+        let Some(target_key) = Self::fixed_layout_shape_key(ty) else {
+            return false;
+        };
+        self.can_use_fixed_object_layout_for_key(func, var_name, &target_key)
+    }
+
+    fn can_use_fixed_object_layout_for_key(
+        &self,
+        func: &MIRFunction,
+        var_name: &str,
+        target_key: &str,
+    ) -> bool {
         let mut cache: HashMap<String, bool> = HashMap::new();
         let mut visiting: HashSet<String> = HashSet::new();
-        self.can_use_fixed_object_layout_inner(func, var_name, &mut cache, &mut visiting)
+        self.can_use_fixed_object_layout_with_key(
+            func,
+            var_name,
+            target_key,
+            &mut cache,
+            &mut visiting,
+        )
     }
 
     pub(crate) fn fixed_layout_object_type(ty: &TejxType) -> Option<TejxType> {
         match ty {
             TejxType::Object(_) => Some(ty.clone()),
-            TejxType::Union(types) => {
-                let mut matches = types.iter().filter_map(Self::fixed_layout_object_type);
-                let first = matches.next()?;
-                matches.all(|other| other == first).then_some(first)
-            }
+            TejxType::Optional(_) => None,
             _ => None,
         }
     }
@@ -630,6 +650,8 @@ impl CodeGen {
         self.buffer.clear();
         self.global_buffer.clear();
         self.declared_functions.clear();
+        self.function_param_counts.clear();
+        self.function_param_types.clear();
         self.declared_globals.clear();
 
         self.collect_object_shapes(functions);
@@ -650,6 +672,13 @@ impl CodeGen {
             self.declared_functions.insert(f.name.clone());
             self.function_param_counts
                 .insert(f.name.clone(), f.params.len());
+            self.function_param_types.insert(
+                f.name.clone(),
+                f.params
+                    .iter()
+                    .filter_map(|param_name| f.variables.get(param_name).cloned())
+                    .collect(),
+            );
             if f.name == "tejx_main" {
                 has_tejx_main = true;
             }

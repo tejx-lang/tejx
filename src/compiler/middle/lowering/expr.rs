@@ -5,6 +5,28 @@ use crate::frontend::token::TokenType;
 use crate::common::types::TejxType;
 
 impl Lowering {
+    fn variadic_pack_type(&self, callee: &str) -> TejxType {
+        let mut candidates = vec![callee.to_string()];
+        if callee.starts_with("f_") {
+            candidates.push(callee.trim_start_matches("f_").to_string());
+        } else {
+            candidates.push(format!("f_{}", callee));
+        }
+
+        for candidate in candidates {
+            if let Some(TejxType::Function(params, _)) = self.user_functions.borrow().get(&candidate)
+            {
+                if let Some(last_param) = params.last() {
+                    if last_param.is_array() {
+                        return last_param.clone();
+                    }
+                }
+            }
+        }
+
+        TejxType::DynamicArray(Box::new(TejxType::Any))
+    }
+
     fn can_fast_print_arg(&self, expr: &HIRExpression) -> bool {
         matches!(
             expr.get_type(),
@@ -341,11 +363,38 @@ impl Lowering {
                                 ty: TejxType::String,
                             },
                         ],
-                        ty: TejxType::Int32,
+                        ty: TejxType::Bool,
                     };
                 }
                 let l = self.lower_expression(left);
-                let r = self.lower_expression(right);
+                let r = if matches!(
+                    op,
+                    TokenType::AmpersandAmpersand | TokenType::PipePipe
+                ) {
+                    if let Some((name, then_ty, else_ty)) =
+                        self.get_narrowing_from_condition(left)
+                    {
+                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                            then_ty
+                        } else {
+                            else_ty
+                        };
+
+                        if !matches!(rhs_ty, TejxType::Void) {
+                            self.enter_scope();
+                            self.narrow_type(name, rhs_ty);
+                            let lowered = self.lower_expression(right);
+                            self._exit_scope();
+                            lowered
+                        } else {
+                            self.lower_expression(right)
+                        }
+                    } else {
+                        self.lower_expression(right)
+                    }
+                } else {
+                    self.lower_expression(right)
+                };
 
                 let bin_ty = self.infer_hir_binary_type(&l, op, &r);
                 HIRExpression::BinaryExpr {
@@ -578,7 +627,7 @@ impl Lowering {
                 if callee_str == "typeof" {
                     if let Some(arg) = hir_args.get(0) {
                         let arg_ty = arg.get_type();
-                        if matches!(arg_ty, TejxType::Class(_, _) | TejxType::Any | TejxType::Union(_)) {
+                        if matches!(arg_ty, TejxType::Class(_, _) | TejxType::Any | TejxType::Optional(_)) {
                             // Let objects be evaluated at runtime for inheritance paths
                             final_callee = "rt_typeof".to_string();
                             ty = TejxType::String;
@@ -594,6 +643,7 @@ impl Lowering {
                                 TejxType::Function(_, _) => "function",
                                 TejxType::Class(_, _) => "object",
                                 TejxType::Object(_) => "object",
+                                TejxType::Void => "None",
                                 _ => "void",
                             };
                             return HIRExpression::Literal {
@@ -770,20 +820,8 @@ impl Lowering {
 
                         if !resolved {
                             // Priority 3: Instance/Runtime Methods (General Resolution)
-                            let mut obj_hir = self.lower_expression(object);
-                            let mut obj_ty = obj_hir.get_type();
-
-                            if self.is_optional_type(&obj_ty) {
-                                let narrowed = self.non_none_type(&obj_ty);
-                                if narrowed != obj_ty {
-                                    obj_hir = HIRExpression::Cast {
-                                        line,
-                                        expr: Box::new(obj_hir),
-                                        ty: narrowed.clone(),
-                                    };
-                                    obj_ty = narrowed;
-                                }
-                            }
+                            let obj_hir = self.lower_expression(object);
+                            let obj_ty = obj_hir.get_type();
 
                             if obj_ty == TejxType::String || obj_ty.is_array() || obj_ty.is_slice() {
                                 if let Some(builtin_callee) =
@@ -1047,17 +1085,18 @@ impl Lowering {
                             }];
                         } else {
                             let mut new_var_args = fixed.to_vec();
+                            let rest_array_ty = self.variadic_pack_type(&final_callee);
                             new_var_args.push(HIRExpression::ArrayLiteral {
                                 line: line,
                                 elements: rest.to_vec(),
-                                ty: TejxType::DynamicArray(Box::new(TejxType::Any)),
+                                ty: rest_array_ty,
                                 sized_allocation: None,
                             });
                             final_args = new_var_args;
                         }
                     }
                 } else {
-                    // Non-variadic: pad missing arguments with None for Optionals/T|None
+                    // Non-variadic: pad missing arguments with None for Optional parameters
                     let expected_count_opt =
                         self.user_function_args.borrow().get(&final_callee).copied();
                     if let Some(expected_count) = expected_count_opt {
@@ -1466,11 +1505,12 @@ impl Lowering {
                     if hir_args.len() >= fixed_count {
                         let (fixed, rest) = hir_args.split_at(fixed_count);
                         let mut new_var_args = fixed.to_vec();
+                        let rest_array_ty = self.variadic_pack_type(&cons_unmangled);
                         new_var_args.push(HIRExpression::ArrayLiteral {
                             line: line,
                             elements: rest.to_vec(),
                             sized_allocation: None,
-                            ty: TejxType::DynamicArray(Box::new(TejxType::Any)),
+                            ty: rest_array_ty,
                         });
                         hir_args = new_var_args;
                     }
@@ -1536,24 +1576,17 @@ impl Lowering {
         }
     }
 
-    fn non_none_type(&self, ty: &TejxType) -> TejxType {
+    pub(crate) fn non_none_type(&self, ty: &TejxType) -> TejxType {
         match ty {
-            TejxType::Union(types) => types
-                .iter()
-                .find(|t| t.to_name() != "None")
-                .cloned()
-                .unwrap_or_else(|| ty.clone()),
-            TejxType::Class(name, generics) if name == "Option" && !generics.is_empty() => {
-                generics[0].clone()
-            }
+            TejxType::Optional(inner) => (**inner).clone(),
             _ => ty.clone(),
         }
     }
 
     fn is_optional_type(&self, ty: &TejxType) -> bool {
         match ty {
-            TejxType::Union(types) => types.iter().any(|t| t.to_name() == "None"),
-            TejxType::Class(name, _) if name == "Option" || name == "None" => true,
+            TejxType::Optional(_) => true,
+            TejxType::Class(name, _) if name == "None" => true,
             _ => false,
         }
     }
@@ -1563,8 +1596,7 @@ impl Lowering {
             return right.clone();
         }
         match left {
-            TejxType::Union(_) => self.non_none_type(left),
-            TejxType::Class(name, _) if name == "Option" => self.non_none_type(left),
+            TejxType::Optional(_) => self.non_none_type(left),
             TejxType::Class(name, _) if name == "None" => right.clone(),
             _ => left.clone(),
         }
@@ -1619,18 +1651,8 @@ impl Lowering {
             }
         }
 
-        let mut obj_expr = lowered_object;
-        let mut obj_ty = self.resolve_alias_type(&obj_expr.get_type());
-        if let TejxType::Union(types) = &obj_ty {
-            if let Some(non_none) = types.iter().find(|t| t.to_name() != "None") {
-                obj_ty = non_none.clone();
-                obj_expr = HIRExpression::Cast {
-                    line,
-                    expr: Box::new(obj_expr),
-                    ty: obj_ty.clone(),
-                };
-            }
-        }
+        let obj_expr = lowered_object;
+        let obj_ty = self.resolve_alias_type(&obj_expr.get_type());
 
         if let TejxType::Class(ref full_class, _) = obj_ty {
             let class_name = full_class

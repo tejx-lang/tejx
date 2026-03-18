@@ -94,9 +94,9 @@ function main() {
 // --- Validation Logic (from modern_capabilities.tx) ---
 
 class ValidationResult {
-    isValid: boolean;
+    isValid: bool;
     error: string;
-    constructor(valid: boolean, err: string) {
+    constructor(valid: bool, err: string) {
         this.isValid = valid;
         this.error = err;
     }

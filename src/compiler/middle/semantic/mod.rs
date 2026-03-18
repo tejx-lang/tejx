@@ -32,6 +32,7 @@ pub struct MemberInfo {
 pub struct Symbol {
     pub ty: TejxType,
     pub is_const: bool,
+    pub is_narrowed: bool,
     pub params: Vec<TejxType>,     // Parameter types if function
     pub min_params: Option<usize>, // Minimum required params (excluding defaulted ones)
     pub is_variadic: bool,
@@ -169,6 +170,7 @@ impl TypeChecker {
                 Symbol {
                     ty: ty_obj,
                     is_const: false,
+                    is_narrowed: false,
                     params: final_params
                         .iter()
                         .map(|p| TejxType::from_name(p))
@@ -213,6 +215,7 @@ impl TypeChecker {
                 Symbol {
                     ty: ty_obj,
                     is_const: false,
+                    is_narrowed: false,
                     params: params.iter().map(|p| TejxType::from_name(p)).collect(),
                     min_params: None,
                     is_variadic,
@@ -261,6 +264,7 @@ impl TypeChecker {
                 Symbol {
                     ty: ty_obj,
                     is_const,
+                    is_narrowed: false,
                     params: final_params
                         .iter()
                         .map(|p| TejxType::from_name(p))
@@ -275,6 +279,25 @@ impl TypeChecker {
         }
     }
 
+    pub(crate) fn define_narrowed(&mut self, name: String, type_name: String) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(
+                name,
+                Symbol {
+                    ty: TejxType::from_name(&type_name),
+                    is_const: false,
+                    is_narrowed: true,
+                    params: Vec::new(),
+                    min_params: None,
+                    is_variadic: false,
+                    aliased_type: None,
+                    generic_params: Vec::new(),
+                    literal_length: None,
+                },
+            );
+        }
+    }
+
     pub(crate) fn lookup(&self, name: &str) -> Option<Symbol> {
         for scope in self.scopes.iter().rev() {
             if let Some(s) = scope.get(name) {
@@ -282,6 +305,21 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    pub(crate) fn lookup_assignment_target(&self, name: &str) -> Option<Symbol> {
+        let mut narrowed_match: Option<Symbol> = None;
+        for scope in self.scopes.iter().rev() {
+            if let Some(symbol) = scope.get(name) {
+                if !symbol.is_narrowed {
+                    return Some(symbol.clone());
+                }
+                if narrowed_match.is_none() {
+                    narrowed_match = Some(symbol.clone());
+                }
+            }
+        }
+        narrowed_match
     }
 
     pub(crate) fn report_error_detailed(

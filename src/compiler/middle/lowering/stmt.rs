@@ -6,6 +6,73 @@ use crate::frontend::token::TokenType;
 use crate::common::types::TejxType;
 
 impl Lowering {
+    fn has_effective_narrowing_ty(ty: &TejxType) -> bool {
+        !matches!(ty, TejxType::Void) && ty.to_name() != "None"
+    }
+
+    fn merge_then_narrowing_ty(left: &TejxType, right: &TejxType) -> TejxType {
+        if matches!(left, TejxType::Void) {
+            return right.clone();
+        }
+        if matches!(right, TejxType::Void) {
+            return left.clone();
+        }
+        if left.to_name() == "None" {
+            return right.clone();
+        }
+        if right.to_name() == "None" {
+            return left.clone();
+        }
+        if left == right {
+            return left.clone();
+        }
+        right.clone()
+    }
+
+    fn combine_and_narrowing(
+        &self,
+        left: Option<(String, TejxType, TejxType)>,
+        right: Option<(String, TejxType, TejxType)>,
+    ) -> Option<(String, TejxType, TejxType)> {
+        match (left, right) {
+            (Some((name, then_ty, _)), None) | (None, Some((name, then_ty, _))) => {
+                Some((name, then_ty, TejxType::Void))
+            }
+            (Some((left_name, left_then, _)), Some((right_name, right_then, _)))
+                if left_name == right_name =>
+            {
+                Some((
+                    left_name,
+                    Self::merge_then_narrowing_ty(&left_then, &right_then),
+                    TejxType::Void,
+                ))
+            }
+            (Some((name, then_ty, _)), Some(_)) => Some((name, then_ty, TejxType::Void)),
+            _ => None,
+        }
+    }
+
+    fn statement_guarantees_exit(stmt: &Statement) -> bool {
+        match stmt {
+            Statement::ReturnStmt { .. }
+            | Statement::ThrowStmt { .. }
+            | Statement::BreakStmt { .. }
+            | Statement::ContinueStmt { .. } => true,
+            Statement::BlockStmt { statements, .. } => statements
+                .iter()
+                .any(Self::statement_guarantees_exit),
+            Statement::IfStmt {
+                then_branch,
+                else_branch: Some(else_branch),
+                ..
+            } => {
+                Self::statement_guarantees_exit(then_branch)
+                    && Self::statement_guarantees_exit(else_branch)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn lower_statement(&self, stmt: &Statement) -> Option<HIRStatement> {
         let line = stmt.get_line();
         match stmt {
@@ -88,13 +155,19 @@ impl Lowering {
                 };
 
                 if init.is_none() {
-                    if let TejxType::DynamicArray(_) = ty {
-                        init = Some(HIRExpression::ArrayLiteral {
-                            line,
-                            elements: vec![],
-                            ty: ty.clone(),
-                            sized_allocation: sized_allocation_expr.clone().map(Box::new),
-                        });
+                    match &ty {
+                        TejxType::DynamicArray(_) => {
+                            init = Some(HIRExpression::ArrayLiteral {
+                                line,
+                                elements: vec![],
+                                ty: ty.clone(),
+                                sized_allocation: sized_allocation_expr.clone().map(Box::new),
+                            });
+                        }
+                        TejxType::Optional(_) => {
+                            init = Some(HIRExpression::NoneLiteral { line });
+                        }
+                        _ => {}
                     }
                 } else if let Some(size_expr) = sized_allocation_expr {
                     if let Some(HIRExpression::ArrayLiteral {
@@ -145,7 +218,17 @@ impl Lowering {
                 condition, body, ..
             } => {
                 let cond = self.lower_expression(condition);
+                let narrowing = self.get_narrowing_from_condition(condition);
+                if let Some((ref name, ref then_ty, _)) = narrowing {
+                    self.enter_scope();
+                    if Self::has_effective_narrowing_ty(then_ty) {
+                        self.narrow_type(name.clone(), then_ty.clone());
+                    }
+                }
                 let body_hir = self.lower_statement_as_block(body);
+                if narrowing.is_some() {
+                    self._exit_scope();
+                }
                 Some(HIRStatement::Loop {
                     line,
                     condition: cond,
@@ -183,7 +266,19 @@ impl Lowering {
                         ty: TejxType::Bool,
                     });
 
+                let narrowing = condition
+                    .as_ref()
+                    .and_then(|cond_expr| self.get_narrowing_from_condition(cond_expr));
+                if let Some((ref name, ref then_ty, _)) = narrowing {
+                    self.enter_scope();
+                    if Self::has_effective_narrowing_ty(then_ty) {
+                        self.narrow_type(name.clone(), then_ty.clone());
+                    }
+                }
                 let body_hir = self.lower_statement_as_block(body);
+                if narrowing.is_some() {
+                    self._exit_scope();
+                }
 
                 let inc = increment.as_ref().map(|e| {
                     let expr = self.lower_expression(e);
@@ -377,10 +472,15 @@ impl Lowering {
             } => {
                 let cond = self.lower_expression(condition);
                 let narrowing = self.get_narrowing_from_condition(condition);
+                let then_exits = Self::statement_guarantees_exit(then_branch);
+                let else_exits = else_branch
+                    .as_deref()
+                    .map(Self::statement_guarantees_exit)
+                    .unwrap_or(false);
 
                 self.enter_scope();
                 if let Some((ref name, ref then_ty, _)) = narrowing {
-                    if then_ty.to_name() != "None" && !then_ty.to_name().is_empty() {
+                    if Self::has_effective_narrowing_ty(then_ty) {
                         self.narrow_type(name.clone(), then_ty.clone());
                     }
                 }
@@ -396,7 +496,7 @@ impl Lowering {
                 let else_hir = else_branch.as_ref().map(|e| {
                     self.enter_scope();
                     if let Some((ref name, _, ref else_ty)) = narrowing {
-                        if else_ty.to_name() != "None" && !else_ty.to_name().is_empty() {
+                        if Self::has_effective_narrowing_ty(else_ty) {
                             self.narrow_type(name.clone(), else_ty.clone());
                         }
                     }
@@ -407,6 +507,17 @@ impl Lowering {
                     self._exit_scope();
                     res
                 });
+
+                if let Some((ref name, ref then_ty, ref else_ty)) = narrowing {
+                    if then_exits && !else_exits && Self::has_effective_narrowing_ty(else_ty) {
+                        self.narrow_type(name.clone(), else_ty.clone());
+                    } else if else_exits
+                        && !then_exits
+                        && Self::has_effective_narrowing_ty(then_ty)
+                    {
+                        self.narrow_type(name.clone(), then_ty.clone());
+                    }
+                }
 
                 Some(HIRStatement::If {
                     line,
@@ -689,9 +800,43 @@ impl Lowering {
             Expression::BinaryExpr {
                 left, op, right, ..
             } => {
+                if *op == TokenType::AmpersandAmpersand || *op == TokenType::PipePipe {
+                    let left_narrowing = self.get_narrowing_from_condition(left);
+                    let right_narrowing = if let Some((ref name, ref then_ty, ref else_ty)) =
+                        left_narrowing
+                    {
+                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                            then_ty
+                        } else {
+                            else_ty
+                        };
+
+                        if !matches!(rhs_ty, TejxType::Void) {
+                            self.enter_scope();
+                            self.narrow_type(name.clone(), rhs_ty.clone());
+                            let narrowed = self.get_narrowing_from_condition(right);
+                            self._exit_scope();
+                            narrowed
+                        } else {
+                            self.get_narrowing_from_condition(right)
+                        }
+                    } else {
+                        self.get_narrowing_from_condition(right)
+                    };
+
+                    if *op == TokenType::AmpersandAmpersand {
+                        return self.combine_and_narrowing(left_narrowing, right_narrowing);
+                    }
+
+                    return None;
+                }
+
                 if *op == TokenType::Instanceof {
                     if let (Expression::Identifier { name: var_name, .. }, Expression::Identifier { name: type_name, .. }) = (left.as_ref(), right.as_ref()) {
                         if let Some((_, original_ty)) = self.lookup(var_name) {
+                            if matches!(original_ty, TejxType::Optional(_)) {
+                                return None;
+                            }
                             let original_type = original_ty.clone();
                             return Some((var_name.clone(), TejxType::from_name(type_name), original_type));
                         }
@@ -718,18 +863,8 @@ impl Lowering {
                 }
 
                 if let Some((_, ty)) = self.lookup(&name) {
-                    let original_type = ty.to_name();
-                    if original_type.contains('|') {
-                        let mut non_none_str = "".to_string();
-                        for p in original_type.split('|') {
-                            if p.trim() != "None" {
-                                if !non_none_str.is_empty() {
-                                    non_none_str.push_str(" | ");
-                                }
-                                non_none_str.push_str(p.trim());
-                            }
-                        }
-                        let non_none = TejxType::from_name(&non_none_str);
+                    if matches!(ty, TejxType::Optional(_)) {
+                        let non_none = self.non_none_type(&ty);
                         let none_ty = TejxType::from_name("None");
                         if is_not_none {
                             return Some((name, non_none, none_ty));

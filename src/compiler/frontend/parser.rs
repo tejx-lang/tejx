@@ -161,6 +161,15 @@ impl Parser {
             initializer = Some(Box::new(self.parse_assignment()));
         }
 
+        if initializer.is_none() && matches!(type_annotation, TypeNode::Object(_)) {
+            self.errors.push(crate::common::diagnostics::Diagnostic::new(
+                "Object-typed variables must be initialized at declaration".to_string(),
+                start_token.line,
+                start_token.column,
+                self.filename.clone(),
+            ));
+        }
+
         let mut declarations = vec![Statement::VarDeclaration {
             pattern,
             type_annotation,
@@ -180,6 +189,14 @@ impl Parser {
             let mut init = None;
             if self.match_token(TokenType::Equals) {
                 init = Some(Box::new(self.parse_assignment()));
+            }
+            if init.is_none() && matches!(ta, TypeNode::Object(_)) {
+                self.errors.push(crate::common::diagnostics::Diagnostic::new(
+                    "Object-typed variables must be initialized at declaration".to_string(),
+                    start_token.line,
+                    start_token.column,
+                    self.filename.clone(),
+                ));
             }
             declarations.push(Statement::VarDeclaration {
                 pattern: p,
@@ -239,6 +256,7 @@ impl Parser {
             | TokenType::Async
             | TokenType::Await
             | TokenType::Option
+            | TokenType::Optional
             | TokenType::String
             | TokenType::Number
             | TokenType::From
@@ -983,7 +1001,6 @@ impl Parser {
     fn parse_type_annotation(&mut self) -> TypeNode {
         let mut base_type = self.parse_base_type();
 
-        // Union Type: A | B
         let mut union_types = Vec::new();
         while self.match_token(TokenType::Pipe) {
             let next_type = self.parse_single_type();
@@ -992,9 +1009,38 @@ impl Parser {
             }
             union_types.push(next_type);
         }
-        
+
         if !union_types.is_empty() {
-            base_type = TypeNode::Union(union_types);
+            if union_types.len() == 2 {
+                let left_is_none =
+                    matches!(&union_types[0], TypeNode::Named(name) if name == "None");
+                let right_is_none =
+                    matches!(&union_types[1], TypeNode::Named(name) if name == "None");
+                if left_is_none ^ right_is_none {
+                    let inner = if left_is_none {
+                        union_types[1].clone()
+                    } else {
+                        union_types[0].clone()
+                    };
+                    let token = self.previous().clone();
+                    self.errors.push(crate::common::diagnostics::Diagnostic::new(
+                        "Use `Optional<T>` instead of `T | None`.".to_string(),
+                        token.line,
+                        token.column,
+                        self.filename.clone(),
+                    ));
+                    return TypeNode::Optional(Box::new(inner));
+                }
+            }
+
+            let token = self.previous().clone();
+            self.errors.push(crate::common::diagnostics::Diagnostic::new(
+                "Union types are not supported. Only `Optional<T>` is allowed.".to_string(),
+                token.line,
+                token.column,
+                self.filename.clone(),
+            ));
+            base_type = TypeNode::Any;
         }
 
         base_type
@@ -1097,7 +1143,7 @@ impl Parser {
             base_type_name = ident_name.clone();
             base_node = TypeNode::Named(ident_name.clone());
 
-            // Generics: Array<T> or Option<T>
+            // Generics: Array<T> or Optional<T>
             if self.match_token(TokenType::Less) {
                 let mut generic_args = Vec::new();
                 base_type_name.push('<');
@@ -1128,7 +1174,37 @@ impl Parser {
                     self.consume(TokenType::Greater, "Expected '>'");
                 }
                 base_type_name.push('>');
-                base_node = TypeNode::Generic(ident_name, generic_args);
+                base_node = match ident_name.as_str() {
+                    "Optional" => {
+                        if generic_args.len() != 1 {
+                            let tok = self.previous().clone();
+                            self.errors.push(crate::common::diagnostics::Diagnostic::new(
+                                "`Optional<T>` expects exactly one type argument.".to_string(),
+                                tok.line,
+                                tok.column,
+                                self.filename.clone(),
+                            ));
+                            TypeNode::Any
+                        } else {
+                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
+                        }
+                    }
+                    "Option" => {
+                        let tok = self.previous().clone();
+                        self.errors.push(crate::common::diagnostics::Diagnostic::new(
+                            "Use `Optional<T>` instead of `Option<T>`.".to_string(),
+                            tok.line,
+                            tok.column,
+                            self.filename.clone(),
+                        ));
+                        if generic_args.len() == 1 {
+                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
+                        } else {
+                            TypeNode::Any
+                        }
+                    }
+                    _ => TypeNode::Generic(ident_name, generic_args),
+                };
             }
         }
 

@@ -16,12 +16,12 @@ pub enum TejxType {
 
     Char,                         // 4-byte
     Class(String, Vec<TejxType>), // Name, Generics
+    Optional(Box<TejxType>),
     FixedArray(Box<TejxType>, usize),
     DynamicArray(Box<TejxType>),
     Slice(Box<TejxType>),
     Void,
     Function(Vec<TejxType>, Box<TejxType>), // (Params, Return)
-    Union(Vec<TejxType>),
     Object(Vec<(String, bool, TejxType)>),
     Any,
 }
@@ -122,7 +122,7 @@ impl TejxType {
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64 => true,
-            TejxType::Function(_, _) | TejxType::Union(_) | TejxType::Object(_) => false,
+            TejxType::Function(_, _) | TejxType::Optional(_) | TejxType::Object(_) => false,
             _ => false,
         }
     }
@@ -130,7 +130,7 @@ impl TejxType {
     pub fn is_float(&self) -> bool {
         match self {
             TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => true,
-            TejxType::Function(_, _) | TejxType::Union(_) | TejxType::Object(_) => false,
+            TejxType::Function(_, _) | TejxType::Optional(_) | TejxType::Object(_) => false,
             _ => false,
         }
     }
@@ -175,13 +175,13 @@ impl TejxType {
             TejxType::Char => 4,
             TejxType::String
             | TejxType::Class(_, _)
+            | TejxType::Optional(_)
             | TejxType::DynamicArray(_)
             | TejxType::Object(_) => 8, // Pointers/Boxed/Borrows
             TejxType::Function(_, _) => 16, // Pointer + env (fat pointer)
             TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Any => 8, // Boxed value ptr
-            TejxType::Union(types) => types.iter().map(|t| t.size()).max().unwrap_or(8),
             TejxType::Void => 0,
         }
     }
@@ -192,6 +192,9 @@ impl TejxType {
             crate::frontend::ast::TypeNode::Generic(name, args) => {
                 let parsed_args = args.iter().map(TejxType::from_node).collect();
                 TejxType::Class(name.clone(), parsed_args)
+            }
+            crate::frontend::ast::TypeNode::Optional(inner) => {
+                TejxType::Optional(Box::new(TejxType::from_node(inner)))
             }
             crate::frontend::ast::TypeNode::Array(inner) => {
                 TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
@@ -206,16 +209,6 @@ impl TejxType {
             crate::frontend::ast::TypeNode::Object(members) => {
                 let parsed_members = members.iter().map(|(k, o, t)| (k.clone(), *o, TejxType::from_node(t))).collect();
                 TejxType::Object(parsed_members)
-            }
-            crate::frontend::ast::TypeNode::Union(types) => {
-                let parsed_types: Vec<_> = types.iter().map(TejxType::from_node).collect();
-                if parsed_types.len() == 1 {
-                    parsed_types.into_iter().next().unwrap()
-                } else if parsed_types.is_empty() {
-                    TejxType::Void
-                } else {
-                    TejxType::Union(parsed_types)
-                }
             }
             crate::frontend::ast::TypeNode::Intersection(_) => TejxType::Any,
             crate::frontend::ast::TypeNode::Any => TejxType::Any,
@@ -244,6 +237,7 @@ impl TejxType {
                     crate::frontend::ast::TypeNode::Generic(name.clone(), type_args)
                 }
             }
+            TejxType::Optional(inner) => crate::frontend::ast::TypeNode::Optional(Box::new(inner.to_type_node())),
             TejxType::FixedArray(inner, _) => crate::frontend::ast::TypeNode::Array(Box::new(inner.to_type_node())),
             TejxType::DynamicArray(inner) => crate::frontend::ast::TypeNode::Array(Box::new(inner.to_type_node())),
             TejxType::Slice(inner) => crate::frontend::ast::TypeNode::Generic("slice".to_string(), vec![inner.to_type_node()]),
@@ -251,7 +245,6 @@ impl TejxType {
                 let p_nodes = params.iter().map(|p| p.to_type_node()).collect();
                 crate::frontend::ast::TypeNode::Function(p_nodes, Box::new(ret.to_type_node()))
             }
-            TejxType::Union(types) => crate::frontend::ast::TypeNode::Union(types.iter().map(|t| t.to_type_node()).collect()),
             TejxType::Object(members) => crate::frontend::ast::TypeNode::Object(members.iter().map(|(k, o, t)| (k.clone(), *o, t.to_type_node())).collect()),
         }
     }
@@ -266,10 +259,19 @@ impl TejxType {
                 .filter(|p| !p.is_empty())
                 .map(|s| TejxType::from_name(s.trim()))
                 .collect();
-            if parts.len() == 1 {
-                return parts.into_iter().next().unwrap();
+            if parts.len() == 2 {
+                let left_is_none = parts[0].to_name() == "None";
+                let right_is_none = parts[1].to_name() == "None";
+                if left_is_none ^ right_is_none {
+                    let inner = if left_is_none {
+                        parts[1].clone()
+                    } else {
+                        parts[0].clone()
+                    };
+                    return TejxType::Optional(Box::new(inner));
+                }
             }
-            return TejxType::Union(parts);
+            return TejxType::Class(name.to_string(), vec![]);
         }
 
         if name.starts_with('{') && name.ends_with('}') {
@@ -373,6 +375,11 @@ impl TejxType {
             return TejxType::Slice(Box::new(TejxType::from_name(inner)));
         }
 
+        if name.starts_with("Optional<") && name.ends_with('>') {
+            let inner = &name[name.find('<').unwrap_or(0) + 1..name.len() - 1];
+            return TejxType::Optional(Box::new(TejxType::from_name(inner)));
+        }
+
         match name {
             "int" | "int32" => TejxType::Int32,
             "int16" => TejxType::Int16,
@@ -384,7 +391,7 @@ impl TejxType {
             "float16" => TejxType::Float16,
             "string" => TejxType::String,
             "char" => TejxType::Char,
-            "boolean" | "bool" => TejxType::Bool,
+            "bool" => TejxType::Bool,
             "void" | "" => TejxType::Void,
             "any" => TejxType::Any,
             other => {
@@ -417,7 +424,7 @@ impl TejxType {
             TejxType::Float16 => "float16".to_string(),
             TejxType::Float32 => "float32".to_string(),
             TejxType::Float64 => "float".to_string(),
-            TejxType::Bool => "boolean".to_string(),
+            TejxType::Bool => "bool".to_string(),
             TejxType::String => "string".to_string(),
             TejxType::Char => "char".to_string(),
             TejxType::Class(name, generics) => {
@@ -428,6 +435,7 @@ impl TejxType {
                     format!("{}<{}>", name, gen_strs.join(", "))
                 }
             }
+            TejxType::Optional(inner) => format!("Optional<{}>", inner.to_name()),
             TejxType::Any => "any".to_string(),
             TejxType::FixedArray(inner, size) => format!("{}[{}]", inner.to_name(), size),
             TejxType::DynamicArray(inner) => format!("{}[]", inner.to_name()),
@@ -436,10 +444,6 @@ impl TejxType {
             TejxType::Function(params, ret) => {
                 let p_names: Vec<String> = params.iter().map(|p| p.to_name()).collect();
                 format!("({}) => {}", p_names.join(", "), ret.to_name())
-            }
-            TejxType::Union(types) => {
-                let t_names: Vec<String> = types.iter().map(|t| t.to_name()).collect();
-                t_names.join("|")
             }
             TejxType::Object(props) => {
                 let p_names: Vec<String> = props.iter().map(|(k, o, t)| {
@@ -464,6 +468,9 @@ impl TejxType {
                     TejxType::Class(name.clone(), new_generics)
                 }
             }
+            TejxType::Optional(inner) => {
+                TejxType::Optional(Box::new(inner.substitute_generics(bindings)))
+            }
             TejxType::FixedArray(inner, size) => TejxType::FixedArray(Box::new(inner.substitute_generics(bindings)), *size),
             TejxType::DynamicArray(inner) => TejxType::DynamicArray(Box::new(inner.substitute_generics(bindings))),
             TejxType::Slice(inner) => TejxType::Slice(Box::new(inner.substitute_generics(bindings))),
@@ -471,7 +478,6 @@ impl TejxType {
                 let new_params = params.iter().map(|p| p.substitute_generics(bindings)).collect();
                 TejxType::Function(new_params, Box::new(ret.substitute_generics(bindings)))
             }
-            TejxType::Union(types) => TejxType::Union(types.iter().map(|t| t.substitute_generics(bindings)).collect()),
             TejxType::Object(props) => TejxType::Object(
                 props.iter().map(|(k, o, t)| (k.clone(), *o, t.substitute_generics(bindings))).collect()
             ),
