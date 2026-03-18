@@ -2,9 +2,67 @@ use super::*;
 use crate::common::intrinsics::*;
 use crate::middle::mir::*;
 use crate::common::types::TejxType;
+use crate::frontend::token::TokenType;
 use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
+    fn is_null_like_value(value: &MIRValue) -> bool {
+        matches!(value, MIRValue::Constant { value, .. } if value == "0")
+    }
+
+    fn fixed_layout_field_key(ty: &TejxType) -> String {
+        if Self::fixed_layout_object_type(ty).is_some() {
+            return "__fixed_object_ref".to_string();
+        }
+
+        match ty {
+            TejxType::FixedArray(inner, len) => {
+                format!("[{};{}]", Self::fixed_layout_field_key(inner), len)
+            }
+            TejxType::DynamicArray(inner) => {
+                format!("Array<{}>", Self::fixed_layout_field_key(inner))
+            }
+            TejxType::Slice(inner) => format!("slice<{}>", Self::fixed_layout_field_key(inner)),
+            TejxType::Function(params, ret) => {
+                let params = params
+                    .iter()
+                    .map(Self::fixed_layout_field_key)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("fn({})->{}", params, Self::fixed_layout_field_key(ret))
+            }
+            TejxType::Union(types) => {
+                let parts = types
+                    .iter()
+                    .map(Self::fixed_layout_field_key)
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("union({})", parts)
+            }
+            _ => ty.to_name(),
+        }
+    }
+
+    fn fixed_layout_shape_key(ty: &TejxType) -> Option<String> {
+        match Self::fixed_layout_object_type(ty)? {
+            TejxType::Object(props) => Some(
+                props
+                    .iter()
+                    .map(|(name, _, field_ty)| format!("{}:{}", name, Self::fixed_layout_field_key(field_ty)))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            _ => None,
+        }
+    }
+
+    fn array_element_fixed_layout_shape_key(ty: &TejxType) -> Option<String> {
+        if !ty.is_array() {
+            return None;
+        }
+        Self::fixed_layout_shape_key(&ty.get_array_element_type())
+    }
+
     fn register_object_shape_type(&mut self, ty: &TejxType) {
         match ty {
             TejxType::Object(props) => {
@@ -116,11 +174,17 @@ impl CodeGen {
                                 }
                             }
                         }
-                        MIRInstruction::StoreIndex { src, .. }
-                        | MIRInstruction::StoreMember { src, .. } => {
+                        MIRInstruction::StoreIndex { obj, src, .. }
+                        | MIRInstruction::StoreMember { obj, src, .. } => {
                             if let MIRValue::Variable { name, .. } = src {
                                 if name == &current_var {
-                                    return true;
+                                    if let MIRValue::Variable { name: obj_name, .. } = obj {
+                                        if !check_vars.contains(obj_name) {
+                                            check_vars.push(obj_name.clone());
+                                        }
+                                    } else {
+                                        return true;
+                                    }
                                 }
                             }
                         }
@@ -142,45 +206,48 @@ impl CodeGen {
     }
 
     pub(crate) fn can_use_fixed_object_layout(&self, func: &MIRFunction, var_name: &str) -> bool {
-        if !matches!(func.variables.get(var_name), Some(TejxType::Object(_))) {
+        let Some(target_key) = func
+            .variables
+            .get(var_name)
+            .and_then(Self::fixed_layout_shape_key)
+        else {
+            return false;
+        };
+
+        let type_vars: HashSet<String> = func
+            .variables
+            .iter()
+            .filter_map(|(name, ty)| {
+                (Self::fixed_layout_shape_key(ty).as_ref() == Some(&target_key))
+                    .then(|| name.clone())
+            })
+            .collect();
+
+        if type_vars.is_empty() {
             return false;
         }
 
-        let mut aliases = HashSet::from([var_name.to_string()]);
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for block in &func.blocks {
-                for instr in &block.instructions {
-                    if let MIRInstruction::Move {
-                        dst,
-                        src: MIRValue::Variable { name, .. },
-                        ..
-                    } = instr
-                    {
-                        if aliases.contains(name) && !aliases.contains(dst) {
-                            if !matches!(func.variables.get(dst), Some(TejxType::Object(_))) {
-                                return false;
-                            }
-                            aliases.insert(dst.clone());
-                            changed = true;
-                        } else if aliases.contains(dst) && !aliases.contains(name) {
-                            if !matches!(func.variables.get(name), Some(TejxType::Object(_))) {
-                                return false;
-                            }
-                            aliases.insert(name.clone());
-                            changed = true;
-                        }
-                    }
-                }
-            }
+        let params_are_opaque = func.params.iter().any(|param| {
+            func.variables
+                .get(param)
+                .and_then(Self::fixed_layout_shape_key)
+                .as_ref()
+                == Some(&target_key)
+                || func
+                    .variables
+                    .get(param)
+                    .map(|ty| Self::array_element_fixed_layout_shape_key(ty).as_ref() == Some(&target_key))
+                    .unwrap_or(false)
+        });
+        if params_are_opaque {
+            return false;
         }
 
         let mut has_object_new_root = false;
         for block in &func.blocks {
             for instr in &block.instructions {
                 match instr {
-                    MIRInstruction::Call { dst, callee, .. } if aliases.contains(dst) => {
+                    MIRInstruction::Call { dst, callee, .. } if type_vars.contains(dst) => {
                         if callee == "rt_object_new" {
                             has_object_new_root = true;
                         } else {
@@ -192,78 +259,110 @@ impl CodeGen {
                         src: MIRValue::Variable { name, .. },
                         ..
                     } => {
-                        if aliases.contains(name) && !matches!(func.variables.get(dst), Some(TejxType::Object(_))) {
-                            return false;
-                        }
-                        if aliases.contains(dst) && !aliases.contains(name) {
+                        let src_matches = type_vars.contains(name);
+                        let dst_matches = type_vars.contains(dst);
+                        if src_matches != dst_matches {
                             return false;
                         }
                     }
-                    MIRInstruction::BinaryOp { dst, .. } if aliases.contains(dst) => return false,
-                    MIRInstruction::Cast { dst, .. } if aliases.contains(dst) => return false,
-                    MIRInstruction::LoadMember { dst, .. } if aliases.contains(dst) => return false,
-                    MIRInstruction::LoadIndex { dst, .. } if aliases.contains(dst) => return false,
-                    MIRInstruction::LoadMember {
-                        obj: MIRValue::Variable { name, .. },
-                        ..
-                    } if aliases.contains(name) => {}
-                    MIRInstruction::StoreMember {
-                        obj: MIRValue::Variable { name, .. },
-                        src,
-                        ..
-                    } if aliases.contains(name) => {
-                        if let MIRValue::Variable { name: src_name, .. } = src {
-                            if aliases.contains(src_name) {
-                                return false;
+                    MIRInstruction::BinaryOp { dst, .. } if type_vars.contains(dst) => return false,
+                    MIRInstruction::Cast { dst, .. } if type_vars.contains(dst) => return false,
+                    MIRInstruction::LoadMember { dst, obj, .. } if type_vars.contains(dst) => {
+                        if Self::fixed_layout_shape_key(obj.get_type()).as_ref() != Some(&target_key)
+                        {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::LoadIndex { dst, obj, .. } if type_vars.contains(dst) => {
+                        if Self::array_element_fixed_layout_shape_key(obj.get_type()).as_ref()
+                            != Some(&target_key)
+                        {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::StoreMember { obj, src, .. } => {
+                        let obj_matches =
+                            Self::fixed_layout_shape_key(obj.get_type()).as_ref() == Some(&target_key);
+                        let src_matches =
+                            Self::fixed_layout_shape_key(src.get_type()).as_ref() == Some(&target_key);
+
+                        if obj_matches {
+                            if let MIRValue::Variable { name, .. } = src {
+                                if type_vars.contains(name) {
+                                    continue;
+                                }
                             }
+                            if src_matches {
+                                continue;
+                            }
+                        } else if src_matches {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::StoreIndex { obj, src, .. } => {
+                        let src_matches =
+                            Self::fixed_layout_shape_key(src.get_type()).as_ref() == Some(&target_key);
+                        if src_matches
+                            && Self::array_element_fixed_layout_shape_key(obj.get_type()).as_ref()
+                                != Some(&target_key)
+                        {
+                            return false;
+                        }
+                        if Self::fixed_layout_shape_key(obj.get_type()).as_ref() == Some(&target_key)
+                        {
+                            return false;
                         }
                     }
                     MIRInstruction::Call { args, .. } | MIRInstruction::IndirectCall { args, .. } => {
                         for arg in args {
                             if let MIRValue::Variable { name, .. } = arg {
-                                if aliases.contains(name) {
+                                if type_vars.contains(name) {
                                     return false;
                                 }
                             }
                         }
                     }
-                    MIRInstruction::Return {
-                        value: Some(MIRValue::Variable { name, .. }),
-                        ..
-                    }
-                    | MIRInstruction::LoadIndex {
-                        obj: MIRValue::Variable { name, .. },
-                        ..
-                    }
-                    | MIRInstruction::StoreIndex {
-                        obj: MIRValue::Variable { name, .. },
-                        ..
-                    }
-                    | MIRInstruction::StoreIndex {
-                        src: MIRValue::Variable { name, .. },
-                        ..
-                    }
-                    | MIRInstruction::StoreMember {
-                        src: MIRValue::Variable { name, .. },
-                        ..
-                    }
-                    | MIRInstruction::Cast {
-                        src: MIRValue::Variable { name, .. },
-                        ..
-                    }
-                    | MIRInstruction::Branch {
-                        condition: MIRValue::Variable { name, .. },
-                        ..
-                    }
-                        if aliases.contains(name) =>
-                    {
-                        return false;
-                    }
-                    MIRInstruction::BinaryOp { left, right, .. } => {
-                        if matches!(left, MIRValue::Variable { name, .. } if aliases.contains(name))
-                            || matches!(right, MIRValue::Variable { name, .. } if aliases.contains(name))
+                    MIRInstruction::Return { value, .. } => {
+                        if matches!(value, Some(MIRValue::Variable { name, .. }) if type_vars.contains(name))
                         {
                             return false;
+                        }
+                    }
+                    MIRInstruction::LoadIndex { obj, .. } => {
+                        if Self::fixed_layout_shape_key(obj.get_type()).as_ref() == Some(&target_key)
+                        {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::Cast { src, .. } => {
+                        if Self::fixed_layout_shape_key(src.get_type()).as_ref() == Some(&target_key)
+                        {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::Branch { condition, .. } => {
+                        if Self::fixed_layout_shape_key(condition.get_type()).as_ref()
+                            == Some(&target_key)
+                        {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::BinaryOp { left, op, right, .. } => {
+                        let left_matches =
+                            Self::fixed_layout_shape_key(left.get_type()).as_ref() == Some(&target_key);
+                        let right_matches =
+                            Self::fixed_layout_shape_key(right.get_type()).as_ref() == Some(&target_key);
+
+                        if left_matches || right_matches {
+                            let is_null_compare = matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
+                                && ((left_matches
+                                    && (right_matches || Self::is_null_like_value(right)))
+                                    || (right_matches
+                                        && (left_matches || Self::is_null_like_value(left))));
+
+                            if !is_null_compare {
+                                return false;
+                            }
                         }
                     }
                     _ => {}
@@ -272,6 +371,25 @@ impl CodeGen {
         }
 
         has_object_new_root
+    }
+
+    pub(crate) fn fixed_layout_object_type(ty: &TejxType) -> Option<TejxType> {
+        match ty {
+            TejxType::Object(_) => Some(ty.clone()),
+            TejxType::Union(types) => {
+                let mut matches = types.iter().filter_map(Self::fixed_layout_object_type);
+                let first = matches.next()?;
+                matches.all(|other| other == first).then_some(first)
+            }
+            _ => None,
+        }
+    }
+
+    fn array_element_fixed_layout_type(ty: &TejxType) -> Option<TejxType> {
+        if !ty.is_array() {
+            return None;
+        }
+        Self::fixed_layout_object_type(&ty.get_array_element_type())
     }
 
     pub(crate) fn needs_arena(&self, func: &MIRFunction) -> bool {
@@ -287,21 +405,17 @@ impl CodeGen {
                     {
                         return true;
                     }
+                    if callee == "rt_object_new" && !dst.is_empty() && !self.does_escape(func, dst) {
+                        return true;
+                    }
                     if callee == RT_CLASS_NEW && !dst.is_empty() && !self.does_escape(func, dst) {
-                        let class_name = match args.first() {
+                        let _class_name = match args.first() {
                             Some(MIRValue::Constant { value, .. }) => {
                                 value.trim_matches('"').to_string()
                             }
                             _ => continue,
                         };
-                        let body_size = self
-                            .class_fields
-                            .get(&class_name)
-                            .map(|fields| fields.iter().map(|(_, ty)| ty.size()).sum::<usize>())
-                            .unwrap_or(0);
-                        if body_size > 64 {
-                            return true;
-                        }
+                        return true;
                     }
                 }
             }

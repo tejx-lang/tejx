@@ -308,7 +308,7 @@ impl TypeChecker {
                         Ok(TejxType::Int32)
                     }
                 } else {
-                    Ok(TejxType::Float32)
+                    Ok(TejxType::Float64)
                 }
             }
             Expression::StringLiteral { value, _line, _col } => {
@@ -568,8 +568,11 @@ impl TypeChecker {
                         if left_type == TejxType::Float64 || right_type == TejxType::Float64 {
                             return Ok(TejxType::Float64);
                         }
-                        if left_type.is_float() || right_type.is_float() {
+                        if left_type == TejxType::Float32 || right_type == TejxType::Float32 {
                             return Ok(TejxType::Float32);
+                        }
+                        if left_type.is_float() || right_type.is_float() {
+                            return Ok(TejxType::Float64);
                         }
                         if left_type == TejxType::Int64 || right_type == TejxType::Int64 {
                             return Ok(TejxType::Int64);

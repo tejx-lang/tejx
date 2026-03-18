@@ -317,7 +317,7 @@ pub unsafe extern "C" fn rt_clear_tlab() {
 }
 
 // --- Arena Manager ---
-pub const ARENA_DEFAULT_SIZE: usize = 4 * 1024 * 1024; // 4MB
+pub const ARENA_DEFAULT_SIZE: usize = 512 * 1024 * 1024; // 512MB
 
 #[repr(C)]
 pub struct Arena {
@@ -367,14 +367,15 @@ pub unsafe extern "C" fn rt_arena_alloc(arena: *mut Arena, type_id: i32, body_si
     // Total size = 24 bytes header + body_size
     let total_size = 24 + body_size as usize;
     let obj_ptr = rt_arena_alloc_raw(arena, total_size);
+    std::ptr::write_bytes(obj_ptr, 0, total_size);
 
     // Initialise header (type_id, etc.)
     let header = obj_ptr as *mut ObjectHeader;
     (*header).type_id = type_id as u16;
     (*header).length = body_size as u32;
 
-    // Return tagged pointer (body = obj_ptr + 24)
-    (obj_ptr as i64) + 24
+    // Tag arena objects like stack objects so GC/runtime scan them but never move them.
+    (obj_ptr as i64) + 24 + STACK_OFFSET
 }
 
 #[no_mangle]
@@ -384,7 +385,7 @@ pub unsafe extern "C" fn rt_arena_reset(arena: *mut Arena) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_arena_destroy(arena: *mut Arena) {
-    // Note: munmap should ideally be called here but we don't have it in extern C block yet
+    munmap((*arena).base as *mut _, (*arena).capacity);
     free(arena as *mut std::ffi::c_void);
 }
 
@@ -607,7 +608,7 @@ pub unsafe extern "C" fn rt_start_gc_scheduler() {
     */
 }
 
-unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
+pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
     let total_size = size + std::mem::size_of::<ObjectHeader>();
     let ptr = mmap(
         std::ptr::null_mut(),

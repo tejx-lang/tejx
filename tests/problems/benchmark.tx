@@ -60,7 +60,7 @@ function bench_pointers(): float {
 
 // 3. Math Throughput (FMA Simulation)
 function bench_math(): float {
-    let a:int64 = 1.01; let b = 1.00; let c = 1.03;
+    let a:float64 = 1.01; let b = 1.00; let c = 1.03;
     for (let i = 0; i < 500000000; i++) {
         a = a * b + c;
     }
@@ -270,7 +270,7 @@ function bench_obj_access(): float {
     let obj_b = 2;
     let obj_c = 3;
     let obj_d = 4;
-    let sum = 0;
+    let sum:int64 = 0;
     for (let i = 0; i < 500000000; i++) {
         sum += obj_a + obj_b + obj_c + obj_d;
     }

@@ -148,7 +148,7 @@ impl Lowering {
                     if !s.contains('.') && !s.contains('e') {
                         s.push_str(".0");
                     }
-                    (s, TejxType::Float32)
+                    (s, TejxType::Float64)
                 } else {
                     if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
                         (format!("{:.0}", value), TejxType::Int64)
@@ -1744,8 +1744,11 @@ impl Lowering {
         if lt == TejxType::Float64 || rt == TejxType::Float64 {
             return TejxType::Float64;
         }
+        if lt == TejxType::Float32 || rt == TejxType::Float32 {
+            return TejxType::Float32;
+        }
         if is_float(&lt) || is_float(&rt) {
-            return TejxType::Float32; // Default promotion
+            return TejxType::Float64;
         }
 
         if lt == TejxType::Int64 || rt == TejxType::Int64 {

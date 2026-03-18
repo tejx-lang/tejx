@@ -17,11 +17,13 @@ impl CodeGen {
                 };
                 self.class_fields.get(lookup_name)?.clone()
             }
-            TejxType::Object(props) => props
-                .iter()
-                .map(|(name, _, ty)| (name.clone(), ty.clone()))
-                .collect(),
-            _ => return None,
+            _ => match Self::fixed_layout_object_type(obj_ty)? {
+                TejxType::Object(props) => props
+                    .iter()
+                    .map(|(name, _, ty)| (name.clone(), ty.clone()))
+                    .collect(),
+                _ => return None,
+            },
         };
 
         let pos = fields.iter().position(|(field_name, _)| field_name == member)?;
@@ -55,7 +57,8 @@ impl CodeGen {
         } else {
             let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
                 || matches!(obj, MIRValue::Variable { name, ty, .. }
-                    if matches!(ty, TejxType::Object(_)) && self.can_use_fixed_object_layout(func, name));
+                    if Self::fixed_layout_object_type(ty).is_some()
+                        && self.can_use_fixed_object_layout(func, name));
             if allow_fixed_layout {
                 if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
                 let llvm_ty = Self::get_llvm_storage_type(&field_ty);
@@ -189,7 +192,8 @@ impl CodeGen {
         let mut used_fast_store = false;
         let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
             || matches!(obj, MIRValue::Variable { name, ty, .. }
-                if matches!(ty, TejxType::Object(_)) && self.can_use_fixed_object_layout(func, name));
+                if Self::fixed_layout_object_type(ty).is_some()
+                    && self.can_use_fixed_object_layout(func, name));
         if allow_fixed_layout {
             if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
             let llvm_ty = Self::get_llvm_storage_type(&field_ty);
@@ -419,6 +423,7 @@ impl CodeGen {
         }
 
         let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
+
         self.temp_counter += 1;
         let res_tmp = format!("%val{}", self.temp_counter);
 

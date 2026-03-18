@@ -41,11 +41,6 @@ impl CodeGen {
             }
 
             MIRInstruction::Jump { target, .. } => {
-                // Safepoint poll for backward jumps (loops)
-                if *target <= current_bb {
-                    self.emit_line("call void @rt_safepoint_poll()");
-                }
-
                 if *target < func.blocks.len() {
                     self.emit_line(&format!("br label %{}", func.blocks[*target].name));
                 }
@@ -86,11 +81,6 @@ impl CodeGen {
                     self.emit_line(&format!("{} = icmp ne i64 {}, 0", cmp, bool_val));
                     cmp
                 };
-
-                // Safepoint poll for backward branches (loops)
-                if *true_target <= current_bb || *false_target <= current_bb {
-                    self.emit_line("call void @rt_safepoint_poll()");
-                }
 
                 let true_name = if *true_target < func.blocks.len() {
                     func.blocks[*true_target].name.clone()
@@ -737,6 +727,25 @@ impl CodeGen {
         };
 
         let can_stack_allocate = func.name != "tejx_main";
+        if can_stack_allocate && !is_escaped && !dst.is_empty() && self.current_arena.is_some() {
+            let arena = self.current_arena.clone().unwrap();
+            self.declare_runtime_fn(
+                RT_ARENA_ALLOC,
+                &format!("i64 @{}(i64, i32, i64) nounwind", RT_ARENA_ALLOC),
+            );
+
+            self.temp_counter += 1;
+            let result_tmp = format!("%call{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @{}(i64 {}, i32 {}, i64 {})",
+                result_tmp, RT_ARENA_ALLOC, arena, type_id, body_size as i64
+            ));
+
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            self.emit_store_variable(dst, &result_tmp, dst_ty);
+            return;
+        }
+
         if can_stack_allocate && !is_escaped && !dst.is_empty() {
             let total_size = body_size + 24;
             let obj_alloca = format!("%stack_obj_{}", dst.replace('.', "_"));
@@ -1007,7 +1016,6 @@ impl CodeGen {
             if func.name != "tejx_main"
                 && !is_escaped
                 && !dst.is_empty()
-                && body_size > 64
                 && self.current_arena.is_some()
             {
                 let arena = self.current_arena.clone().unwrap();
@@ -1229,7 +1237,7 @@ impl CodeGen {
         if callee == "rt_object_new" {
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
             let use_fixed_layout = matches!(dst_ty, TejxType::Class(_, _))
-                || (matches!(dst_ty, TejxType::Object(_))
+                || (Self::fixed_layout_object_type(dst_ty).is_some()
                     && self.can_use_fixed_object_layout(func, dst));
             if use_fixed_layout {
                 if let Some((shape_name, fields)) = self.fixed_layout_shape(dst_ty) {

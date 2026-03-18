@@ -454,9 +454,23 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
         return rt_get_static_root(slot);
     }
 
-    let res = rt_string_from_c_str(s);
-    let header = rt_get_header((res - HEAP_OFFSET) as *mut u8);
+    if gc::EDEN_START.is_null() {
+        rt_init_gc();
+    }
+
+    let len = strlen(s);
+    let body_ptr = gc::gc_allocate_large(len + 1);
+    let header = rt_get_header(body_ptr);
+    (*header).type_id = TAG_STRING as u16;
+    (*header).length = len as u32;
+    (*header).capacity = len as u32;
     (*header).flags |= STRING_FLAG_FROZEN;
+
+    std::ptr::copy_nonoverlapping(s as *const u8, body_ptr, len);
+    *(body_ptr.add(len)) = 0;
+
+    let res = (body_ptr as i64) + HEAP_OFFSET;
+    rt_update_array_cache(res, body_ptr, len as i64, 1);
 
     let mut slots = CONST_STRING_SLOTS.lock().unwrap();
     if let Some(slot) = slots.get(&key).copied() {
@@ -1861,13 +1875,21 @@ pub unsafe extern "C" fn rt_print(val: i64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_print_string_array(args: i64) {
-    let len = rt_len(args);
+    let args = rt_resolve_array_id(args);
+    if (args as u64) < (HEAP_OFFSET as u64) {
+        return;
+    }
+
+    let body = (args - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    let len = (*header).length as i64;
+    let data = body as *const i64;
     let out = std::io::stdout();
     let mut handle = out.lock();
     use std::io::Write;
 
     for i in 0..len {
-        let s_id = rt_array_get_fast(args, i);
+        let s_id = *data.add(i as usize);
         if let Some((data, chunk_len)) = get_str_parts(s_id) {
             let bytes = std::slice::from_raw_parts(data, chunk_len as usize);
             let _ = handle.write_all(bytes);
