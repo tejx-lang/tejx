@@ -19,6 +19,8 @@ pub struct CodeGen {
     defined_functions: HashSet<String>,
     function_param_counts: HashMap<String, usize>,
     declared_globals: HashSet<String>,
+    string_constant_cache: HashMap<String, (String, usize)>,
+    boxed_string_cache: HashMap<String, String>,
     current_function_params: HashSet<String>,
     pub local_vars: HashSet<String>,
 
@@ -35,6 +37,8 @@ pub struct CodeGen {
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
     pub type_id_map: HashMap<String, u32>,
+    closure_adapters: HashMap<String, String>,
+    pub object_shape_names: HashMap<String, String>,
     current_arena: Option<String>,
 }
 
@@ -95,6 +99,7 @@ impl CodeGen {
             | TejxType::Any
             | TejxType::Slice(_)
             | TejxType::Object(_) => true,
+            TejxType::Union(types) => types.iter().any(Self::is_gc_managed),
             _ => false,
         }
     }
@@ -111,6 +116,8 @@ impl CodeGen {
             defined_functions: HashSet::new(),
             function_param_counts: HashMap::new(),
             declared_globals: HashSet::new(),
+            string_constant_cache: HashMap::new(),
+            boxed_string_cache: HashMap::new(),
             current_function_params: HashSet::new(),
             local_vars: HashSet::new(),
 
@@ -127,6 +134,8 @@ impl CodeGen {
             class_fields: HashMap::new(),
             class_methods: HashMap::new(),
             type_id_map: HashMap::new(),
+            closure_adapters: HashMap::new(),
+            object_shape_names: HashMap::new(),
             current_arena: None,
         }
     }

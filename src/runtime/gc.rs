@@ -1,13 +1,15 @@
 use super::*;
+use std::sync::{LazyLock, Mutex};
 
 // --- GC Memory System Constants ---
 pub const YOUNG_GEN_SIZE: usize = 16 * 1024 * 1024; // 16MB Eden
 pub const SURVIVOR_SIZE: usize = 2 * 1024 * 1024; // 2MB each
-pub const OLD_GEN_SIZE: usize = 256 * 1024 * 1024; // 256MB Old Gen
+pub const OLD_GEN_SIZE: usize = 4 * 1024 * 1024 * 1024; // 4GB Old Gen
 pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB
 
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+static STATIC_ROOTS: LazyLock<Mutex<Vec<i64>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -18,6 +20,38 @@ pub struct ObjectHeader {
     pub length: u32,   // Active elements (for arrays/strings)
     pub capacity: u32, // Total allocated slots (for arrays/strings)
     pub padding: u32,  // Ensure 8-byte alignment
+}
+
+const GC_MARK_BIT: u64 = 0x1;
+const GC_FWD_BIT: u64 = 0x2;
+const GC_FLAG_MASK: u64 = GC_MARK_BIT | GC_FWD_BIT;
+const GC_AGE_SHIFT: u64 = 56;
+const GC_AGE_MASK: u64 = 0xFFu64 << GC_AGE_SHIFT;
+const GC_PTR_MASK: u64 = !(GC_FLAG_MASK | GC_AGE_MASK);
+
+#[inline]
+fn gc_is_marked(word: u64) -> bool {
+    (word & GC_MARK_BIT) != 0
+}
+
+#[inline]
+fn gc_is_forwarded(word: u64) -> bool {
+    (word & GC_FWD_BIT) != 0
+}
+
+#[inline]
+fn gc_forward_ptr(word: u64) -> *mut ObjectHeader {
+    (word & GC_PTR_MASK) as *mut ObjectHeader
+}
+
+#[inline]
+fn gc_get_age(word: u64) -> u8 {
+    ((word & GC_AGE_MASK) >> GC_AGE_SHIFT) as u8
+}
+
+#[inline]
+fn gc_set_age(word: u64, age: u8) -> u64 {
+    (word & !GC_AGE_MASK) | ((age as u64) << GC_AGE_SHIFT)
 }
 
 // --- GC State Globals ---
@@ -77,8 +111,8 @@ pub unsafe fn rt_update_ptr(ptr: *mut i64) {
     // If it's in Old Gen and marked, it has a new address stored at its gc_word
     if body >= OLD_START && body < OLD_TOP {
         let header = rt_get_header(body);
-        if ((*header).gc_word & 0x200) != 0 {
-            let new_header = ((*header).gc_word & !0x3FF) as *mut ObjectHeader;
+        if gc_is_forwarded((*header).gc_word) {
+            let new_header = gc_forward_ptr((*header).gc_word);
             let new_body =
                 (new_header as u64).wrapping_add(std::mem::size_of::<ObjectHeader>() as u64);
             *ptr = (new_body as i64) + HEAP_OFFSET;
@@ -109,6 +143,39 @@ pub unsafe extern "C" fn rt_register_type(
         for i in 0..count {
             TYPE_TABLE[id as usize].ptr_offsets[i] = *offsets.add(i);
         }
+    }
+}
+
+pub unsafe fn rt_add_static_root(val: i64) -> usize {
+    let mut roots = STATIC_ROOTS.lock().unwrap();
+    roots.push(val);
+    roots.len() - 1
+}
+
+pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
+    let roots = STATIC_ROOTS.lock().unwrap();
+    roots.get(slot).copied().unwrap_or(0)
+}
+
+unsafe fn mark_static_roots() {
+    let roots = STATIC_ROOTS.lock().unwrap();
+    for &root in roots.iter() {
+        let mut tmp = root;
+        mark_object(&mut tmp);
+    }
+}
+
+unsafe fn update_static_roots() {
+    let mut roots = STATIC_ROOTS.lock().unwrap();
+    for root in roots.iter_mut() {
+        rt_update_ptr(root as *mut i64);
+    }
+}
+
+unsafe fn copy_static_roots() {
+    let mut roots = STATIC_ROOTS.lock().unwrap();
+    for root in roots.iter_mut() {
+        copy_object(root as *mut i64);
     }
 }
 
@@ -170,6 +237,56 @@ pub unsafe extern "C" fn rt_is_gc_ptr(ptr: *mut u8) -> bool {
     let res = in_eden || in_old || in_l;
 
     res
+}
+
+unsafe fn region_contains_exact_body(
+    mut scan: *mut u8,
+    end: *mut u8,
+    target_body: *mut u8,
+) -> bool {
+    while scan < end {
+        let header = scan as *mut ObjectHeader;
+        let body = scan.add(std::mem::size_of::<ObjectHeader>());
+        if body == target_body {
+            return true;
+        }
+        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+        if size == 0 {
+            break;
+        }
+        scan = scan.add(size);
+    }
+    false
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_is_gc_body_ptr_exact(ptr: *mut u8) -> bool {
+    if ptr.is_null() || EDEN_START.is_null() {
+        return false;
+    }
+
+    if !rt_is_gc_ptr(ptr) {
+        return false;
+    }
+
+    for i in 0..LOS_COUNT {
+        let body = LOS_OBJECTS[i].add(std::mem::size_of::<ObjectHeader>());
+        if body == ptr {
+            return true;
+        }
+    }
+
+    let eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
+    if region_contains_exact_body(EDEN_START, eden_top, ptr) {
+        return true;
+    }
+    if region_contains_exact_body(FROM_SURVIVOR, FROM_SURVIVOR_TOP, ptr) {
+        return true;
+    }
+    if region_contains_exact_body(TO_SURVIVOR, TO_SURVIVOR_TOP, ptr) {
+        return true;
+    }
+    region_contains_exact_body(OLD_START, OLD_TOP, ptr)
 }
 
 // --- Thread Local Allocation Buffer (TLAB) ---
@@ -275,7 +392,7 @@ pub unsafe extern "C" fn rt_arena_destroy(arena: *mut Arena) {
 pub const GC_STACK_SIZE: usize = 1024 * 64;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct ThreadContextPtr(pub *mut ThreadContext);
@@ -376,6 +493,11 @@ pub unsafe fn rt_push_root(ptr: *mut i64) {
     MY_CONTEXT.with(|ctx| {
         let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
         if (*ctx_ptr).roots_top >= GC_STACK_SIZE {
+            eprintln!(
+                "FATAL: GC root stack overflow (top={}, limit={})",
+                (*ctx_ptr).roots_top,
+                GC_STACK_SIZE
+            );
             exit(1);
         }
         (*ctx_ptr).roots[(*ctx_ptr).roots_top] = ptr;
@@ -393,6 +515,11 @@ pub unsafe fn rt_pop_roots(count: usize) {
                 (*ctx_ptr).roots[(*ctx_ptr).roots_top] = std::ptr::null_mut();
             }
         } else {
+            eprintln!(
+                "FATAL: GC root stack underflow (top={}, pop={})",
+                (*ctx_ptr).roots_top,
+                count
+            );
             exit(1);
         }
     });
@@ -557,6 +684,10 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
             if current_top.add(refill_size) > EDEN_END {
                 trigger_safepoint();
                 minor_gc_locked();
+                let old_used = OLD_TOP as usize - OLD_START as usize;
+                if old_used > (OLD_GEN_SIZE * 7 / 10) {
+                    major_gc_locked_internal(false, true);
+                }
                 resume_safepoint();
                 if EDEN_TOP
                     .load(std::sync::atomic::Ordering::SeqCst)
@@ -651,20 +782,20 @@ pub unsafe fn mark_object(root: *mut i64) {
 
     let header = (body_ptr as *mut ObjectHeader).offset(-1);
 
-    if ((*header).gc_word & 0x100) != 0 {
+    if gc_is_marked((*header).gc_word) {
         return; // Already marked (using bit 8 for mark_bit)
     }
 
-    (*header).gc_word |= 0x100;
+    (*header).gc_word |= GC_MARK_BIT;
 
     // Recursively mark fields
     let type_id = (*header).type_id;
     if type_id == TAG_ARRAY as u16 {
         let len = (*header).length;
-        let elem_size = ((*header).flags & 0xFF) as u32;
+        let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
 
-        // Only scan if elements are 8 bytes (could be pointers)
-        if elem_size == 8 {
+        // Only scan pointer arrays
+        if is_ptr_array {
             let data = body_ptr as *mut i64;
             for i in 0..len {
                 mark_object(data.add(i as usize));
@@ -685,28 +816,29 @@ pub unsafe fn mark_object(root: *mut i64) {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn major_gc() {
-    let _lock = GC_LOCK.lock().unwrap();
+unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
     rt_clear_tlab();
 
-    // Trigger Safepoint
-    trigger_safepoint();
+    if !safepoint_already {
+        trigger_safepoint();
+    }
 
-    // 1. Run minor GC first
-    minor_gc_locked();
+    // 1. Run minor GC first (optional)
+    if run_minor_first {
+        minor_gc_locked();
+    }
 
     // 2. Mark phase (from roots, recursively)
     // Clear marks
     let mut current = OLD_START;
     while current < OLD_TOP {
         let header = current as *mut ObjectHeader;
-        (*header).gc_word &= !0x100;
+        (*header).gc_word &= !GC_MARK_BIT;
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
         current = current.add(size);
     }
     for i in 0..LOS_COUNT {
-        (*(LOS_OBJECTS[i] as *mut ObjectHeader)).gc_word &= !0x100;
+        (*(LOS_OBJECTS[i] as *mut ObjectHeader)).gc_word &= !GC_MARK_BIT;
     }
 
     {
@@ -719,6 +851,7 @@ pub unsafe extern "C" fn major_gc() {
             }
         }
     }
+    mark_static_roots();
     super::event_loop::rt_gc_mark_tasks();
 
     // 2.5 Run Finalizers for unmarked objects
@@ -726,7 +859,7 @@ pub unsafe extern "C" fn major_gc() {
     while curr < OLD_TOP {
         let header = curr as *mut ObjectHeader;
         let type_id = (*header).type_id;
-        if ((*header).gc_word & 0x100) == 0 {
+        if !gc_is_marked((*header).gc_word) {
             if (type_id as usize) < MAX_TYPES {
                 if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
                     let obj_val =
@@ -742,7 +875,7 @@ pub unsafe extern "C" fn major_gc() {
     for i in 0..LOS_COUNT {
         let header = LOS_OBJECTS[i] as *mut ObjectHeader;
         let type_id = (*header).type_id;
-        if ((*header).gc_word & 0x100) == 0 {
+        if !gc_is_marked((*header).gc_word) {
             if (type_id as usize) < MAX_TYPES {
                 if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
                     let obj_val = (LOS_OBJECTS[i].add(std::mem::size_of::<ObjectHeader>()) as i64)
@@ -757,7 +890,7 @@ pub unsafe extern "C" fn major_gc() {
     let mut new_los_count = 0;
     for i in 0..LOS_COUNT {
         let header = LOS_OBJECTS[i] as *mut ObjectHeader;
-        if ((*header).gc_word & 0x100) != 0 {
+        if gc_is_marked((*header).gc_word) {
             LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
             new_los_count += 1;
         } else {
@@ -775,10 +908,10 @@ pub unsafe extern "C" fn major_gc() {
     while scan_ptr < OLD_TOP {
         let header = scan_ptr as *mut ObjectHeader;
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if ((*header).gc_word & 0x100) != 0 {
+        if gc_is_marked((*header).gc_word) {
             // Store new address in gc_word (bit 9 = forwarded)
             let new_addr = free_ptr;
-            (*header).gc_word = (new_addr as u64) | 0x300; // Mark + Forwarded
+            (*header).gc_word = ((new_addr as u64) & GC_PTR_MASK) | GC_MARK_BIT | GC_FWD_BIT;
             free_ptr = free_ptr.add(size);
         }
         scan_ptr = scan_ptr.add(size);
@@ -795,6 +928,7 @@ pub unsafe extern "C" fn major_gc() {
             }
         }
     }
+    update_static_roots();
     super::event_loop::rt_gc_update_tasks();
 
     // Update Young Gen (Survivor)
@@ -811,7 +945,7 @@ pub unsafe extern "C" fn major_gc() {
     while scan_ptr < OLD_TOP {
         let header = scan_ptr as *mut ObjectHeader;
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if ((*header).gc_word & 0x100) != 0 {
+        if gc_is_marked((*header).gc_word) {
             update_object_fields(header, rt_update_ptr);
         }
         scan_ptr = scan_ptr.add(size);
@@ -829,14 +963,14 @@ pub unsafe extern "C" fn major_gc() {
     while move_ptr < OLD_TOP {
         let header = move_ptr as *mut ObjectHeader;
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if ((*header).gc_word & 0x100) != 0 {
-            let new_addr = ((*header).gc_word & !0x3FF) as *mut u8;
+        if gc_is_marked((*header).gc_word) {
+            let new_addr = gc_forward_ptr((*header).gc_word) as *mut u8;
             if new_addr != move_ptr {
                 memcpy(new_addr as *mut _, move_ptr as *const _, size);
                 // Clear mark bit in new header
-                (*(new_addr as *mut ObjectHeader)).gc_word &= !0x300;
+                (*(new_addr as *mut ObjectHeader)).gc_word &= !GC_FLAG_MASK;
             } else {
-                (*header).gc_word &= !0x300; // Just clear mark/fwd bits
+                (*header).gc_word &= !GC_FLAG_MASK; // Just clear mark/fwd bits
             }
             dest_ptr = dest_ptr.add(size); // Update dest_ptr for the next available slot
         }
@@ -844,8 +978,16 @@ pub unsafe extern "C" fn major_gc() {
     }
     OLD_TOP = dest_ptr;
 
-    // Resume threads
-    resume_safepoint();
+    if !safepoint_already {
+        // Resume threads
+        resume_safepoint();
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn major_gc() {
+    let _lock = GC_LOCK.lock().unwrap();
+    major_gc_locked_internal(true, false);
 }
 
 unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mut i64)) {
@@ -854,12 +996,18 @@ unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mu
 
     if type_id == TAG_ARRAY as u16 {
         let len = (*header).length;
-        let elem_size = ((*header).flags & 0xFF) as u32;
+        let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
 
-        if elem_size == 8 {
+        if is_ptr_array {
             let data = body_ptr as *mut i64;
             for i in 0..len {
-                updater(data.add(i as usize));
+                let val = *data.add(i as usize);
+                if val >= HEAP_OFFSET {
+                    let body = (val - HEAP_OFFSET) as *mut u8;
+                    if rt_is_gc_ptr(body) {
+                        updater(data.add(i as usize));
+                    }
+                }
             }
         }
     } else if type_id == TAG_OBJECT as u16 {
@@ -934,8 +1082,8 @@ pub unsafe fn copy_object(root: *mut i64) {
 
     let header = rt_get_header(old_body);
     // Forwarding check: bit 9 of gc_word
-    if ((*header).gc_word & 0x200) != 0 {
-        let forwarded_header = ((*header).gc_word & !0x3FF) as *mut ObjectHeader;
+    if gc_is_forwarded((*header).gc_word) {
+        let forwarded_header = gc_forward_ptr((*header).gc_word);
         let forwarded_body =
             (forwarded_header as u64).wrapping_add(std::mem::size_of::<ObjectHeader>() as u64);
         *root = (forwarded_body as i64) + HEAP_OFFSET;
@@ -946,9 +1094,9 @@ pub unsafe fn copy_object(root: *mut i64) {
     let total_size = size_without_header + std::mem::size_of::<ObjectHeader>();
 
     // Increment age (lower 8 bits of gc_word)
-    let mut age = ((*header).gc_word & 0xFF) as u8;
+    let mut age = gc_get_age((*header).gc_word);
     age += 1;
-    (*header).gc_word = ((*header).gc_word & !0xFF) | (age as u64);
+    (*header).gc_word = gc_set_age((*header).gc_word, age);
 
     let (new_header, is_promotion) = if age >= PROMOTION_THRESHOLD
         || (TO_SURVIVOR_TOP as usize + total_size > (TO_SURVIVOR as usize + SURVIVOR_SIZE))
@@ -973,7 +1121,7 @@ pub unsafe fn copy_object(root: *mut i64) {
     let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
 
     // Mark as forwarded and store pointer in gc_word
-    (*header).gc_word = (new_header as u64) | 0x200;
+    (*header).gc_word = ((new_header as u64) & GC_PTR_MASK) | GC_FWD_BIT;
 
     *root = (new_body as i64) + HEAP_OFFSET;
 
@@ -990,12 +1138,18 @@ unsafe fn scan_object_fields(header: *mut ObjectHeader) {
 
     if type_id == TAG_ARRAY as u16 {
         let len = (*header).length;
-        let elem_size = ((*header).flags & 0xFF) as u32;
+        let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
 
-        if elem_size == 8 {
+        if is_ptr_array {
             let data = body_ptr as *mut i64;
             for i in 0..len {
-                copy_object(data.add(i as usize));
+                let val = *data.add(i as usize);
+                if val >= HEAP_OFFSET {
+                    let body = (val - HEAP_OFFSET) as *mut u8;
+                    if rt_is_gc_ptr(body) {
+                        copy_object(data.add(i as usize));
+                    }
+                }
             }
         }
     } else if type_id == TAG_OBJECT as u16 {
@@ -1078,6 +1232,9 @@ unsafe fn clear_array_caches() {
     PREV2_ID = 0;
     PREV2_PTR = std::ptr::null_mut();
     PREV2_LEN = 0;
+    PREV2_ELEM_SIZE = 0;
+    ARRAY_FORWARD.lock().unwrap().clear();
+    ARRAY_FORWARD_ACTIVE.store(false, Ordering::Release);
 }
 
 pub unsafe fn minor_gc_locked() {
@@ -1097,6 +1254,7 @@ pub unsafe fn minor_gc_locked() {
             }
         }
     }
+    copy_static_roots();
     super::event_loop::rt_gc_scan_tasks();
 
     // 1b. Scan dirty cards in Old Gen

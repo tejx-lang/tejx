@@ -2,29 +2,29 @@ use super::*; // Extracted \n
 #[no_mangle]
 pub unsafe extern "C" fn rt_Object_keys(obj: i64) -> i64 {
     if !rt_is_object(obj) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     }
     rt_object_keys_array(obj)
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_Object_values(obj: i64) -> i64 {
     if !rt_is_object(obj) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     }
     rt_object_values_array(obj)
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_Object_entries(obj: i64) -> i64 {
     if !rt_is_object(obj) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     }
     let keys = rt_object_keys_array(obj);
     let values = rt_object_values_array(obj);
     let len = rt_len(keys);
-    let result = rt_Array_constructor_v2(0, len, 8, ARRAY_FLAG_FIXED);
+    let result = rt_Array_constructor_v2(0, len, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     let mut i = 0;
     while i < len {
-        let pair = rt_Array_constructor_v2(0, 2, 8, ARRAY_FLAG_FIXED);
+        let pair = rt_Array_constructor_v2(0, 2, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
         rt_array_set_fast(pair, 0, rt_array_get_fast(keys, i));
         rt_array_set_fast(pair, 1, rt_array_get_fast(values, i));
         rt_array_set_fast(result, i, pair);

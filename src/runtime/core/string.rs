@@ -437,15 +437,11 @@ pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
 
     let res = if let (Some((_d1, l1)), Some((_d2, l2))) = (parts_a, parts_b) {
         let total_len = l1 + l2;
-        let body_ptr = gc_allocate(total_len as usize + 1);
+        let body_ptr = alloc_string_body(total_len, total_len);
 
         // RE-RESOLVE after potential GC
         if let (Some((d1_new, _)), Some((d2_new, _))) = (get_str_parts(val_a), get_str_parts(val_b))
         {
-            let header = rt_get_header(body_ptr);
-            (*header).type_id = TAG_STRING as u16;
-            (*header).length = total_len as u32;
-
             memcpy(body_ptr as *mut _, d1_new as *const _, l1 as usize);
             memcpy(
                 body_ptr.add(l1 as usize) as *mut _,
@@ -467,5 +463,80 @@ pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
     };
 
     rt_pop_roots(2);
+    res
+}
+
+fn next_string_capacity(required: i64) -> i64 {
+    let needed = required.max(1) as usize;
+    let grown = needed.next_power_of_two().max(128);
+    grown as i64
+}
+
+#[inline]
+unsafe fn get_string_body_and_len(s: i64) -> Option<(*mut u8, *mut ObjectHeader, i64)> {
+    if s < HEAP_OFFSET {
+        return None;
+    }
+    let body = (s - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    if (*header).type_id != TAG_STRING as u16 {
+        return None;
+    }
+    Some((body, header, (*header).length as i64))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_str_clear_local(lhs_id: i64) -> i64 {
+    if let Some((body, header, _)) = get_string_body_and_len(lhs_id) {
+        if ((*header).flags & STRING_FLAG_FROZEN) == 0 {
+            (*header).length = 0;
+            *body = 0;
+            rt_update_array_cache(lhs_id, body, 0, 1);
+            return lhs_id;
+        }
+    }
+    rt_string_from_c_str_const("\0".as_ptr() as *const _)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
+    let res = if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) =
+        (get_string_body_and_len(lhs_id), get_string_body_and_len(rhs_id))
+    {
+        let required = lhs_len + rhs_len;
+        let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
+            && ((*lhs_header).capacity as i64) >= required;
+
+        if can_mutate {
+            memcpy(
+                lhs_body.add(lhs_len as usize) as *mut _,
+                rhs_body as *const _,
+                rhs_len as usize,
+            );
+            *lhs_body.add(required as usize) = 0;
+            (*lhs_header).length = required as u32;
+            rt_update_array_cache(lhs_id, lhs_body, required, 1);
+            lhs_id
+        } else {
+            let capacity = next_string_capacity(required);
+            let body_ptr = alloc_string_body(capacity, required);
+            memcpy(body_ptr as *mut _, lhs_body as *const _, lhs_len as usize);
+            memcpy(
+                body_ptr.add(lhs_len as usize) as *mut _,
+                rhs_body as *const _,
+                rhs_len as usize,
+            );
+            *body_ptr.add(required as usize) = 0;
+            let res_id = (body_ptr as i64) + HEAP_OFFSET;
+            rt_update_array_cache(res_id, body_ptr, required, 1);
+            res_id
+        }
+    } else if get_string_body_and_len(lhs_id).is_some() {
+        rt_clone(lhs_id)
+    } else if get_string_body_and_len(rhs_id).is_some() {
+        rt_clone(rhs_id)
+    } else {
+        rt_string_from_c_str("\0".as_ptr() as *const _)
+    };
     res
 }

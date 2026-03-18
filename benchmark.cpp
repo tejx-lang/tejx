@@ -316,6 +316,15 @@ double bench_float_to_int() {
   return (double)sum + 0.1;
 }
 
+double bench_sum_billion() {
+  long long sum = 0;
+  long long limit = 1000000000LL;
+  for (long long i = 0; i < limit; i++) {
+    sum += i;
+  }
+  return (double)sum;
+}
+
 void run(string name, double (*f)()) {
   cout << left << setw(35) << name << flush;
   auto s = high_resolution_clock::now();
@@ -327,7 +336,7 @@ void run(string name, double (*f)()) {
 }
 
 int main() {
-  cout << "--- Unified Performance Suite (23 Tests) ---" << endl;
+  cout << "--- Unified Performance Suite (24 Tests) ---" << endl;
   run("1. Sieve of Eratosthenes", bench_sieve);
   run("2. Pointer Chasing", bench_pointers);
   run("3. Math Throughput", bench_math);
@@ -351,5 +360,6 @@ int main() {
   run("21. Hard: N-Queens", bench_nqueens);
   run("22. Hard: Ackermann", bench_ackermann);
   run("23. Regress: Float-to-Int", bench_float_to_int);
+  run("24. Sum of 1 billion", bench_sum_billion);
   return 0;
 }

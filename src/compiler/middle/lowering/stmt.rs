@@ -69,6 +69,10 @@ impl Lowering {
                 } else {
                     Some(self.resolve_alias_type(&TejxType::from_node(type_annotation)))
                 };
+                let sized_allocation_expr = match type_annotation {
+                    TypeNode::SizedArray(_, size_expr) => Some(self.lower_expression(size_expr)),
+                    _ => None,
+                };
 
                 let prev_expected = self.current_expected_type.borrow_mut().take();
                 *self.current_expected_type.borrow_mut() = expected_ty.clone();
@@ -89,8 +93,15 @@ impl Lowering {
                             line,
                             elements: vec![],
                             ty: ty.clone(),
-                            sized_allocation: None,
+                            sized_allocation: sized_allocation_expr.clone().map(Box::new),
                         });
+                    }
+                } else if let Some(size_expr) = sized_allocation_expr {
+                    if let Some(HIRExpression::ArrayLiteral {
+                        sized_allocation, ..
+                    }) = init.as_mut()
+                    {
+                        *sized_allocation = Some(Box::new(size_expr));
                     }
                 }
 
@@ -630,7 +641,10 @@ impl Lowering {
                     _line: func._line,
                     _col: func._col,
                 };
+                let prev_expected = self.current_expected_type.borrow_mut().take();
+                *self.current_expected_type.borrow_mut() = Some(fn_ty.clone());
                 let hir_lambda = self.lower_expression(&lambda_expr);
+                *self.current_expected_type.borrow_mut() = prev_expected;
 
                 Some(HIRStatement::VarDecl {
                     name: mangled_name,

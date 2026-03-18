@@ -3,6 +3,38 @@ use crate::middle::mir::*;
 use crate::common::types::TejxType;
 
 impl CodeGen {
+    fn resolve_fixed_field_info(
+        &self,
+        obj_ty: &TejxType,
+        member: &str,
+    ) -> Option<(usize, TejxType)> {
+        let fields: Vec<(String, TejxType)> = match obj_ty {
+            TejxType::Class(class_name, _) => {
+                let lookup_name = if class_name.contains('<') {
+                    class_name.split('<').next().unwrap()
+                } else {
+                    class_name.as_str()
+                };
+                self.class_fields.get(lookup_name)?.clone()
+            }
+            TejxType::Object(props) => props
+                .iter()
+                .map(|(name, _, ty)| (name.clone(), ty.clone()))
+                .collect(),
+            _ => return None,
+        };
+
+        let pos = fields.iter().position(|(field_name, _)| field_name == member)?;
+        let mut offset = 0usize;
+        for (_, ty) in &fields[..pos] {
+            offset = Self::get_aligned_offset(offset, ty);
+            offset += ty.size();
+        }
+        let field_ty = fields[pos].1.clone();
+        offset = Self::get_aligned_offset(offset, &field_ty);
+        Some((offset, field_ty))
+    }
+
     pub(crate) fn emit_load_member(
         &mut self,
         func: &MIRFunction,
@@ -21,52 +53,46 @@ impl CodeGen {
             self.emit_line(&format!("{} = call i64 @rt_len(i64 {})", res_tmp, obj_val));
             used_fast = true;
         } else {
-            if let TejxType::Class(class_name, _) = obj.get_type() {
-                let lookup_name = if class_name.contains('<') {
-                    class_name.split('<').next().unwrap()
-                } else {
-                    &class_name
-                };
-                let resolved_info = self.class_fields.get(lookup_name).and_then(|fields| {
-                    fields.iter().position(|(f, _)| f == member).map(|pos| {
-                        let mut offset = 0;
-                        for (_, ty) in &fields[..pos] {
-                            offset = Self::get_aligned_offset(offset, ty);
-                            offset += ty.size();
-                        }
-                        let field_ty = fields[pos].1.clone();
-                        offset = Self::get_aligned_offset(offset, &field_ty);
-                        (offset, field_ty)
-                    })
-                });
+            let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
+                || matches!(obj, MIRValue::Variable { name, ty, .. }
+                    if matches!(ty, TejxType::Object(_)) && self.can_use_fixed_object_layout(func, name));
+            if allow_fixed_layout {
+                if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
+                let llvm_ty = Self::get_llvm_storage_type(&field_ty);
 
-                if let Some((offset, field_ty)) = resolved_info {
-                    let llvm_ty = Self::get_llvm_storage_type(&field_ty);
+                let ptr_reg = format!("%ptr_{}", self.temp_counter);
+                self.temp_counter += 1;
+                let raw_obj = self.emit_strip_heap_offset(&obj_val);
+                self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
 
-                    let ptr_reg = format!("%ptr_{}", self.temp_counter);
-                    self.temp_counter += 1;
-                    let raw_obj = self.emit_strip_heap_offset(&obj_val);
-                    self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
+                let field_ptr = format!("%field_ptr_{}", self.temp_counter);
+                self.temp_counter += 1;
+                self.emit_line(&format!(
+                    "{} = getelementptr i8, i8* {}, i32 {}",
+                    field_ptr, ptr_reg, offset
+                ));
 
-                    let field_ptr = format!("%field_ptr_{}", self.temp_counter);
-                    self.temp_counter += 1;
-                    self.emit_line(&format!("{} = getelementptr i8, i8* {}, i32 {}", field_ptr, ptr_reg, offset));
+                let typed_field_ptr = format!("%typed_field_ptr_{}", self.temp_counter);
+                self.temp_counter += 1;
+                self.emit_line(&format!(
+                    "{} = bitcast i8* {} to {}*",
+                    typed_field_ptr, field_ptr, llvm_ty
+                ));
 
-                    let typed_field_ptr = format!("%typed_field_ptr_{}", self.temp_counter);
-                    self.temp_counter += 1;
-                    self.emit_line(&format!("{} = bitcast i8* {} to {}*", typed_field_ptr, field_ptr, llvm_ty));
+                let loaded_val = format!("%loaded_val_{}", self.temp_counter);
+                self.temp_counter += 1;
+                self.emit_line(&format!(
+                    "{} = load {}, {}* {}",
+                    loaded_val, llvm_ty, llvm_ty, typed_field_ptr
+                ));
 
-                    let loaded_val = format!("%loaded_val_{}", self.temp_counter);
-                    self.temp_counter += 1;
-                    self.emit_line(&format!("{} = load {}, {}* {}", loaded_val, llvm_ty, llvm_ty, typed_field_ptr));
-
-                    let mut value_val = loaded_val;
-                    if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
-                        value_val = self.emit_storage_to_value(&value_val, &field_ty);
-                    }
-                    res_tmp = self.emit_abi_cast(&value_val, &field_ty, dst_ty);
-                    used_fast = true;
+                let mut value_val = loaded_val;
+                if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
+                    value_val = self.emit_storage_to_value(&value_val, &field_ty);
                 }
+                res_tmp = self.emit_abi_cast(&value_val, &field_ty, dst_ty);
+                used_fast = true;
+            }
             }
 
             if !used_fast {
@@ -113,23 +139,7 @@ impl CodeGen {
             }
         }
 
-        let mut needs_unboxing = !used_fast;
-        if !used_fast {
-            if let TejxType::Class(class_name, _) = obj.get_type() {
-                let lookup_name = if class_name.contains('<') {
-                    class_name.split('<').next().unwrap()
-                } else {
-                    class_name
-                };
-                if let Some(fields) = self.class_fields.get(lookup_name) {
-                    if let Some((_, field_ty)) = fields.iter().find(|(f, _)| f == member) {
-                        if (field_ty.is_numeric() || matches!(field_ty, TejxType::Bool | TejxType::Char)) && field_ty == dst_ty {
-                            needs_unboxing = false;
-                        }
-                    }
-                }
-            }
-        }
+        let needs_unboxing = !used_fast;
 
         let final_res = if needs_unboxing && dst_ty.is_numeric() && !matches!(dst_ty, TejxType::Int64 | TejxType::Any) {
             self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
@@ -164,7 +174,7 @@ impl CodeGen {
 
     pub(crate) fn emit_store_member(
         &mut self,
-        _func: &MIRFunction,
+        func: &MIRFunction,
         obj: &MIRValue,
         member: &String,
         src: &MIRValue,
@@ -177,50 +187,52 @@ impl CodeGen {
         }
 
         let mut used_fast_store = false;
-        if let TejxType::Class(class_name, _) = obj.get_type() {
-            let lookup_name = if class_name.contains('<') {
-                class_name.split('<').next().unwrap()
+        let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
+            || matches!(obj, MIRValue::Variable { name, ty, .. }
+                if matches!(ty, TejxType::Object(_)) && self.can_use_fixed_object_layout(func, name));
+        if allow_fixed_layout {
+            if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
+            let llvm_ty = Self::get_llvm_storage_type(&field_ty);
+
+            let ptr_reg = format!("%ptr_store_{}", self.temp_counter);
+            self.temp_counter += 1;
+            let raw_obj = self.emit_strip_heap_offset(&obj_val);
+            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
+
+            let field_ptr = format!("%field_ptr_store_{}", self.temp_counter);
+            self.temp_counter += 1;
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i32 {}",
+                field_ptr, ptr_reg, offset
+            ));
+
+            let typed_field_ptr = format!("%typed_field_ptr_store_{}", self.temp_counter);
+            self.temp_counter += 1;
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to {}*",
+                typed_field_ptr, field_ptr, llvm_ty
+            ));
+
+            let final_src = self.emit_abi_cast(&v_val, &v_ty, &field_ty);
+            let store_val = if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
+                self.emit_value_to_storage(&final_src, &field_ty)
             } else {
-                &class_name
+                final_src
             };
-            let resolved_info = self.class_fields.get(lookup_name).and_then(|fields| {
-                fields.iter().position(|(f, _)| f == member).map(|pos| {
-                    let mut offset = 0;
-                    for (_, ty) in &fields[..pos] {
-                        offset = Self::get_aligned_offset(offset, ty);
-                        offset += ty.size();
-                    }
-                    let field_ty = fields[pos].1.clone();
-                    offset = Self::get_aligned_offset(offset, &field_ty);
-                    (offset, field_ty)
-                })
-            });
-
-            if let Some((offset, field_ty)) = resolved_info {
-                let llvm_ty = Self::get_llvm_storage_type(&field_ty);
-
-                let ptr_reg = format!("%ptr_store_{}", self.temp_counter);
-                self.temp_counter += 1;
-                let raw_obj = self.emit_strip_heap_offset(&obj_val);
-                self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
-
-                let field_ptr = format!("%field_ptr_store_{}", self.temp_counter);
-                self.temp_counter += 1;
-                self.emit_line(&format!("{} = getelementptr i8, i8* {}, i32 {}", field_ptr, ptr_reg, offset));
-
-                let typed_field_ptr = format!("%typed_field_ptr_store_{}", self.temp_counter);
-                self.temp_counter += 1;
-                self.emit_line(&format!("{} = bitcast i8* {} to {}*", typed_field_ptr, field_ptr, llvm_ty));
-
-                let final_src = self.emit_abi_cast(&v_val, &v_ty, &field_ty);
-                let store_val = if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
-                    self.emit_value_to_storage(&final_src, &field_ty)
-                } else {
-                    final_src
-                };
-                self.emit_line(&format!("store {} {}, {}* {}", llvm_ty, store_val, llvm_ty, typed_field_ptr));
-                used_fast_store = true;
+            self.emit_line(&format!(
+                "store {} {}, {}* {}",
+                llvm_ty, store_val, llvm_ty, typed_field_ptr
+            ));
+            if Self::is_gc_managed(&field_ty) {
+                let barrier_val = self.emit_abi_cast(&v_val, &v_ty, &TejxType::Int64);
+                self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
+                self.emit_line(&format!(
+                    "call void @rt_write_barrier(i64 {}, i64 {})",
+                    obj_val, barrier_val
+                ));
             }
+            used_fast_store = true;
+        }
         }
 
         if !used_fast_store {
@@ -288,6 +300,44 @@ impl CodeGen {
         let obj_val = self.resolve_value(obj);
         let idx_ty = index.get_type();
         let idx_val = self.resolve_value(index);
+
+        if matches!(obj.get_type(), TejxType::FixedArray(_, _)) && !matches!(idx_ty, TejxType::String)
+        {
+            let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
+            let llvm_ty = Self::get_llvm_storage_type(element_ty);
+            let raw_obj = self.emit_strip_heap_offset(&obj_val);
+
+            self.temp_counter += 1;
+            let data_ptr = format!("%fixed_arr_data_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = inttoptr i64 {} to {}*",
+                data_ptr, raw_obj, llvm_ty
+            ));
+
+            self.temp_counter += 1;
+            let elem_ptr = format!("%fixed_arr_elem_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr {}, {}* {}, i64 {}",
+                elem_ptr, llvm_ty, llvm_ty, data_ptr, idx_val
+            ));
+
+            self.temp_counter += 1;
+            let loaded_val = format!("%fixed_arr_val_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = load {}, {}* {}",
+                loaded_val, llvm_ty, llvm_ty, elem_ptr
+            ));
+
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            let value_val = if llvm_ty == "i8" && matches!(element_ty, TejxType::Bool) {
+                self.emit_storage_to_value(&loaded_val, element_ty)
+            } else {
+                loaded_val
+            };
+            let casted = self.emit_abi_cast(&value_val, element_ty, dst_ty);
+            self.emit_store_variable(dst, &casted, dst_ty);
+            return;
+        }
 
         if matches!(idx_ty, TejxType::String) {
             let mut temp_root_count = 0;
@@ -445,6 +495,47 @@ impl CodeGen {
         let mut v_val = self.resolve_value(src);
         let v_ty = src.get_type();
 
+        if matches!(obj.get_type(), TejxType::FixedArray(_, _)) && !matches!(idx_ty, TejxType::String)
+        {
+            let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
+            let llvm_ty = Self::get_llvm_storage_type(element_ty);
+            let raw_obj = self.emit_strip_heap_offset(&obj_val);
+
+            self.temp_counter += 1;
+            let data_ptr = format!("%fixed_arr_store_data_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = inttoptr i64 {} to {}*",
+                data_ptr, raw_obj, llvm_ty
+            ));
+
+            self.temp_counter += 1;
+            let elem_ptr = format!("%fixed_arr_store_elem_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr {}, {}* {}, i64 {}",
+                elem_ptr, llvm_ty, llvm_ty, data_ptr, idx_val
+            ));
+
+            let final_src = self.emit_abi_cast(&v_val, v_ty, element_ty);
+            let store_val = if llvm_ty == "i8" && matches!(element_ty, TejxType::Bool) {
+                self.emit_value_to_storage(&final_src, element_ty)
+            } else {
+                final_src
+            };
+            self.emit_line(&format!(
+                "store {} {}, {}* {}",
+                llvm_ty, store_val, llvm_ty, elem_ptr
+            ));
+            if Self::is_gc_managed(element_ty) {
+                let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
+                self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
+                self.emit_line(&format!(
+                    "call void @rt_write_barrier(i64 {}, i64 {})",
+                    obj_val, barrier_val
+                ));
+            }
+            return;
+        }
+
         if matches!(idx_ty, TejxType::String) {
             let boxed_v = self.emit_auto_box(&v_val, &v_ty);
             let mut temp_root_count = 0;
@@ -492,7 +583,6 @@ impl CodeGen {
         }
 
         let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
-        let src_ty = v_ty;
         let src_ty = src.get_type();
         if element_ty.is_float() {
             if matches!(element_ty, TejxType::Float32) {
@@ -526,11 +616,16 @@ impl CodeGen {
 
         self.declare_runtime_fn(
             "rt_array_set_fast",
-            "void @rt_array_set_fast(i64, i64, i64) nounwind",
+            "i64 @rt_array_set_fast(i64, i64, i64) nounwind",
         );
+        self.temp_counter += 1;
+        let updated_arr = format!("%arr_set_{}", self.temp_counter);
         self.emit_line(&format!(
-            "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
-            obj_val, idx_val, v_val
+            "{} = call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+            updated_arr, obj_val, idx_val, v_val
         ));
+        if let MIRValue::Variable { name, ty } = obj {
+            self.emit_store_variable(name, &updated_arr, ty);
+        }
     }
 }

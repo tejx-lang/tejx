@@ -34,7 +34,12 @@ pub unsafe extern "C" fn rt_Thread_start(this: i64) {
     let args = *ptr.offset(2);
     let handle = std::thread::spawn(move || {
         rt_register_thread();
-        let _ = rt_call_closure(cb, args);
+        let mut cb_root = cb;
+        let mut args_root = args;
+        rt_push_root(&mut cb_root);
+        rt_push_root(&mut args_root);
+        let _ = rt_call_closure(cb_root, args_root);
+        rt_pop_roots(2);
         rt_unregister_thread();
     });
     (*data_ptr).handle = Some(handle);

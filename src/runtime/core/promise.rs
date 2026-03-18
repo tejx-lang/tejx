@@ -289,8 +289,13 @@ pub unsafe extern "C" fn rt_promise_get_value(p: i64) -> i64 {
         return 0;
     }
     let body = (p - HEAP_OFFSET) as *mut i64;
-    // Return the resolved value or error (offset 1)
-    *body.offset(1)
+    let state = *body.offset(0);
+    let val = *body.offset(1);
+    if state == 2 {
+        crate::event_loop::tejx_throw(val);
+        std::hint::unreachable_unchecked();
+    }
+    val
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_clone(p: i64) -> i64 {

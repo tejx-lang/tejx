@@ -5,16 +5,71 @@ use crate::frontend::token::TokenType;
 use crate::common::types::TejxType;
 
 impl Lowering {
+    fn can_fast_print_arg(&self, expr: &HIRExpression) -> bool {
+        matches!(
+            expr.get_type(),
+            TejxType::String
+                | TejxType::Bool
+                | TejxType::Int16
+                | TejxType::Int32
+                | TejxType::Int64
+                | TejxType::Float32
+                | TejxType::Float64
+        )
+    }
+
+    fn lower_fast_print_arg(&self, expr: HIRExpression, line: usize) -> HIRExpression {
+        let ty = expr.get_type();
+        match ty {
+            TejxType::String => expr,
+            TejxType::Bool => HIRExpression::Call {
+                line,
+                callee: "rt_to_string_boolean".to_string(),
+                args: vec![expr],
+                ty: TejxType::String,
+            },
+            TejxType::Float32 | TejxType::Float64 => HIRExpression::Call {
+                line,
+                callee: "rt_to_string_float".to_string(),
+                args: vec![expr],
+                ty: TejxType::String,
+            },
+            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 => HIRExpression::Call {
+                line,
+                callee: "rt_to_string_int".to_string(),
+                args: vec![expr],
+                ty: TejxType::String,
+            },
+            _ => expr,
+        }
+    }
+
     pub(crate) fn lower_expression(&self, expr: &Expression) -> HIRExpression {
         let line = expr.get_line();
         match expr {
             Expression::ObjectLiteralExpr {
                 entries, _spreads, ..
             } => {
+                let expected_raw_ty = self.current_expected_type.borrow().clone();
+                let expected_resolved_ty = expected_raw_ty
+                    .as_ref()
+                    .map(|ty| self.resolve_alias_type(ty));
+                let expected_props = match &expected_resolved_ty {
+                    Some(TejxType::Object(props)) => Some(props.clone()),
+                    _ => None,
+                };
                 let mut hir_entries = Vec::new();
                 let mut object_props = Vec::new();
                 for (key, val) in entries {
+                    let prev_expected = self.current_expected_type.borrow_mut().take();
+                    if let Some(props) = &expected_props {
+                        if let Some((_, _, field_ty)) = props.iter().find(|(name, _, _)| name == key)
+                        {
+                            *self.current_expected_type.borrow_mut() = Some(field_ty.clone());
+                        }
+                    }
                     let lowered = self.lower_expression(val);
+                    *self.current_expected_type.borrow_mut() = prev_expected;
                     object_props.push((key.clone(), false, lowered.get_type()));
                     hir_entries.push((key.clone(), lowered));
                 }
@@ -32,7 +87,17 @@ impl Lowering {
                     spread_vals.push(spread_val);
                 }
 
-                let merged_ty = TejxType::Object(object_props);
+                let merged_ty = if spread_vals.is_empty() {
+                    match (expected_raw_ty.clone(), expected_resolved_ty) {
+                        (Some(TejxType::Class(name, generics)), Some(TejxType::Object(_))) => {
+                            TejxType::Class(name, generics)
+                        }
+                        (_, Some(TejxType::Object(props))) => TejxType::Object(props),
+                        _ => TejxType::Object(object_props),
+                    }
+                } else {
+                    TejxType::Object(object_props)
+                };
                 let base_obj = HIRExpression::ObjectLiteral {
                     entries: hir_entries,
                     ty: merged_ty.clone(),
@@ -192,7 +257,20 @@ impl Lowering {
                 let index_hir = self.lower_expression(index);
                 if !self.is_optional_type(&target_hir.get_type()) {
                     let target_ty = self.non_none_type(&target_hir.get_type());
-                    let elem_ty = target_ty.get_array_element_type();
+                    let mut elem_ty = target_ty.get_array_element_type();
+                    if let TejxType::Object(props) = &target_ty {
+                        if let Expression::StringLiteral { value, .. } = index.as_ref() {
+                            if let Some((_, _, prop_ty)) =
+                                props.iter().find(|(name, _, _)| name == value)
+                            {
+                                elem_ty = prop_ty.clone();
+                            } else {
+                                elem_ty = TejxType::Any;
+                            }
+                        } else {
+                            elem_ty = TejxType::Any;
+                        }
+                    }
                     return HIRExpression::IndexAccess {
                         line: line,
                         target: Box::new(target_hir),
@@ -202,7 +280,20 @@ impl Lowering {
                 }
 
                 let target_ty = self.non_none_type(&target_hir.get_type());
-                let elem_ty = target_ty.get_array_element_type();
+                let mut elem_ty = target_ty.get_array_element_type();
+                if let TejxType::Object(props) = &target_ty {
+                    if let Expression::StringLiteral { value, .. } = index.as_ref() {
+                        if let Some((_, _, prop_ty)) =
+                            props.iter().find(|(name, _, _)| name == value)
+                        {
+                            elem_ty = prop_ty.clone();
+                        } else {
+                            elem_ty = TejxType::Any;
+                        }
+                    } else {
+                        elem_ty = TejxType::Any;
+                    }
+                }
 
                 let cond = self.build_not_none_condition(&target_hir, line);
                 HIRExpression::If {
@@ -268,8 +359,30 @@ impl Lowering {
             Expression::AssignmentExpr {
                 target, value, _op, ..
             } => {
+                let assignment_expected = match target.as_ref() {
+                    Expression::Identifier { name, .. } => self
+                        .lookup(name)
+                        .map(|(_, ty)| self.resolve_alias_type(&ty)),
+                    Expression::ArrayAccessExpr { target, .. } => {
+                        Some(self.lower_expression(target).get_type().get_array_element_type())
+                    }
+                    Expression::MemberAccessExpr { object, member, .. } => {
+                        let obj_ty = self.lower_expression(object).get_type();
+                        match self.resolve_alias_type(&obj_ty) {
+                            TejxType::Object(props) => props
+                                .iter()
+                                .find(|(name, _, _)| name == member)
+                                .map(|(_, _, ty)| ty.clone()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let prev_expected = self.current_expected_type.borrow_mut().take();
+                *self.current_expected_type.borrow_mut() = assignment_expected.clone();
                 let v = self.lower_expression(value);
-                let ty = v.get_type();
+                *self.current_expected_type.borrow_mut() = prev_expected;
+                let ty = assignment_expected.unwrap_or_else(|| v.get_type());
 
                 // Desugar compound assignments: a += b  ->  a = a + b
                 let final_value = match _op {
@@ -917,15 +1030,31 @@ impl Lowering {
                 if let Some(&fixed_count) = self.variadic_functions.borrow().get(lookup_name) {
                     if final_args.len() >= fixed_count {
                         let (fixed, rest) = final_args.split_at(fixed_count);
-                        let mut new_var_args = fixed.to_vec();
-
-                        new_var_args.push(HIRExpression::ArrayLiteral {
-                            line: line,
-                            elements: rest.to_vec(),
-                            ty: TejxType::DynamicArray(Box::new(TejxType::Any)),
-                            sized_allocation: None,
-                        });
-                        final_args = new_var_args;
+                        if lookup_name == "print"
+                            && rest.iter().all(|arg| self.can_fast_print_arg(arg))
+                        {
+                            final_callee = "rt_print_string_array".to_string();
+                            ty = TejxType::Void;
+                            final_args = vec![HIRExpression::ArrayLiteral {
+                                line,
+                                elements: rest
+                                    .iter()
+                                    .cloned()
+                                    .map(|arg| self.lower_fast_print_arg(arg, line))
+                                    .collect(),
+                                ty: TejxType::DynamicArray(Box::new(TejxType::String)),
+                                sized_allocation: None,
+                            }];
+                        } else {
+                            let mut new_var_args = fixed.to_vec();
+                            new_var_args.push(HIRExpression::ArrayLiteral {
+                                line: line,
+                                elements: rest.to_vec(),
+                                ty: TejxType::DynamicArray(Box::new(TejxType::Any)),
+                                sized_allocation: None,
+                            });
+                            final_args = new_var_args;
+                        }
                     }
                 } else {
                     // Non-variadic: pad missing arguments with None for Optionals/T|None
@@ -957,7 +1086,20 @@ impl Lowering {
                 let lowered_target = self.lower_expression(target);
                 let target_ty = lowered_target.get_type();
 
-                let ty = target_ty.get_array_element_type();
+                let mut ty = target_ty.get_array_element_type();
+                if let TejxType::Object(props) = &target_ty {
+                    if let Expression::StringLiteral { value, .. } = index.as_ref() {
+                        if let Some((_, _, prop_ty)) =
+                            props.iter().find(|(name, _, _)| name == value)
+                        {
+                            ty = prop_ty.clone();
+                        } else {
+                            ty = TejxType::Any;
+                        }
+                    } else {
+                        ty = TejxType::Any;
+                    }
+                }
                 HIRExpression::IndexAccess {
                     line: line,
                     target: Box::new(lowered_target),
@@ -1070,6 +1212,14 @@ impl Lowering {
                 _line,
                 _col,
             } => {
+                let expected_lambda_ret = self
+                    .current_expected_type
+                    .borrow()
+                    .clone()
+                    .and_then(|ty| match ty {
+                        TejxType::Function(_, ret) => Some(*ret),
+                        _ => None,
+                    });
                 let id = {
                     let mut counter = self.lambda_counter.borrow_mut();
                     let val = *counter;
@@ -1145,20 +1295,25 @@ impl Lowering {
                         line: line,
                         name: lambda_name.clone(),
                         params: mangled_params,
-                        // Lambdas return through the Any/i64 ABI so closures are uniform.
-                        _return_type: TejxType::Any,
+                        _return_type: expected_lambda_ret.clone().unwrap_or_else(|| {
+                            self.lambda_inferred_returns
+                                .get(&(*_line, *_col))
+                                .cloned()
+                                .unwrap_or(TejxType::Void)
+                        }),
                         body: Box::new(hir_body),
                         is_extern: false,
                     });
 
+                let lambda_ret_ty = expected_lambda_ret.unwrap_or_else(|| {
+                    self.lambda_inferred_returns
+                        .get(&(*_line, *_col))
+                        .cloned()
+                        .unwrap_or(TejxType::Void)
+                });
                 let fn_ty = TejxType::Function(
                     hir_params.iter().map(|(_, ty)| ty.clone()).collect(),
-                    Box::new(
-                        self.lambda_inferred_returns
-                            .get(&(*_line, *_col))
-                            .cloned()
-                            .unwrap_or(TejxType::Void),
-                    ),
+                    Box::new(lambda_ret_ty),
                 );
                 HIRExpression::Literal {
                     line: line,

@@ -34,6 +34,7 @@ impl<'a> TypeSubstitutor<'a> {
                 }
             }
             TypeNode::Array(inner) => self.substitute_type_node(inner),
+            TypeNode::SizedArray(inner, _) => self.substitute_type_node(inner),
             TypeNode::Function(params, ret) => {
                 for p in params {
                     self.substitute_type_node(p);

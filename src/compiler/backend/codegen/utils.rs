@@ -4,6 +4,58 @@ use crate::middle::mir::*;
 use crate::common::types::TejxType;
 
 impl CodeGen {
+    pub(crate) fn ensure_closure_adapter(&mut self, name: &str, ty: &TejxType) -> String {
+        let key = format!("{}::{}", name, ty.to_name());
+        if let Some(existing) = self.closure_adapters.get(&key) {
+            return existing.clone();
+        }
+
+        self.label_counter += 1;
+        let adapter_name = format!("closure_adapter_{}", self.label_counter);
+        self.closure_adapters
+            .insert(key, adapter_name.clone());
+
+        if let TejxType::Function(params, ret) = ty {
+            let ret_llvm = Self::get_llvm_type(ret);
+            let mut wrapper_params = vec!["i64 %env".to_string()];
+            let mut call_args = Vec::new();
+
+            for (idx, param_ty) in params.iter().enumerate() {
+                let arg_name = format!("%arg{}", idx);
+                wrapper_params.push(format!("{} {}", Self::get_llvm_type(param_ty), arg_name));
+                call_args.push(format!("{} {}", Self::get_llvm_type(param_ty), arg_name));
+            }
+            while wrapper_params.len() < 5 {
+                let pad_idx = wrapper_params.len() - 1;
+                wrapper_params.push(format!("i64 %pad{}", pad_idx));
+            }
+
+            self.global_buffer.push_str(&format!(
+                "define {} @{}({}) {{\nentry:\n",
+                ret_llvm,
+                adapter_name,
+                wrapper_params.join(", ")
+            ));
+            if ret_llvm == "void" {
+                self.global_buffer.push_str(&format!(
+                    "  call void @\"{}\"({})\n  ret void\n}}\n",
+                    name,
+                    call_args.join(", ")
+                ));
+            } else {
+                self.global_buffer.push_str(&format!(
+                    "  %call = call {} @\"{}\"({})\n  ret {} %call\n}}\n",
+                    ret_llvm,
+                    name,
+                    call_args.join(", "),
+                    ret_llvm
+                ));
+            }
+        }
+
+        adapter_name
+    }
+
     pub(crate) fn emit_value_to_storage(&mut self, val: &str, ty: &TejxType) -> String {
         if !matches!(ty, TejxType::Bool) {
             return val.to_string();
@@ -484,14 +536,47 @@ impl CodeGen {
             MIRValue::Constant { value, ty } => {
                 // Handle "new Class" hack
                 if let Some(name) = value.strip_prefix("@") {
-                    let count = self.function_param_counts.get(name).cloned().unwrap_or(1); // Default to 1 for workers
+                    if let TejxType::Function(params, ret) = ty {
+                        let adapter = self.ensure_closure_adapter(name, ty);
+                        let mut llvm_params = vec!["i64".to_string()];
+                        for param in params {
+                            llvm_params.push(Self::get_llvm_type(param).to_string());
+                        }
+                        while llvm_params.len() < 5 {
+                            llvm_params.push("i64".to_string());
+                        }
+                        return format!(
+                            "ptrtoint ({} ({})* @{} to i64)",
+                            Self::get_llvm_type(ret),
+                            llvm_params.join(", "),
+                            adapter
+                        );
+                    }
+
+                    let count = self.function_param_counts.get(name).cloned().unwrap_or(1);
                     let args = vec!["i64"; count].join(", ");
                     return format!("ptrtoint (i64 ({})* @{} to i64)", args, name);
                 }
                 if value.starts_with("lambda_") {
-                    let count = self.function_param_counts.get(value).cloned().unwrap_or(1);
-                    let args = vec!["i64"; count].join(", ");
-                    let fn_ptr = format!("ptrtoint (i64 ({})* @{} to i64)", args, value);
+                    let fn_ptr = if let TejxType::Function(params, ret) = ty {
+                        let mut llvm_params = vec!["i64".to_string()];
+                        for param in params {
+                            llvm_params.push(Self::get_llvm_type(param).to_string());
+                        }
+                        while llvm_params.len() < 5 {
+                            llvm_params.push("i64".to_string());
+                        }
+                        format!(
+                            "ptrtoint ({} ({})* @{} to i64)",
+                            Self::get_llvm_type(ret),
+                            llvm_params.join(", "),
+                            value
+                        )
+                    } else {
+                        let count = self.function_param_counts.get(value).cloned().unwrap_or(1);
+                        let args = vec!["i64"; count].join(", ");
+                        format!("ptrtoint (i64 ({})* @{} to i64)", args, value)
+                    };
 
                     // Wrap function pointer into a closure object using rt_closure_from_ptr
                     self.declare_runtime_fn(
@@ -500,7 +585,7 @@ impl CodeGen {
                     );
                     self.declare_runtime_fn(
                         "rt_array_set_fast",
-                        "void @rt_array_set_fast(i64, i64, i64)",
+                        "i64 @rt_array_set_fast(i64, i64, i64)",
                     );
 
                     self.temp_counter += 1;
@@ -529,7 +614,7 @@ impl CodeGen {
                     };
 
                     self.emit_line(&format!(
-                        "call void @rt_array_set_fast(i64 {}, i64 1, i64 {})",
+                        "call i64 @rt_array_set_fast(i64 {}, i64 1, i64 {})",
                         closure_id, env_to_pass
                     ));
 
@@ -587,7 +672,6 @@ impl CodeGen {
                 }
 
                 let raw_ptr = self.emit_string_constant(value);
-                self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
                 self.emit_box_string(&raw_ptr)
             }
             MIRValue::Variable { name, ty } => {
@@ -670,19 +754,29 @@ impl CodeGen {
                     return val_reg;
                 }
 
-                // Check for function pointer using type info
-                if let TejxType::Function(params, _) = ty {
-                    let args_sig = vec!["i64"; params.len()].join(", ");
-                    return format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, name);
-                }
-
-                // Check for function parameter (if not mapped to alloca yet? - should be in value_map)
-                // Fallback for globals
-                if self.declared_functions.contains(name) || name == TEJX_MAIN {
-                    // Function pointer logic (same as before)
-                    let count = self.function_param_counts.get(name).cloned().unwrap_or(0);
-                    let args_sig = vec!["i64"; count].join(", ");
-                    return format!("ptrtoint (i64 ({})* @{} to i64)", args_sig, name);
+                // Check for function pointer using type info.
+                if let TejxType::Function(params, ret) = ty {
+                    let use_adapter = name.starts_with("f_")
+                        || self.declared_functions.contains(name)
+                        || name == TEJX_MAIN;
+                    let symbol_name = if use_adapter {
+                        self.ensure_closure_adapter(name, ty)
+                    } else {
+                        name.clone()
+                    };
+                    let mut args_sig = vec!["i64".to_string()];
+                    for param in params {
+                        args_sig.push(Self::get_llvm_type(param).to_string());
+                    }
+                    while args_sig.len() < 5 {
+                        args_sig.push("i64".to_string());
+                    }
+                    return format!(
+                        "ptrtoint ({} ({})* @{} to i64)",
+                        Self::get_llvm_type(ret),
+                        args_sig.join(", "),
+                        symbol_name
+                    );
                 }
 
                 // Should check globals here properly
@@ -775,7 +869,7 @@ impl CodeGen {
             if let Some(env) = self.current_env.clone() {
                 self.declare_runtime_fn(
                     "rt_array_set_fast",
-                    "void @rt_array_set_fast(i64, i64, i64)",
+                    "i64 @rt_array_set_fast(i64, i64, i64)",
                 );
 
                 let val_to_store = if ty.is_float() {
@@ -807,7 +901,7 @@ impl CodeGen {
                 }
 
                 self.emit_line(&format!(
-                    "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                    "call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
                     env, cap_idx, val_to_store
                 ));
                 if temp_root_count > 0 {
@@ -863,9 +957,6 @@ impl CodeGen {
     }
 
     pub(crate) fn emit_string_constant(&mut self, value: &str) -> String {
-        self.label_counter += 1;
-        let str_lbl = format!("@.str{}", self.label_counter);
-
         let raw_content = value.to_string();
         let content =
             if raw_content.len() >= 2 && raw_content.starts_with('"') && raw_content.ends_with('"')
@@ -874,6 +965,13 @@ impl CodeGen {
             } else {
                 &raw_content
             };
+
+        if let Some((str_lbl, byte_len)) = self.string_constant_cache.get(content) {
+            return format!("ptrtoint ([{} x i8]* {} to i64)", byte_len, str_lbl);
+        }
+
+        self.label_counter += 1;
+        let str_lbl = format!("@.str{}", self.label_counter);
 
         let mut escaped = String::new();
         for b in content.as_bytes() {
@@ -889,6 +987,8 @@ impl CodeGen {
         }
 
         let byte_len = content.len() + 1;
+        self.string_constant_cache
+            .insert(content.to_string(), (str_lbl.clone(), byte_len));
 
         self.global_buffer.push_str(&format!(
             "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
@@ -899,13 +999,22 @@ impl CodeGen {
     }
 
     pub(crate) fn emit_box_string(&mut self, raw_ptr: &str) -> String {
-        self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
+        if let Some(boxed) = self.boxed_string_cache.get(raw_ptr) {
+            return boxed.clone();
+        }
+
+        self.declare_runtime_fn(
+            "rt_string_from_c_str_const",
+            "i64 @rt_string_from_c_str_const(i64)",
+        );
         self.temp_counter += 1;
         let boxed = format!("%boxed_str{}", self.temp_counter);
-        self.emit_line(&format!(
-            "{} = call i64 @rt_string_from_c_str(i64 {})",
+        self.alloca_buffer.push_str(&format!(
+            "  {} = call i64 @rt_string_from_c_str_const(i64 {})\n",
             boxed, raw_ptr
         ));
+        self.boxed_string_cache
+            .insert(raw_ptr.to_string(), boxed.clone());
         boxed
     }
     pub(crate) fn emit_auto_box(&mut self, val: &str, ty: &TejxType) -> String {

@@ -512,11 +512,13 @@ impl TypeChecker {
                 );
 
                 if is_comparison {
+                    let is_none_comparison = matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
+                        && (left_type.to_name() == "None" || right_type.to_name() == "None");
                     let compatible = self.are_types_compatible(&left_type, &right_type)
                         || self.are_types_compatible(&right_type, &left_type);
                     let both_numeric = left_type.is_numeric() && right_type.is_numeric();
 
-                    if !compatible && !both_numeric {
+                    if !is_none_comparison && !compatible && !both_numeric {
                         self.report_error_detailed(
                             format!(
                                 "Cannot compare values of different types: '{}' and '{}'",
@@ -935,6 +937,14 @@ impl TypeChecker {
                             );
                         }
                     }
+                }
+                if let TejxType::Object(props) = &parsed {
+                    if let Expression::StringLiteral { value, .. } = index.as_ref() {
+                        if let Some((_, _, prop_ty)) = props.iter().find(|(name, _, _)| name == value) {
+                            return Ok(prop_ty.clone());
+                        }
+                    }
+                    return Ok(TejxType::Any);
                 }
                 if parsed == TejxType::Any {
                     return Ok(TejxType::Any);

@@ -83,7 +83,7 @@ const ARRAY_FIXED_METHOD_NAMES: &[&str] = &[
 fn string_method_info(name: &str) -> Option<BuiltinMethodInfo> {
     let info = match name {
         "length" => BuiltinMethodInfo {
-            callee: "rt_len",
+            callee: "rt_strlen",
             ret: Some(BuiltinRet::Int32),
         },
         "concat" => BuiltinMethodInfo {

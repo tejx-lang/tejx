@@ -795,6 +795,34 @@ impl Lowering {
         let mut signatures = HashMap::new();
         // Add built-in runtime signatures for proper auto-boxing in MIR
         signatures.insert("rt_len".to_string(), vec![TejxType::Int64]);
+        signatures.insert("rt_strlen".to_string(), vec![TejxType::String]);
+        signatures.insert("rt_map_new".to_string(), vec![]);
+        signatures.insert(
+            "rt_map_set".to_string(),
+            vec![TejxType::Int64, TejxType::Int64, TejxType::Int64],
+        );
+        signatures.insert(
+            "rt_map_get".to_string(),
+            vec![TejxType::Int64, TejxType::Int64],
+        );
+        signatures.insert(
+            "rt_map_has".to_string(),
+            vec![TejxType::Int64, TejxType::Int64],
+        );
+        signatures.insert(
+            "rt_map_delete".to_string(),
+            vec![TejxType::Int64, TejxType::Int64],
+        );
+        signatures.insert("rt_map_size".to_string(), vec![TejxType::Int64]);
+        signatures.insert("rt_map_keys".to_string(), vec![TejxType::Int64]);
+        signatures.insert("rt_map_values".to_string(), vec![TejxType::Int64]);
+        signatures.insert(
+            "rt_print_string_array".to_string(),
+            vec![TejxType::DynamicArray(Box::new(TejxType::String))],
+        );
+        signatures.insert("rt_to_string_int".to_string(), vec![TejxType::Int64]);
+        signatures.insert("rt_to_string_float".to_string(), vec![TejxType::Float64]);
+        signatures.insert("rt_to_string_boolean".to_string(), vec![TejxType::Bool]);
         signatures.insert(
             "rt_promise_resolve".to_string(),
             vec![TejxType::Int64, TejxType::Int64],
@@ -829,6 +857,7 @@ impl Lowering {
             vec![TejxType::Int64, TejxType::Int64],
         );
         signatures.insert("rt_len".to_string(), vec![TejxType::Int64]);
+        signatures.insert("rt_strlen".to_string(), vec![TejxType::String]);
         signatures.insert("rt_typeof".to_string(), vec![TejxType::Int64]);
 
         for func in &functions {

@@ -6,11 +6,12 @@ pub struct Program {
     pub statements: Vec<Statement>, // In C++ this was vector<shared_ptr<ASTNode>>, but mostly statements
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub enum TypeNode {
     Named(String),
     Generic(String, Vec<TypeNode>),
     Array(Box<TypeNode>),
+    SizedArray(Box<TypeNode>, Box<Expression>),
     Function(Vec<TypeNode>, Box<TypeNode>),
     Object(Vec<(String, bool, TypeNode)>), // key, is_optional, value_type
     Union(Vec<TypeNode>),
@@ -19,6 +20,36 @@ pub enum TypeNode {
 }
 
 impl TypeNode {
+    fn size_expr_to_string(expr: &Expression) -> String {
+        match expr {
+            Expression::NumberLiteral { value, .. } => {
+                if *value == value.trunc() {
+                    format!("{:.0}", value)
+                } else {
+                    value.to_string()
+                }
+            }
+            Expression::Identifier { name, .. } => name.clone(),
+            Expression::BinaryExpr { left, op, right, .. } => {
+                let op_str = match op {
+                    TokenType::Plus => "+",
+                    TokenType::Minus => "-",
+                    TokenType::Star => "*",
+                    TokenType::Slash => "/",
+                    TokenType::Modulo => "%",
+                    _ => "?",
+                };
+                format!(
+                    "{} {} {}",
+                    Self::size_expr_to_string(left),
+                    op_str,
+                    Self::size_expr_to_string(right)
+                )
+            }
+            _ => "(expr)".to_string(),
+        }
+    }
+
     pub fn to_string(&self) -> String {
         match self {
             TypeNode::Named(n) => n.clone(),
@@ -27,6 +58,7 @@ impl TypeNode {
                 format!("{}<{}>", n, args_str)
             }
             TypeNode::Array(t) => format!("{}[]", t),
+            TypeNode::SizedArray(t, _) => format!("{}[]", t),
             TypeNode::Function(args, ret) => {
                 let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
                 format!("({}) => {}", args_str, ret)

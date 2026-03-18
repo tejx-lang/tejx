@@ -26,7 +26,7 @@ type Vec3 = {
 
 // 1. Sieve of Eratosthenes (Memory Write)
 function bench_sieve(): float {
-    let limit = 500000;
+    let limit = 50000000;
     let primes: int[limit + 1] = [];
     for (let i = 0; i <= limit; i++) primes[i] = 1;
     for (let p = 2; p * p <= limit; p++) {
@@ -50,7 +50,7 @@ function bench_pointers(): float {
     }
     
     let curr = nodes[0];
-    let sum = 0;
+    let sum:int64 = 0;
     while (curr != None) {
         sum += curr.value;
         curr = curr.next;
@@ -60,7 +60,7 @@ function bench_pointers(): float {
 
 // 3. Math Throughput (FMA Simulation)
 function bench_math(): float {
-    let a = 1.01; let b = 1.00; let c = 1.03;
+    let a:int64 = 1.01; let b = 1.00; let c = 1.03;
     for (let i = 0; i < 500000000; i++) {
         a = a * b + c;
     }
@@ -121,7 +121,7 @@ function bench_mandelbrot(): float {
 function bench_branching(): float {
     let data: int[20000000] = [];
     for (let i = 0; i < 20000000; i++) data[i] = i % 100;
-    let sum = 0;
+    let sum:int64 = 0;
     for (let j = 0; j < 20; j++) {
         for (let i = 0; i < 20000000; i++) {
             if (data[i] < 50) sum += data[i];
@@ -330,13 +330,13 @@ function bench_sum_billion(): float {
 // --- Benchmark Runner ---
 function run(name: string, fn: () => float): void {
     let s = now();
-    let res: float = fn();
+    let res: float64 = fn();
     let e = now();
     print(name , " -> [" , res , "] : " , (e - s) , " ms");
 }
 
 function main(): float {
-        print("--- Unified Performance Suite (23 Tests) ---");
+        print("--- Unified Performance Suite (24 Tests) ---");
         run("1. Sieve of Eratosthenes", bench_sieve);
         run("2. Pointer Chasing", bench_pointers);
         run("3. Math Throughput", bench_math);

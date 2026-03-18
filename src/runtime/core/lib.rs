@@ -26,12 +26,18 @@ pub use thread::*;
 #[path = "../gc.rs"]
 pub mod gc;
 pub use gc::{
-    gc_allocate, rt_get_header, rt_init_gc, rt_is_gc_ptr, rt_pop_roots, rt_push_root,
-    rt_register_thread, rt_unregister_thread, rt_write_barrier, ObjectHeader,
+    gc_allocate, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
+    rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pop_roots, rt_push_root, rt_register_thread,
+    rt_unregister_thread, rt_write_barrier,
+    ObjectHeader,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
+
+const STRING_FLAG_FROZEN: u16 = 0x0800;
+static CONST_STRING_SLOTS: LazyLock<Mutex<HashMap<usize, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
     let cstr = std::ffi::CString::new(msg).unwrap_or_else(|_| {
@@ -95,6 +101,7 @@ pub const MAP_STATES_OFFSET: isize = 32;
 
 pub const ARRAY_FLAG_FIXED: i64 = 0x0100;
 pub const ARRAY_FLAG_CONSTANT: i64 = 0x0200;
+pub const ARRAY_FLAG_PTR: i64 = 0x0400;
 // Boolean sentinels (below HEAP_OFFSET, above normal number range)
 #[no_mangle]
 pub static BOOL_FALSE: i64 = 0;
@@ -426,12 +433,7 @@ pub unsafe extern "C" fn rt_string_from_c_str(s: *const std::ffi::c_char) -> i64
         return 0;
     }
     let len = strlen(s);
-    // Body now only contains characters + null terminator. No more 16-byte [TAG, len] in body!
-    let body_ptr = gc_allocate(len + 1);
-    let header = rt_get_header(body_ptr);
-
-    (*header).type_id = TAG_STRING as u16;
-    (*header).length = len as u32;
+    let body_ptr = alloc_string_body(len as i64, len as i64);
 
     std::ptr::copy_nonoverlapping(s as *const u8, body_ptr, len);
     *(body_ptr.add(len)) = 0;
@@ -439,6 +441,40 @@ pub unsafe extern "C" fn rt_string_from_c_str(s: *const std::ffi::c_char) -> i64
     let res = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(res, body_ptr, len as i64, 1);
     res
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) -> i64 {
+    if s.is_null() {
+        return 0;
+    }
+
+    let key = s as usize;
+    if let Some(slot) = CONST_STRING_SLOTS.lock().unwrap().get(&key).copied() {
+        return rt_get_static_root(slot);
+    }
+
+    let res = rt_string_from_c_str(s);
+    let header = rt_get_header((res - HEAP_OFFSET) as *mut u8);
+    (*header).flags |= STRING_FLAG_FROZEN;
+
+    let mut slots = CONST_STRING_SLOTS.lock().unwrap();
+    if let Some(slot) = slots.get(&key).copied() {
+        return rt_get_static_root(slot);
+    }
+    let slot = rt_add_static_root(res);
+    slots.insert(key, slot);
+    res
+}
+
+pub unsafe fn alloc_string_body(capacity: i64, len: i64) -> *mut u8 {
+    let cap = if capacity < len { len } else { capacity };
+    let body_ptr = gc_allocate(cap as usize + 1);
+    let header = rt_get_header(body_ptr);
+    (*header).type_id = TAG_STRING as u16;
+    (*header).length = len as u32;
+    (*header).capacity = cap as u32;
+    body_ptr
 }
 
 // --- IO Primitives ---
@@ -479,31 +515,43 @@ pub unsafe extern "C" fn rt_to_string_int(v: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string_float(v: f64) -> i64 {
-    let mut buf = [0u8; 64];
-    sprintf(buf.as_mut_ptr() as *mut _, "%.15f\0".as_ptr() as *const _, v);
-    
-    // Trim trailing zeros from the formatted float like %g does, but without entering scientific notation
-    let mut len = strlen(buf.as_ptr() as *const _);
-    let mut has_dot = false;
-    for i in 0..len {
-        if buf[i] == b'.' {
-            has_dot = true;
-            break;
+    let s = if v.is_nan() {
+        "NaN".to_string()
+    } else if v.is_infinite() {
+        if v.is_sign_negative() {
+            "-Infinity".to_string()
+        } else {
+            "Infinity".to_string()
         }
-    }
-    if has_dot {
-        while len > 0 && buf[len - 1] == b'0' {
-            len -= 1;
-            buf[len] = 0;
+    } else {
+        // Round to a human-friendly decimal when very close to a shorter representation.
+        let eps = 1e-5_f64.max(v.abs() * 1e-7);
+        let mut out: Option<String> = None;
+        for decimals in 0..=6 {
+            let factor = 10_f64.powi(decimals);
+            let rounded = (v * factor).round() / factor;
+            if (v - rounded).abs() <= eps {
+                let mut s = format!("{:.*}", decimals as usize, rounded);
+                if let Some(dot) = s.find('.') {
+                    let mut end = s.len();
+                    while end > dot + 1 && s.as_bytes()[end - 1] == b'0' {
+                        end -= 1;
+                    }
+                    if end == dot + 1 {
+                        end = dot;
+                    }
+                    s.truncate(end);
+                }
+                out = Some(s);
+                break;
+            }
         }
-        if len > 0 && buf[len - 1] == b'.' {
-            buf[len] = b'0';
-            len += 1;
-            buf[len] = 0;
-        }
-    }
-    
-    rt_string_from_c_str(buf.as_ptr() as *const _)
+        out.unwrap_or_else(|| v.to_string())
+    };
+    let cstr = std::ffi::CString::new(s).unwrap_or_else(|_| {
+        std::ffi::CString::new("0").expect("CString for float")
+    });
+    rt_string_from_c_str(cstr.as_ptr() as *const _)
 }
 
 #[no_mangle]
@@ -527,6 +575,17 @@ pub unsafe extern "C" fn rt_box_char(c: i32) -> i64 {
     (ptr as i64) + HEAP_OFFSET
 }
 
+#[inline]
+fn looks_like_unboxed_float_bits(val: i64) -> bool {
+    let bits = val as u64;
+    let exp = (bits & 0x7FF0_0000_0000_0000) >> 52;
+    if exp == 0 || exp == 2047 {
+        return false;
+    }
+
+    val >= HEAP_OFFSET || (bits & (1u64 << 63)) != 0
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     let mut v = val;
@@ -537,7 +596,7 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     // Robust pointer check: within the HEAP_OFFSET range AND verified by GC.
     let body_ptr_probe = (v - HEAP_OFFSET) as *mut u8;
     let in_offset_range = v >= HEAP_OFFSET;
-    let is_gc = in_offset_range && rt_is_gc_ptr(body_ptr_probe);
+    let is_gc = in_offset_range && rt_is_gc_body_ptr_exact(body_ptr_probe);
     let is_stack = v >= STACK_OFFSET && v < HEAP_OFFSET;
     let is_ptr = is_gc || is_stack;
 
@@ -593,20 +652,10 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
         }
     } else {
         // Handle unboxed primitives (direct i64 representation)
-        if in_offset_range {
-            // Large value, not a GC pointer.
-            // A bitcasted f64 has an exponent in bits 52-62.
-            // If the exponent is 0, it's a subnormal or 0 (but 0 < HEAP_OFFSET).
-            let exp = (v as u64 & 0x7FF0000000000000) >> 52;
-            if exp > 0 && exp < 2047 && (v as u64) > 0x3FF0000000000000 {
-                // Heuristically a float
-                let n = f64::from_bits(v as u64);
-                res_id = rt_to_string_float(n);
-            } else {
-                res_id = rt_to_string_int(v);
-            }
+        if looks_like_unboxed_float_bits(v) {
+            let n = f64::from_bits(v as u64);
+            res_id = rt_to_string_float(n);
         } else {
-            // Normal small integer
             res_id = rt_to_string_int(v);
         }
     }
@@ -639,15 +688,20 @@ pub unsafe extern "C" fn rt_len(val: i64) -> i64 {
     } else {
         val
     };
-    let is_gc = if resolved >= HEAP_OFFSET {
-        rt_is_gc_ptr((resolved - HEAP_OFFSET) as *mut u8)
-    } else {
-        false
-    };
-    if !is_gc {
+    let is_heap = resolved >= HEAP_OFFSET;
+    let is_stack = resolved >= STACK_OFFSET && resolved < HEAP_OFFSET;
+    if !is_heap && !is_stack {
         return 0;
     }
-    let body = (resolved - HEAP_OFFSET) as *mut u8;
+    let body = if is_heap {
+        let body = (resolved - HEAP_OFFSET) as *mut u8;
+        if !rt_is_gc_ptr(body) {
+            return 0;
+        }
+        body
+    } else {
+        (resolved - STACK_OFFSET) as *mut u8
+    };
     let header = rt_get_header(body);
     if (*header).type_id == TAG_STRING as u16 || (*header).type_id == TAG_ARRAY as u16 {
         return (*header).length as i64;
@@ -656,16 +710,34 @@ pub unsafe extern "C" fn rt_len(val: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_is_array(val: i64) -> i64 {
-    let is_gc = if val >= HEAP_OFFSET {
-        rt_is_gc_ptr((val - HEAP_OFFSET) as *mut u8)
-    } else {
-        false
-    };
-    if !is_gc {
+pub unsafe extern "C" fn rt_strlen(val: i64) -> i64 {
+    if val < HEAP_OFFSET {
         return 0;
     }
     let body = (val - HEAP_OFFSET) as *mut u8;
+    let header = rt_get_header(body);
+    if (*header).type_id == TAG_STRING as u16 {
+        return (*header).length as i64;
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_is_array(val: i64) -> i64 {
+    let is_heap = val >= HEAP_OFFSET;
+    let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
+    if !is_heap && !is_stack {
+        return 0;
+    }
+    let body = if is_heap {
+        let body = (val - HEAP_OFFSET) as *mut u8;
+        if !rt_is_gc_body_ptr_exact(body) {
+            return 0;
+        }
+        body
+    } else {
+        (val - STACK_OFFSET) as *mut u8
+    };
     let header = rt_get_header(body);
     if (*header).type_id == TAG_ARRAY as u16 {
         1
@@ -929,10 +1001,7 @@ unsafe fn get_str_parts(s: i64) -> Option<(*const u8, i64)> {
 }
 
 unsafe fn new_string_from_bytes(data: *const u8, len: i64) -> i64 {
-    let body_ptr = gc_allocate(len as usize + 1);
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_STRING as u16;
-    (*header).length = len as u32;
+    let body_ptr = alloc_string_body(len, len);
 
     memcpy(body_ptr as *mut _, data as *const _, len as usize);
     *(body_ptr.add(len as usize)) = 0;
@@ -957,14 +1026,10 @@ unsafe fn new_string_from_parts(source_s: i64, offset: i64, len: i64) -> i64 {
     let mut s = source_s;
     rt_push_root(&mut s);
 
-    let body_ptr = gc_allocate(len as usize + 1);
+    let body_ptr = alloc_string_body(len, len);
 
     // RE-RESOLVE after potential GC
     if let Some((data, _)) = get_str_parts(s) {
-        let header = rt_get_header(body_ptr);
-        (*header).type_id = TAG_STRING as u16;
-        (*header).length = len as u32;
-
         std::ptr::copy_nonoverlapping(data.offset(offset as isize), body_ptr, len as usize);
         *(body_ptr.add(len as usize)) = 0;
 
@@ -1036,12 +1101,14 @@ pub unsafe extern "C" fn rt_time_now_ms() -> i64 {
 // --- Timer Management ---
 use std::sync::atomic::AtomicI64;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
 
-thread_local! {
-    static CANCELLED_TIMERS: std::cell::RefCell<std::collections::HashSet<i64>> = std::cell::RefCell::new(std::collections::HashSet::new());
-}
+static CANCELLED_TIMERS: LazyLock<Mutex<HashSet<i64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static INTERVAL_CANCELS: LazyLock<Mutex<HashMap<i64, (usize, oneshot::Sender<()>)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_timer_worker(closure_id: i64) {
@@ -1058,14 +1125,19 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
     crate::event_loop::TOKIO_RT.spawn(async move {
         tokio::time::sleep(Duration::from_millis(ms as u64)).await;
 
-        let cancelled = CANCELLED_TIMERS.with(|c| c.borrow().contains(&timer_id));
+        let cancelled = CANCELLED_TIMERS
+            .lock()
+            .map(|c| c.contains(&timer_id))
+            .unwrap_or(false);
         if !cancelled {
             unsafe {
                 let cb = crate::event_loop::tejx_get_global_handle(handle);
                 crate::event_loop::tejx_enqueue_task(rt_timer_worker as *const () as i64, cb);
             }
         } else {
-            CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
+            if let Ok(mut c) = CANCELLED_TIMERS.lock() {
+                c.remove(&timer_id);
+            }
         }
         unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
         unsafe { crate::event_loop::tejx_dec_async_ops() };
@@ -1080,18 +1152,30 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
     unsafe { crate::event_loop::tejx_inc_async_ops() };
 
     let handle = unsafe { crate::event_loop::tejx_create_global_handle(callback) };
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
+        cancels.insert(timer_id, (handle, cancel_tx));
+    }
     crate::event_loop::TOKIO_RT.spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(ms as u64));
         interval.tick().await; // first tick returns immediately
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = &mut cancel_rx => {
+                    break;
+                }
+            }
 
-            let cancelled = CANCELLED_TIMERS.with(|c| c.borrow().contains(&timer_id));
+            let cancelled = CANCELLED_TIMERS
+                .lock()
+                .map(|c| c.contains(&timer_id))
+                .unwrap_or(false);
             if cancelled {
-                CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
-                unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
-                unsafe { crate::event_loop::tejx_dec_async_ops() };
+                if let Ok(mut c) = CANCELLED_TIMERS.lock() {
+                    c.remove(&timer_id);
+                }
                 break;
             }
 
@@ -1100,6 +1184,11 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
                 crate::event_loop::tejx_enqueue_task(rt_timer_worker as *const () as i64, cb);
             }
         }
+        if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
+            cancels.remove(&timer_id);
+        }
+        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
+        unsafe { crate::event_loop::tejx_dec_async_ops() };
     });
 
     timer_id
@@ -1107,13 +1196,23 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
-    CANCELLED_TIMERS.with(|c| c.borrow_mut().insert(id));
+    if let Ok(mut c) = CANCELLED_TIMERS.lock() {
+        c.insert(id);
+    }
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
-    CANCELLED_TIMERS.with(|c| c.borrow_mut().insert(id));
+    if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
+        if let Some((_, cancel_tx)) = cancels.remove(&id) {
+            let _ = cancel_tx.send(());
+            return 0;
+        }
+    }
+    if let Ok(mut c) = CANCELLED_TIMERS.lock() {
+        c.insert(id);
+    }
     0
 }
 
@@ -1129,7 +1228,10 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
     crate::event_loop::TOKIO_RT.spawn(async move {
         tokio::time::sleep(Duration::from_millis(actual_ms)).await;
 
-        let cancelled = CANCELLED_TIMERS.with(|c| c.borrow().contains(&timer_id));
+        let cancelled = CANCELLED_TIMERS
+            .lock()
+            .map(|c| c.contains(&timer_id))
+            .unwrap_or(false);
         if !cancelled {
             unsafe {
                 let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
@@ -1139,7 +1241,9 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
                 crate::event_loop::tejx_enqueue_task(rt_promise_resolver_worker as *const () as i64, task_args);
             }
         } else {
-            CANCELLED_TIMERS.with(|c| c.borrow_mut().remove(&timer_id));
+            if let Ok(mut c) = CANCELLED_TIMERS.lock() {
+                c.remove(&timer_id);
+            }
         }
         unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
         unsafe { crate::event_loop::tejx_dec_async_ops() };
@@ -1756,6 +1860,26 @@ pub unsafe extern "C" fn rt_print(val: i64) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_print_string_array(args: i64) {
+    let len = rt_len(args);
+    let out = std::io::stdout();
+    let mut handle = out.lock();
+    use std::io::Write;
+
+    for i in 0..len {
+        let s_id = rt_array_get_fast(args, i);
+        if let Some((data, chunk_len)) = get_str_parts(s_id) {
+            let bytes = std::slice::from_raw_parts(data, chunk_len as usize);
+            let _ = handle.write_all(bytes);
+        }
+        if i + 1 < len {
+            let _ = handle.write_all(b" ");
+        }
+    }
+    let _ = handle.write_all(b"\n");
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
     let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
     let is_heap = if val >= HEAP_OFFSET {
@@ -1767,6 +1891,8 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
     if !is_heap && !is_stack {
         if val >= BOOL_FALSE && val <= BOOL_TRUE {
             return rt_string_from_c_str("bool\0".as_ptr() as *const _);
+        } else if looks_like_unboxed_float_bits(val) {
+            return rt_string_from_c_str("float\0".as_ptr() as *const _);
         } else {
             return rt_string_from_c_str("int\0".as_ptr() as *const _);
         }
@@ -1863,9 +1989,13 @@ pub unsafe extern "C" fn rt_await(p: i64) -> i64 {
         }
     }
 
-    // Return the resolved value
+    let state = *body.offset(0);
     let res = *body.offset(1);
     rt_pop_roots(1);
+    if state == 2 {
+        crate::event_loop::tejx_throw(res);
+        std::hint::unreachable_unchecked();
+    }
     res
 }
 
@@ -2008,9 +2138,9 @@ pub unsafe extern "C" fn rt_object_new() -> i64 {
     let mut obj_id = (body_ptr as i64) + HEAP_OFFSET;
     rt_push_root(&mut obj_id);
 
-    let mut keys = rt_Array_constructor_v2(0, 0, 8, 0);
+    let mut keys = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
     rt_push_root(&mut keys);
-    let mut values = rt_Array_constructor_v2(0, 0, 8, 0);
+    let mut values = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
     rt_push_root(&mut values);
 
     let body_ptr = (obj_id - HEAP_OFFSET) as *mut u8;
@@ -2263,8 +2393,8 @@ pub unsafe extern "C" fn rt_map_new() -> i64 {
     let header = rt_get_header(body_ptr);
     (*header).type_id = TAG_MAP as u16;
 
-    let keys = rt_Array_constructor_v2(0, cap, 8, ARRAY_FLAG_FIXED);
-    let values = rt_Array_constructor_v2(0, cap, 8, ARRAY_FLAG_FIXED);
+    let keys = rt_Array_constructor_v2(0, cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
+    let values = rt_Array_constructor_v2(0, cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     let states = rt_Array_constructor_v2(0, cap, 1, ARRAY_FLAG_FIXED);
 
     *(body_ptr.offset(MAP_SIZE_OFFSET) as *mut i64) = 0;
@@ -2282,8 +2412,8 @@ pub unsafe fn rt_map_resize(map: i64, new_cap: i64) {
     let states_old = rt_map_states_array(map);
     let cap_old = rt_map_get_cap(map);
 
-    let keys_new = rt_Array_constructor_v2(0, new_cap, 8, ARRAY_FLAG_FIXED);
-    let values_new = rt_Array_constructor_v2(0, new_cap, 8, ARRAY_FLAG_FIXED);
+    let keys_new = rt_Array_constructor_v2(0, new_cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
+    let values_new = rt_Array_constructor_v2(0, new_cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     let states_new = rt_Array_constructor_v2(0, new_cap, 1, ARRAY_FLAG_FIXED);
 
     let mut i = 0;
@@ -2457,13 +2587,13 @@ pub unsafe extern "C" fn rt_map_delete(map: i64, key: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_map_keys(map: i64) -> i64 {
     if !rt_is_map(map) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     }
     let size = rt_map_get_size(map);
     let keys = rt_map_keys_array(map);
     let states = rt_map_states_array(map);
     let cap = rt_map_get_cap(map);
-    let result = rt_Array_constructor_v2(0, size, 8, ARRAY_FLAG_FIXED);
+    let result = rt_Array_constructor_v2(0, size, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     let mut out = 0;
     let mut i = 0;
     while i < cap {
@@ -2479,13 +2609,13 @@ pub unsafe extern "C" fn rt_map_keys(map: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_map_values(map: i64) -> i64 {
     if !rt_is_map(map) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED);
+        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     }
     let size = rt_map_get_size(map);
     let values = rt_map_values_array(map);
     let states = rt_map_states_array(map);
     let cap = rt_map_get_cap(map);
-    let result = rt_Array_constructor_v2(0, size, 8, ARRAY_FLAG_FIXED);
+    let result = rt_Array_constructor_v2(0, size, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
     let mut out = 0;
     let mut i = 0;
     while i < cap {

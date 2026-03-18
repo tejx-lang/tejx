@@ -296,14 +296,7 @@ impl CodeGen {
                 ));
                 l_str
             } else if matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint") {
-                self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
-                self.temp_counter += 1;
-                let boxed = format!("%boxed_l{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @rt_string_from_c_str(i64 {})",
-                    boxed, l
-                ));
-                boxed
+                self.emit_box_string(&l)
             } else {
                 self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]))
             };
@@ -354,14 +347,7 @@ impl CodeGen {
                 ));
                 r_str
             } else if matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint") {
-                self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
-                self.temp_counter += 1;
-                let boxed = format!("%boxed_r{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @rt_string_from_c_str(i64 {})",
-                    boxed, r
-                ));
-                boxed
+                self.emit_box_string(&r)
             } else {
                 self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]))
             };
@@ -441,6 +427,9 @@ impl CodeGen {
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                 let final_tmp = self.emit_abi_cast(&bool_res, &TejxType::Bool, dst_ty);
                 self.emit_store_variable(dst, &final_tmp, dst_ty);
+                if temp_root_count > 0 {
+                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
+                }
                 return;
             } else {
                 // Fallback numeric addition on strings
@@ -693,6 +682,148 @@ impl CodeGen {
         }
     }
 
+    fn fixed_layout_shape(&self, ty: &TejxType) -> Option<(String, Vec<(String, TejxType)>)> {
+        match ty {
+            TejxType::Class(class_name, _) => {
+                let lookup_name = if class_name.contains('<') {
+                    class_name.split('<').next().unwrap()
+                } else {
+                    class_name.as_str()
+                };
+                self.class_fields
+                    .get(lookup_name)
+                    .cloned()
+                    .map(|fields| (lookup_name.to_string(), fields))
+            }
+            TejxType::Object(props) => {
+                let shape_name = self.object_shape_names.get(&ty.to_name())?.clone();
+                Some((
+                    shape_name,
+                    props.iter().map(|(name, _, ty)| (name.clone(), ty.clone())).collect(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn emit_fixed_layout_alloc(
+        &mut self,
+        func: &MIRFunction,
+        dst: &str,
+        shape_name: &str,
+        fields: &[(String, TejxType)],
+    ) {
+        let type_id = self.type_id_map.get(shape_name).cloned().unwrap_or(2);
+        let mut ptr_offsets = Vec::new();
+        let mut body_size = 0usize;
+        for (_, ty) in fields {
+            body_size = Self::get_aligned_offset(body_size, ty);
+            if Self::is_gc_managed(ty) {
+                ptr_offsets.push(body_size);
+            }
+            body_size += ty.size();
+        }
+        body_size = (body_size + 7) & !7;
+
+        let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
+        let offsets_ptr = if ptr_offsets.is_empty() {
+            "null".to_string()
+        } else {
+            format!(
+                "bitcast ([{} x i64]* @type_{}_offsets to i64*)",
+                ptr_offsets.len(),
+                type_id
+            )
+        };
+
+        let can_stack_allocate = func.name != "tejx_main";
+        if can_stack_allocate && !is_escaped && !dst.is_empty() {
+            let total_size = body_size + 24;
+            let obj_alloca = format!("%stack_obj_{}", dst.replace('.', "_"));
+            self.alloca_buffer.push_str(&format!(
+                "  {} = alloca i8, i32 {}, align 16\n",
+                obj_alloca, total_size
+            ));
+
+            self.declare_runtime_fn(
+                "llvm.memset.p0i8.i64",
+                "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
+            );
+            self.emit_line(&format!(
+                "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
+                obj_alloca, total_size
+            ));
+
+            self.temp_counter += 1;
+            let header_ptr = format!("%header_ptr_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to %struct.ObjectHeader*",
+                header_ptr, obj_alloca
+            ));
+
+            self.temp_counter += 1;
+            let tid_ptr = format!("%tid_ptr_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 1",
+                tid_ptr, header_ptr
+            ));
+            self.emit_line(&format!("store i16 {}, i16* {}", type_id, tid_ptr));
+
+            self.temp_counter += 1;
+            let body_ptr_i8 = format!("%body_ptr_i8_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i32 24",
+                body_ptr_i8, obj_alloca
+            ));
+
+            self.temp_counter += 1;
+            let body_ptr = format!("%body_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = ptrtoint i8* {} to i64", body_ptr, body_ptr_i8));
+
+            self.declare_runtime_fn(
+                RT_CLASS_NEW,
+                &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
+            );
+
+            self.temp_counter += 1;
+            let result_tmp = format!("%call{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 {})",
+                result_tmp,
+                RT_CLASS_NEW,
+                type_id,
+                body_size as i64,
+                ptr_offsets.len(),
+                offsets_ptr,
+                body_ptr
+            ));
+
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            self.emit_store_variable(dst, &result_tmp, dst_ty);
+            return;
+        }
+
+        self.declare_runtime_fn(
+            RT_CLASS_NEW,
+            &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
+        );
+
+        self.temp_counter += 1;
+        let result_tmp = format!("%call{}", self.temp_counter);
+        self.emit_line(&format!(
+            "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 0)",
+            result_tmp,
+            RT_CLASS_NEW,
+            type_id,
+            body_size as i64,
+            ptr_offsets.len(),
+            offsets_ptr
+        ));
+
+        let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+        self.emit_store_variable(dst, &result_tmp, dst_ty);
+    }
+
     pub(crate) fn emit_call(
         &mut self,
         func: &MIRFunction,
@@ -700,6 +831,49 @@ impl CodeGen {
         callee: &String,
         args: &[MIRValue],
     ) {
+        if callee == "rt_strlen" && !args.is_empty() {
+            let mut str_val = self.resolve_value(&args[0]);
+            if matches!(args[0].get_type(), TejxType::String) && str_val.starts_with("ptrtoint") {
+                str_val = self.emit_box_string(&str_val);
+            }
+
+            let body_ptr = self.emit_strip_heap_offset(&str_val);
+            self.temp_counter += 1;
+            let body_i8 = format!("%strlen_body_i8_{}", self.temp_counter);
+            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", body_i8, body_ptr));
+            self.temp_counter += 1;
+            let header_i8 = format!("%strlen_header_i8_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i32 -24",
+                header_i8, body_i8
+            ));
+            self.temp_counter += 1;
+            let header_ptr = format!("%strlen_header_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to %struct.ObjectHeader*",
+                header_ptr, header_i8
+            ));
+            self.temp_counter += 1;
+            let len_ptr = format!("%strlen_len_ptr_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 3",
+                len_ptr, header_ptr
+            ));
+            self.temp_counter += 1;
+            let len_i32 = format!("%strlen_len_i32_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i32, i32* {}", len_i32, len_ptr));
+            self.temp_counter += 1;
+            let len_i64 = format!("%strlen_len_i64_{}", self.temp_counter);
+            self.emit_line(&format!("{} = zext i32 {} to i64", len_i64, len_i32));
+
+            if !dst.is_empty() {
+                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Int64);
+                let final_val = self.emit_abi_cast(&len_i64, &TejxType::Int64, dst_ty);
+                self.emit_store_variable(dst, &final_val, dst_ty);
+            }
+            return;
+        }
+
         if callee == "rt_box_number" {
             let float_val = self.resolve_float_value(&args[0]);
 
@@ -830,7 +1004,12 @@ impl CodeGen {
 
             let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
 
-            if !is_escaped && !dst.is_empty() && body_size > 64 && self.current_arena.is_some() {
+            if func.name != "tejx_main"
+                && !is_escaped
+                && !dst.is_empty()
+                && body_size > 64
+                && self.current_arena.is_some()
+            {
                 let arena = self.current_arena.clone().unwrap();
                 self.declare_runtime_fn(
                     RT_ARENA_ALLOC,
@@ -859,7 +1038,7 @@ impl CodeGen {
                 )
             };
 
-            if !is_escaped && !dst.is_empty() {
+            if func.name != "tejx_main" && !is_escaped && !dst.is_empty() {
                 // Stack Allocation (24 bytes header + body_size)
                 let total_size = body_size + 24;
                 let obj_alloca = format!("%stack_class_{}", dst.replace(".", "_"));
@@ -868,7 +1047,17 @@ impl CodeGen {
                     obj_alloca, total_size
                 ));
 
-                // Initialize Header
+                // Zero-initialize entire object (Header + Body) to be GC-safe
+                self.declare_runtime_fn(
+                    "llvm.memset.p0i8.i64",
+                    "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
+                );
+                self.emit_line(&format!(
+                    "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
+                    obj_alloca, total_size
+                ));
+
+                // Initialize Header after memset so the type tag survives.
                 self.temp_counter += 1;
                 let header_ptr = format!("%header_ptr_{}", self.temp_counter);
                 self.emit_line(&format!(
@@ -887,16 +1076,6 @@ impl CodeGen {
                 self.emit_line(&format!(
                     "{} = getelementptr i8, i8* {}, i32 24",
                     body_ptr_i8, obj_alloca
-                ));
-
-                // Zero-initialize entire object (Header + Body) to be GC-safe
-                self.declare_runtime_fn(
-                    "llvm.memset.p0i8.i64",
-                    "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
-                );
-                self.emit_line(&format!(
-                    "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
-                    obj_alloca, total_size
                 ));
 
                 self.temp_counter += 1;
@@ -952,6 +1131,111 @@ impl CodeGen {
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                 self.emit_store_variable(dst, &result_tmp, dst_ty);
                 return;
+            }
+        }
+
+        if callee == "rt_Array_constructor_v2" {
+            if let Some(TejxType::FixedArray(inner, len)) = func.variables.get(dst) {
+                let elem_size = inner.size();
+                let body_size = elem_size.saturating_mul(*len);
+                let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
+                if func.name != "tejx_main" && !is_escaped && body_size <= 256 {
+                    let stack_arr = format!("%stack_arr_{}", dst.replace('.', "_"));
+                    let total_size = body_size + 24;
+                    self.alloca_buffer.push_str(&format!(
+                        "  {} = alloca i8, i32 {}, align 16\n",
+                        stack_arr, total_size
+                    ));
+
+                    self.declare_runtime_fn(
+                        "llvm.memset.p0i8.i64",
+                        "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
+                    );
+                    self.emit_line(&format!(
+                        "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
+                        stack_arr, total_size
+                    ));
+
+                    self.temp_counter += 1;
+                    let header_ptr = format!("%arr_header_ptr_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = bitcast i8* {} to %struct.ObjectHeader*",
+                        header_ptr, stack_arr
+                    ));
+
+                    self.temp_counter += 1;
+                    let tid_ptr = format!("%arr_tid_ptr_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 1",
+                        tid_ptr, header_ptr
+                    ));
+                    self.emit_line(&format!("store i16 3, i16* {}", tid_ptr));
+
+                    let ptr_flag = if Self::is_gc_managed(inner) { 0x0400 } else { 0 };
+                    let flags = 0x0100 | ptr_flag | (elem_size as i64 & 0xFF);
+
+                    self.temp_counter += 1;
+                    let flags_ptr = format!("%arr_flags_ptr_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 2",
+                        flags_ptr, header_ptr
+                    ));
+                    self.emit_line(&format!("store i16 {}, i16* {}", flags, flags_ptr));
+
+                    self.temp_counter += 1;
+                    let len_ptr = format!("%arr_len_ptr_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 3",
+                        len_ptr, header_ptr
+                    ));
+                    self.emit_line(&format!("store i32 {}, i32* {}", len, len_ptr));
+
+                    self.temp_counter += 1;
+                    let cap_ptr = format!("%arr_cap_ptr_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 4",
+                        cap_ptr, header_ptr
+                    ));
+                    self.emit_line(&format!("store i32 {}, i32* {}", len, cap_ptr));
+
+                    self.temp_counter += 1;
+                    let body_ptr_i8 = format!("%arr_body_ptr_i8_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = getelementptr i8, i8* {}, i32 24",
+                        body_ptr_i8, stack_arr
+                    ));
+
+                    self.temp_counter += 1;
+                    let body_ptr = format!("%arr_body_ptr_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = ptrtoint i8* {} to i64", body_ptr, body_ptr_i8));
+
+                    self.temp_counter += 1;
+                    let stack_offset = format!("%stack_offset_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = load i64, i64* @STACK_OFFSET", stack_offset));
+
+                    self.temp_counter += 1;
+                    let result_tmp = format!("%stack_arr_id_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = add i64 {}, {}",
+                        result_tmp, body_ptr, stack_offset
+                    ));
+
+                    self.emit_store_variable(dst, &result_tmp, func.variables.get(dst).unwrap());
+                    return;
+                }
+            }
+        }
+
+        if callee == "rt_object_new" {
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            let use_fixed_layout = matches!(dst_ty, TejxType::Class(_, _))
+                || (matches!(dst_ty, TejxType::Object(_))
+                    && self.can_use_fixed_object_layout(func, dst));
+            if use_fixed_layout {
+                if let Some((shape_name, fields)) = self.fixed_layout_shape(dst_ty) {
+                self.emit_fixed_layout_alloc(func, dst, &shape_name, &fields);
+                return;
+            }
             }
         }
 
@@ -1361,7 +1645,7 @@ impl CodeGen {
                             final_reg = self.emit_box_string(&final_reg);
                         }
 
-                        let target_llvm_ty = if is_math_fn {
+                        let target_llvm_ty = if is_math_fn || final_callee == "rt_to_string_float" {
                             "double".to_string()
                         } else if is_runtime_fn {
                             "i64".to_string()
@@ -1369,7 +1653,7 @@ impl CodeGen {
                             Self::get_llvm_type(arg_mir.get_type()).to_string()
                         };
 
-                        let casted = if is_math_fn {
+                        let casted = if is_math_fn || final_callee == "rt_to_string_float" {
                             self.emit_abi_cast(&final_reg, arg_mir.get_type(), &TejxType::Float64)
                         } else if is_runtime_any {
                             self.emit_abi_cast(
@@ -1410,7 +1694,13 @@ impl CodeGen {
                 }
             }
 
-            for arg in args {
+            let array_elem_ty = args
+                .first()
+                .map(|arg| arg.get_type())
+                .filter(|ty| ty.is_array())
+                .map(|ty| ty.get_array_element_type());
+
+            for (arg_index, arg) in args.iter().enumerate() {
                 let reg = if final_callee == "rt_string_from_c_str" {
                     if let MIRValue::Constant {
                         value,
@@ -1436,7 +1726,49 @@ impl CodeGen {
                     final_reg = self.emit_box_string(&final_reg);
                 }
 
-                let target_llvm_ty = if is_math_fn {
+                let array_value_arg = matches!(
+                    final_callee.as_str(),
+                    "rt_array_fill" if arg_index == 1
+                ) || matches!(
+                    final_callee.as_str(),
+                    "rt_array_push" | "rt_array_unshift" if arg_index == 1
+                ) || matches!(final_callee.as_str(), "rt_array_splice" if arg_index >= 3);
+
+                if array_value_arg {
+                    if let Some(elem_ty) = &array_elem_ty {
+                        if elem_ty.is_float() {
+                            if matches!(elem_ty, TejxType::Float32) {
+                                let f_val =
+                                    self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float32);
+                                self.temp_counter += 1;
+                                let bits_i32 = format!("%arr_f_bits_{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = bitcast float {} to i32",
+                                    bits_i32, f_val
+                                ));
+                                self.temp_counter += 1;
+                                let bits_i64 = format!("%arr_f_bits64_{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = zext i32 {} to i64",
+                                    bits_i64, bits_i32
+                                ));
+                                final_reg = bits_i64;
+                            } else {
+                                let f_val =
+                                    self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float64);
+                                self.temp_counter += 1;
+                                let bits_i64 = format!("%arr_f_bits64_{}", self.temp_counter);
+                                self.emit_line(&format!(
+                                    "{} = bitcast double {} to i64",
+                                    bits_i64, f_val
+                                ));
+                                final_reg = bits_i64;
+                            }
+                        }
+                    }
+                }
+
+                let target_llvm_ty = if is_math_fn || final_callee == "rt_to_string_float" {
                     "double".to_string()
                 } else if is_runtime_fn {
                     "i64".to_string()
@@ -1444,7 +1776,9 @@ impl CodeGen {
                     Self::get_llvm_type(arg_ty).to_string()
                 };
 
-                let casted = if is_math_fn {
+                let casted = if array_value_arg && array_elem_ty.as_ref().is_some_and(|ty| ty.is_float()) {
+                    final_reg.clone()
+                } else if is_math_fn || final_callee == "rt_to_string_float" {
                     self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float64)
                 } else if is_runtime_any {
                     self.emit_abi_cast(
@@ -1509,6 +1843,7 @@ impl CodeGen {
                     if final_callee == "rt_promise_resolve"
                         || final_callee == "rt_promise_reject"
                         || final_callee == "rt_promise_await_resume"
+                        || final_callee == "rt_print_string_array"
                     {
                         "void".to_string()
                     } else {
@@ -1583,11 +1918,48 @@ impl CodeGen {
                 if decl_ret == "double" {
                     final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float64, &store_ty);
                 } else if is_runtime_fn && decl_ret == "i64" {
+                    let runtime_returns_primitive = matches!(
+                        final_callee.as_str(),
+                        "rt_len"
+                            | "rt_strlen"
+                            | "rt_map_size"
+                            | "rt_map_has"
+                            | "rt_map_delete"
+                            | "rt_is_array"
+                    );
+                    let runtime_src_ty = if runtime_returns_primitive {
+                        TejxType::Int64
+                    } else if Self::is_gc_managed(&store_ty)
+                        && !matches!(store_ty, TejxType::Any)
+                        && !matches!(&store_ty, TejxType::Class(name, _) if name == "Any")
+                    {
+                        store_ty.clone()
+                    } else {
+                        TejxType::Class("Any".to_string(), vec![])
+                    };
                     final_val = self.emit_abi_cast(
                         &result_tmp,
-                        &TejxType::Class("Any".to_string(), vec![]),
+                        &runtime_src_ty,
                         &store_ty,
                     );
+                }
+            }
+
+            let updates_array_receiver = matches!(
+                final_callee.as_str(),
+                "rt_array_set_fast"
+                    | "rt_array_push"
+                    | "rt_array_unshift"
+                    | "rt_array_splice"
+                    | "rt_array_reverse"
+                    | "rt_array_fill"
+                    | "rt_array_sort"
+            );
+            if decl_ret == "i64" && updates_array_receiver {
+                if let Some(MIRValue::Variable { name, ty }) = args.first() {
+                    if ty.is_array() {
+                        self.emit_store_variable(name, &result_tmp, ty);
+                    }
                 }
             }
 
@@ -1785,14 +2157,12 @@ impl CodeGen {
         let func_ptr_tmp = format!("%func_ptr_{}", self.temp_counter);
         let mut arg_types = vec!["i64".to_string()]; // First arg is always env
         let mut param_tys: Vec<TejxType> = Vec::new();
-        let _ret_ty = if let TejxType::Function(params, ret) = &callee_ty {
+        let call_ret_ty = if let TejxType::Function(params, ret) = &callee_ty {
             param_tys = params.clone();
             (**ret).clone()
         } else {
             TejxType::Int64
         };
-        // Lambdas/closures use the Any/i64 ABI for return values.
-        let call_ret_ty = TejxType::Any;
         for (idx, _) in args.iter().enumerate() {
             let ty = param_tys.get(idx).cloned().unwrap_or(TejxType::Int64);
             arg_types.push(Self::get_llvm_type(&ty).to_string());

@@ -13,15 +13,15 @@ function isBalanced(expr: string): bool {
   print("Checking expr:", expr);
   
   for (let i = 0; i < expr.length(); i++) {
-    let c = expr[i];
-    if (c == "(" || c == "[" || c == "{") {
+    let c = expr[i] as char;
+    if (c == "(" as char || c == "[" as char || c == "{" as char) {
       s.push(c);
     } else {
       if (s.isEmpty()) { return false; }
       let top = s.pop();
-      if ((c == ")" && top != "(") || 
-          (c == "]" && top != "[") || 
-          (c == "}" && top != "{")) {
+      if ((c == ")" as char && top != "(" as char) || 
+          (c == "]" as char && top != "[" as char) || 
+          (c == "}" as char && top != "{" as char)) {
         return false;
       }
     }

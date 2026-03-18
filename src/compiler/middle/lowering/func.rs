@@ -382,6 +382,7 @@ impl Lowering {
                             .any(|arg| contains_generic(arg, generic_names))
                 }
                 TypeNode::Array(inner) => contains_generic(inner, generic_names),
+                TypeNode::SizedArray(inner, _) => contains_generic(inner, generic_names),
                 TypeNode::Function(params, ret) => {
                     params
                         .iter()

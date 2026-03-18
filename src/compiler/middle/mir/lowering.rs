@@ -7,6 +7,9 @@ use crate::frontend::token::TokenType;
 use crate::common::types::TejxType;
 use std::collections::HashMap;
 
+const ARRAY_FLAG_FIXED: i64 = 0x0100;
+const ARRAY_FLAG_PTR: i64 = 0x0400;
+
 #[derive(Clone)]
 struct LoopContext {
     continue_target: usize,
@@ -633,7 +636,6 @@ impl MIRLowering {
             let is_downcast = (src_ty == &TejxType::Int64)
                 && (target_ty.is_numeric()
                     || matches!(target_ty, TejxType::Bool | TejxType::String));
-
             if is_primitive_cast || is_primitive_storage_cast || is_downcast {
                 let cast_temp = self.new_temp(target_ty.clone());
                 self.emit(MIRInstruction::Cast {
@@ -670,6 +672,32 @@ impl MIRLowering {
         }
 
         val
+    }
+
+    fn emit_array_receiver_storeback(
+        &mut self,
+        receiver: &HIRExpression,
+        updated_array: MIRValue,
+    ) {
+        match receiver {
+            HIRExpression::Variable { name, .. } => {
+                self.emit(MIRInstruction::Move {
+                    line: 0,
+                    dst: self.resolve_variable(name),
+                    src: updated_array,
+                });
+            }
+            HIRExpression::MemberAccess { target, member, .. } => {
+                let obj_val = self.lower_expression(target);
+                self.emit(MIRInstruction::StoreMember {
+                    obj: obj_val,
+                    member: member.clone(),
+                    src: updated_array,
+                    line: 0,
+                });
+            }
+            _ => {}
+        }
     }
 
     fn lower_statement(&mut self, stmt: &HIRStatement) {
@@ -1305,6 +1333,36 @@ impl MIRLowering {
         }
     }
 
+    fn is_heap_ref_type(&self, ty: &TejxType) -> bool {
+        match ty {
+            TejxType::String
+            | TejxType::DynamicArray(_)
+            | TejxType::Object(_)
+            | TejxType::Any => true,
+            TejxType::Class(name, _) => {
+                let lookup_name = if name.contains('<') {
+                    name.split('<').next().unwrap()
+                } else {
+                    name.as_str()
+                };
+                !lookup_name.starts_with('{')
+            }
+            _ => false,
+        }
+    }
+
+    fn array_flags_for_type(&self, array_ty: &TejxType) -> i64 {
+        let mut flags = 0;
+        if matches!(array_ty, TejxType::FixedArray(_, _)) {
+            flags |= ARRAY_FLAG_FIXED;
+        }
+        let elem_ty = array_ty.get_array_element_type();
+        if self.is_heap_ref_type(&elem_ty) {
+            flags |= ARRAY_FLAG_PTR;
+        }
+        flags
+    }
+
     fn lower_expression(&mut self, expr: &HIRExpression) -> MIRValue {
         self.current_line = expr.get_line();
         match expr {
@@ -1429,11 +1487,7 @@ impl MIRLowering {
 
                     if is_raw_array {
                         // Pass flags
-                        let flags = if matches!(ty, TejxType::FixedArray(_, _)) {
-                            1
-                        } else {
-                            0
-                        };
+                        let flags = self.array_flags_for_type(ty);
                         constructor_args.push(MIRValue::Constant {
                             value: flags.to_string(),
                             ty: TejxType::Int64,
@@ -1728,7 +1782,28 @@ impl MIRLowering {
                         ty,
                         ..
                     } => {
-                        let obj_val = self.lower_expression(obj_expr);
+                        let obj_val = if let HIRExpression::MemberAccess {
+                            target,
+                            member,
+                            ty: member_ty,
+                            ..
+                        } = obj_expr.as_ref()
+                        {
+                            let base_obj = self.lower_expression(target);
+                            let loaded_arr = self.new_temp(member_ty.clone());
+                            self.emit(MIRInstruction::LoadMember {
+                                line: 0,
+                                dst: loaded_arr.clone(),
+                                obj: base_obj.clone(),
+                                member: member.clone(),
+                            });
+                            MIRValue::Variable {
+                                name: loaded_arr,
+                                ty: member_ty.clone(),
+                            }
+                        } else {
+                            self.lower_expression(obj_expr)
+                        };
                         let mut idx_val = self.lower_expression(idx_expr);
 
                         if idx_val.get_type().is_float() {
@@ -1748,11 +1823,16 @@ impl MIRLowering {
                         val = self.auto_box(val, ty);
                         self.emit(MIRInstruction::StoreIndex {
                             line: 0,
-                            obj: obj_val,
+                            obj: obj_val.clone(),
                             index: idx_val,
                             src: val.clone(),
                             element_ty: ty.clone(),
                         });
+
+                        if matches!(obj_expr.as_ref(), HIRExpression::MemberAccess { ty, .. } if ty.is_array())
+                        {
+                            self.emit_array_receiver_storeback(obj_expr, obj_val);
+                        }
                     }
                     _ => {}
                 }
@@ -1855,7 +1935,16 @@ impl MIRLowering {
                     raw_temp = self.new_temp(TejxType::Int64);
                 }
 
-                let is_array_mut = final_callee == "rt_array_push"
+                let is_array_mut = matches!(
+                    final_callee.as_str(),
+                    "rt_array_push"
+                        | "rt_array_unshift"
+                        | "rt_array_splice"
+                        | "rt_array_reverse"
+                        | "rt_array_fill"
+                        | "rt_array_sort"
+                );
+                let returns_length = final_callee == "rt_array_push"
                     || final_callee == "rt_array_unshift";
 
                 if is_array_mut {
@@ -1871,45 +1960,27 @@ impl MIRLowering {
                         });
 
                         if let Some(first_arg) = args.first() {
-                            match first_arg {
-                                HIRExpression::Variable { name, .. } => {
+                            let updated_arr = MIRValue::Variable {
+                                name: new_arr_tmp.clone(),
+                                ty: arr_ty.clone(),
+                            };
+                            self.emit_array_receiver_storeback(first_arg, updated_arr.clone());
+
+                            if !matches!(
+                                first_arg,
+                                HIRExpression::Variable { .. } | HIRExpression::MemberAccess { .. }
+                            ) {
+                                if let MIRValue::Variable { name, .. } = &arr_val {
                                     self.emit(MIRInstruction::Move {
                                         line: 0,
                                         dst: name.clone(),
-                                        src: MIRValue::Variable {
-                                            name: new_arr_tmp.clone(),
-                                            ty: arr_ty.clone(),
-                                        },
+                                        src: updated_arr,
                                     });
-                                }
-                                HIRExpression::MemberAccess { target, member, .. } => {
-                                    let obj_val = self.lower_expression(target);
-                                    self.emit(MIRInstruction::StoreMember {
-                                        obj: obj_val,
-                                        member: member.clone(),
-                                        src: MIRValue::Variable {
-                                            name: new_arr_tmp.clone(),
-                                            ty: arr_ty.clone(),
-                                        },
-                                        line: 0,
-                                    });
-                                }
-                                _ => {
-                                    if let MIRValue::Variable { name, .. } = &arr_val {
-                                        self.emit(MIRInstruction::Move {
-                                            line: 0,
-                                            dst: name.clone(),
-                                            src: MIRValue::Variable {
-                                                name: new_arr_tmp.clone(),
-                                                ty: arr_ty.clone(),
-                                            },
-                                        });
-                                    }
                                 }
                             }
                         }
 
-                        if *ty == TejxType::Int32 {
+                        if returns_length && *ty == TejxType::Int32 {
                             let len_tmp = self.new_temp(TejxType::Int32);
                             self.emit(MIRInstruction::Call {
                                 line: 0,
@@ -2204,13 +2275,24 @@ impl MIRLowering {
                         callee: "rt_get_property".to_string(), // Use generic property getter
                         args: vec![obj, idx],
                     });
-                    return self.auto_box(
-                        MIRValue::Variable {
-                            name: temp,
-                            ty: TejxType::Any,
-                        },
-                        ty,
-                    );
+                    let val_any = MIRValue::Variable {
+                        name: temp,
+                        ty: TejxType::Any,
+                    };
+                    if ty != &TejxType::Any {
+                        let cast_temp = self.new_temp(ty.clone());
+                        self.emit(MIRInstruction::Cast {
+                            line: 0,
+                            dst: cast_temp.clone(),
+                            src: val_any,
+                            ty: ty.clone(),
+                        });
+                        return MIRValue::Variable {
+                            name: cast_temp,
+                            ty: ty.clone(),
+                        };
+                    }
+                    return val_any;
                 }
 
                 let elem_ty = obj_ty.get_array_element_type();
@@ -2327,10 +2409,7 @@ impl MIRLowering {
                 let inner_type = ty.get_array_element_type();
                 let elem_size_bytes = self.get_type_size(&inner_type);
 
-                let flags = match ty {
-                    TejxType::FixedArray(_, _) => 1,
-                    _ => 0,
-                };
+                let flags = self.array_flags_for_type(ty);
 
                 let args = vec![
                     array_obj,
@@ -2352,27 +2431,23 @@ impl MIRLowering {
                     line: *expr_line,
                 });
 
-                let unused = self.new_temp(TejxType::Void);
                 for (i, e) in elements.iter().enumerate() {
                     let elem_ty = ty.get_array_element_type();
                     let mut val = self.lower_expression(e);
                     val = self.auto_box(val, &elem_ty);
 
-                    self.emit(MIRInstruction::Call {
+                    self.emit(MIRInstruction::StoreIndex {
                         line: 0,
-                        callee: "rt_array_set_fast".to_string(),
-                        args: vec![
-                            MIRValue::Variable {
-                                name: arr_temp.clone(),
-                                ty: ty.clone(),
-                            },
-                            MIRValue::Constant {
-                                value: i.to_string(),
-                                ty: TejxType::Int64,
-                            },
-                            val,
-                        ],
-                        dst: unused.clone(),
+                        obj: MIRValue::Variable {
+                            name: arr_temp.clone(),
+                            ty: ty.clone(),
+                        },
+                        index: MIRValue::Constant {
+                            value: i.to_string(),
+                            ty: TejxType::Int64,
+                        },
+                        src: val,
+                        element_ty: elem_ty,
                     });
                 }
 

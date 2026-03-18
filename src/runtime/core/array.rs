@@ -773,7 +773,11 @@ pub unsafe extern "C" fn rt_Array_new(len: i64, elem_size: i64) -> i64 {
     (*header).type_id = TAG_ARRAY as u16;
     (*header).length = len as u32;
     (*header).capacity = len as u32;
-    (*header).flags = elem_size as u16; // Store elem_size in flags
+    let mut flags = elem_size as u16;
+    if elem_size == 8 {
+        flags |= ARRAY_FLAG_PTR as u16;
+    }
+    (*header).flags = flags; // Store elem_size + pointer flag in flags
 
     // let ptr = body_ptr as *mut i64; // No longer needed
     // *ptr = TAG_ARRAY; // No longer needed

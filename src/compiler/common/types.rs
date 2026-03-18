@@ -196,6 +196,9 @@ impl TejxType {
             crate::frontend::ast::TypeNode::Array(inner) => {
                 TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
             }
+            crate::frontend::ast::TypeNode::SizedArray(inner, _) => {
+                TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
+            }
             crate::frontend::ast::TypeNode::Function(params, ret) => {
                 let parsed_params = params.iter().map(TejxType::from_node).collect();
                 TejxType::Function(parsed_params, Box::new(TejxType::from_node(ret)))

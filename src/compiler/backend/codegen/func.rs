@@ -5,6 +5,55 @@ use crate::common::types::TejxType;
 use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
+    fn register_object_shape_type(&mut self, ty: &TejxType) {
+        match ty {
+            TejxType::Object(props) => {
+                let signature = ty.to_name();
+                if !self.object_shape_names.contains_key(&signature) {
+                    let shape_name = format!("__objshape_{}", self.object_shape_names.len() + 1);
+                    self.object_shape_names
+                        .insert(signature.clone(), shape_name.clone());
+                    self.class_fields.insert(
+                        shape_name,
+                        props.iter().map(|(name, _, ty)| (name.clone(), ty.clone())).collect(),
+                    );
+                }
+                for (_, _, field_ty) in props {
+                    self.register_object_shape_type(field_ty);
+                }
+            }
+            TejxType::FixedArray(inner, _)
+            | TejxType::DynamicArray(inner)
+            | TejxType::Slice(inner) => self.register_object_shape_type(inner),
+            TejxType::Function(params, ret) => {
+                for param in params {
+                    self.register_object_shape_type(param);
+                }
+                self.register_object_shape_type(ret);
+            }
+            TejxType::Union(types) => {
+                for inner in types {
+                    self.register_object_shape_type(inner);
+                }
+            }
+            TejxType::Class(_, generics) => {
+                for generic in generics {
+                    self.register_object_shape_type(generic);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_object_shapes(&mut self, functions: &[MIRFunction]) {
+        for func in functions {
+            self.register_object_shape_type(&func.return_type);
+            for ty in func.variables.values() {
+                self.register_object_shape_type(ty);
+            }
+        }
+    }
+
     pub(crate) fn does_escape(&self, func: &MIRFunction, var_name: &str) -> bool {
         // More robust escape analysis: If the reference escapes via return, pass as argument,
         // or is stored inside an object/array, it escapes the stack frame.
@@ -92,6 +141,139 @@ impl CodeGen {
         false
     }
 
+    pub(crate) fn can_use_fixed_object_layout(&self, func: &MIRFunction, var_name: &str) -> bool {
+        if !matches!(func.variables.get(var_name), Some(TejxType::Object(_))) {
+            return false;
+        }
+
+        let mut aliases = HashSet::from([var_name.to_string()]);
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &func.blocks {
+                for instr in &block.instructions {
+                    if let MIRInstruction::Move {
+                        dst,
+                        src: MIRValue::Variable { name, .. },
+                        ..
+                    } = instr
+                    {
+                        if aliases.contains(name) && !aliases.contains(dst) {
+                            if !matches!(func.variables.get(dst), Some(TejxType::Object(_))) {
+                                return false;
+                            }
+                            aliases.insert(dst.clone());
+                            changed = true;
+                        } else if aliases.contains(dst) && !aliases.contains(name) {
+                            if !matches!(func.variables.get(name), Some(TejxType::Object(_))) {
+                                return false;
+                            }
+                            aliases.insert(name.clone());
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut has_object_new_root = false;
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                match instr {
+                    MIRInstruction::Call { dst, callee, .. } if aliases.contains(dst) => {
+                        if callee == "rt_object_new" {
+                            has_object_new_root = true;
+                        } else {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::Move {
+                        dst,
+                        src: MIRValue::Variable { name, .. },
+                        ..
+                    } => {
+                        if aliases.contains(name) && !matches!(func.variables.get(dst), Some(TejxType::Object(_))) {
+                            return false;
+                        }
+                        if aliases.contains(dst) && !aliases.contains(name) {
+                            return false;
+                        }
+                    }
+                    MIRInstruction::BinaryOp { dst, .. } if aliases.contains(dst) => return false,
+                    MIRInstruction::Cast { dst, .. } if aliases.contains(dst) => return false,
+                    MIRInstruction::LoadMember { dst, .. } if aliases.contains(dst) => return false,
+                    MIRInstruction::LoadIndex { dst, .. } if aliases.contains(dst) => return false,
+                    MIRInstruction::LoadMember {
+                        obj: MIRValue::Variable { name, .. },
+                        ..
+                    } if aliases.contains(name) => {}
+                    MIRInstruction::StoreMember {
+                        obj: MIRValue::Variable { name, .. },
+                        src,
+                        ..
+                    } if aliases.contains(name) => {
+                        if let MIRValue::Variable { name: src_name, .. } = src {
+                            if aliases.contains(src_name) {
+                                return false;
+                            }
+                        }
+                    }
+                    MIRInstruction::Call { args, .. } | MIRInstruction::IndirectCall { args, .. } => {
+                        for arg in args {
+                            if let MIRValue::Variable { name, .. } = arg {
+                                if aliases.contains(name) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    MIRInstruction::Return {
+                        value: Some(MIRValue::Variable { name, .. }),
+                        ..
+                    }
+                    | MIRInstruction::LoadIndex {
+                        obj: MIRValue::Variable { name, .. },
+                        ..
+                    }
+                    | MIRInstruction::StoreIndex {
+                        obj: MIRValue::Variable { name, .. },
+                        ..
+                    }
+                    | MIRInstruction::StoreIndex {
+                        src: MIRValue::Variable { name, .. },
+                        ..
+                    }
+                    | MIRInstruction::StoreMember {
+                        src: MIRValue::Variable { name, .. },
+                        ..
+                    }
+                    | MIRInstruction::Cast {
+                        src: MIRValue::Variable { name, .. },
+                        ..
+                    }
+                    | MIRInstruction::Branch {
+                        condition: MIRValue::Variable { name, .. },
+                        ..
+                    }
+                        if aliases.contains(name) =>
+                    {
+                        return false;
+                    }
+                    MIRInstruction::BinaryOp { left, right, .. } => {
+                        if matches!(left, MIRValue::Variable { name, .. } if aliases.contains(name))
+                            || matches!(right, MIRValue::Variable { name, .. } if aliases.contains(name))
+                        {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        has_object_new_root
+    }
+
     pub(crate) fn needs_arena(&self, func: &MIRFunction) -> bool {
         for bb in &func.blocks {
             for inst in &bb.instructions {
@@ -152,6 +334,7 @@ impl CodeGen {
         captured_vars_by_function: HashMap<String, HashSet<String>>,
     ) -> String {
         self.captured_vars_by_function.clear();
+        self.object_shape_names.clear();
         for (name, vars) in captured_vars_by_function {
             let mut sorted: Vec<String> = vars.into_iter().collect();
             sorted.sort();
@@ -162,6 +345,8 @@ impl CodeGen {
         self.global_buffer.clear();
         self.declared_functions.clear();
         self.declared_globals.clear();
+
+        self.collect_object_shapes(functions);
 
         // Module headers
         self.global_buffer.push_str("; ModuleID = 'tejx_module'\n");
@@ -347,9 +532,12 @@ impl CodeGen {
         );
         self.declare_runtime_fn("rt_object_new", "i64 @rt_object_new()");
         self.declare_runtime_fn("rt_len", "i64 @rt_len(i64)");
+        self.declare_runtime_fn("rt_strlen", "i64 @rt_strlen(i64)");
         self.declare_runtime_fn("rt_typeof", "i64 @rt_typeof(i64)");
         self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
         self.declare_runtime_fn("rt_str_concat_v2", "i64 @rt_str_concat_v2(i64, i64)");
+        self.declare_runtime_fn("rt_str_append_local", "i64 @rt_str_append_local(i64, i64)");
+        self.declare_runtime_fn("rt_str_clear_local", "i64 @rt_str_clear_local(i64)");
         self.declare_runtime_fn("rt_String_concat", "i64 @rt_String_concat(i64, i64)");
         self.declare_runtime_fn("rt_str_equals", "i32 @rt_str_equals(i64, i64)");
         self.declare_runtime_fn("rt_box_int", "i64 @rt_box_int(i64)");
@@ -361,7 +549,7 @@ impl CodeGen {
         self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
         self.declare_runtime_fn(
             "rt_array_set_fast",
-            "void @rt_array_set_fast(i64, i64, i64)",
+            "i64 @rt_array_set_fast(i64, i64, i64)",
         );
         self.declare_runtime_fn("rt_Object_keys", "i64 @rt_Object_keys(i64)");
         self.declare_runtime_fn("rt_Object_values", "i64 @rt_Object_values(i64)");
@@ -418,6 +606,10 @@ impl CodeGen {
             &format!("i64 @{}()", TEJX_GET_EXCEPTION),
         );
         self.declare_runtime_fn("rt_string_from_c_str", "i64 @rt_string_from_c_str(i64)");
+        self.declare_runtime_fn(
+            "rt_string_from_c_str_const",
+            "i64 @rt_string_from_c_str_const(i64)",
+        );
 
         // Generate main wrapper if tejx_main exists
         if has_tejx_main {
@@ -444,6 +636,7 @@ impl CodeGen {
         self.stack_arrays.clear();
         self.heap_array_ptrs.clear();
         self.float_ssa_vars.clear();
+        self.boxed_string_cache.clear();
         self.temp_counter = 0;
         self.current_function_params.clear();
         self.local_vars.clear();
@@ -585,6 +778,17 @@ impl CodeGen {
             self.value_map.insert(name.clone(), reg_name.clone());
         }
 
+        // GC roots must start as null. Otherwise a safepoint during heavy allocation can
+        // scan uninitialized stack garbage as live heap pointers.
+        for name in &sorted_alloca_vars {
+            let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
+            if Self::is_gc_managed(ty) {
+                if let Some(reg_name) = self.value_map.get(name) {
+                    self.emit_line(&format!("store i64 0, i64* {}", reg_name));
+                }
+            }
+        }
+
         // Create environment if needed
         let has_captures = self.local_vars.iter().any(|v| self.is_captured(v))
             || func.params.iter().any(|p| self.is_captured(p));
@@ -659,7 +863,7 @@ impl CodeGen {
                 if let Some(env) = self.current_env.clone() {
                     self.declare_runtime_fn(
                         "rt_array_set_fast",
-                        "void @rt_array_set_fast(i64, i64, i64)",
+                        "i64 @rt_array_set_fast(i64, i64, i64)",
                     );
 
                     let ty = func.variables.get(p).unwrap();
@@ -679,7 +883,7 @@ impl CodeGen {
                     };
 
                     self.emit_line(&format!(
-                        "call void @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                        "call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
                         env, cap_idx, val_to_store
                     ));
                 }

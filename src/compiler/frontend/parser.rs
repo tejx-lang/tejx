@@ -1084,7 +1084,7 @@ impl Parser {
                     }
                 }
 
-                node = TypeNode::Array(Box::new(node));
+                node = TypeNode::SizedArray(Box::new(node), Box::new(size_expr));
             }
             return node;
         }
@@ -1190,7 +1190,7 @@ impl Parser {
                 }
             }
 
-            base_node = TypeNode::Array(Box::new(base_node));
+            base_node = TypeNode::SizedArray(Box::new(base_node), Box::new(size_expr));
         }
 
         let mut intersection_types = Vec::new();
