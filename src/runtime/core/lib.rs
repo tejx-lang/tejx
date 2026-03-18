@@ -1388,10 +1388,11 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
     rt_push_root(&mut c);
     rt_push_root(&mut a);
 
+    let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
     let ptr_val;
     let env;
 
-    if (c as u64) >= (HEAP_OFFSET as u64) {
+    if !is_raw_ptr {
         ptr_val = rt_get_closure_ptr(c);
         env = rt_get_closure_env(c);
     } else {
@@ -1413,7 +1414,7 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
         rt_pop_roots(2);
         return 0;
     }
-    let result = if env == 0 {
+    let result = if is_raw_ptr {
         // Non-closure function: no env parameter
         let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 =
             std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64) -> i64>(
@@ -1440,10 +1441,11 @@ pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
     rt_push_root(&mut c);
     rt_push_root(&mut a);
 
+    let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
     let ptr_val;
     let env;
 
-    if (c as u64) >= (HEAP_OFFSET as u64) {
+    if !is_raw_ptr {
         ptr_val = rt_get_closure_ptr(c);
         env = rt_get_closure_env(c);
     } else {
@@ -1493,7 +1495,7 @@ pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
         }
     }
 
-    let result = if env == 0 {
+    let result = if is_raw_ptr {
         // Non-closure function: no env parameter
         let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 =
             std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64) -> i64>(
