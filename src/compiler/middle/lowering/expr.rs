@@ -148,7 +148,7 @@ impl Lowering {
                     if !s.contains('.') && !s.contains('e') {
                         s.push_str(".0");
                     }
-                    (s, TejxType::Float64)
+                    (s, TejxType::Float32)
                 } else {
                     if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
                         (format!("{:.0}", value), TejxType::Int64)

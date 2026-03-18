@@ -738,19 +738,24 @@ pub unsafe extern "C" fn rt_strlen(val: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_is_array(val: i64) -> i64 {
-    let is_heap = val >= HEAP_OFFSET;
-    let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
+    let resolved = if val >= HEAP_OFFSET {
+        rt_resolve_array_id(val)
+    } else {
+        val
+    };
+    let is_heap = resolved >= HEAP_OFFSET;
+    let is_stack = resolved >= STACK_OFFSET && resolved < HEAP_OFFSET;
     if !is_heap && !is_stack {
         return 0;
     }
     let body = if is_heap {
-        let body = (val - HEAP_OFFSET) as *mut u8;
-        if !rt_is_gc_body_ptr_exact(body) {
+        let body = (resolved - HEAP_OFFSET) as *mut u8;
+        if !rt_is_gc_ptr(body) {
             return 0;
         }
         body
     } else {
-        (val - STACK_OFFSET) as *mut u8
+        (resolved - STACK_OFFSET) as *mut u8
     };
     let header = rt_get_header(body);
     if (*header).type_id == TAG_ARRAY as u16 {

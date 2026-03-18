@@ -3,7 +3,7 @@ use crate::middle::mir::*;
 use crate::common::types::TejxType;
 
 impl CodeGen {
-    fn resolve_fixed_field_info(
+    pub(crate) fn resolve_fixed_field_info(
         &self,
         obj_ty: &TejxType,
         member: &str,

@@ -308,7 +308,7 @@ impl TypeChecker {
                         Ok(TejxType::Int32)
                     }
                 } else {
-                    Ok(TejxType::Float64)
+                    Ok(TejxType::Float32)
                 }
             }
             Expression::StringLiteral { value, _line, _col } => {

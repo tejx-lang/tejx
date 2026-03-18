@@ -1,11 +1,12 @@
 use super::*; // Extracted \n
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_get_data_ptr(id: i64) -> i64 {
-    if id < HEAP_OFFSET {
+    let resolved = rt_resolve_array_id(id);
+    if resolved < STACK_OFFSET {
         return 0;
     }
     // With contiguous layout, id (pointer to body) IS the start of the data
-    id
+    resolved
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_get_data_ptr_nocache(id: i64) -> i64 {
@@ -373,7 +374,7 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64 {
-    if (id as u64) < (HEAP_OFFSET as u64) {
+    if id < STACK_OFFSET {
         let msg = rt_string_from_c_str(
             "RuntimeError: Null pointer dereference in array assignment\0".as_ptr() as *const _,
         );
@@ -390,13 +391,17 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         flags = (*header).flags;
     } else {
         id = rt_resolve_array_id(id);
-        if (id as u64) < (HEAP_OFFSET as u64) {
+        if id < STACK_OFFSET {
             let msg = rt_string_from_c_str(
                 "RuntimeError: Null pointer dereference in array assignment\0".as_ptr() as *const _,
             );
             crate::event_loop::tejx_throw(msg);
         }
-        body = (id - HEAP_OFFSET) as *mut u8;
+        body = if id >= HEAP_OFFSET {
+            (id - HEAP_OFFSET) as *mut u8
+        } else {
+            (id - STACK_OFFSET) as *mut u8
+        };
         header = rt_get_header(body);
         flags = (*header).flags;
     }
@@ -407,6 +412,14 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
     let mut len = (*header).length as i64;
     if index < 0 || index >= len {
         if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 {
+            let msg_str = format!(
+                "RuntimeError: Array index {} out of bounds (length {}) in assignment\0",
+                index, len
+            );
+            let msg = rt_string_from_c_str(msg_str.as_ptr() as *const _);
+            crate::event_loop::tejx_throw(msg);
+        }
+        if id < HEAP_OFFSET {
             let msg_str = format!(
                 "RuntimeError: Array index {} out of bounds (length {}) in assignment\0",
                 index, len
@@ -442,10 +455,14 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
         _ => {
             *(data.offset((index * 8) as isize) as *mut i64) = val;
-            rt_write_barrier(id, val);
+            if id >= HEAP_OFFSET {
+                rt_write_barrier(id, val);
+            }
         }
     }
-    rt_update_array_cache(id, body, len, elem_size);
+    if id >= HEAP_OFFSET {
+        rt_update_array_cache(id, body, len, elem_size);
+    }
     id
 }
 #[no_mangle]
@@ -659,7 +676,7 @@ pub unsafe extern "C" fn rt_array_concat(id1: i64, id2: i64) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
-    if (id as u64) < (HEAP_OFFSET as u64) {
+    if id < STACK_OFFSET {
         let msg = rt_string_from_c_str(
             "RuntimeError: Null pointer dereference in array access\0".as_ptr() as *const _,
         );
@@ -683,13 +700,17 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     }
 
     let id = rt_resolve_array_id(id);
-    if (id as u64) < (HEAP_OFFSET as u64) {
+    if id < STACK_OFFSET {
         let msg = rt_string_from_c_str(
             "RuntimeError: Null pointer dereference in array access\0".as_ptr() as *const _,
         );
         crate::event_loop::tejx_throw(msg);
     }
-    let body = (id - HEAP_OFFSET) as *mut u8;
+    let body = if id >= HEAP_OFFSET {
+        (id - HEAP_OFFSET) as *mut u8
+    } else {
+        (id - STACK_OFFSET) as *mut u8
+    };
     let header = rt_get_header(body);
     let len = (*header).length as i64;
     let flags = (*header).flags;
@@ -709,7 +730,9 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
         *(body.offset((index * 8) as isize) as *const i64)
     };
 
-    rt_update_array_cache(id, body, len, elem_size);
+    if id >= HEAP_OFFSET {
+        rt_update_array_cache(id, body, len, elem_size);
+    }
     res
 }
 #[no_mangle]

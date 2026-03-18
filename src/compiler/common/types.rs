@@ -378,7 +378,7 @@ impl TejxType {
             "int16" => TejxType::Int16,
             "int64" => TejxType::Int64,
             "int128" => TejxType::Int128,
-            "float" => TejxType::Float64,
+            "float" => TejxType::Float32,
             "float32" => TejxType::Float32,
             "float64" => TejxType::Float64,
             "float16" => TejxType::Float16,
