@@ -1,60 +1,115 @@
-# TejX Internals & Architecture
+# TejX Compiler Internals
 
-This document provides a deep dive into the compiler pipeline, memory model, and performance engineering of the TejX language.
+This document gives the current high-level architecture of the compiler and runtime without duplicating the deeper topic guides.
 
-## 🚀 Compiler Pipeline
+Use this file as the architectural overview, then jump to the focused docs:
 
-TejX is built in Rust and uses LLVM as its backend. The compilation process follows these stages:
+- `TYPE_SYSTEM.md`
+- `MODULE_SYSTEM.md`
+- `MEMORY_MODEL.md`
+- `CONCURRENCY.md`
+- `FILE_STRUCTURE.md`
 
-1.  **Lexing (`lexer.rs`)**: Text → Tokens.
-2.  **Parsing (`parser.rs`)**: Tokens → AST (Abstract Syntax Tree).
-3.  **Type Checking (`type_checker.rs`)**: Semantic validation and type inference.
-4.  **Lowering (`lowering.rs`)**: AST → HIR (Higher-level IR), resolving imports.
-5.  **MIR Generation (`mir_lowering.rs`)**: HIR → MIR (Control-flow graph based Mid-level IR).
-6.  **Code Generation (`codegen.rs`)**: MIR → LLVM IR.
-7.  **Linking (`linker.rs`)**: LLVM IR + **Runtime** → Native Executable.
+## Compilation Pipeline
 
-### Entry Point
+The compiler entry point is `src/compiler/main.rs`.
 
-The compiler generates a C-compatible `main` that initializes the runtime and calls `tejx_main`. Top-level code is automatically wrapped in this entry function.
+The pipeline is:
 
----
+1. lex source into tokens
+2. parse tokens into the AST
+3. resolve imports and inject core modules
+4. type-check the merged program
+5. lower AST to HIR
+6. lower HIR to MIR
+7. optimize MIR
+8. generate LLVM IR
+9. link against the runtime archive
 
-## 🧠 Memory Model
+## Frontend
 
-TejX employs a hybrid strategy: deterministic Stack allocation for primitives and managed Heap allocation for objects.
+Located in `src/compiler/frontend/`.
 
-### Value Representation (The Boxed `i64`)
+Main responsibilities:
 
-All values in TejX are represented as 64-bit integers (`i64`).
+- tokenization
+- parsing
+- AST construction
+- syntax diagnostics
 
-| Value Type     | Representation       | Notes                               |
-| :------------- | :------------------- | :---------------------------------- |
-| **Small Ints** | `0` to `199,999,999` | Stored directly.                    |
-| **Heap IDs**   | `200,000,000+`       | Index into the global object table. |
-| **Doubles**    | Bitcasted `f64`      | Standard IEEE-754 patterns.         |
-| **Pointers**   | Raw addresses        | Used for C-string literals and FFI. |
+The parser also enforces source-level type syntax rules such as:
 
-### Global Heap
+- `bool` instead of `boolean`
+- `Optional<T>` instead of `Option<T>`
+- no source-level union types
 
-The runtime maintains a centralized `HEAP` (a `Vec<Option<TaggedValue>>`).
+## Import Resolution and HIR Lowering
 
-- **Addressing**: `internal_index = id - 200,000,000`.
-- **Safety**: Protected by a global `Mutex` to ensure thread-safe allocations.
+Located in `src/compiler/middle/lowering/`.
 
-### Automatic Reference Counting (ARC)
+This stage:
 
-TejX uses deterministic ARC for heap objects (Classes, Arrays, Maps).
+- resolves relative and `std:` imports
+- injects `prelude.tx`, `array.tx`, and `string.tx` when appropriate
+- merges imported modules into the active compilation unit
+- performs early structural lowering into HIR
 
-- **Strict Ownership**: Objects are destroyed immediately when their reference count hits zero.
-- **Reference Cycles**: Since ARC does not trace the heap, cycles (A -> B -> A) will leak. Use weak references (Planned) to break cycles.
-- **Status**: Currently, `rt_free` is a no-op in the runtime to ensure stability while the borrow checker's ownership analysis is refined.
+## Semantic Analysis
 
----
+Located in `src/compiler/middle/semantic/`.
 
-## ⚡ Performance Engineering
+This stage is responsible for:
 
-1.  **AOT Compilation**: No JIT "warm-up" time; compiles directly to optimized machine code.
-2.  **LLVM Optimization**: Leverages LLVM's world-class pipeline for register allocation and SIMD.
-3.  **Zero-Cost Primitives**: Basic operations (e.g., integer math) translate directly to single CPU instructions without runtime dispatch.
-4.  **Native Threading**: Direct mapping to OS threads allows for true multi-core parallel processing.
+- symbol definition and lookup
+- type checking
+- optional narrowing rules
+- method and member validation
+- constant reassignment checks
+- interface/class relationship checks
+
+## MIR and Optimization
+
+Located in `src/compiler/middle/mir/`.
+
+MIR gives the backend a more explicit control-flow representation. This is the stage where:
+
+- branching becomes CFG-style blocks
+- async and exception constructs are lowered further
+- backend-friendly instructions are produced
+- basic MIR optimizations are applied
+
+## Backend
+
+Located in `src/compiler/backend/`.
+
+The backend:
+
+- maps MIR instructions to LLVM IR
+- performs ABI casts between runtime slots and native LLVM types
+- emits fixed-layout fast paths for objects and arrays where possible
+- lowers intrinsic math and runtime calls
+- links the generated IR against `tejx_rt.a`
+
+## Runtime
+
+The runtime lives in `src/runtime/`.
+
+Core services include:
+
+- garbage collection
+- event loop and async integration
+- strings, arrays, and objects
+- numeric helpers
+- network and JSON support
+- thread primitives
+
+The compiler and runtime are tightly coupled through shared assumptions about:
+
+- value representation
+- type tags
+- root tracking
+- runtime intrinsics
+
+## Diagnostics
+
+Diagnostics are collected through shared `Diagnostic` values and reported with file, line, column, labels, and hints. The compiler also deduplicates repeated diagnostics before printing them.

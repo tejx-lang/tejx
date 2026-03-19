@@ -59,7 +59,9 @@ impl TypeNode {
             }
             TypeNode::Optional(inner) => format!("Optional<{}>", inner),
             TypeNode::Array(t) => format!("{}[]", t),
-            TypeNode::SizedArray(t, _) => format!("{}[]", t),
+            TypeNode::SizedArray(t, size) => {
+                format!("{}[{}]", t, Self::size_expr_to_string(size))
+            }
             TypeNode::Function(args, ret) => {
                 let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
                 format!("({}) => {}", args_str, ret)

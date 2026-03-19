@@ -90,9 +90,14 @@ impl TypeChecker {
                 let ty_str = type_annotation.to_string();
                 let has_explicit_type = !ty_str.is_empty();
                 let is_explicit_any = ty_str == "any";
+                let declared_ty = if has_explicit_type {
+                    Some(TejxType::from_node(type_annotation))
+                } else {
+                    None
+                };
                 if !is_explicit_any
                     && has_explicit_type
-                    && !self.is_valid_type(&TejxType::from_name(&ty_str))
+                    && !self.is_valid_type(declared_ty.as_ref().unwrap())
                 {
                     self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
                 }
@@ -100,7 +105,7 @@ impl TypeChecker {
                     let prev_expected = self.current_expected_type.take();
                     let prev_lambda_ctx = self.lambda_context_params.take();
                     if ty_str != "any" && !ty_str.is_empty() {
-                        let expected_ty = TejxType::from_name(&ty_str);
+                        let expected_ty = declared_ty.clone().unwrap();
                         self.current_expected_type = Some(expected_ty.clone());
                         if let TejxType::Function(params, _) = expected_ty {
                             self.lambda_context_params = Some(params);
@@ -146,7 +151,7 @@ impl TypeChecker {
                     if ty_str != "any" && !ty_str.is_empty() {
                         self.check_numeric_bounds(
                             expr,
-                            &TejxType::from_name(&ty_str),
+                            declared_ty.as_ref().unwrap(),
                             *line,
                             *_col,
                         );
@@ -162,7 +167,7 @@ impl TypeChecker {
                     if !is_explicit_any
                         && has_explicit_type
                         && !self.are_types_compatible(
-                            &TejxType::from_name(&ty_str),
+                            declared_ty.as_ref().unwrap(),
                             &TejxType::from_name(&init_type),
                         )
                     {
@@ -190,7 +195,7 @@ impl TypeChecker {
                                 *_col,
                                 "E0100",
                                 self.optional_requires_check_hint(
-                                    &TejxType::from_name(&ty_str),
+                                    declared_ty.as_ref().unwrap(),
                                     &TejxType::from_name(&init_type),
                                 )
                                 .as_deref()
@@ -211,7 +216,7 @@ impl TypeChecker {
                             init_type.clone()
                         }
                     } else {
-                        ty_str
+                        declared_ty.as_ref().unwrap().to_name()
                     };
 
                     let mut literal_length = None;
@@ -236,8 +241,7 @@ impl TypeChecker {
                         None,
                     );
                 } else {
-                    let declared_ty = TejxType::from_node(type_annotation);
-                    match declared_ty {
+                    match declared_ty.as_ref().unwrap() {
                         TejxType::Object(_) => {
                             self.report_error_detailed(
                                 "Object-typed variables must be initialized at declaration"
@@ -270,7 +274,7 @@ impl TypeChecker {
                     }
                     let _ = self.define_pattern(
                         pattern,
-                        type_annotation.to_string(),
+                        declared_ty.as_ref().unwrap().to_name(),
                         *is_const,
                         *line,
                         *_col,

@@ -17,7 +17,7 @@ examples/hello
 build/
 cmake-build-debug/
 target
-libruntime.a
+wasm/browser
 *.mjs
 
 editors/

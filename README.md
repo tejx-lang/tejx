@@ -8,10 +8,14 @@ TejX is a high-performance, strictly typed programming language that compiles to
 
 | Guide                                             | Description                                       |
 | :------------------------------------------------ | :------------------------------------------------ |
-| **[Language Reference](docs/LANGUAGE.md)**        | Syntax, types, and core language features.        |
-| **[Concurrency Guide](docs/CONCURRENCY.md)**      | Async/Await and Multi-Threading models.           |
-| **[Internals & Architecture](docs/INTERNALS.md)** | Compiler pipeline, memory model, and performance. |
-| **[Standard Collections](docs/COLLECTIONS.md)**   | Usage and memory layout of Array, Map, Set, etc.  |
+| **[Docs Index](docs/README.md)**                  | Entry point for the consolidated documentation.   |
+| **[Language Guide](docs/LANGUAGE.md)**            | Syntax, types, and core language features.        |
+| **[Type System](docs/TYPE_SYSTEM.md)**            | Exact typing rules, `Optional<T>`, and generics.  |
+| **[Module System](docs/MODULE_SYSTEM.md)**        | Imports, exports, and stdlib resolution.          |
+| **[Concurrency Guide](docs/CONCURRENCY.md)**      | Async/await, event loop behavior, and threads.    |
+| **[Memory Model](docs/MEMORY_MODEL.md)**          | Runtime value layout, roots, and GC behavior.     |
+| **[Internals & Architecture](docs/INTERNALS.md)** | Compiler pipeline and backend overview.           |
+| **[File Structure](docs/FILE_STRUCTURE.md)**      | Repository layout, SDK layout, and paths.         |
 
 ---
 

@@ -1917,6 +1917,7 @@ impl Parser {
         if self.match_token(TokenType::PlusPlus)
             || self.match_token(TokenType::MinusMinus)
             || self.match_token(TokenType::Bang)
+            || self.match_token(TokenType::Tilde)
             || self.match_token(TokenType::Minus)
         {
             let op_token = self.tokens[self.current - 1].clone();

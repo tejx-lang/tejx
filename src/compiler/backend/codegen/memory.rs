@@ -55,7 +55,12 @@ impl CodeGen {
             self.emit_line(&format!("{} = call i64 @rt_len(i64 {})", res_tmp, obj_val));
             used_fast = true;
         } else {
+            let allow_optional_fixed_layout = matches!(
+                obj.get_type(),
+                TejxType::Optional(inner) if Self::fixed_layout_object_type(inner).is_some()
+            );
             let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
+                || allow_optional_fixed_layout
                 || matches!(obj, MIRValue::Variable { name, ty, .. }
                     if Self::fixed_layout_object_type(ty).is_some()
                         && self.can_use_fixed_object_layout_for_ty(func, name, ty));
@@ -190,7 +195,12 @@ impl CodeGen {
         }
 
         let mut used_fast_store = false;
+        let allow_optional_fixed_layout = matches!(
+            obj.get_type(),
+            TejxType::Optional(inner) if Self::fixed_layout_object_type(inner).is_some()
+        );
         let allow_fixed_layout = matches!(obj.get_type(), TejxType::Class(_, _))
+            || allow_optional_fixed_layout
             || matches!(obj, MIRValue::Variable { name, ty, .. }
                 if Self::fixed_layout_object_type(ty).is_some()
                     && self.can_use_fixed_object_layout_for_ty(func, name, ty));

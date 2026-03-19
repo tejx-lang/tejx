@@ -81,6 +81,35 @@ impl WasmCodeGen {
         1024 + self.string_constants[..idx].iter().map(|item| item.len() + 1).sum::<usize>()
     }
 
+    fn push_string_constant(&mut self, s: &str) {
+        if !self.string_constants.iter().any(|item| item == s) {
+            self.string_constants.push(s.to_string());
+        }
+    }
+
+    fn value_type_name(value: &Value) -> Option<&str> {
+        value.as_object()?.get("ty")?.as_str()
+    }
+
+    fn cast_descriptor(src_ty: &str, dst_ty: &str) -> String {
+        format!("{}->{}", src_ty, dst_ty)
+    }
+
+    fn needs_any_box(src_ty: &str) -> bool {
+        matches!(src_ty, "Bool" | "Int" | "Int32" | "Int64" | "Float" | "Float32" | "Float64")
+    }
+
+    fn any_box_descriptor(value: &Value, element_ty: &str) -> Option<String> {
+        if element_ty != "Any" {
+            return None;
+        }
+        let src_ty = Self::value_type_name(value)?;
+        if !Self::needs_any_box(src_ty) {
+            return None;
+        }
+        Some(Self::cast_descriptor(src_ty, "Any"))
+    }
+
     pub fn new(config: Value) -> Self {
         Self {
             config,
@@ -525,9 +554,22 @@ impl WasmCodeGen {
                     }
                 } else if ty == "LoadMember" || ty == "StoreMember" {
                     if let Some(member) = obj.get("member").and_then(|v| v.as_str()) {
-                         if !self.string_constants.contains(&member.to_string()) {
-                             self.string_constants.push(member.to_string());
-                         }
+                         self.push_string_constant(member);
+                    }
+                } else if ty == "Cast" {
+                    if let Some(src) = obj.get("src") {
+                        if let Some(src_ty) = Self::value_type_name(src) {
+                            if let Some(dst_ty) = obj.get("ty").and_then(|v| v.as_str()) {
+                                self.push_string_constant(&Self::cast_descriptor(src_ty, dst_ty));
+                            }
+                        }
+                    }
+                } else if ty == "StoreIndex" {
+                    if let Some(src) = obj.get("src") {
+                        let element_ty = obj.get("element_ty").and_then(|v| v.as_str()).unwrap_or("");
+                        if let Some(desc) = Self::any_box_descriptor(src, element_ty) {
+                            self.push_string_constant(&desc);
+                        }
                     }
                 }
             }
@@ -714,8 +756,13 @@ impl WasmCodeGen {
                 let left = obj.get("left").unwrap_or(&Value::Null);
                 let right = obj.get("right").unwrap_or(&Value::Null);
                 let op = obj.get("op").and_then(|v| v.as_str()).unwrap_or("");
+                let op_width = obj.get("op_width").and_then(|v| v.as_str()).unwrap_or("");
                 self.gen_expr(left);
                 self.gen_expr(right);
+                if op == "Plus" && op_width == "String" {
+                    self.emit_line(&format!("call ${}", self.wasm_func_id("rt_str_concat_v2")));
+                    return;
+                }
                 let wasm_op = self.config.get("ops").and_then(|ops| ops.get(op)).and_then(|v| v.as_str()).map(|s| s.to_string());
                 if let Some(op_code) = wasm_op {
                     self.emit_line(&op_code);
@@ -770,15 +817,31 @@ impl WasmCodeGen {
                 let obj_val = obj.get("obj").unwrap_or(&Value::Null);
                 let index = obj.get("index").unwrap_or(&Value::Null);
                 let val = obj.get("src").unwrap_or(&Value::Null); // Align with Rust: src
+                let element_ty = obj.get("element_ty").and_then(|v| v.as_str()).unwrap_or("");
                 self.gen_expr(obj_val);
                 self.gen_expr(index);
                 self.gen_expr(val);
+                if let Some(desc) = Self::any_box_descriptor(val, element_ty) {
+                    let offset = self.string_offset(&desc);
+                    self.emit_line(&format!("i64.const {}", offset));
+                    self.emit_line(&format!("call ${}", self.wasm_func_id("rt_box_string")));
+                    self.emit_line(&format!("call ${}", self.wasm_func_id("rt_cast")));
+                }
                 self.emit_line(&format!("call ${}", self.wasm_func_id("rt_store_index")));
             }
             "Cast" => {
                 let val = obj.get("src").unwrap_or(&Value::Null); // Align with Rust: src
+                let src_ty = Self::value_type_name(val);
+                let dst_ty = obj.get("ty").and_then(|v| v.as_str());
                 self.gen_expr(val);
-                self.emit_line("i64.const 0"); // typePtr stub
+                if let (Some(src_ty), Some(dst_ty)) = (src_ty, dst_ty) {
+                    let desc = Self::cast_descriptor(src_ty, dst_ty);
+                    let offset = self.string_offset(&desc);
+                    self.emit_line(&format!("i64.const {}", offset));
+                    self.emit_line(&format!("call ${}", self.wasm_func_id("rt_box_string")));
+                } else {
+                    self.emit_line("i64.const 0");
+                }
                 self.emit_line(&format!("call ${}", self.wasm_func_id("rt_cast")));
             }
             "Class" => {
@@ -789,7 +852,19 @@ impl WasmCodeGen {
             }
             "Constant" => {
                 if let Some(value) = obj.get("value") {
-                    if let Some(i) = value.as_i64() {
+                    let ty_name = obj.get("ty").and_then(|v| v.as_str()).unwrap_or("");
+                    if matches!(ty_name, "Float" | "Float32" | "Float64") {
+                        if let Some(s) = value.as_str() {
+                            if let Ok(f) = s.parse::<f64>() {
+                                self.emit_line(&format!("i64.const {}", f.to_bits() as i64));
+                                self.emit_line(&format!("call ${}", self.wasm_func_id("rt_box_number_internal")));
+                            } else {
+                                self.emit_line("i64.const 0");
+                            }
+                        } else {
+                            self.emit_line("i64.const 0");
+                        }
+                    } else if let Some(i) = value.as_i64() {
                         self.emit_line(&format!("i64.const {}", i));
                     } else if let Some(u) = value.as_u64() {
                         self.emit_line(&format!("i64.const {}", u));

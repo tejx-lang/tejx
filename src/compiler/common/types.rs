@@ -199,8 +199,16 @@ impl TejxType {
             crate::frontend::ast::TypeNode::Array(inner) => {
                 TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
             }
-            crate::frontend::ast::TypeNode::SizedArray(inner, _) => {
-                TejxType::DynamicArray(Box::new(TejxType::from_node(inner)))
+            crate::frontend::ast::TypeNode::SizedArray(inner, size_expr) => {
+                let inner_ty = TejxType::from_node(inner);
+                match size_expr.as_ref() {
+                    crate::frontend::ast::Expression::NumberLiteral { value, .. }
+                        if *value >= 0.0 && value.fract() == 0.0 =>
+                    {
+                        TejxType::FixedArray(Box::new(inner_ty), *value as usize)
+                    }
+                    _ => TejxType::DynamicArray(Box::new(inner_ty)),
+                }
             }
             crate::frontend::ast::TypeNode::Function(params, ret) => {
                 let parsed_params = params.iter().map(TejxType::from_node).collect();
@@ -223,7 +231,7 @@ impl TejxType {
             TejxType::Int128 => crate::frontend::ast::TypeNode::Named("int128".to_string()),
             TejxType::Float16 => crate::frontend::ast::TypeNode::Named("float16".to_string()),
             TejxType::Float32 => crate::frontend::ast::TypeNode::Named("float32".to_string()),
-            TejxType::Float64 => crate::frontend::ast::TypeNode::Named("float".to_string()),
+            TejxType::Float64 => crate::frontend::ast::TypeNode::Named("float64".to_string()),
             TejxType::Bool => crate::frontend::ast::TypeNode::Named("bool".to_string()),
             TejxType::String => crate::frontend::ast::TypeNode::Named("string".to_string()),
             TejxType::Char => crate::frontend::ast::TypeNode::Named("char".to_string()),
@@ -238,7 +246,15 @@ impl TejxType {
                 }
             }
             TejxType::Optional(inner) => crate::frontend::ast::TypeNode::Optional(Box::new(inner.to_type_node())),
-            TejxType::FixedArray(inner, _) => crate::frontend::ast::TypeNode::Array(Box::new(inner.to_type_node())),
+            TejxType::FixedArray(inner, size) => crate::frontend::ast::TypeNode::SizedArray(
+                Box::new(inner.to_type_node()),
+                Box::new(crate::frontend::ast::Expression::NumberLiteral {
+                    value: *size as f64,
+                    _is_float: false,
+                    _line: 0,
+                    _col: 0,
+                }),
+            ),
             TejxType::DynamicArray(inner) => crate::frontend::ast::TypeNode::Array(Box::new(inner.to_type_node())),
             TejxType::Slice(inner) => crate::frontend::ast::TypeNode::Generic("slice".to_string(), vec![inner.to_type_node()]),
             TejxType::Function(params, ret) => {
@@ -423,7 +439,7 @@ impl TejxType {
             TejxType::Int128 => "int128".to_string(),
             TejxType::Float16 => "float16".to_string(),
             TejxType::Float32 => "float32".to_string(),
-            TejxType::Float64 => "float".to_string(),
+            TejxType::Float64 => "float64".to_string(),
             TejxType::Bool => "bool".to_string(),
             TejxType::String => "string".to_string(),
             TejxType::Char => "char".to_string(),

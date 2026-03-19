@@ -18,6 +18,8 @@ function main() {
     let obj = { a: 42, b: { c: "Nested" } };
     assert_eq_int(42, obj?.a, "Optional Access a");
     assert_eq_string("Nested", obj?.b?.c, "Optional Access nested");
+    let maybeObj: Optional<{ a: int }> = None;
+    assert_true(maybeObj?.a == None, "Optional Access None");
     // assert_eq(undefined/0, obj?.missing); // Value check harder without undefined constant
 
     // Nullish Coalescing

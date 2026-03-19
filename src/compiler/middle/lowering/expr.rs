@@ -328,7 +328,7 @@ impl Lowering {
                         ty: elem_ty.clone(),
                     }),
                     else_branch: Box::new(HIRExpression::NoneLiteral { line }),
-                    ty: elem_ty,
+                    ty: TejxType::Optional(Box::new(elem_ty)),
                 }
             }
             Expression::NoneLiteral { .. } => HIRExpression::NoneLiteral { line },
@@ -591,6 +591,22 @@ impl Lowering {
                         args: vec![self.lower_expression(right)],
                         ty: TejxType::Bool,
                     },
+                    TokenType::Tilde => {
+                        let right_hir = self.lower_expression(right);
+                        let ty = right_hir.get_type();
+
+                        HIRExpression::BinaryExpr {
+                            line,
+                            left: Box::new(right_hir),
+                            op: TokenType::Caret,
+                            right: Box::new(HIRExpression::Literal {
+                                line,
+                                value: "-1".to_string(),
+                                ty: ty.clone(),
+                            }),
+                            ty,
+                        }
+                    }
                     TokenType::Minus => {
                         // -x -> 0 - x
                         let right_hir = self.lower_expression(right);
@@ -1385,11 +1401,11 @@ impl Lowering {
                 let lowered_object = self.lower_expression(object);
                 let access_hir =
                     self.lower_member_access_with_obj(line, &obj_name, lowered_object.clone(), member);
-                let result_ty = access_hir.get_type();
                 if !self.is_optional_type(&lowered_object.get_type()) {
                     return access_hir;
                 }
                 let cond = self.build_not_none_condition(&lowered_object, line);
+                let result_ty = TejxType::Optional(Box::new(access_hir.get_type()));
 
                 HIRExpression::If {
                     line: line,
@@ -1616,16 +1632,8 @@ impl Lowering {
         HIRExpression::BinaryExpr {
             line,
             op: TokenType::BangEqual,
-            left: Box::new(HIRExpression::Cast {
-                line,
-                expr: Box::new(expr.clone()),
-                ty: TejxType::Int64,
-            }),
-            right: Box::new(HIRExpression::Literal {
-                line,
-                value: "0".to_string(),
-                ty: TejxType::Int64,
-            }),
+            left: Box::new(expr.clone()),
+            right: Box::new(HIRExpression::NoneLiteral { line }),
             ty: TejxType::Bool,
         }
     }
@@ -1652,7 +1660,7 @@ impl Lowering {
         }
 
         let obj_expr = lowered_object;
-        let obj_ty = self.resolve_alias_type(&obj_expr.get_type());
+        let obj_ty = self.non_none_type(&self.resolve_alias_type(&obj_expr.get_type()));
 
         if let TejxType::Class(ref full_class, _) = obj_ty {
             let class_name = full_class

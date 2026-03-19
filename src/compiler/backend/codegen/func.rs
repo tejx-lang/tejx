@@ -561,7 +561,7 @@ impl CodeGen {
     pub(crate) fn fixed_layout_object_type(ty: &TejxType) -> Option<TejxType> {
         match ty {
             TejxType::Object(_) => Some(ty.clone()),
-            TejxType::Optional(_) => None,
+            TejxType::Optional(inner) => Self::fixed_layout_object_type(inner),
             _ => None,
         }
     }

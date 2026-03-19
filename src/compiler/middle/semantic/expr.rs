@@ -347,6 +347,30 @@ impl TypeChecker {
                 let right_type = self.check_expression(right)?;
                 match op {
                     TokenType::Bang => Ok(TejxType::Bool),
+                    TokenType::Tilde => {
+                        if matches!(
+                            right_type,
+                            TejxType::Int16
+                                | TejxType::Int32
+                                | TejxType::Int64
+                                | TejxType::Int128
+                        ) || right_type == TejxType::from_name("<inferred>")
+                        {
+                            Ok(right_type)
+                        } else {
+                            self.report_error_detailed(
+                                format!(
+                                    "Unary '~' cannot be applied to type '{}'",
+                                    right_type.to_name()
+                                ),
+                                *_line,
+                                *_col,
+                                "E0100",
+                                Some("Bitwise NOT only works on integer types"),
+                            );
+                            Ok(TejxType::from_name("<inferred>"))
+                        }
+                    }
                     TokenType::Minus => {
                         if right_type.is_numeric()
                             || right_type == TejxType::from_name("<inferred>")
@@ -2163,52 +2187,73 @@ impl TypeChecker {
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
                 let target_ty = self.check_expression(target)?;
                 self.check_expression(index)?;
+                let is_optional_target = matches!(target_ty, TejxType::Optional(_));
                 let mut unwrapped_type = target_ty.to_name();
                 if let Some(sym) = self.lookup(&unwrapped_type) {
                     if let Some(aliased) = &sym.aliased_type {
                         unwrapped_type = aliased.to_name();
                     }
                 }
-                if unwrapped_type.contains('|') {
-                    unwrapped_type = unwrapped_type
-                        .split('|')
-                        .map(|s| s.trim().to_string())
-                        .find(|s| s != "None" && !s.is_empty())
-                        .unwrap_or(unwrapped_type.clone());
-                }
-                let parsed = TejxType::from_name(&unwrapped_type);
-                if parsed.is_array() || parsed.is_slice() {
-                    return Ok(parsed.get_array_element_type());
+                let parsed_target = TejxType::from_name(&unwrapped_type);
+                let parsed = match parsed_target {
+                    TejxType::Optional(inner) => *inner,
+                    other => other,
+                };
+                if matches!(
+                    &parsed,
+                    TejxType::DynamicArray(_)
+                        | TejxType::FixedArray(_, _)
+                        | TejxType::Slice(_)
+                ) {
+                    let elem_ty = parsed.get_array_element_type();
+                    return Ok(if is_optional_target {
+                        TejxType::Optional(Box::new(elem_ty))
+                    } else {
+                        elem_ty
+                    });
                 }
                 Ok(TejxType::from_name("<inferred>"))
             }
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
-                let mut obj_type = self.check_expression(object)?.to_name();
+                let checked_obj_type = self.check_expression(object)?;
+                let is_optional_object = matches!(checked_obj_type, TejxType::Optional(_));
+                let mut obj_type = checked_obj_type.to_name();
                 if let Some(sym) = self.lookup(&obj_type) {
                     if let Some(aliased) = &sym.aliased_type {
                         obj_type = aliased.to_name();
                     }
                 }
-                if obj_type.contains('|') {
-                    obj_type = obj_type
-                        .split('|')
-                        .map(|s| s.trim().to_string())
-                        .find(|s| s != "None" && !s.is_empty())
-                        .unwrap_or(obj_type.clone());
-                }
+                let resolved_obj_ty = match TejxType::from_name(&obj_type) {
+                    TejxType::Optional(inner) => *inner,
+                    other => other,
+                };
 
-                if let TejxType::Object(props) = TejxType::from_name(&obj_type) {
+                if let TejxType::Object(props) = resolved_obj_ty.clone() {
                     for (k, _, t) in props {
                         if k == *member {
-                            return Ok(t);
+                            return Ok(if is_optional_object {
+                                TejxType::Optional(Box::new(t))
+                            } else {
+                                t
+                            });
                         }
                     }
                 }
 
-                if let Some(info) = self.resolve_instance_member(&obj_type, member) {
-                    return Ok(TejxType::from_name(
-                        &self.substitute_generics(&info.ty.to_name(), &obj_type),
-                    ));
+                if let Some(info) =
+                    self.resolve_instance_member(&resolved_obj_ty.to_name(), member)
+                {
+                    let member_ty = TejxType::from_name(
+                        &self.substitute_generics(
+                            &info.ty.to_name(),
+                            &resolved_obj_ty.to_name(),
+                        ),
+                    );
+                    return Ok(if is_optional_object {
+                        TejxType::Optional(Box::new(member_ty))
+                    } else {
+                        member_ty
+                    });
                 }
 
                 Ok(TejxType::from_name("<inferred>"))
