@@ -1,0 +1,13 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test invalid object operations like spread with non-object and read-only property modification.
+
+function main() {
+    let obj = { x: 1, y: 2 };
+    
+    // Case 1: Spread non-object (if spreads are supported)
+    // let obj2 = { ...obj, ...10 }; 
+
+    // Case 2: Modifying length property of array (built-in read-only)
+    let arr = [1, 2, 3];
+    arr.length = 10; 
+}

@@ -1,0 +1,18 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test private member access violation.
+
+class Base {
+    private x: int = 1;
+    private privMethod() {}
+}
+
+class Derived extends Base {
+    test() {
+        this.x = 30; // Error: private in Base
+    }
+}
+
+function main() {
+    let b = new Base();
+    b.x = 300; // Error: private
+}

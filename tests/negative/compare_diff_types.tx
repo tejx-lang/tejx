@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: give compilation error on compare two diff type values
+function main() {
+    let a: int = 5;
+    let b: string = "5";
+    print(a == b);
+}

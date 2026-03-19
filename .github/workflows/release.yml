@@ -52,10 +52,31 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.platform.target }}
 
-      - name: Archive binary
+      - name: Package Release
         run: |
-          cd target/${{ matrix.platform.target }}/release
-          tar -czvf ../../../${{ matrix.platform.asset_name }}${{ matrix.platform.ext }} ${{ matrix.platform.bin }}
+          DIST_DIR="tejx"
+          mkdir -p $DIST_DIR/bin $DIST_DIR/runtime $DIST_DIR/lib
+          
+          # Copy binary
+          cp target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }} $DIST_DIR/bin/
+          
+          # Find and copy runtime static library
+          # It usually resides in deps/ with a hash suffix
+          RT_FILE=$(find target/${{ matrix.platform.target }}/release/deps -name "libtejx_rt*.a" | head -n 1)
+          if [ -n "$RT_FILE" ]; then
+            cp "$RT_FILE" $DIST_DIR/runtime/tejx_rt.a
+            echo "✅ Included runtime: $RT_FILE"
+          else
+            echo "❌ Error: Runtime library not found"
+            exit 1
+          fi
+          
+          # Copy standard library modules
+          cp -r src/library/* $DIST_DIR/lib/
+          echo "✅ Included standard library from src/library/"
+          
+          # Archive the full distribution
+          tar -czvf ${{ matrix.platform.asset_name }}${{ matrix.platform.ext }} $DIST_DIR
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

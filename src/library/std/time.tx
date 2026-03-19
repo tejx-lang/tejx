@@ -1,0 +1,61 @@
+// Returns current time in milliseconds since Unix epoch
+export function now(): int64 {
+    return rt_time_now_ms();
+}
+
+// Returns current time in milliseconds since Unix epoch (as int)
+export function nowMs(): int64 {
+    return rt_time_now_ms();
+}
+
+// Synchronous sleep for given milliseconds
+export function sleep(ms: int64): void {
+    rt_sleep(ms);
+}
+
+// Async delay — returns a Promise that resolves after ms milliseconds
+export async function delay(ms: int64): Promise<void> {
+    return rt_delay(ms);
+}
+
+// Schedule a callback to run after ms milliseconds (returns timer ID)
+export function setTimeout(callback: () => void, ms: int64): int {
+    return rt_setTimeout(callback, ms);
+}
+
+// Schedule a callback to run repeatedly every ms milliseconds (returns timer ID)
+export function setInterval(callback: () => void, ms: int64): int {
+    return rt_setInterval(callback, ms);
+}
+
+// Cancel a setTimeout timer by ID
+export function clearTimeout(id: int): void {
+    rt_clearTimeout(id);
+}
+
+// Cancel a setInterval timer by ID
+export function clearInterval(id: int): void {
+    rt_clearInterval(id);
+}
+
+// --- Date class (JS-like API backed by runtime time functions) ---
+export class Date {
+    private timestamp: int64;
+
+    constructor() {
+        this.timestamp = rt_time_now_ms();
+    }
+
+    static now(): int64 {
+        return rt_time_now_ms();
+    }
+
+    getTime(): int64 {
+        return this.timestamp;
+    }
+
+    toISOString(): string {
+        // Return a basic string representation with the timestamp
+        return "Date(" + rt_to_string(this.timestamp) + ")";
+    }
+}

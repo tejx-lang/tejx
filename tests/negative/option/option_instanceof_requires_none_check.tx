@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Optional values must be checked against None before instanceof narrowing.
+
+class Animal {}
+class Dog extends Animal {
+    bark(): void {}
+}
+
+function main() {
+    let a: Optional<Animal> = None;
+    if (a instanceof Dog) {
+        a.bark();
+    }
+}

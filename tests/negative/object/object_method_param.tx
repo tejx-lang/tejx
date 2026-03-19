@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test method parameter type mismatch in object literal.
+
+type Logger = {
+    log: (msg: string) => void;
+};
+
+function main() {
+    let l1: Logger = {
+        log: (msg: int) => {} // Error: parameter type mismatch
+    };
+}

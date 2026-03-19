@@ -1,0 +1,22 @@
+export function abs(x: float): float {
+    return std_math_abs(x);
+}
+
+export function min(a: float, b: float): float {
+    if (a < b) return a;
+    return b;
+}
+
+export function max(a: float, b: float): float {
+    if (a > b) return a;
+    return b;
+}
+
+export function sin(x: float): float { return std_math_sin(x); }
+export function cos(x: float): float { return std_math_cos(x); }
+export function sqrt(x: float): float { return std_math_sqrt(x); }
+export function floor(x: float): float { return std_math_floor(x); }
+export function ceil(x: float): float { return std_math_ceil(x); }
+export function round(x: float): float { return std_math_round(x); }
+export function pow(base: float, exp: float): float { return std_math_pow(base, exp); }
+export function random(): float { return rt_math_random(); }

@@ -29,7 +29,7 @@ function test_custom_modules() {
     // We can't assert exact string if we don't know it, but logic suggests:
     // "Hello from runtime.rs! ..." or based on export_default.tx content. 
     // Let's assume it returns something non-empty.
-    assert_true(len(msg) > 0, "Default export returned message");
+    assert_true(msg.length() > 0, "Default export returned message");
 }
 
 function test_std_imports() {

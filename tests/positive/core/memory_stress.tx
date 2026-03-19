@@ -33,11 +33,11 @@ function test_loop_allocation_stress() {
 
 function test_array_stress() {
     print("--- Array Capacity Stress ---");
-    let arr = [];
+    let arr:Node[] = [];
     for (let i = 0; i < 1000; i++) {
         arr.push(new Node(i, "Dynamic"));
     }
-    assert_eq_int(1000, len(arr), "Array reached 1000 items");
+    assert_eq_int(1000, arr.length(), "Array reached 1000 items");
     
     // Ensure data integrity
     let mid_node = arr[500];
@@ -48,7 +48,7 @@ function test_array_stress() {
     for (let i = 0; i < 1000; i++) {
         arr.pop();
     }
-    assert_eq_int(0, len(arr), "Array fully popped");
+    assert_eq_int(0, arr.length(), "Array fully popped");
 }
 
 function test_string_concatenation_stress() {
@@ -57,7 +57,7 @@ function test_string_concatenation_stress() {
     for (let i = 0; i < 100; i++) {
         builder = builder + "A";
     }
-    assert_eq_int(100, len(builder), "String grew to 100 length securely");
+    assert_eq_int(100, builder.length(), "String grew to 100 length securely");
 }
 
 function test_tagged_pointer_reuse() {

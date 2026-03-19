@@ -1,10 +1,11 @@
 import { Map } from "std:collections";
+import { assert_eq_int } from "../positive/utils.tx";
 
 function getFrequencyKey(word: string): string {
   let chars = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"];
   let counts = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
   
-  for (let i = 0; i < word.length; i++) {
+  for (let i = 0; i < word.length(); i++) {
     let c = word[i];
     for (let j = 0; j < 26; j++) {
       if (c == chars[j]) {
@@ -22,9 +23,9 @@ function getFrequencyKey(word: string): string {
 }
 
 function groupAnagrams(words: string[]): void {
-  let groups: Map<string, string[]> = new Map();
+  let groups: Map<string, string[]> = new Map<string, string[]>();
 
-  for (let i = 0; i < words.length; i++) {
+  for (let i = 0; i < words.length(); i++) {
     let word = words[i];
     let key = getFrequencyKey(word);
     
@@ -37,9 +38,9 @@ function groupAnagrams(words: string[]): void {
 
   // Print grouped anagrams using keys()
   let keys = groups.keys();
-  print("Number of groups: Expected: 3, Actual: ", keys.length);
+  assert_eq_int(3, keys.length(), "Number of groups");
   
-  for (let i = 0; i < keys.length; i++) {
+  for (let i = 0; i < keys.length(); i++) {
     let key = keys[i];
     let list = groups.get(key);
     print("Group: ", list);

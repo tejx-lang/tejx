@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: String can not be assigned to char type
+function main() {
+    let a: char = "hello";
+    print(a);
+}

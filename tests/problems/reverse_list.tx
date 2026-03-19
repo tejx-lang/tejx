@@ -1,6 +1,7 @@
+import {assert_eq_int, assert_true} from "../positive/utils.tx";
 class Node {
   data: int;
-  next: Node | None;
+  next: Optional<Node>;
   constructor(val: int) { 
       this.data = val; 
       this.next = None;
@@ -8,14 +9,14 @@ class Node {
 }
 
 // Reverse a linked list
-function reverseList(head: Node | None): Node | None {
-  let prev: Node | None = None;
-  let current: Node | None = head;
-  let next: Node | None = None;
+function reverseList(head: Optional<Node>): Optional<Node> {
+  let prev: Optional<Node> = None;
+  let current: Optional<Node> = head;
+  let next: Optional<Node> = None;
 
 
   let loopCount = 0;
-  while (!(current == None)) {
+  while (current != None) {
     loopCount = loopCount + 1;
     
     if (loopCount > 5) {
@@ -31,13 +32,7 @@ function reverseList(head: Node | None): Node | None {
   return prev; 
 }
 
-function assert(condition: bool, message: string): void {
-    if (!condition) {
-        print("❌ ASSERT FAILED: " + message);
-    } else {
-        print("✅ PASS: " + message);
-    }
-}
+
 
 function main(): void {
   let n1 = new Node(1);
@@ -53,21 +48,22 @@ function main(): void {
 
   print("Reversed List Check:");
   if (head != None) {
-      print("Head data:", head.data);
+      assert_eq_int(3, head.data, "Head data is not 3");
       if (head.data == 3) {
-           print("Head data Correct");
            // Traverse
            let second = head.next;
            if (second != None) {
-             print("Second data:", second.data);
+             assert_eq_int(2, second.data, "Second data is not 2");
              let third = second.next;
              if (third != None) { 
-                 print("Third data:", third.data);
-                 if (third.next == None) {
-                     print("Tail Correct");
-                 } else {
-                     print("Tail Next is NOT None!");
-                 }
+               assert_eq_int(1, third.data, "Third data is not 1");
+               assert_true(third.next == None, "Tail Next is NOT None!");
+
+               if (third.next == None) {
+                print("Tail Correct");
+               } else {
+                   print("Tail Next is NOT None!");
+               }
              }
            }
       } else {

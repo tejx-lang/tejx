@@ -1,0 +1,41 @@
+// String Equality Test
+// Tests that == compares string CONTENT, not pointer addresses
+
+import { assert_true, assert_false } from "../utils.tx";
+
+function main() {
+    // Same literal
+    let a = "hello";
+    let b = "hello";
+    assert_true(a == b, "same literal equality");
+
+    // Different strings
+    let c = "hello";
+    let d = "world";
+    assert_false(c == d, "different strings should not be equal");
+
+    // Concatenated string vs literal
+    let e = "hel" + "lo";
+    let f = "hello";
+    assert_true(e == f, "concatenated string equals literal");
+
+    // != operator
+    let g = "foo";
+    let h = "bar";
+    assert_true(g != h, "!= works for different strings");
+
+    // Empty strings
+    let empty1 = "";
+    let empty2 = "";
+    assert_true(empty1 == empty2, "empty strings are equal");
+
+    // String with None comparison
+    let maybeStr: Optional<string> = "test";
+    assert_true(maybeStr != None, "string != None");
+
+    // String with None comparison
+    let maybeStr2: Optional<string> = None;
+    assert_true(maybeStr2 == None, "string == None");
+
+    print("String equality tests complete!");
+}

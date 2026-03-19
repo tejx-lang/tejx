@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test specific numeric types like int16 and int128 for size-related mismatches.
+
+function main() {
+    // 1. int16 overflow/mismatch
+    let a: int16 = 32767;
+    let b: int16 = a + 1; // This might overflow at runtime, but assignment from larger type should fail
+    let c: int16 = 40000; // Error: literal too big for int16 (if checked)
+    a = 100_int32; // Error: int32 to int16
+
+    // 2. int128 mismatches
+    let d: int128 = 100_int128;
+    d = "not a number"; // Error: string to int128
+}

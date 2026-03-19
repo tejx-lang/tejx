@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test rest parameter type mismatch in assignment.
+
+function sum(...numbers: int[]): int {
+    return 0; 
+}
+
+function main() {
+    let fn: (...args: string[]) => void = sum; // Error: incompatible rest types
+}

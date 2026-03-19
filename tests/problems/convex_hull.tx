@@ -6,7 +6,8 @@ class Point {
 function orientation(p: Point, q: Point, r: Point): int {
   let val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
   if (val > -0.0001 && val < 0.0001) return 0;  // Collinear
-  return (val > 0.0) ? 1 : 2; // Clockwise or Counter-clockwise
+  if (val > 0.0) { return 1; }
+  else { return 2; }
 }
 
 

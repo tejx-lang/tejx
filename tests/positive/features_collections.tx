@@ -1,38 +1,39 @@
 import { Stack, Queue, PriorityQueue } from "std:collections";
+import { assert_eq_int, assert_true } from "./utils.tx";
 
 function main() {
     print("--- Testing Stack ---");
-    let s = new Stack();
-    print("isEmpty (new): ", s.isEmpty());
+    let s = new Stack<int>();
+    assert_true(s.isEmpty(), "isEmpty (new)");
     s.push(10);
     s.push(20);
     s.push(30);
-    print("size (3): ", s.size());
-    print("peek (30): ", s.peek());
-    print("pop (30): ", s.pop());
-    print("pop (20): ", s.pop());
-    print("size (1): ", s.size());
+    assert_eq_int(s.size(), 3, "size (3)");
+    assert_eq_int(s.peek(), 30, "peek (30)");
+    assert_eq_int(s.pop(), 30, "pop (30)");
+    assert_eq_int(s.pop(), 20, "pop (20)");
+    assert_eq_int(s.size(), 1, "size (1)");
 
     print("\n--- Testing Queue ---");
-    let q = new Queue();
+    let q = new Queue<int>();
     q.enqueue(100);
     q.enqueue(200);
-    print("dequeue (100): ", q.dequeue());
-    print("dequeue (200): ", q.dequeue());
-    print("isEmpty (true): ", q.isEmpty());
+    assert_eq_int(q.dequeue(), 100, "dequeue (100)");
+    assert_eq_int(q.dequeue(), 200, "dequeue (200)");
+    assert_true(q.isEmpty(), "isEmpty (true)");
 
     print("\n--- Testing PriorityQueue ---");
-    let pq = new PriorityQueue();
+    let pq = new PriorityQueue<int>();
     pq.insert(30);
     pq.insert(10);
     pq.insert(20);
     pq.insert(5);
-    print("size (4): ", pq.size());
-    print("extractMin (5): ", pq.extractMin());
-    print("extractMin (10): ", pq.extractMin());
-    print("extractMin (20): ", pq.extractMin());
-    print("extractMin (30): ", pq.extractMin());
-    print("isEmpty (true): ", pq.isEmpty());
+    assert_eq_int(pq.size(), 4, "size (4)");
+    assert_eq_int(pq.extractMin(), 5, "extractMin (5)");
+    assert_eq_int(pq.extractMin(), 10, "extractMin (10)");
+    assert_eq_int(pq.extractMin(), 20, "extractMin (20)");
+    assert_eq_int(pq.extractMin(), 30, "extractMin (30)");
+    assert_true(pq.isEmpty(), "isEmpty (true)");
 
     print("\nCollections test complete!");
 }

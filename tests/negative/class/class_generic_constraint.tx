@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic constraint violation.
+
+class Animal { name: string; }
+class Car { model: string; }
+
+class Box<T: Animal> {
+    item: T;
+    constructor(item: T) { this.item = item; }
+}
+
+function main() {
+    let b2 = new Box<Car>(new Car()); // Error: Car does not extend Animal
+}

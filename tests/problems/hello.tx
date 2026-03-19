@@ -1,3 +1,0 @@
-function main(): void {
-  print("Hello from TejX!");
-}

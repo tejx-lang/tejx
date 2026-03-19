@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic mismatch with Optional types.
+
+function main() {
+    let x: Optional<int> = 10;
+    let y: Optional<string> = x; // Error: Optional<int> is not compatible with Optional<string>
+}

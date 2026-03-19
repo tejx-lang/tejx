@@ -1,5 +1,6 @@
-function f_Solver_isSafe(board: string[][], n: int, row: int, col: int): bool {
-    // print("Checking safe: ", row, col);
+import { assert } from "../positive/utils.tx";
+
+function isSafe(board: string[][], n: int, row: int, col: int): bool {
     for (let i = 0; i < col; i++) {
         if (board[row][i] == "Q") return false;
     }
@@ -12,47 +13,34 @@ function f_Solver_isSafe(board: string[][], n: int, row: int, col: int): bool {
     return true;
 }
 
-function f_Solver_backtrack(board: string[][], n: int, col: int): bool {
-    // print("Backtrack col: ", col);
-    if (col >= n) return true; // All queens placed
+function backtrack(board: string[][], n: int, col: int): bool {
+    if (col >= n) return true;
 
     for (let i = 0; i < n; i++) {
-      if (f_Solver_isSafe(board, n, i, col)) {
+      if (isSafe(board, n, i, col)) {
         board[i][col] = "Q";
-        if (f_Solver_backtrack(board, n, col + 1)) return true;
-        board[i][col] = "."; // Backtrack
+        if (backtrack(board, n, col + 1)) return true;
+        board[i][col] = ".";
       }
     }
     return false;
 }
 
 function solveNQueens(n: int): void {
-  let board: string[][] = new Array(n);
+  let board: string[n][n] = [];
   print("Init board...");
   for(let i = 0; i < n; i++) {
-      board[i] = new Array(n).fill(".");
-      // print("Filled row ", i);
+    let tempArr:string[n]=[];
+    tempArr.fill(".");
+    board[i] = tempArr;
   }
 
   print("Starting backtrack...");
-  let found = f_Solver_backtrack(board, n, 0);
+  let found = backtrack(board, n, 0);
   assert(found == true, "N-Queens Solution should be found for n=4");
-  
-  if (found) {
-       print("Board generated."); 
-  }
 }
 
-function assert(condition: bool, message: string): void {
-  if (!condition) {
-    print("❌ ASSERT FAILED: ", message);
-  } else {
-    print("✅ PASS: ", message);
-  }
-}
-
-function main() {
-  print("STARTING_N_QUEEN");
+function main(): void {
   solveNQueens(4);
-  print("FINISHED_N_QUEEN");
+  print("N-Queens 4 passed.");
 }

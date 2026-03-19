@@ -5,28 +5,77 @@ import {
 } from "std:collections";
 import { assert_eq_int, assert_true, assert_false } from "../utils.tx";
 
+
+
+import std:collections;
+
+function test_stack(): void {
+    print("Testing Stack...");
+    let s = new Stack<int>();
+    s.push(10);
+    s.push(20);
+    assert_eq_int(s.size(), 2, "Stack size");
+    assert_eq_int(s.pop(), 20, "Stack pop");
+    assert_eq_int(s.peek(), 10, "Stack peek");
+    print("Stack OK");
+}
+
+function test_queue(): void {
+    print("Testing Queue...");
+    let q = new Queue<int>();
+    q.enqueue(1);
+    q.enqueue(2);
+    assert_eq_int(q.size(), 2, "Queue size");
+    assert_eq_int(q.dequeue() , 1, "Queue dequeue");
+    print("Queue OK");
+}
+
+function test_map(): void {
+    print("Testing Map...");
+    let m = new Map<string, int>();
+    m.set("key", 123);
+    assert_true(m.has("key"), "Map has key");
+    assert_eq_int(m.get("key"), 123, "Map get key");
+    assert_eq_int(m.size(), 1, "Map size");
+    print("Map OK");
+}
+
+function test_set(): void {
+    print("Testing Set...");
+    let s = new Set<int>();
+    s.add(100);
+    s.add(200);
+    s.add(100);
+    assert_eq_int(s.size(), 2, "Set size");
+    assert_true(s.has(100), "Set has 100");
+    print("Set OK");
+}
+
+
+
+
 function main() {
     print("=== ADVANCED COLLECTIONS START ===");
 
     // MinHeap
-    let minH = new MinHeap();
+    let minH = new MinHeap<int>();
     minH.insert(50); minH.insert(10); minH.insert(30);
     assert_eq_int(10, minH.extractMin(), "MinHeap extract 10");
     assert_eq_int(30, minH.extractMin(), "MinHeap extract 30");
 
     // MaxHeap
-    let maxH = new MaxHeap();
+    let maxH = new MaxHeap<int>();
     maxH.insertMax(10); maxH.insertMax(50); maxH.insertMax(30);
     assert_eq_int(50, maxH.extractMax(), "MaxHeap extract 50");
     
     // OrderedMap
-    let om = new OrderedMap();
+    let om = new OrderedMap<string, int>();
     om.put("b", 2); om.put("a", 1);
     assert_eq_int(1, om.at("a"), "OrderedMap get a");
     assert_eq_int(2, om.size(), "OrderedMap size");
     
     // OrderedSet
-    let os = new OrderedSet();
+    let os = new OrderedSet<int>();
     os.add(100); os.add(50);
     assert_true(os.has(50), "OrderedSet has 50");
     assert_false(os.has(99), "OrderedSet !has 99");
@@ -43,5 +92,11 @@ function main() {
     assert_eq_int(1, t.find("hello"), "Trie find hello");
     assert_eq_int(0, t.find("hell"), "Trie !find hell");
 
+ test_stack();
+    test_queue();
+    test_map();
+    test_set();
+
+    
     print("=== ADVANCED COLLECTIONS COMPLETE ===");
 }

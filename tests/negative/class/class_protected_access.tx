@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test protected member access violation from outside.
+
+class Base {
+    protected y: int = 2;
+    protected protMethod() {}
+}
+
+function main() {
+    let b = new Base();
+    b.y = 200; // Error: protected
+}

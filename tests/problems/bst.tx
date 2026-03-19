@@ -1,35 +1,41 @@
 class TreeNode {
   val: int;
-  left: TreeNode | None = None;
-  right: TreeNode | None = None;
+  left: Optional<TreeNode> = None;
+  right: Optional<TreeNode> = None;
   constructor(v: int) { this.val = v; }
   
   clone(): TreeNode {
     let n = new TreeNode(this.val);
-    if (this.left != None) n.left = this.left.clone();
-    if (this.right != None) n.right = this.right.clone();
+    let left = this.left;
+    if (left != None) {
+      n.left = left.clone();
+    }
+    let right = this.right;
+    if (right != None) {
+      n.right = right.clone();
+    }
     return n;
   }
 }
 
-function hasPathSum(root: TreeNode | None, sum: int): bool {
-  if (root == None) {
-    return false;
+function hasPathSum(root: Optional<TreeNode>, sum: int): bool {
+  if (root != None) {
+    // If we are at a leaf node
+    if (root.left == None && root.right == None) {
+      return sum == root.val;
+    }
+
+    // Recursive check for children
+    let remaining = sum - root.val;
+    return hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
   }
-  
-  // If we are at a leaf node
-  if (root.left == None && root.right == None) {
-    return sum == root.val;
-  }
-  
-  // Recursive check for children
-  let remaining = sum - root.val;
-  return hasPathSum(root.left, remaining) || hasPathSum(root.right, remaining);
+  return false;
 }
 
 function assert(condition: bool, message: string): void {
   if (!condition) {
     print("❌ ASSERT FAILED: ", message);
+    throw "AssertionFailed: " + message;
   } else {
     print("✅ PASS: ", message);
   }
@@ -38,11 +44,17 @@ function assert(condition: bool, message: string): void {
 function main() {
   // Test case
   let root: TreeNode = new TreeNode(5);
-  root.left = new TreeNode(4);
-  root.right = new TreeNode(8);
-  root.left.left = new TreeNode(11);
-  root.left.left.left = new TreeNode(7);
-  root.left.left.right = new TreeNode(2);
+  let left = new TreeNode(4);
+  let right = new TreeNode(8);
+  let leftLeft = new TreeNode(11);
+  let leftLeftLeft = new TreeNode(7);
+  let leftLeftRight = new TreeNode(2);
+
+  root.left = left;
+  root.right = right;
+  left.left = leftLeft;
+  leftLeft.left = leftLeftLeft;
+  leftLeft.right = leftLeftRight;
 
   assert(hasPathSum(root.clone(), 22) == true, "PathSum(22) is true");
   assert(hasPathSum(root.clone(), 26) == false, "PathSum(26) is false");

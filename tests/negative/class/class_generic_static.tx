@@ -1,0 +1,16 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test invalid usage of generic parameters in static context.
+
+class Container<T> {
+    // 1. Using T in a static property should be an error
+    static defaultItem: T; 
+
+    // 2. Using T in a static method should be an error
+    static createDefault(): T {
+        // ...
+    }
+}
+
+function main() {
+    let c = new Container<int>();
+}

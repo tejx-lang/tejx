@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test object literal with duplicate keys.
+
+function main() {
+    let obj = {
+        name: "praveen",
+        age: 21,
+        name: "duplicate"
+    };
+}

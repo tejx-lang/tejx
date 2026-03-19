@@ -1,0 +1,40 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Comprehensive test for primitive type mismatches and operations.
+
+function main() {
+    // 1. int (int32) mismatches
+    let a: int = 10;
+    a = 10.5; // Error: Float32 to Int32
+    a = true; // Error: Bool to Int32
+    a = "10"; // Error: String to Int32
+    
+    // 2. int64 mismatches
+    let b: int64 = 100_000_000_000_int64;
+    b = 10; // This might be allowed (widening), but let's check
+    b = "huge"; // Error: String to Int64
+
+    // 3. float (float32) mismatches
+    let c: float = 1.2;
+    c = "1.2"; // Error: String to Float32
+    c = false; // Error: Bool to Float32
+
+    // 4. bool mismatches
+    let d: bool = true;
+    d = 1; // Error: Int32 to Bool
+    d = "true"; // Error: String to Bool
+
+    // 5. string mismatches
+    let e: string = "hello";
+    e = 123; // Error: Int32 to String
+    e = 'a'; // Error: Char to String (usually separate in Tejx)
+
+    // 6. char mismatches
+    let f: char = 'x';
+    f = "x"; // Error: String to Char
+    f = 120; // Error: Int32 to Char
+
+    // 7. Operations on incompatible types
+    let g = true + false; // Error: + on Bool
+    let h = "hi" * 2; // Error: * on String
+    let i = !10; // Error: ! on Int32
+}

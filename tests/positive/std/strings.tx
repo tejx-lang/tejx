@@ -34,8 +34,11 @@ function main() {
     assert_eq_string("Hello, World!", replaced, "Replaced");
     assert_ne_string("Hello, TejX!", replaced, "Replaced not original");
 
+    let concatenated = trimmed.concat("!!!");
+    assert_eq_string("Hello, TejX!!!!", concatenated, "concat");
+
     // len() from prelude
     let s2 = "Hello";
-    assert_eq_int(5, len(s2), "len(String)");
-    assert_ne_int(0, len(s2), "len(String) not zero");
+    assert_eq_int(5, s2.length(), "String.length()");
+    assert_ne_int(0, s2.length(), "String.length() not zero");
 }

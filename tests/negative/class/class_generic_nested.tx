@@ -1,0 +1,16 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test nested generic mismatch.
+
+class Pair<K, V> {
+    key: K;
+    value: V;
+    constructor(k: K, v: V) {
+        this.key = k;
+        this.value = v;
+    }
+}
+
+function main() {
+    let list1: Pair<int, Pair<int, int>>[] = [];
+    let list2: Pair<int, Pair<int, string>>[] = list1; // Error: nested type mismatch
+}

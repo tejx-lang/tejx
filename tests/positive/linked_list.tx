@@ -1,10 +1,10 @@
 
 // Linked List Traversal (Destructive)
 // ===================================
-
+import { assert_eq_int, assert_true } from "./utils.tx";
 class Node {
     value: int32;
-    next: Node | None;
+    next: Optional<Node>;
 
     constructor(val: int32) {
         this.value = val;
@@ -30,11 +30,14 @@ function main() {
     // Traversal
     print("Traversing (Destructive):");
     
-    let current: Node | None = head;
+    let current: Optional<Node> = head;
     // head is moved to current. head is now Moved.
+    assert_true(current != None, "Current is not None");
+    if (current != None) {
+        assert_eq_int(1, current.value, "Node value");
+    }
 
     while (current != None) {
-        print("Node:", current.value);
         
         let nextNode = current.next;
         // current.next is moved to nextNode.
@@ -42,7 +45,7 @@ function main() {
         // But since we destructively read, 'current' object loses 'next'.
         
         // Check if we can still access value (primitive copy)
-        // print("Still have value:", current.value);
+        print("Still have value:", current.value);
 
         // Move current to next
         current = nextNode;

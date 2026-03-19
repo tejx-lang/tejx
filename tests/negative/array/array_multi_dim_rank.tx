@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test multi-dimensional array rank mismatch.
+
+function main() {
+    let cube: int[][][] = [
+        [[1], [2]],
+        [3] // Error: int[] instead of int[][]
+    ];
+}

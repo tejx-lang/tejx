@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that assigning incompatible class types causes a compile error.
+
+class Cat {
+    meow: bool;
+}
+
+class Dog {
+    bark: bool;
+}
+
+function main() {
+    let myCat: Cat = new Dog(); // Error: Dog is not assignable to Cat
+}

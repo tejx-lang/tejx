@@ -1,0 +1,32 @@
+import { assert_eq_int, assert_true } from "../utils.tx";
+import { Map, Set } from "std:collections";
+
+function countSet(values: Set<int>): int {
+    return values.values().length();
+}
+
+function main() {
+    let nested: Map<string, Set<int>> = new Map();
+    let set = new Set<int>();
+    set.add(1);
+    set.add(2);
+    nested.set("a", set);
+
+    let out = nested.get("a");
+    assert_eq_int(2, out.values().length(), "nested set length");
+    assert_true(out.has(2), "nested set has");
+    assert_eq_int(2, countSet(out), "nested generic arg");
+
+    let deep: Map<string, Map<string, int>> = new Map();
+    let inner: Map<string, int> = new Map();
+    inner.set("x", 42);
+    deep.set("first", inner);
+    let got = deep.get("first");
+    assert_eq_int(42, got.get("x"), "nested map get");
+
+    let buckets: Map<string, int[]> = new Map();
+    buckets.set("list", [5, 6, 7]);
+    let arr = buckets.get("list");
+    assert_eq_int(3, arr.length(), "nested array length");
+    assert_eq_int(6, arr[1], "nested array index");
+}

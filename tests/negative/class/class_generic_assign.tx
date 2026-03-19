@@ -1,0 +1,15 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic assignment incompatibility.
+
+class Pair<K, V> {
+    key: K;
+    value: V;
+    constructor(k: K, v: V) {
+        this.key = k;
+        this.value = v;
+    }
+}
+
+function main() {
+    let p3: Pair<int, string> = new Pair<int, int>(1, 2); // Error: Pair<int, int> to Pair<int, string>
+}

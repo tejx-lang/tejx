@@ -1,0 +1,35 @@
+class Base {}
+class Sub extends Base {}
+class Other extends Base {}
+
+class Box<T: Base> {
+    val: T;
+    
+    constructor(v: T) {
+        this.val = v;
+    }
+    
+    get(): T {
+        return this.val;
+    }
+}
+
+function processNode<N: Base>(node: N): N {
+    return node;
+}
+
+function main(): int {
+    let b1: Base = new Base();
+    let sub: Sub = new Sub();
+    let other: Other = new Other();
+
+    let box1: Box<Base> = new Box<Base>(b1);
+    // Unleashing invalid generic constraint mapping:
+    let box3: Box<Other> = new Box<Other>(other);
+    let box2: Box<Sub> = new Box<Sub>(sub);
+
+    processNode<Base>(b1);
+    processNode<Sub>(sub);
+
+    return 0;
+}

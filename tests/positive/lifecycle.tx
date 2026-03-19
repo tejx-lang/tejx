@@ -1,3 +1,4 @@
+import { assert_eq_int } from "./utils.tx";
 
 class Resource {
     id: int;
@@ -10,7 +11,7 @@ class Resource {
 function basic_lifecycle() {
     print("--- Basic Lifecycle ---");
     let r1 = new Resource(1);
-    print("Using Resource", r1.id);
+    assert_eq_int(r1.id, 1, "Resource id");
     // r1 should be freed here
 }
 
@@ -18,7 +19,7 @@ function move_semantics() {
     print("--- Move Semantics ---");
     let r2 = new Resource(2);
     let r3 = r2; // r2 moved to r3
-    print("Using moved Resource", r3.id);
+    assert_eq_int(r3.id, 2, "Using moved Resource");
     // r3 freed. r2 is dead (not freed again).
 }
 
@@ -28,7 +29,7 @@ function field_consumption() {
     container.id = 100;
     
     // Strict move: Accessing container.id is valid for primitive (Copy)
-    print("Primitive field access:", container.id);
+    assert_eq_int(container.id, 100, "Primitive field access");
     
     // If we had object field, accessing it would consume it.
 }

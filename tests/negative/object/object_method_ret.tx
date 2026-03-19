@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test method return type mismatch in object literal.
+
+type Logger = {
+    log: (msg: string) => void;
+};
+
+function main() {
+    let l2: Logger = {
+        log: (msg: string): int => { return 1; } // Error: return type mismatch
+    };
+}

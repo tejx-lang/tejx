@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test super outside of class.
+
+function main() {
+    super(); // Error: super outside of class
+}

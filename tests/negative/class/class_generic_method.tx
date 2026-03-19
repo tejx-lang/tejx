@@ -1,0 +1,20 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test generic method parameter type mismatch in generic class.
+
+class Pair<K, V> {
+    key: K;
+    value: V;
+    constructor(k: K, v: V) {
+        this.key = k;
+        this.value = v;
+    }
+
+    update(v: V) {
+        this.value = v;
+    }
+}
+
+function main() {
+    let p4 = new Pair<int, string>(1, "test");
+    p4.update(123); // Error: expected string, got int
+}

@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test adding non-existent properties to an object literal.
+
+function main() {
+    let obj = {
+        name: "praveen",
+        age: 21,
+        tests: 23,
+        add: { a: 1, b: 2 }
+    };
+    
+    // This should not be allowed if tejx is statically typed
+    obj.sdf = 34;
+}

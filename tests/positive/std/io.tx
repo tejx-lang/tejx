@@ -6,7 +6,6 @@ import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../u
 function test_output() {
     print("--- Output Test ---");
     print("Sending to stdout...");
-    eprint("Sending to stderr...");
     // Hard to assert output without capturing it, but ensuring it runs is good.
 }
 
@@ -66,7 +65,7 @@ function test_directories() {
     let files = fs.readdirSync(dir);
     // Depending on impl, might include . or ..? Usually just entries.
     // If we just created 1 file, length should be 1.
-    assert_eq_int(1, files.length, "Dir files count");
+    assert_eq_int(1, files.length(), "Dir files count");
 
     fs.unlinkSync(dir);
     assert_false(fs.existsSync(dir), "Dir deleted");

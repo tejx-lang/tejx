@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Optional values cannot be used as the inner type without a None check.
+
+function maybe(): Optional<int> {
+    return None;
+}
+
+function main() {
+    let value: Optional<int> = maybe();
+    let n: int = value;
+    print(n);
+}

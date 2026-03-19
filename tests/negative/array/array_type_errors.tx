@@ -1,0 +1,31 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Comprehensive test for array type mismatches including nesting and fixed/dynamic.
+
+function main() {
+    // 1. Dynamic Array Mismatch
+    let arr1: int[] = [1, 2, 3];
+    arr1 = ["1", "2"]; // Error: string[] to int[]
+
+    // 2. Fixed Array Mismatch
+    let arr2: int[3] = [1, 2, 3];
+    arr2 = [1, 2]; // Error: length mismatch
+    arr2 = [1, 2, 3, 4]; // Error: length mismatch
+
+    // 3. Nested Array Mismatch
+    let arr3: int[][] = [[1], [2]];
+    arr3 = [1, 2]; // Error: int[] to int[][]
+    arr3 = [["1"]]; // Error: string[][] to int[][]
+
+    // 4. Fixed vs Dynamic Array
+    let arr4: int[] = [1, 2, 3];
+    let arr5: int[3] = [1, 2, 3];
+    arr5 = arr4; // Error: dynamic to fixed (unsafe)
+
+    // 5. Slice mismatches
+    // Assuming slice<t> exists
+    let s: slice<int> = [1, 2, 3]; 
+    s = ["1"]; // Error: string[] to slice<int>
+    
+    // 6. Invalid elements in literal
+    let arr6: float[] = [1.1, "2.2", 3.3]; // Error: string in float[]
+}

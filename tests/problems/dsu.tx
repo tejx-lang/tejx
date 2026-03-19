@@ -1,7 +1,8 @@
 class DSU {
   parent: int[];
   constructor(n: int) {
-    this.parent = new Array<int>(n);
+    let tempArr:int[n] =[];
+    this.parent=tempArr;
     for (let i = 0; i < n; i++) this.parent[i] = i;
   }
 

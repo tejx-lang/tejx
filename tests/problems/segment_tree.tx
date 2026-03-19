@@ -1,22 +1,25 @@
 class SegNode {
   val: int;
-  left: SegNode | None;
-  right: SegNode | None;
-  constructor(v: int, l: SegNode | None, r: SegNode | None) {
+  left: Optional<SegNode>;
+  right: Optional<SegNode>;
+  constructor(v: int, l: Optional<SegNode>, r: Optional<SegNode>) {
     this.val = v;
     this.left = l;
     this.right = r;
   }
 }
 
-function update(node: SegNode | None, start: int, end: int, idx: int, val: int): SegNode {
+function update(node: Optional<SegNode>, start: int, end: int, idx: int, val: int): SegNode {
   if (node == None) {
      if (start == end) return new SegNode(val, None, None);
      let mid = (start + end) / 2;
-     // Create a new node if it doesn't exist
-     let newNode = new SegNode(0, None, None); 
-     // Proceed to update it
-     node = newNode; 
+     // Create a new node and recurse into it
+     let newNode = new SegNode(0, None, None);
+     if (idx <= mid) {
+       return new SegNode(newNode.val + val, update(newNode.left, start, mid, idx, val), newNode.right);
+     } else {
+       return new SegNode(newNode.val + val, newNode.left, update(newNode.right, mid + 1, end, idx, val));
+     }
   }
   
   if (start == end) return new SegNode(node.val + val, None, None);

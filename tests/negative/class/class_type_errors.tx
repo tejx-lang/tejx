@@ -1,0 +1,34 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Comprehensive test for class related errors.
+
+class Base {
+    x: int;
+}
+
+class Derived extends Base {
+    y: string;
+}
+
+class Generic<T> {
+    val: T;
+    constructor(v: T) { this.val = v; }
+}
+
+function main() {
+    // 1. Constructor Arg Mismatch
+    let g1 = new Generic<int>("not int"); // Error: string to int
+
+    // 2. Private Access (already test, but good to have here)
+    // 3. Missing Constructor
+    // class NoInit { a: int; }
+    // let n = new NoInit(); // If members must be initialized
+
+    // 4. Inheritance Mismatch
+    let b: Base = new Base();
+    let d: Derived = b; // Error: base to derived (unsafe)
+
+    // 5. Static vs Instance (already tested)
+    
+    // 6. Generic Type Mismatch
+    let g2: Generic<string> = new Generic<int>(10); // Error: Generic<int> to Generic<string>
+}

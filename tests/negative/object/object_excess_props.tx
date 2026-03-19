@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Test excess property checks in object literals.
+
+type Point = { x: int; y: int };
+
+function main() {
+    // Should fail if b is not in Point
+    let p: Point = { x: 1, y: 2, z: 3 }; 
+}

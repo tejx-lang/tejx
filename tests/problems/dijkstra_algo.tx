@@ -7,12 +7,12 @@ class Edge {
 }
 
 function dijkstra(graph: Map<string, Edge[]>, start: string): Map<string, int> {
-  let distances: Map<string, int> = new Map();
-  let pq: PriorityQueue<int> = new PriorityQueue(); // Simplified to int for current runtime support
+  let distances: Map<string, int> = new Map<string, int>();
+  let pq: PriorityQueue<int> = new PriorityQueue<int>(); // Simplified to int for current runtime support
 
   // Initialize distances using keys()
   let nodes = graph.keys();
-  for (let i = 0; i < nodes.length; i++) {
+  for (let i = 0; i < nodes.length(); i++) {
     distances.set(nodes[i], 2147483647); 
   }
   
@@ -31,7 +31,7 @@ function dijkstra(graph: Map<string, Edge[]>, start: string): Map<string, int> {
 
 
 function main() {
-  let graph = new Map();
+  let graph = new Map<string, Edge[]>();
   // A -> B (4), A -> C (2)
   graph.set("A", [new Edge("B", 4), new Edge("C", 2)]);
   graph.set("B", [new Edge("C", 5), new Edge("D", 10)]);
