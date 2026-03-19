@@ -11,7 +11,7 @@ impl CodeGen {
         inst: &MIRInstruction,
         func: &MIRFunction,
         _bb_name: &str,
-        current_bb: usize,
+        _current_bb: usize,
     ) {
         match inst {
             MIRInstruction::Move { dst, src, .. } => {

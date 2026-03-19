@@ -637,6 +637,118 @@ fn mir_function_to_json(func: &MIRFunction) -> Value {
     })
 }
 
+fn is_false_async_ctx_load(inst: &Value) -> Option<String> {
+    let obj = inst.as_object()?;
+    if obj.get("_type")?.as_str()? != "Call" || obj.get("callee")?.as_str()? != "rt_array_get_fast" {
+        return None;
+    }
+    let args = obj.get("args")?.as_array()?;
+    if args.len() != 2 {
+        return None;
+    }
+    let ctx_arg = args[0].as_object()?;
+    if ctx_arg.get("_type")?.as_str()? != "Variable" || ctx_arg.get("name")?.as_str()? != "ctx" {
+        return None;
+    }
+    let index_arg = args[1].as_object()?;
+    if index_arg.get("_type")?.as_str()? != "Constant" || index_arg.get("value")? != &json!(0) {
+        return None;
+    }
+    obj.get("dst")?.as_str().map(str::to_string)
+}
+
+fn false_async_return_value(
+    promise_id_inst: &Value,
+    resolve_inst: &Value,
+    dec_inst: &Value,
+    return_inst: &Value,
+) -> Option<Value> {
+    let promise_id = is_false_async_ctx_load(promise_id_inst)?;
+
+    let resolve_obj = resolve_inst.as_object()?;
+    if resolve_obj.get("_type")?.as_str()? != "Call"
+        || resolve_obj.get("callee")?.as_str()? != "rt_promise_resolve"
+    {
+        return None;
+    }
+    let resolve_args = resolve_obj.get("args")?.as_array()?;
+    if resolve_args.len() != 2 {
+        return None;
+    }
+    let promise_arg = resolve_args[0].as_object()?;
+    if promise_arg.get("_type")?.as_str()? != "Variable"
+        || promise_arg.get("name")?.as_str()? != promise_id
+    {
+        return None;
+    }
+
+    let dec_obj = dec_inst.as_object()?;
+    if dec_obj.get("_type")?.as_str()? != "Call"
+        || dec_obj.get("callee")?.as_str()? != "tejx_dec_async_ops"
+    {
+        return None;
+    }
+
+    let return_obj = return_inst.as_object()?;
+    if return_obj.get("_type")?.as_str()? != "Return" || !return_obj.get("value").is_some_and(Value::is_null) {
+        return None;
+    }
+
+    Some(resolve_args[1].clone())
+}
+
+fn normalize_false_async_workers(mir_functions: &mut [Value]) {
+    for func in mir_functions {
+        let Some(name) = func.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !name.ends_with("_worker") {
+            continue;
+        }
+
+        let has_ctx_param = func
+            .get("params")
+            .and_then(|value| value.as_array())
+            .map(|params| params.iter().any(|param| param.as_str() == Some("ctx")))
+            .unwrap_or(false);
+        if has_ctx_param {
+            continue;
+        }
+
+        let Some(blocks) = func.get_mut("blocks").and_then(|value| value.as_array_mut()) else {
+            continue;
+        };
+
+        for block in blocks {
+            let Some(instructions) = block.get_mut("instructions").and_then(|value| value.as_array_mut()) else {
+                continue;
+            };
+            if instructions.len() < 4 {
+                continue;
+            }
+
+            let tail = instructions.len() - 4;
+            if let Some(return_value) = false_async_return_value(
+                &instructions[tail],
+                &instructions[tail + 1],
+                &instructions[tail + 2],
+                &instructions[tail + 3],
+            ) {
+                let line = instructions[tail + 3]
+                    .get("line")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                instructions.truncate(tail);
+                instructions.push(json!({
+                    "_type": "Return",
+                    "line": line,
+                    "value": return_value,
+                }));
+            }
+        }
+    }
+}
+
 fn diagnostic_to_json(stage: &str, diag: &Diagnostic, source: &str) -> Value {
     json!({
         "ok": false,
@@ -733,6 +845,7 @@ fn compile_report(source: String, filename: String, config: Value) -> Result<Val
         }
         mir_json_functions.push(mir_function_to_json(&mir_func));
     }
+    normalize_false_async_workers(&mut mir_json_functions);
 
     log_internal("Codegen...");
     let mut wasm_codegen = WasmCodeGen::new(codegen_config);

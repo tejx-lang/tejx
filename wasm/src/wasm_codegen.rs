@@ -6,6 +6,7 @@ pub struct WasmCodeGen {
     current_func: String,
     generated_ids: std::collections::HashSet<String>,
     signatures: std::collections::HashMap<String, usize>,
+    table_indices: std::collections::HashMap<String, usize>,
     string_constants: Vec<String>,
 }
 
@@ -76,6 +77,13 @@ impl WasmCodeGen {
         format!("{}{}", L_PREFIX, mangle(mir_name))
     }
 
+    fn function_table_index(&self, mir_name: &str) -> Option<usize> {
+        self.table_indices
+            .get(mir_name)
+            .copied()
+            .or_else(|| self.table_indices.get(&Self::normalize_mir_name(mir_name)).copied())
+    }
+
     fn string_offset(&self, s: &str) -> usize {
         let idx = self.string_constants.iter().position(|x| x == s).unwrap_or(0);
         1024 + self.string_constants[..idx].iter().map(|item| item.len() + 1).sum::<usize>()
@@ -117,6 +125,7 @@ impl WasmCodeGen {
             current_func: String::new(),
             generated_ids: std::collections::HashSet::new(),
             signatures: std::collections::HashMap::new(),
+            table_indices: std::collections::HashMap::new(),
             string_constants: Vec::new(),
         }
     }
@@ -229,29 +238,11 @@ impl WasmCodeGen {
         self.buffer.push('\n');
     }
 
-    fn emit_import(&mut self, module: &str, name: &str, params: &[&str], results: &[&str]) {
-        let wasm_id = format!("{}{}", F_PREFIX, mangle(name));
-        let mut p_str = String::new();
-        for p in params {
-            p_str.push_str(" ");
-            p_str.push_str(p);
-        }
-        let mut r_str = String::new();
-        for r in results {
-            r_str.push_str(" (result ");
-            r_str.push_str(r);
-            r_str.push_str(")");
-        }
-        self.emit_line(&format!(
-            "(import \"{}\" \"{}\" (func ${} (param{}){}))",
-            module, name, wasm_id, p_str, r_str
-        ));
-    }
-
     pub fn generate_wat_generic(&mut self, mir_functions: Value) -> String {
         self.buffer.clear();
         self.string_constants.clear();
         self.generated_ids.clear();
+        self.table_indices.clear();
 
         // 0. Pre-populate function sets to distinguish between local and FFI
         let mut extern_calls = std::collections::HashMap::new();
@@ -338,13 +329,26 @@ impl WasmCodeGen {
                 for func in funcs {
                     if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
                         if !func.get("is_extern").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            let table_index = elem_items.len();
+                            self.table_indices.insert(name.to_string(), table_index);
+                            self.table_indices
+                                .entry(Self::normalize_mir_name(name))
+                                .or_insert(table_index);
                             elem_items.push(format!("${}", self.wasm_func_id(name)));
                         }
                     }
                 }
             }
             // 2. Add all imported functions (must be in the table to support indirect calls)
-            for (wasm_id, _) in &params_counts {
+            for (callee, _) in extern_calls.iter() {
+                let table_index = elem_items.len();
+                self.table_indices
+                    .entry(callee.to_string())
+                    .or_insert(table_index);
+                self.table_indices
+                    .entry(Self::normalize_mir_name(callee))
+                    .or_insert(table_index);
+                let wasm_id = self.wasm_func_id(callee);
                 elem_items.push(format!("${}", wasm_id));
             }
 
@@ -893,6 +897,13 @@ impl WasmCodeGen {
             }
             "Variable" => {
                 let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let ty_name = obj.get("ty").and_then(|v| v.as_str()).unwrap_or("");
+                if ty_name.starts_with("Function") {
+                    if let Some(table_index) = self.function_table_index(name) {
+                        self.emit_line(&format!("i64.const {}", table_index));
+                        return;
+                    }
+                }
                 if name.starts_with("g_") {
                     self.emit_line(&format!("global.get ${}", self.wasm_global_id(name)));
                 } else {

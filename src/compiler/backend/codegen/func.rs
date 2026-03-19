@@ -566,13 +566,6 @@ impl CodeGen {
         }
     }
 
-    fn array_element_fixed_layout_type(ty: &TejxType) -> Option<TejxType> {
-        if !ty.is_array() {
-            return None;
-        }
-        Self::fixed_layout_object_type(&ty.get_array_element_type())
-    }
-
     pub(crate) fn needs_arena(&self, func: &MIRFunction) -> bool {
         for bb in &func.blocks {
             for inst in &bb.instructions {
