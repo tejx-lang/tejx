@@ -1,88 +1,65 @@
 // Network Tests
 // =============
 import std:net;
-import { assert_eq_int, assert_true } from "../utils.tx";
+import { assert_eq_string, assert_true } from "../utils.tx";
 
-async function test_http_sync() {
-    print("--- HTTP Sync ---");
-    let url = "https://example.com";
-    print("GET Sync: ", url);
-    let res = http.getSync(url);
-    assert_true(res != "", "Response received");
-    if (res != "") {
-        print("Success Sync. Length: ", res.length());
-        assert_true(res.length() > 0, "Response received");
-    } else {
-        print("WARN: HTTP Sync request failed or empty (network issue?)");
+class BoundListener {
+    addr: string;
+    listener: TcpListener;
+
+    constructor(addr: string, listener: TcpListener) {
+        this.addr = addr;
+        this.listener = listener;
     }
 }
 
-async function test_http_async() {
-    print("--- HTTP Async ---");
-    let url = "https://example.com";
-    print("GET Async: ", url);
-    let res = await http.get(url);
-    assert_true(res != "", "Response received");
-    if (res != "") {
-        print("Success Async. Length: ", res.length());
-        assert_true(res.length() > 0, "Async Response received");
-    } else {
-        print("WARN: HTTP Async request failed or empty");
+function open_listener(): BoundListener {
+    let ports = [43123, 43124, 43125, 43126, 43127, 43128];
+    for (let i = 0; i < ports.length(); i++) {
+        let addr = "127.0.0.1:" + ports[i];
+        try {
+            let listener = net.listen(addr);
+            return new BoundListener(addr, listener);
+        } catch (e) {
+        }
     }
+
+    throw new Error("No free local TCP test port");
 }
 
-function test_tcp_connect() {
-    print("--- TCP Connect ---");
-    let stream = net.connect("example.com:80");
-    print("Connect result: ", stream);
-    assert_true(stream != None, "TCP Connect success");
-    if (stream != None) {
-        print("Connected to example.com:80");
-        net.close(stream);
-        assert_true(true, "TCP Connect success");
-    } else {
-        print("WARN: TCP Connect failed");
+function test_tcp_round_trip() {
+    print("--- TCP Round Trip ---");
+    let bound = open_listener();
+    let listener = bound.listener;
+    let client = net.connect(bound.addr);
+    assert_true(client != None, "Client connected to local listener");
+
+    let server = listener.accept();
+    if (client != None) {
+        client.send("ping");
+        let incoming = server.receive(16);
+        assert_eq_string("ping", incoming, "Server received client payload");
+
+        server.send("pong");
+        let reply = client.receive(16);
+        assert_eq_string("pong", reply, "Client received server payload");
+
+        client.close();
     }
+
+    server.close();
+    listener.close();
 }
 
-async function test_parallel_requests() {
-    print("--- Parallel Requests ---");
-    let url = "https://example.com";
-    let p1 = http.get(url);
-    let p2 = http.get(url);
-    
-    let results = await Promise.all([p1, p2]);
-    assert_eq_int(results.length(), 2, "Parallel fetch done");
+function test_connect_failure() {
+    print("--- TCP Connect Failure ---");
+    let stream = net.connect("127.0.0.1:43999");
+    assert_true(stream == None, "Connect to unopened port returns None");
 }
 
-async function test_404() {
-    print("--- HTTP 404 ---");
-    let url = "https://example.com/this-page-definitely-does-not-exist-123";
-    let res = await http.get(url);
-    // 404 usually returns a body (error page).
-    print("404 Response Length: ", res.length());
-    assert_true(res.length() > 0, "404 Response received");
-}
-
-async function test_dns_fail() {
-    print("--- DNS Failure ---");
-    let url = "https://tejx-net-test.invalid";
-    try {
-        await http.get(url);
-        assert_true(false, "Unexpected success for bad DNS");
-    } catch (e) {
-        print("Caught expected error for bad DNS: ", e);
-        assert_true(true, "Caught DNS error");
-    }
-}
-
-async function main() {
+function main() {
     print("=== NET TESTS START ===");
-    test_tcp_connect();
-    test_http_sync();
-    await test_http_async();
-    await test_parallel_requests();
-    await test_404();
-    await test_dns_fail();
+    test_tcp_round_trip();
+    test_connect_failure();
     print("=== NET TESTS COMPLETE ===");
 }

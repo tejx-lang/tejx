@@ -64,6 +64,45 @@ pub unsafe extern "C" fn rt_net_receive_resolver_worker(args: i64) {
     rt_promise_resolve(pid, res_str);
 }
 #[no_mangle]
+pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
+    if let Some(addr) = i64_to_rust_str(addr_ptr) {
+        match std::net::TcpListener::bind(&addr) {
+            Ok(listener) => {
+                let boxed = Box::new(listener);
+                Box::into_raw(boxed) as i64
+            }
+            Err(_) => -1,
+        }
+    } else {
+        -1
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
+    if listener_ptr <= 0 {
+        return -1;
+    }
+    let listener = &*(listener_ptr as *const std::net::TcpListener);
+    match listener.accept() {
+        Ok((stream, _)) => {
+            let boxed = Box::new(stream);
+            Box::into_raw(boxed) as i64
+        }
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_net_close_listener(listener_ptr: i64) -> i64 {
+    if listener_ptr <= 0 {
+        return -1;
+    }
+    let _ = Box::from_raw(listener_ptr as *mut std::net::TcpListener);
+    0
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_net_close(stream: i64) -> i64 {
     if stream <= 0 {
         return -1;

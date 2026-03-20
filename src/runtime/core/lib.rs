@@ -4,8 +4,6 @@ pub mod atomic;
 pub use atomic::*;
 pub mod condition;
 pub use condition::*;
-pub mod internal_http;
-pub use internal_http::*;
 pub mod math;
 pub use math::*;
 pub mod mutex;

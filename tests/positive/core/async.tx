@@ -1,6 +1,5 @@
 // Async Tests (Consolidated)
 // =========================
-import { http } from "std:net";
 import { assert_eq_int, assert_eq_string } from "../utils.tx";
 
 // --- From features_async.tx ---
@@ -226,4 +225,3 @@ async function main() {
     await test_async_oop();
     print("=== ASYNC TESTS COMPLETE ===");
 }
-
