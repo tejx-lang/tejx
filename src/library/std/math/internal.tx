@@ -1,0 +1,173 @@
+extern function std_math_sin(x: float): float;
+extern function std_math_cos(x: float): float;
+extern function std_math_tan(x: float): float;
+extern function std_math_asin(x: float): float;
+extern function std_math_acos(x: float): float;
+extern function std_math_atan(x: float): float;
+extern function std_math_sqrt(x: float): float;
+extern function std_math_floor(x: float): float;
+extern function std_math_ceil(x: float): float;
+extern function std_math_round(x: float): float;
+extern function std_math_pow(base: float, exp: float): float;
+extern function std_math_powi(base: float, exp: int): float;
+extern function std_math_abs(x: float): float;
+extern function std_math_exp(x: float): float;
+extern function std_math_log(x: float): float;
+extern function std_math_min(a: float, b: float): float;
+extern function std_math_max(a: float, b: float): float;
+extern function rt_random_seed(seed: int64): void;
+extern function rt_random(): float;
+extern function rt_random_int(lower: int, upper: int): int;
+
+function _math_abs(x: float): float {
+    return std_math_abs(x);
+}
+
+function _math_is_integer(x: float): bool {
+    let whole: int = x as int;
+    return (whole as float) == x;
+}
+
+function _math_min(a: float, b: float): float {
+    return std_math_min(a, b);
+}
+
+function _math_max(a: float, b: float): float {
+    return std_math_max(a, b);
+}
+
+function _math_clamp(value: float, lower: float, upper: float): float {
+    let lo = lower;
+    let hi = upper;
+    if (lo > hi) {
+        let swap = lo;
+        lo = hi;
+        hi = swap;
+    }
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+function _math_sign(value: float): int {
+    if (value > 0.0) return 1;
+    if (value < 0.0) return -1;
+    return 0;
+}
+
+function _math_lerp(start: float, end: float, amount: float): float {
+    return start + (end - start) * amount;
+}
+
+function _math_trunc(x: float): float {
+    let whole: int = x as int;
+    return whole as float;
+}
+
+function _math_floor(x: float): float {
+    return std_math_floor(x);
+}
+
+function _math_ceil(x: float): float {
+    return std_math_ceil(x);
+}
+
+function _math_round(x: float): float {
+    return std_math_round(x);
+}
+
+function _math_sqrt(x: float): float {
+    if (x < 0.0) {
+        throw new Error("sqrt() domain error");
+    }
+    return std_math_sqrt(x);
+}
+
+function _math_exp(x: float): float {
+    return std_math_exp(x);
+}
+
+function _math_ln(x: float): float {
+    if (x <= 0.0) {
+        throw new Error("ln() domain error");
+    }
+    return std_math_log(x);
+}
+
+function _math_pow(base: float, exponent: float): float {
+    if (exponent == 0.0) return 1.0;
+    if (base == 0.0) {
+        if (exponent < 0.0) {
+            throw new Error("pow() domain error");
+        }
+        return 0.0;
+    }
+
+    let exponentIsInt = exponent >= -2147483648.0
+        && exponent <= 2147483647.0
+        && _math_is_integer(exponent);
+
+    if (base < 0.0 && !exponentIsInt) {
+        throw new Error("pow() domain error");
+    }
+
+    if (exponentIsInt) {
+        return std_math_powi(base, exponent as int);
+    }
+
+    return std_math_pow(base, exponent);
+}
+
+function _math_powi(base: float, exponent: int): float {
+    if (exponent == 0) return 1.0;
+    if (base == 0.0) {
+        if (exponent < 0) {
+            throw new Error("powi() domain error");
+        }
+        return 0.0;
+    }
+
+    return std_math_powi(base, exponent);
+}
+
+function _math_sin(x: float): float {
+    return std_math_sin(x);
+}
+
+function _math_cos(x: float): float {
+    return std_math_cos(x);
+}
+
+function _math_tan(x: float): float {
+    return std_math_tan(x);
+}
+
+function _math_asin(x: float): float {
+    if (x < -1.0 || x > 1.0) {
+        throw new Error("asin() domain error");
+    }
+    return std_math_asin(x);
+}
+
+function _math_acos(x: float): float {
+    if (x < -1.0 || x > 1.0) {
+        throw new Error("acos() domain error");
+    }
+    return std_math_acos(x);
+}
+
+function _math_atan(x: float): float {
+    return std_math_atan(x);
+}
+
+function _math_seed_random(seed: int64): void {
+    rt_random_seed(seed);
+}
+
+function _math_random(): float {
+    return rt_random();
+}
+
+function _math_random_int(lower: int, upper: int): int {
+    return rt_random_int(lower, upper);
+}

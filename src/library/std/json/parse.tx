@@ -1,0 +1,166 @@
+function _json_parse(s: string): any {
+    let index = 0;
+    let len = s.length();
+
+    function skipWhitespace() {
+        while (index < len) {
+            let ch = s[index];
+            if (ch == " " || ch == "\n" || ch == "\t" || ch == "\r") {
+                index++;
+            } else {
+                break;
+            }
+        }
+    }
+
+    function parseString(): string {
+        index++;
+        let res = "";
+        while (index < len) {
+            let ch = s[index];
+            if (ch == "\"") {
+                index++;
+                return res;
+            }
+            if (ch == "\\") {
+                index++;
+                if (index < len) {
+                    let esc = s[index];
+                    if (esc == "\"") res = res + "\"";
+                    else if (esc == "\\") res = res + "\\";
+                    else if (esc == "/") res = res + "/";
+                    else if (esc == "b") res = res + "\b";
+                    else if (esc == "f") res = res + "\f";
+                    else if (esc == "n") res = res + "\n";
+                    else if (esc == "r") res = res + "\r";
+                    else if (esc == "t") res = res + "\t";
+                    else res = res + esc;
+                }
+            } else {
+                res = res + ch;
+            }
+            index++;
+        }
+        throw new Error("SyntaxError: Unterminated string in JSON");
+    }
+
+    function parseNumber(): float {
+        let start = index;
+        if (index < len && s[index] == "-") index++;
+
+        while (index < len) {
+            let ch = s[index];
+            if ((ch >= "0" && ch <= "9") || ch == "." || ch == "e" || ch == "E" || ch == "+" || ch == "-") {
+                index++;
+            } else {
+                break;
+            }
+        }
+
+        if (start == index) throw new Error("SyntaxError: Expected number");
+
+        let numStr = s.substring(start, index);
+        return parseFloat(numStr);
+    }
+
+    function parseArray(): any[] {
+        index++;
+        let res: any[] = [];
+        skipWhitespace();
+
+        if (index < len && s[index] == "]") {
+            index++;
+            return res;
+        }
+
+        while (index < len) {
+            let item: any = parseValue();
+            res.push(item);
+            skipWhitespace();
+
+            let ch = s[index];
+            if (ch == ",") {
+                index++;
+            } else if (ch == "]") {
+                index++;
+                return res;
+            } else {
+                throw new Error("SyntaxError: Expected ',' or ']' after array element");
+            }
+        }
+
+        throw new Error("SyntaxError: Unterminated array");
+    }
+
+    function parseObject(): any {
+        index++;
+        let res: any = {};
+        skipWhitespace();
+
+        if (index < len && s[index] == "}") {
+            index++;
+            return res;
+        }
+
+        while (index < len) {
+            skipWhitespace();
+            if (s[index] != "\"") throw new Error("SyntaxError: Expected string key in object");
+
+            let key = parseString();
+            skipWhitespace();
+
+            if (s[index] != ":") throw new Error("SyntaxError: Expected ':' after property key");
+            index++;
+
+            let val: any = parseValue();
+            res[key] = val;
+
+            skipWhitespace();
+            let ch = s[index];
+            if (ch == ",") {
+                index++;
+            } else if (ch == "}") {
+                index++;
+                return res;
+            } else {
+                throw new Error("SyntaxError: Expected ',' or '}' after property value");
+            }
+        }
+
+        throw new Error("SyntaxError: Unterminated object");
+    }
+
+    function parseLiteral(word: string, returnValue: any): any {
+        let wordLen = word.length();
+        let slice = s.substring(index, index + wordLen);
+        if (slice == word) {
+            index = index + wordLen;
+            return returnValue;
+        }
+        throw new Error("SyntaxError: Unexpected token at index " + rt_to_string(index));
+    }
+
+    function parseValue(): any {
+        skipWhitespace();
+        if (index >= len) throw new Error("SyntaxError: Unexpected end of JSON input");
+
+        let ch = s[index];
+        if (ch == "{") return parseObject();
+        if (ch == "[") return parseArray();
+        if (ch == "\"") return parseString();
+        if (ch == "t") return parseLiteral("true", true);
+        if (ch == "f") return parseLiteral("false", false);
+        if (ch == "n") return parseLiteral("null", None);
+        if ((ch >= "0" && ch <= "9") || ch == "-") return parseNumber();
+
+        throw new Error("SyntaxError: Unexpected token '" + ch + "'");
+    }
+
+    let result: any = parseValue();
+    skipWhitespace();
+    if (index < len) {
+        throw new Error("SyntaxError: Unexpected data after JSON payload");
+    }
+
+    return result;
+}

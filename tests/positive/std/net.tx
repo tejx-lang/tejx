@@ -1,14 +1,17 @@
 // Network Tests
 // =============
 import std:net;
-import { assert_eq_string, assert_true } from "../utils.tx";
+import std:binary;
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
 class BoundListener {
     addr: string;
+    port: int;
     listener: TcpListener;
 
-    constructor(addr: string, listener: TcpListener) {
+    constructor(addr: string, port: int, listener: TcpListener) {
         this.addr = addr;
+        this.port = port;
         this.listener = listener;
     }
 }
@@ -19,7 +22,7 @@ function open_listener(): BoundListener {
         let addr = "127.0.0.1:" + ports[i];
         try {
             let listener = net.listen(addr);
-            return new BoundListener(addr, listener);
+            return new BoundListener(addr, ports[i], listener);
         } catch (e) {
         }
     }
@@ -31,7 +34,10 @@ function test_tcp_round_trip() {
     print("--- TCP Round Trip ---");
     let bound = open_listener();
     let listener = bound.listener;
-    let client = net.connect(bound.addr);
+    let localhost = dns.lookup("localhost");
+    assert_true(localhost != None, "DNS lookup resolves localhost");
+
+    let client = net.connectHost("localhost", bound.port);
     assert_true(client != None, "Client connected to local listener");
 
     let server = listener.accept();
@@ -44,6 +50,38 @@ function test_tcp_round_trip() {
         let reply = client.receive(16);
         assert_eq_string("pong", reply, "Client received server payload");
 
+        let packetWriter = binary.writer();
+        packetWriter.writeU8(1);
+        packetWriter.writeU16LE(1025);
+        packetWriter.writeCString("db");
+        let packet = packetWriter.toBytes();
+
+        assert_true(client.writeBytes(packet), "Client wrote binary payload");
+        let serverPacket = server.readExactBytes(packet.length());
+        assert_true(serverPacket != None, "Server exact-read binary payload");
+        if (serverPacket != None) {
+            let reader = binary.reader(serverPacket as int[]);
+            assert_eq_int(1, reader.readU8(), "Server packet byte");
+            assert_eq_int(1025, reader.readU16LE(), "Server packet u16");
+            assert_eq_string("db", reader.readCString(), "Server packet cstring");
+        }
+
+        let replyWriter = new ByteWriter();
+        replyWriter.writeU8(9);
+        replyWriter.writeU8(8);
+        replyWriter.writeU8(7);
+        let replyPacket = replyWriter.toBytes();
+        assert_true(server.writeBytes(replyPacket), "Server wrote binary payload");
+
+        let clientPacket = client.readExactBytes(3);
+        assert_true(clientPacket != None, "Client exact-read binary payload");
+        if (clientPacket != None) {
+            let bytes = clientPacket as int[];
+            assert_eq_int(9, bytes[0], "Client packet first byte");
+            assert_eq_int(8, bytes[1], "Client packet second byte");
+            assert_eq_int(7, bytes[2], "Client packet third byte");
+        }
+
         client.close();
     }
 
@@ -53,7 +91,7 @@ function test_tcp_round_trip() {
 
 function test_connect_failure() {
     print("--- TCP Connect Failure ---");
-    let stream = net.connect("127.0.0.1:43999");
+    let stream = net.connectHost("localhost", 43999);
     assert_true(stream == None, "Connect to unopened port returns None");
 }
 

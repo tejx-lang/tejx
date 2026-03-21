@@ -1,11 +1,11 @@
+pub mod binary;
+pub use binary::*;
 pub mod array;
 pub use array::*;
 pub mod atomic;
 pub use atomic::*;
 pub mod condition;
 pub use condition::*;
-pub mod math;
-pub use math::*;
 pub mod mutex;
 pub use mutex::*;
 pub mod net;
@@ -36,6 +36,26 @@ use std::sync::{LazyLock, Mutex};
 const STRING_FLAG_FROZEN: u16 = 0x0800;
 static CONST_STRING_SLOTS: LazyLock<Mutex<HashMap<usize, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static RNG_STATE: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
+
+fn runtime_seed_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let addr_mix = (&nanos as *const u64 as usize) as u64;
+    let seed = nanos ^ addr_mix.rotate_left(13);
+    if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed }
+}
+
+fn splitmix64_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
 
 pub unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
     let cstr = std::ffi::CString::new(msg).unwrap_or_else(|_| {
@@ -82,20 +102,12 @@ pub static TAG_FUNCTION: i64 = 8;
 pub static TAG_PROMISE: i64 = 10;
 #[no_mangle]
 pub static TAG_RAW_DATA: i64 = 11;
-#[no_mangle]
-pub static TAG_MAP: i64 = 12;
 
 // --- Object Layout Constants ---
 pub const OBJECT_SIZE_OFFSET: isize = 0;
 pub const OBJECT_CAP_OFFSET: isize = 8;
 pub const OBJECT_KEYS_OFFSET: isize = 16;
 pub const OBJECT_VALUES_OFFSET: isize = 24;
-
-pub const MAP_SIZE_OFFSET: isize = 0;
-pub const MAP_CAP_OFFSET: isize = 8;
-pub const MAP_KEYS_OFFSET: isize = 16;
-pub const MAP_VALUES_OFFSET: isize = 24;
-pub const MAP_STATES_OFFSET: isize = 32;
 
 pub const ARRAY_FLAG_FIXED: i64 = 0x0100;
 pub const ARRAY_FLAG_CONSTANT: i64 = 0x0200;
@@ -1120,6 +1132,95 @@ pub unsafe extern "C" fn rt_time_now_ms() -> i64 {
         .as_millis() as i64
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn rt_time_to_iso_string(timestamp_ms: i64) -> i64 {
+    let seconds = timestamp_ms.div_euclid(1000);
+    let millis = timestamp_ms.rem_euclid(1000);
+
+    let mut tm: libc::tm = std::mem::zeroed();
+    #[cfg(unix)]
+    let ok = {
+        let seconds_unix: libc::time_t = seconds as libc::time_t;
+        !libc::gmtime_r(&seconds_unix, &mut tm).is_null()
+    };
+    #[cfg(windows)]
+    let ok = {
+        let seconds_windows: libc::time_t = seconds as libc::time_t;
+        libc::gmtime_s(&mut tm, &seconds_windows) == 0
+    };
+
+    if !ok {
+        return rt_string_from_c_str("Invalid Date\0".as_ptr() as *const _);
+    }
+
+    let formatted = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        millis
+    );
+    let cstr = std::ffi::CString::new(formatted).unwrap_or_default();
+    rt_string_from_c_str(cstr.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_random_seed(seed: i64) {
+    if let Ok(mut state) = RNG_STATE.lock() {
+        let next = if seed == 0 {
+            runtime_seed_now()
+        } else {
+            seed as u64
+        };
+        *state = if next == 0 { 1 } else { next };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_random() -> f64 {
+    let next = if let Ok(mut state) = RNG_STATE.lock() {
+        if *state == 0 {
+            *state = runtime_seed_now();
+        }
+        splitmix64_next(&mut state)
+    } else {
+        let mut fallback = runtime_seed_now();
+        splitmix64_next(&mut fallback)
+    };
+
+    let mantissa = next >> 11;
+    (mantissa as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_random_int(lower: i64, upper: i64) -> i64 {
+    let (lo, hi) = if lower <= upper {
+        (lower, upper)
+    } else {
+        (upper, lower)
+    };
+
+    let span = (hi as i128) - (lo as i128) + 1;
+    if span <= 0 {
+        return lo;
+    }
+
+    let next = if let Ok(mut state) = RNG_STATE.lock() {
+        if *state == 0 {
+            *state = runtime_seed_now();
+        }
+        splitmix64_next(&mut state)
+    } else {
+        let mut fallback = runtime_seed_now();
+        splitmix64_next(&mut fallback)
+    };
+
+    lo + (next % (span as u64)) as i64
+}
+
 // --- Timer Management ---
 use std::sync::atomic::AtomicI64;
 use std::time::Duration;
@@ -1282,11 +1383,6 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
 
 
 
-static mut RNG_STATE: u64 = 0;
-
-
-
-
 // --- Fast Path Helpers (for Codegen) ---
 
 #[no_mangle]
@@ -1295,34 +1391,6 @@ pub unsafe extern "C" fn rt_to_number_v2(v: i64) -> i64 {
     // instead of boxing it back in TAG_FLOAT. This allows LLVM to `bitcast` it directly to `double`.
     let f = rt_to_number(v); // Returns a f64
     f.to_bits() as i64
-}
-
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_get_fast(this: i64, key: i64) -> i64 {
-    let mut _key = key;
-    if (key as u64) >= (HEAP_OFFSET as u64) {
-        let k_ptr = (key - HEAP_OFFSET) as *mut i64;
-        if *k_ptr == TAG_FLOAT {
-            let f = *(k_ptr.offset(1) as *const f64);
-            if f.fract() == 0.0 && f >= 0.0 && f < (HEAP_OFFSET as f64) {
-                _key = f as i64;
-            }
-        }
-    }
-
-    if (this as u64) >= (HEAP_OFFSET as u64) {
-        let tag = *((this - HEAP_OFFSET) as *mut i64);
-        if tag == TAG_ARRAY {
-            let idx = if _key >= 0 && (_key as u64) < (HEAP_OFFSET as u64) {
-                _key
-            } else {
-                return 0;
-            };
-            return rt_array_get_fast(this, idx);
-        }
-    }
-    0 // Dynamic property access on objects via string keys no longer supported without Map
 }
 
 extern "C" {
@@ -1659,39 +1727,6 @@ pub unsafe extern "C" fn rt_to_boolean(val: i64) -> i64 {
     }
     1 // Other objects are truthy
 }
-
-
-
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_set_fast(this: i64, key: i64, val: i64) {
-    let mut _key = key;
-    if (key as u64) >= (HEAP_OFFSET as u64) {
-        let k_ptr = (key - HEAP_OFFSET) as *mut i64;
-        if *k_ptr == TAG_FLOAT {
-            let f = *(k_ptr.offset(1) as *const f64);
-            if f.fract() == 0.0 && f >= 0.0 && f < (HEAP_OFFSET as f64) {
-                _key = f as i64;
-            }
-        }
-    }
-
-    let unboxed_val = val;
-    if (this as u64) >= (HEAP_OFFSET as u64) {
-        let tag = *((this - HEAP_OFFSET) as *mut i64);
-        if tag == TAG_ARRAY {
-            let idx = if _key >= 0 && (_key as u64) < (HEAP_OFFSET as u64) {
-                _key
-            } else {
-                return;
-            };
-            rt_array_set_fast(this, idx, unboxed_val);
-            return;
-        }
-    }
-    // Dynamic property access on objects via string keys no longer supported without Map
-}
-
 // --- Atomic Operations ---
 // Atomic objects store an AtomicI64 at offset 0 (as a boxed pointer)
 
@@ -2413,59 +2448,6 @@ pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
 pub unsafe extern "C" fn rt_obj_keys(obj: i64) -> i64 {
     rt_Object_keys(obj)
 }
-
-
-
-pub unsafe fn rt_is_map(val: i64) -> bool {
-    if val < HEAP_OFFSET {
-        return false;
-    }
-    let body = (val - HEAP_OFFSET) as *mut u8;
-    rt_is_gc_ptr(body) && (*rt_get_header(body)).type_id == TAG_MAP as u16
-}
-
-pub unsafe fn rt_map_keys_array(map: i64) -> i64 {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_KEYS_OFFSET) as *const i64)
-}
-
-pub unsafe fn rt_map_values_array(map: i64) -> i64 {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_VALUES_OFFSET) as *const i64)
-}
-
-pub unsafe fn rt_map_states_array(map: i64) -> i64 {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_STATES_OFFSET) as *const i64)
-}
-
-pub unsafe fn rt_map_set_arrays(map: i64, keys: i64, values: i64, states: i64) {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_KEYS_OFFSET) as *mut i64) = keys;
-    *(body.offset(MAP_VALUES_OFFSET) as *mut i64) = values;
-    *(body.offset(MAP_STATES_OFFSET) as *mut i64) = states;
-}
-
-pub unsafe fn rt_map_get_size(map: i64) -> i64 {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_SIZE_OFFSET) as *const i64)
-}
-
-pub unsafe fn rt_map_set_size(map: i64, size: i64) {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_SIZE_OFFSET) as *mut i64) = size;
-}
-
-pub unsafe fn rt_map_get_cap(map: i64) -> i64 {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_CAP_OFFSET) as *const i64)
-}
-
-pub unsafe fn rt_map_set_cap(map: i64, cap: i64) {
-    let body = (map - HEAP_OFFSET) as *mut u8;
-    *(body.offset(MAP_CAP_OFFSET) as *mut i64) = cap;
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_tag_of(val: i64) -> i64 {
     let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
@@ -2503,295 +2485,6 @@ pub unsafe fn rt_hash_bytes(data: *const u8, len: i64) -> u64 {
     }
     rt_mix64(h)
 }
-
-pub unsafe fn rt_map_hash_key(key: i64) -> u64 {
-    let tag = rt_tag_of(key);
-    if tag == TAG_STRING {
-        if let Some((data, len)) = get_str_parts(key) {
-            return rt_hash_bytes(data, len);
-        }
-    }
-    let is_num = key < HEAP_OFFSET
-        || tag == TAG_FLOAT
-        || tag == TAG_INT
-        || tag == TAG_CHAR
-        || tag == TAG_BOOLEAN;
-    if is_num {
-        let n = rt_to_number(key);
-        return rt_mix64(n.to_bits());
-    }
-    rt_mix64(key as u64)
-}
-
-pub unsafe fn rt_map_keys_equal(a: i64, b: i64) -> bool {
-    if a == b {
-        return true;
-    }
-    let tag_a = rt_tag_of(a);
-    let tag_b = rt_tag_of(b);
-    if tag_a == TAG_STRING && tag_b == TAG_STRING {
-        return rt_str_equals(a, b) != 0;
-    }
-    let a_num = a < HEAP_OFFSET
-        || tag_a == TAG_FLOAT
-        || tag_a == TAG_INT
-        || tag_a == TAG_CHAR
-        || tag_a == TAG_BOOLEAN;
-    let b_num = b < HEAP_OFFSET
-        || tag_b == TAG_FLOAT
-        || tag_b == TAG_INT
-        || tag_b == TAG_CHAR
-        || tag_b == TAG_BOOLEAN;
-    if a_num && b_num {
-        return rt_to_number(a) == rt_to_number(b);
-    }
-    false
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_new() -> i64 {
-    let cap = 16i64;
-    let body_ptr = gc_allocate(40);
-    let header = rt_get_header(body_ptr);
-    (*header).type_id = TAG_MAP as u16;
-
-    let keys = rt_Array_constructor_v2(0, cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    let values = rt_Array_constructor_v2(0, cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    let states = rt_Array_constructor_v2(0, cap, 1, ARRAY_FLAG_FIXED);
-
-    *(body_ptr.offset(MAP_SIZE_OFFSET) as *mut i64) = 0;
-    *(body_ptr.offset(MAP_CAP_OFFSET) as *mut i64) = cap;
-    *(body_ptr.offset(MAP_KEYS_OFFSET) as *mut i64) = keys;
-    *(body_ptr.offset(MAP_VALUES_OFFSET) as *mut i64) = values;
-    *(body_ptr.offset(MAP_STATES_OFFSET) as *mut i64) = states;
-
-    (body_ptr as i64) + HEAP_OFFSET
-}
-
-pub unsafe fn rt_map_resize(map: i64, new_cap: i64) {
-    let keys_old = rt_map_keys_array(map);
-    let values_old = rt_map_values_array(map);
-    let states_old = rt_map_states_array(map);
-    let cap_old = rt_map_get_cap(map);
-
-    let keys_new = rt_Array_constructor_v2(0, new_cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    let values_new = rt_Array_constructor_v2(0, new_cap, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    let states_new = rt_Array_constructor_v2(0, new_cap, 1, ARRAY_FLAG_FIXED);
-
-    let mut i = 0;
-    while i < cap_old {
-        let state = rt_array_get_fast(states_old, i);
-        if state == 1 {
-            let key = rt_array_get_fast(keys_old, i);
-            let val = rt_array_get_fast(values_old, i);
-            let mut idx = (rt_map_hash_key(key) & (new_cap as u64 - 1)) as i64;
-            loop {
-                let s = rt_array_get_fast(states_new, idx);
-                if s == 0 {
-                    rt_array_set_fast(keys_new, idx, key);
-                    rt_array_set_fast(values_new, idx, val);
-                    rt_array_set_fast(states_new, idx, 1);
-                    break;
-                }
-                idx = (idx + 1) & (new_cap - 1);
-            }
-        }
-        i += 1;
-    }
-
-    rt_map_set_arrays(map, keys_new, values_new, states_new);
-    rt_map_set_cap(map, new_cap);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_size(map: i64) -> i64 {
-    if !rt_is_map(map) {
-        return 0;
-    }
-    rt_map_get_size(map)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_has(map: i64, key: i64) -> i64 {
-    if !rt_is_map(map) {
-        return BOOL_FALSE;
-    }
-    let cap = rt_map_get_cap(map);
-    if cap <= 0 {
-        return BOOL_FALSE;
-    }
-    let keys = rt_map_keys_array(map);
-    let states = rt_map_states_array(map);
-    let mut idx = (rt_map_hash_key(key) & (cap as u64 - 1)) as i64;
-    loop {
-        let state = rt_array_get_fast(states, idx);
-        if state == 0 {
-            return BOOL_FALSE;
-        }
-        if state == 1 {
-            let existing = rt_array_get_fast(keys, idx);
-            if rt_map_keys_equal(existing, key) {
-                return BOOL_TRUE;
-            }
-        }
-        idx = (idx + 1) & (cap - 1);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_get(map: i64, key: i64) -> i64 {
-    if !rt_is_map(map) {
-        return 0;
-    }
-    let cap = rt_map_get_cap(map);
-    if cap <= 0 {
-        return 0;
-    }
-    let keys = rt_map_keys_array(map);
-    let values = rt_map_values_array(map);
-    let states = rt_map_states_array(map);
-    let mut idx = (rt_map_hash_key(key) & (cap as u64 - 1)) as i64;
-    loop {
-        let state = rt_array_get_fast(states, idx);
-        if state == 0 {
-            return 0;
-        }
-        if state == 1 {
-            let existing = rt_array_get_fast(keys, idx);
-            if rt_map_keys_equal(existing, key) {
-                return rt_array_get_fast(values, idx);
-            }
-        }
-        idx = (idx + 1) & (cap - 1);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_set(map: i64, key: i64, val: i64) {
-    if !rt_is_map(map) {
-        return;
-    }
-    let mut cap = rt_map_get_cap(map);
-    let mut size = rt_map_get_size(map);
-    if cap <= 0 {
-        return;
-    }
-    if (size + 1) * 10 >= cap * 7 {
-        rt_map_resize(map, cap * 2);
-        cap = rt_map_get_cap(map);
-    }
-
-    let keys = rt_map_keys_array(map);
-    let values = rt_map_values_array(map);
-    let states = rt_map_states_array(map);
-
-    let mut idx = (rt_map_hash_key(key) & (cap as u64 - 1)) as i64;
-    let mut tombstone = -1;
-    loop {
-        let state = rt_array_get_fast(states, idx);
-        if state == 0 {
-            let insert_idx = if tombstone >= 0 { tombstone } else { idx };
-            rt_array_set_fast(keys, insert_idx, key);
-            rt_array_set_fast(values, insert_idx, val);
-            rt_array_set_fast(states, insert_idx, 1);
-            size += 1;
-            rt_map_set_size(map, size);
-            return;
-        }
-        if state == 2 {
-            if tombstone < 0 {
-                tombstone = idx;
-            }
-        } else {
-            let existing = rt_array_get_fast(keys, idx);
-            if rt_map_keys_equal(existing, key) {
-                rt_array_set_fast(values, idx, val);
-                return;
-            }
-        }
-        idx = (idx + 1) & (cap - 1);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_delete(map: i64, key: i64) -> i64 {
-    if !rt_is_map(map) {
-        return BOOL_FALSE;
-    }
-    let cap = rt_map_get_cap(map);
-    if cap <= 0 {
-        return BOOL_FALSE;
-    }
-    let keys = rt_map_keys_array(map);
-    let values = rt_map_values_array(map);
-    let states = rt_map_states_array(map);
-    let mut idx = (rt_map_hash_key(key) & (cap as u64 - 1)) as i64;
-    loop {
-        let state = rt_array_get_fast(states, idx);
-        if state == 0 {
-            return BOOL_FALSE;
-        }
-        if state == 1 {
-            let existing = rt_array_get_fast(keys, idx);
-            if rt_map_keys_equal(existing, key) {
-                rt_array_set_fast(states, idx, 2);
-                rt_array_set_fast(keys, idx, 0);
-                rt_array_set_fast(values, idx, 0);
-                let size = rt_map_get_size(map);
-                rt_map_set_size(map, if size > 0 { size - 1 } else { 0 });
-                return BOOL_TRUE;
-            }
-        }
-        idx = (idx + 1) & (cap - 1);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_keys(map: i64) -> i64 {
-    if !rt_is_map(map) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    }
-    let size = rt_map_get_size(map);
-    let keys = rt_map_keys_array(map);
-    let states = rt_map_states_array(map);
-    let cap = rt_map_get_cap(map);
-    let result = rt_Array_constructor_v2(0, size, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    let mut out = 0;
-    let mut i = 0;
-    while i < cap {
-        if rt_array_get_fast(states, i) == 1 {
-            rt_array_set_fast(result, out, rt_array_get_fast(keys, i));
-            out += 1;
-        }
-        i += 1;
-    }
-    result
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_map_values(map: i64) -> i64 {
-    if !rt_is_map(map) {
-        return rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    }
-    let size = rt_map_get_size(map);
-    let values = rt_map_values_array(map);
-    let states = rt_map_states_array(map);
-    let cap = rt_map_get_cap(map);
-    let result = rt_Array_constructor_v2(0, size, 8, ARRAY_FLAG_FIXED | ARRAY_FLAG_PTR);
-    let mut out = 0;
-    let mut i = 0;
-    while i < cap {
-        if rt_array_get_fast(states, i) == 1 {
-            rt_array_set_fast(result, out, rt_array_get_fast(values, i));
-            out += 1;
-        }
-        i += 1;
-    }
-    result
-}
-
-
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_object_merge(obj: i64, other: i64) -> i64 {
     rt_Object_assign(obj, other)

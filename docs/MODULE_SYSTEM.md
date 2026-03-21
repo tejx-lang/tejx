@@ -8,6 +8,7 @@ TejX supports:
 
 - relative imports such as `"./util.tx"` or `"../shared.tx"`
 - standard library imports using the `std:` prefix
+- nested standard library subpaths such as `std:collections/linear`
 - named imports
 - aliased imports
 - default exports and default imports
@@ -16,6 +17,7 @@ Examples:
 
 ```tx
 import { Map } from "std:collections";
+import { Deque } from "std:collections/linear";
 import { helper as runHelper } from "./helper.tx";
 import defaultThing from "./module.tx";
 ```
@@ -36,12 +38,14 @@ For example:
 
 ```tx
 import { now } from "std:time";
+import { randomInt } from "std:math/random";
 ```
 
 resolves under:
 
 ```text
 <stdlib-root>/std/time.tx
+<stdlib-root>/std/math/random.tx
 ```
 
 ### Relative Imports
@@ -95,4 +99,4 @@ Module contents are resolved before the main type-checking pass. After resolutio
 - diagnostics are reported against the original source file paths
 - duplicate imports of the same canonicalized file are skipped
 
-This keeps the model simple: TejX does not use runtime module loading or package-manager-style search rules.
+This keeps the model simple: TejX does not use runtime module loading or package-manager-style search rules. Entry modules such as `std:time` can internally compose smaller files, but import resolution stays entirely static.

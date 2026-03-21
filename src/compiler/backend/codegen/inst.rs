@@ -1463,27 +1463,76 @@ impl CodeGen {
         }
 
         if callee.starts_with("std_math_") {
-            // Emit LLVM intrinsics directly for math functions
-            // This avoids the runtime call overhead (i64→f64 unbox → math → f64→i64 box)
-            let intrinsic = match callee.as_str() {
-                "std_math_sqrt" => Some(("llvm.sqrt.f64", 1)),
-                "std_math_sin" => Some(("llvm.sin.f64", 1)),
-                "std_math_cos" => Some(("llvm.cos.f64", 1)),
-                "std_math_pow" => Some(("llvm.pow.f64", 2)),
-                "std_math_floor" => Some(("llvm.floor.f64", 1)),
-                "std_math_ceil" => Some(("llvm.ceil.f64", 1)),
-                "std_math_abs" => Some(("llvm.fabs.f64", 1)),
-                "std_math_round" => Some(("llvm.round.f64", 1)),
+            // Emit LLVM intrinsics or direct libm calls for sensitive math functions.
+            // This avoids the runtime boxing path and keeps behavior close to native toolchains.
+            if callee == "std_math_powi" {
+                self.declare_runtime_fn(
+                    "llvm.powi.f64.i32",
+                    "double @llvm.powi.f64.i32(double, i32)",
+                );
+
+                let arg1_f = self.resolve_float_value(&args[0]);
+                let arg2_raw = self.resolve_value(&args[1]);
+                let arg2_i =
+                    self.emit_abi_cast(&arg2_raw, args[1].get_type(), &TejxType::Int32);
+
+                self.temp_counter += 1;
+                let result_f = format!("%intrinsic_res_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call double @llvm.powi.f64.i32(double {}, i32 {})",
+                    result_f, arg1_f, arg2_i
+                ));
+
+                if !dst.is_empty() {
+                    let mut dst_ty = func.variables.get(dst).cloned().unwrap_or(TejxType::Void);
+                    if matches!(dst_ty, TejxType::Void) {
+                        if let Some(ptr_name) = self.value_map.get(dst) {
+                            if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
+                                dst_ty = match ptr_llvm.as_str() {
+                                    "i1" | "i8" => TejxType::Bool,
+                                    "i16" => TejxType::Int16,
+                                    "i32" => TejxType::Int32,
+                                    "float" => TejxType::Float32,
+                                    "double" => TejxType::Float64,
+                                    _ => TejxType::Int64,
+                                };
+                            }
+                        }
+                    }
+                    let result_val = self.emit_abi_cast(&result_f, &TejxType::Float64, &dst_ty);
+                    self.float_ssa_vars.insert(dst.clone(), result_f.clone());
+                    self.emit_store_variable(dst, &result_val, &dst_ty);
+                }
+                return;
+            }
+
+            let direct_math = match callee.as_str() {
+                "std_math_sqrt" => Some(("llvm.sqrt.f64", 1, true)),
+                "std_math_sin" => Some(("llvm.sin.f64", 1, true)),
+                "std_math_cos" => Some(("llvm.cos.f64", 1, true)),
+                "std_math_exp" => Some(("llvm.exp.f64", 1, true)),
+                "std_math_log" => Some(("llvm.log.f64", 1, true)),
+                "std_math_pow" => Some(("llvm.pow.f64", 2, true)),
+                "std_math_floor" => Some(("llvm.floor.f64", 1, true)),
+                "std_math_ceil" => Some(("llvm.ceil.f64", 1, true)),
+                "std_math_abs" => Some(("llvm.fabs.f64", 1, true)),
+                "std_math_round" => Some(("llvm.round.f64", 1, true)),
+                "std_math_tan" => Some(("tan", 1, false)),
+                "std_math_asin" => Some(("asin", 1, false)),
+                "std_math_acos" => Some(("acos", 1, false)),
+                "std_math_atan" => Some(("atan", 1, false)),
+                "std_math_min" => Some(("fmin", 2, false)),
+                "std_math_max" => Some(("fmax", 2, false)),
                 _ => None,
             };
 
-            if let Some((intrinsic_name, param_count)) = intrinsic {
+            if let Some((symbol_name, param_count, _is_intrinsic)) = direct_math {
                 let sig = if param_count == 1 {
-                    format!("double @{}(double)", intrinsic_name)
+                    format!("double @{}(double)", symbol_name)
                 } else {
-                    format!("double @{}(double, double)", intrinsic_name)
+                    format!("double @{}(double, double)", symbol_name)
                 };
-                self.declare_runtime_fn(intrinsic_name, &sig);
+                self.declare_runtime_fn(symbol_name, &sig);
 
                 // Convert arg(s) from i64 to double using optimal SSA path
                 let arg1_f = self.resolve_float_value(&args[0]);
@@ -1495,14 +1544,14 @@ impl CodeGen {
                     result_f = format!("%intrinsic_res_{}", self.temp_counter);
                     self.emit_line(&format!(
                         "{} = call double @{}(double {}, double {})",
-                        result_f, intrinsic_name, arg1_f, arg2_f
+                        result_f, symbol_name, arg1_f, arg2_f
                     ));
                 } else {
                     self.temp_counter += 1;
                     result_f = format!("%intrinsic_res_{}", self.temp_counter);
                     self.emit_line(&format!(
                         "{} = call double @{}(double {})",
-                        result_f, intrinsic_name, arg1_f
+                        result_f, symbol_name, arg1_f
                     ));
                 }
 
@@ -1992,9 +2041,7 @@ impl CodeGen {
                 }
             }
 
-            let decl_ret =
-                if is_math_fn || final_callee == "rt_to_number" || final_callee == "rt_math_random"
-                {
+            let decl_ret = if is_math_fn || final_callee == "rt_to_number" {
                     "double".to_string()
                 } else if is_runtime_fn {
                     if final_callee == "rt_promise_resolve"
@@ -2079,9 +2126,6 @@ impl CodeGen {
                         final_callee.as_str(),
                         "rt_len"
                             | "rt_strlen"
-                            | "rt_map_size"
-                            | "rt_map_has"
-                            | "rt_map_delete"
                             | "rt_is_array"
                     );
                     let runtime_src_ty = if runtime_returns_primitive {

@@ -1,0 +1,11 @@
+export function pi(): float {
+    return 3.141592653589793;
+}
+
+export function tau(): float {
+    return 6.283185307179586;
+}
+
+export function e(): float {
+    return 2.718281828459045;
+}

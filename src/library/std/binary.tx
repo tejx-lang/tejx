@@ -1,0 +1,242 @@
+import "./binary/internal.tx";
+
+function _binary_byte(value: int64): int {
+    if (value < 0 || value > 255) {
+        throw new Error("Byte value out of range");
+    }
+    return value as int;
+}
+
+function _binary_require(data: int[], offset: int, count: int): void {
+    if (offset < 0 || count < 0 || offset + count > data.length()) {
+        throw new Error("Binary read out of bounds");
+    }
+}
+
+function _binary_slice(data: int[], offset: int, count: int): int[] {
+    _binary_require(data, offset, count);
+
+    let out: int[] = [];
+    for (let i = 0; i < count; i++) {
+        out.push(data[offset + i]);
+    }
+    return out;
+}
+
+export function fromString(data: string): int[] {
+    return _binary_bytes_from_string(data);
+}
+
+export function toString(data: int[]): string {
+    return _binary_bytes_to_string(data);
+}
+
+export function concat(parts: int[][]): int[] {
+    let out: int[] = [];
+    for (let i = 0; i < parts.length(); i++) {
+        let part = parts[i];
+        for (let j = 0; j < part.length(); j++) {
+            out.push(_binary_byte(part[j]));
+        }
+    }
+    return out;
+}
+
+function _binary_concat(parts: int[][]): int[] {
+    return concat(parts);
+}
+
+export class ByteReader {
+    private data: int[];
+    private offset: int;
+
+    constructor(data: int[]) {
+        this.data = data;
+        this.offset = 0;
+    }
+
+    position(): int {
+        return this.offset;
+    }
+
+    remaining(): int {
+        return this.data.length() - this.offset;
+    }
+
+    seek(position: int): void {
+        if (position < 0 || position > this.data.length()) {
+            throw new Error("Binary cursor out of bounds");
+        }
+        this.offset = position;
+    }
+
+    readU8(): int {
+        _binary_require(this.data, this.offset, 1);
+        let value = _binary_byte(this.data[this.offset]);
+        this.offset = this.offset + 1;
+        return value;
+    }
+
+    readBytes(count: int): int[] {
+        let out = _binary_slice(this.data, this.offset, count);
+        this.offset = this.offset + count;
+        return out;
+    }
+
+    readString(count: int): string {
+        return toString(this.readBytes(count));
+    }
+
+    readCString(): string {
+        let start = this.offset;
+        while (this.offset < this.data.length()) {
+            if (_binary_byte(this.data[this.offset]) == 0) {
+                let out = _binary_slice(this.data, start, this.offset - start);
+                this.offset = this.offset + 1;
+                return toString(out);
+            }
+            this.offset = this.offset + 1;
+        }
+
+        throw new Error("Missing null-terminated string");
+    }
+
+    readU16LE(): int {
+        let b0 = this.readU8();
+        let b1 = this.readU8();
+        return b0 + (b1 * 256);
+    }
+
+    readU16BE(): int {
+        let b0 = this.readU8();
+        let b1 = this.readU8();
+        return (b0 * 256) + b1;
+    }
+
+    readU24LE(): int {
+        let b0 = this.readU8();
+        let b1 = this.readU8();
+        let b2 = this.readU8();
+        return b0 + (b1 * 256) + (b2 * 65536);
+    }
+
+    readU32LE(): int64 {
+        let b0 = this.readU8() as int64;
+        let b1 = this.readU8() as int64;
+        let b2 = this.readU8() as int64;
+        let b3 = this.readU8() as int64;
+        return b0 + (b1 * 256) + (b2 * 65536) + (b3 * 16777216);
+    }
+
+    readU32BE(): int64 {
+        let b0 = this.readU8() as int64;
+        let b1 = this.readU8() as int64;
+        let b2 = this.readU8() as int64;
+        let b3 = this.readU8() as int64;
+        return (b0 * 16777216) + (b1 * 65536) + (b2 * 256) + b3;
+    }
+
+    readI32LE(): int {
+        let raw = this.readU32LE();
+        if (raw >= 2147483648) {
+            return (raw - 4294967296) as int;
+        }
+        return raw as int;
+    }
+}
+
+export class ByteWriter {
+    private data: int[];
+
+    constructor() {
+        this.data = [];
+    }
+
+    length(): int {
+        return this.data.length();
+    }
+
+    writeU8(value: int64): void {
+        this.data.push(_binary_byte(value));
+    }
+
+    writeBytes(data: int[]): void {
+        for (let i = 0; i < data.length(); i++) {
+            this.data.push(_binary_byte(data[i]));
+        }
+    }
+
+    writeString(data: string): void {
+        this.writeBytes(fromString(data));
+    }
+
+    writeCString(data: string): void {
+        this.writeString(data);
+        this.writeU8(0);
+    }
+
+    writeU16LE(value: int64): void {
+        this.writeU8(value % 256);
+        this.writeU8((value / 256) % 256);
+    }
+
+    writeU16BE(value: int64): void {
+        this.writeU8((value / 256) % 256);
+        this.writeU8(value % 256);
+    }
+
+    writeU24LE(value: int64): void {
+        this.writeU8(value % 256);
+        this.writeU8((value / 256) % 256);
+        this.writeU8((value / 65536) % 256);
+    }
+
+    writeU32LE(value: int64): void {
+        this.writeU8(value % 256);
+        this.writeU8((value / 256) % 256);
+        this.writeU8((value / 65536) % 256);
+        this.writeU8((value / 16777216) % 256);
+    }
+
+    writeU32BE(value: int64): void {
+        this.writeU8((value / 16777216) % 256);
+        this.writeU8((value / 65536) % 256);
+        this.writeU8((value / 256) % 256);
+        this.writeU8(value % 256);
+    }
+
+    writeI32LE(value: int): void {
+        let raw = value as int64;
+        if (value < 0) {
+            this.writeU32LE(raw + 4294967296);
+            return;
+        }
+        this.writeU32LE(raw);
+    }
+
+    toBytes(): int[] {
+        return _binary_slice(this.data, 0, this.data.length());
+    }
+}
+
+export namespace binary {
+    export function fromString(data: string): int[] {
+        return _binary_bytes_from_string(data);
+    }
+
+    export function toString(data: int[]): string {
+        return _binary_bytes_to_string(data);
+    }
+
+    export function concat(parts: int[][]): int[] {
+        return _binary_concat(parts);
+    }
+
+    export function reader(data: int[]): ByteReader {
+        return new ByteReader(data);
+    }
+
+    export function writer(): ByteWriter {
+        return new ByteWriter();
+    }
+}

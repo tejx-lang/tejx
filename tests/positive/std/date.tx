@@ -2,7 +2,7 @@
 // ==========
 
 import std:time;
-import { assert_eq_string, assert_true } from "../utils.tx";
+import { assert_eq_int, assert_true } from "../utils.tx";
 
 function main() {
     print("--- Date Tests ---");
@@ -10,6 +10,9 @@ function main() {
     let d = new Date();
     let iso = d.toISOString();
     assert_true(iso.length() > 0, "toISOString returns content");
+    assert_eq_int(10, iso.indexOf("T"), "ISO date/time separator");
+    assert_true(iso.endsWith("Z"), "ISO string is UTC");
+    assert_eq_int(24, iso.length(), "ISO string length");
 
     let t = d.getTime();
     print("Current timestamp: ", t);

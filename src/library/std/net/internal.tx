@@ -1,0 +1,74 @@
+extern function rt_net_connect(addr: string): int64;
+extern function rt_net_connect_host(host: string, port: int): int64;
+extern function rt_net_connect_tls(host: string, port: int): int64;
+extern function rt_net_connect_tls_insecure(host: string, port: int): int64;
+extern function rt_net_lookup(host: string): string;
+extern function rt_net_lookup_all(host: string): string[];
+extern function rt_net_listen(addr: string): int64;
+extern function rt_net_close(stream: int64): int;
+extern function rt_net_close_listener(listener: int64): int;
+
+function _net_connect_stream(addr: string): Optional<TcpStream> {
+    let id = rt_net_connect(addr);
+    if (id <= 0) return None;
+    return new TcpStream(id);
+}
+
+function _net_connect_host_stream(host: string, port: int): Optional<TcpStream> {
+    let id = rt_net_connect_host(host, port);
+    if (id <= 0) return None;
+    return new TcpStream(id);
+}
+
+function _net_connect_tls_stream(host: string, port: int, insecure: bool = false): Optional<TcpStream> {
+    let id = insecure
+        ? rt_net_connect_tls_insecure(host, port)
+        : rt_net_connect_tls(host, port);
+    if (id <= 0) return None;
+    return new TcpStream(id);
+}
+
+function _net_lookup_host(host: string): Optional<string> {
+    let ip = rt_net_lookup(host);
+    if (ip == "") return None;
+    return ip;
+}
+
+function _net_lookup_all_hosts(host: string): string[] {
+    return rt_net_lookup_all(host);
+}
+
+function _net_listen_on(addr: string): TcpListener {
+    let id = rt_net_listen(addr);
+    if (id <= 0) {
+        throw new Error("Listen failed on " + addr);
+    }
+    return new TcpListener(id);
+}
+
+function _net_close_stream(id: int64): void {
+    if (id <= 0) return;
+    let res = rt_net_close(id);
+    if (res == -1) {
+        throw new Error("Invalid stream");
+    }
+}
+
+function _net_close_listener(id: int64): void {
+    if (id <= 0) return;
+    rt_net_close_listener(id);
+}
+
+function _net_close_any(stream: Optional<any>): void {
+    if (stream == None) return;
+
+    let value: any = stream;
+    if (value instanceof TcpStream) {
+        value.close();
+        return;
+    }
+
+    let id: int64 = value as int64;
+    if (id <= 0) return;
+    _net_close_stream(id);
+}

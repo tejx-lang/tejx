@@ -1,0 +1,121 @@
+extern function rt_net_accept(listener: int64): int64;
+extern function rt_net_send(stream: int64, data: string): int;
+extern function rt_net_send_bytes(stream: int64, data: int[]): int;
+extern function rt_net_receive(stream: int64, max_len: int): string;
+extern function rt_net_receive_bytes(stream: int64, max_len: int): int[];
+extern function rt_net_read_all(stream: int64, chunk_size: int): string;
+extern function rt_net_read_all_bytes(stream: int64, chunk_size: int): int[];
+extern function rt_net_read_exact_bytes(stream: int64, expected_len: int): int[];
+extern function rt_net_set_timeout(stream: int64, timeout_ms: int): int;
+extern function rt_net_start_tls(stream: int64, host: string): int;
+extern function rt_net_start_tls_insecure(stream: int64, host: string): int;
+
+export class TcpStream {
+    private id: int64;
+
+    constructor(id: int64) {
+        this.id = id;
+    }
+
+    write(data: string): bool {
+        if (!this.isOpen()) return false;
+        return rt_net_send(this.id, data) > 0;
+    }
+
+    send(data: string): bool {
+        return this.write(data);
+    }
+
+    writeBytes(data: int[]): bool {
+        if (!this.isOpen()) return false;
+        return rt_net_send_bytes(this.id, data) >= 0;
+    }
+
+    read(max_len: int): string {
+        if (!this.isOpen()) return "";
+        return rt_net_receive(this.id, max_len);
+    }
+
+    readBytes(max_len: int): int[] {
+        if (!this.isOpen()) return [];
+        return rt_net_receive_bytes(this.id, max_len);
+    }
+
+    readAll(): string {
+        if (!this.isOpen()) return "";
+        return rt_net_read_all(this.id, 4096);
+    }
+
+    readAllBytes(): int[] {
+        if (!this.isOpen()) return [];
+        return rt_net_read_all_bytes(this.id, 4096);
+    }
+
+    readExactBytes(expected_len: int): Optional<int[]> {
+        if (!this.isOpen()) return None;
+        let data = rt_net_read_exact_bytes(this.id, expected_len);
+        if (expected_len >= 0 && data.length() == expected_len) {
+            return data;
+        }
+        return None;
+    }
+
+    receive(max_len: int): string {
+        return this.read(max_len);
+    }
+
+    startTls(host: string): bool {
+        if (!this.isOpen()) return false;
+        return rt_net_start_tls(this.id, host) == 0;
+    }
+
+    startTlsInsecure(host: string): bool {
+        if (!this.isOpen()) return false;
+        return rt_net_start_tls_insecure(this.id, host) == 0;
+    }
+
+    setTimeout(timeout_ms: int): bool {
+        if (!this.isOpen()) return false;
+        return rt_net_set_timeout(this.id, timeout_ms) == 0;
+    }
+
+    isOpen(): bool {
+        return this.id > 0;
+    }
+
+    close(): void {
+        if (!this.isOpen()) return;
+        _net_close_stream(this.id);
+        this.id = 0;
+    }
+}
+
+export class TcpListener {
+    private id: int64;
+
+    constructor(id: int64) {
+        this.id = id;
+    }
+
+    static bind(addr: string): TcpListener {
+        return _net_listen_on(addr);
+    }
+
+    accept(): TcpStream {
+        let sid = rt_net_accept(this.id);
+        if (sid <= 0) {
+            throw new Error("Accept failed");
+        }
+        return new TcpStream(sid);
+    }
+
+    isOpen(): bool {
+        return this.id > 0;
+    }
+
+    close(): void {
+        if (!this.isOpen()) return;
+        _net_close_listener(this.id);
+        this.id = 0;
+    }
+}

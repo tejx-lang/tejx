@@ -1,0 +1,255 @@
+export class Stack<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    push(val: T): void {
+        this.items.push(val);
+    }
+
+    pop(): T {
+        if (this.items.length() == 0) return None;
+        return this.items.pop();
+    }
+
+    peek(): T {
+        if (this.items.length() == 0) return None;
+        return this.items[this.items.length() - 1];
+    }
+
+    size(): int {
+        return this.items.length();
+    }
+
+    isEmpty(): bool {
+        return this.items.length() == 0;
+    }
+
+    clear(): void {
+        this.items = [];
+    }
+
+    toArray(): T[] {
+        let out: T[] = [];
+        for (let i = 0; i < this.items.length(); i++) {
+            out.push(this.items[i]);
+        }
+        return out;
+    }
+}
+
+export class Deque<T> {
+    private buffer: T[];
+    private head: int;
+    private tail: int;
+    private count: int;
+
+    constructor() {
+        this.buffer = [];
+        this.head = 0;
+        this.tail = 0;
+        this.count = 0;
+        this.rebuffer(8);
+    }
+
+    private emptySlot(): T {
+        return 0 as any as T;
+    }
+
+    private normalizeCapacity(minCapacity: int): int {
+        let capacity = 8;
+        let target = minCapacity;
+        if (target < 8) target = 8;
+        while (capacity < target) {
+            capacity = capacity << 1;
+        }
+        return capacity;
+    }
+
+    private rebuffer(minCapacity: int): void {
+        let nextCapacity = this.normalizeCapacity(minCapacity);
+        let next: T[] = [];
+        for (let i = 0; i < nextCapacity; i++) {
+            next.push(this.emptySlot());
+        }
+
+        let oldCapacity = this.buffer.length();
+        for (let i = 0; i < this.count; i++) {
+            if (oldCapacity == 0) break;
+            next[i] = this.buffer[(this.head + i) & (oldCapacity - 1)];
+        }
+
+        this.buffer = next;
+        this.head = 0;
+        this.tail = this.count;
+    }
+
+    private ensureCapacity(nextCount: int): void {
+        if (nextCount > this.buffer.length()) {
+            this.rebuffer(this.buffer.length() << 1);
+        }
+    }
+
+    private maybeShrink(): void {
+        let capacity = this.buffer.length();
+        if (capacity <= 8) return;
+        if (this.count * 4 > capacity) return;
+        this.rebuffer(capacity >> 1);
+    }
+
+    reserve(capacity: int): void {
+        if (capacity > this.buffer.length()) {
+            this.rebuffer(capacity);
+        }
+    }
+
+    pushFront(val: T): void {
+        this.ensureCapacity(this.count + 1);
+        let capacity = this.buffer.length();
+        this.head = (this.head - 1 + capacity) & (capacity - 1);
+        this.buffer[this.head] = val;
+        this.count = this.count + 1;
+    }
+
+    pushBack(val: T): void {
+        this.ensureCapacity(this.count + 1);
+        let capacity = this.buffer.length();
+        this.buffer[this.tail] = val;
+        this.tail = (this.tail + 1) & (capacity - 1);
+        this.count = this.count + 1;
+    }
+
+    enqueue(val: T): void {
+        this.pushBack(val);
+    }
+
+    popFront(): T {
+        if (this.count == 0) return None;
+
+        let capacity = this.buffer.length();
+        let value = this.buffer[this.head];
+        this.buffer[this.head] = this.emptySlot();
+        this.head = (this.head + 1) & (capacity - 1);
+        this.count = this.count - 1;
+        if (this.count == 0) {
+            this.head = 0;
+            this.tail = 0;
+        } else {
+            this.maybeShrink();
+        }
+        return value;
+    }
+
+    popBack(): T {
+        if (this.count == 0) return None;
+
+        let capacity = this.buffer.length();
+        this.tail = (this.tail - 1 + capacity) & (capacity - 1);
+        let value = this.buffer[this.tail];
+        this.buffer[this.tail] = this.emptySlot();
+        this.count = this.count - 1;
+        if (this.count == 0) {
+            this.head = 0;
+            this.tail = 0;
+        } else {
+            this.maybeShrink();
+        }
+        return value;
+    }
+
+    dequeue(): T {
+        return this.popFront();
+    }
+
+    peekFront(): T {
+        if (this.count == 0) return None;
+        return this.buffer[this.head];
+    }
+
+    peekBack(): T {
+        if (this.count == 0) return None;
+        let capacity = this.buffer.length();
+        let index = (this.tail - 1 + capacity) & (capacity - 1);
+        return this.buffer[index];
+    }
+
+    size(): int {
+        return this.count;
+    }
+
+    isEmpty(): bool {
+        return this.count == 0;
+    }
+
+    clear(): void {
+        this.count = 0;
+        this.head = 0;
+        this.tail = 0;
+        if (this.buffer.length() > 8) {
+            this.rebuffer(8);
+            return;
+        }
+        for (let i = 0; i < this.buffer.length(); i++) {
+            this.buffer[i] = this.emptySlot();
+        }
+    }
+
+    toArray(): T[] {
+        let out: T[] = [];
+        let capacity = this.buffer.length();
+        for (let i = 0; i < this.count; i++) {
+            out.push(this.buffer[(this.head + i) & (capacity - 1)]);
+        }
+        return out;
+    }
+}
+
+export class Queue<T> {
+    private items: Deque<T>;
+
+    constructor() {
+        this.items = new Deque<T>();
+    }
+
+    enqueue(val: T): void {
+        this.items.pushBack(val);
+    }
+
+    reserve(capacity: int): void {
+        this.items.reserve(capacity);
+    }
+
+    dequeue(): T {
+        return this.items.popFront();
+    }
+
+    peek(): T {
+        return this.items.peekFront();
+    }
+
+    front(): T {
+        return this.items.peekFront();
+    }
+
+    back(): T {
+        return this.items.peekBack();
+    }
+
+    size(): int {
+        return this.items.size();
+    }
+
+    isEmpty(): bool {
+        return this.items.isEmpty();
+    }
+
+    clear(): void {
+        this.items.clear();
+    }
+
+    toArray(): T[] {
+        return this.items.toArray();
+    }
+}

@@ -1,0 +1,10 @@
+extern function rt_bytes_from_string(data: string): int[];
+extern function rt_bytes_to_string(data: int[]): string;
+
+function _binary_bytes_from_string(data: string): int[] {
+    return rt_bytes_from_string(data);
+}
+
+function _binary_bytes_to_string(data: int[]): string {
+    return rt_bytes_to_string(data);
+}

@@ -15,11 +15,14 @@ function main() {
     assert_eq_string("TejX", m.at("name"), "Map.get('name')");
     assert_eq_int(2, m.size(), "Map.size()");
     assert_ne_int(0, m.size(), "Map.size() not zero");
+    assert_eq_int(-1, m.getOrDefault("missing", -1), "Map.getOrDefault()");
 
     // Verify instance keys()
     // Note: keys() format check might need adjustment depending on toString implementation
     // For now just checking it doesn't crash and returns something
     let k = m.keys();
+    assert_eq_string("name", k[0], "Map keys preserve insertion order");
+    assert_eq_string("version", k[1], "Map keys preserve insertion order (2)");
     // print("Map keys: ", k); 
 
     m.clear();
@@ -41,4 +44,7 @@ function main() {
     assert_ne_int(3, setObj.size(), "Set size not pre-delete");
     assert_false(setObj.has(1), "Set.has(1) after delete");
     assert_true(setObj.has(2), "Set still has(2) after delete");
+    let setValues = setObj.values();
+    assert_eq_int(2, setValues[0], "Set preserves insertion order after delete");
+    assert_eq_int(3, setValues[1], "Set preserves insertion order after delete (2)");
 }

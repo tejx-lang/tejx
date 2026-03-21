@@ -1,0 +1,155 @@
+import "./hash.tx";
+
+export class OrderedMap<K, V> {
+    private inner: Map<K, V>;
+
+    constructor() {
+        this.inner = new Map<K, V>();
+    }
+
+    set(key: K, val: V): void {
+        this.inner.set(key, val);
+    }
+
+    put(key: K, val: V): void {
+        this.inner.set(key, val);
+    }
+
+    reserve(entries: int): void {
+        this.inner.reserve(entries);
+    }
+
+    shrinkToFit(): void {
+        this.inner.shrinkToFit();
+    }
+
+    get(key: K): V {
+        return this.inner.get(key);
+    }
+
+    at(key: K): V {
+        return this.inner.at(key);
+    }
+
+    getOrDefault(key: K, fallback: V): V {
+        return this.inner.getOrDefault(key, fallback);
+    }
+
+    has(key: K): bool {
+        return this.inner.has(key);
+    }
+
+    delete(key: K): bool {
+        return this.inner.delete(key);
+    }
+
+    keys(): K[] {
+        return this.inner.keys();
+    }
+
+    values(): V[] {
+        return this.inner.values();
+    }
+
+    entries(): any[] {
+        return this.inner.entries();
+    }
+
+    forEach(callback: (value: V, key: K, index: int) => void): void {
+        this.inner.forEach(callback);
+    }
+
+    clone(): OrderedMap<K, V> {
+        let out = new OrderedMap<K, V>();
+        out.reserve(this.size());
+        this.inner.forEach((value: V, key: K) => {
+            out.set(key, value);
+        });
+        return out;
+    }
+
+    size(): int {
+        return this.inner.size();
+    }
+
+    isEmpty(): bool {
+        return this.inner.isEmpty();
+    }
+
+    clear(): void {
+        this.inner.clear();
+    }
+}
+
+export class OrderedSet<T> {
+    private inner: Set<T>;
+
+    constructor() {
+        this.inner = new Set<T>();
+    }
+
+    add(val: T): void {
+        this.inner.add(val);
+    }
+
+    reserve(entries: int): void {
+        this.inner.reserve(entries);
+    }
+
+    shrinkToFit(): void {
+        this.inner.shrinkToFit();
+    }
+
+    has(val: T): bool {
+        return this.inner.has(val);
+    }
+
+    contains(val: T): bool {
+        return this.inner.has(val);
+    }
+
+    delete(val: T): bool {
+        return this.inner.delete(val);
+    }
+
+    values(): T[] {
+        return this.inner.values();
+    }
+
+    keys(): T[] {
+        return this.inner.keys();
+    }
+
+    entries(): any[] {
+        return this.inner.entries();
+    }
+
+    forEach(callback: (value: T, index: int) => void): void {
+        this.inner.forEach(callback);
+    }
+
+    toArray(): T[] {
+        return this.inner.toArray();
+    }
+
+    clone(): OrderedSet<T> {
+        let out = new OrderedSet<T>();
+        out.reserve(this.size());
+        this.inner.forEach((value: T) => {
+            out.add(value);
+        });
+        return out;
+    }
+
+    size(): int {
+        return this.inner.size();
+    }
+
+    isEmpty(): bool {
+        return this.inner.isEmpty();
+    }
+
+    clear(): void {
+        this.inner.clear();
+    }
+}

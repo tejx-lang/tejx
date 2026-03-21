@@ -1,0 +1,80 @@
+extern function rt_String_charCodeAt(s: string, index: int): int;
+
+export class BloomFilter {
+    private words: int[];
+    private numHashes: int;
+    private bitSize: int;
+
+    constructor(size: int, numHashes: int) {
+        this.bitSize = size;
+        this.numHashes = numHashes;
+        this.words = [];
+        let wordCount = (size + 31) / 32;
+        for (let i = 0; i < wordCount; i++) {
+            this.words.push(0);
+        }
+    }
+
+    private hash1(val: string): int {
+        let h = 5381;
+        let length = val.length();
+        for (let i = 0; i < length; i++) {
+            h = (((h << 5) + h) ^ rt_String_charCodeAt(val, i)) & 2147483647;
+        }
+        return h % this.bitSize;
+    }
+
+    private hash2(val: string): int {
+        let h = 216613626;
+        let length = val.length();
+        for (let i = 0; i < length; i++) {
+            h = ((h ^ rt_String_charCodeAt(val, i)) * 16777619) & 2147483647;
+        }
+        let value = h % this.bitSize;
+        if (value == 0) return 1;
+        return value;
+    }
+
+    private setBit(index: int): void {
+        let word = index >> 5;
+        let bit = index & 31;
+        this.words[word] = this.words[word] | (1 << bit);
+    }
+
+    private hasBit(index: int): bool {
+        let word = index >> 5;
+        let bit = index & 31;
+        return (this.words[word] & (1 << bit)) != 0;
+    }
+
+    add(val: string): void {
+        let h1 = this.hash1(val);
+        let h2 = this.hash2(val);
+        for (let i = 0; i < this.numHashes; i++) {
+            let idx = (h1 + i * h2) % this.bitSize;
+            if (idx < 0) idx = idx + this.bitSize;
+            this.setBit(idx);
+        }
+    }
+
+    contains(val: string): bool {
+        let h1 = this.hash1(val);
+        let h2 = this.hash2(val);
+        for (let i = 0; i < this.numHashes; i++) {
+            let idx = (h1 + i * h2) % this.bitSize;
+            if (idx < 0) idx = idx + this.bitSize;
+            if (!this.hasBit(idx)) return false;
+        }
+        return true;
+    }
+
+    mightContain(val: string): bool {
+        return this.contains(val);
+    }
+
+    clear(): void {
+        for (let i = 0; i < this.words.length(); i++) {
+            this.words[i] = 0;
+        }
+    }
+}

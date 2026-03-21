@@ -864,26 +864,6 @@ impl Lowering {
         // Add built-in runtime signatures for proper auto-boxing in MIR
         signatures.insert("rt_len".to_string(), vec![TejxType::Int64]);
         signatures.insert("rt_strlen".to_string(), vec![TejxType::String]);
-        signatures.insert("rt_map_new".to_string(), vec![]);
-        signatures.insert(
-            "rt_map_set".to_string(),
-            vec![TejxType::Int64, TejxType::Int64, TejxType::Int64],
-        );
-        signatures.insert(
-            "rt_map_get".to_string(),
-            vec![TejxType::Int64, TejxType::Int64],
-        );
-        signatures.insert(
-            "rt_map_has".to_string(),
-            vec![TejxType::Int64, TejxType::Int64],
-        );
-        signatures.insert(
-            "rt_map_delete".to_string(),
-            vec![TejxType::Int64, TejxType::Int64],
-        );
-        signatures.insert("rt_map_size".to_string(), vec![TejxType::Int64]);
-        signatures.insert("rt_map_keys".to_string(), vec![TejxType::Int64]);
-        signatures.insert("rt_map_values".to_string(), vec![TejxType::Int64]);
         signatures.insert(
             "rt_print_string_array".to_string(),
             vec![TejxType::DynamicArray(Box::new(TejxType::String))],

@@ -1,0 +1,15 @@
+extern function rt_exit(code: int): void;
+extern function rt_getenv(key: string): string;
+extern function rt_args(): string[];
+
+function _system_exit(code: int): void {
+    rt_exit(code);
+}
+
+function _system_env(key: string): string {
+    return rt_getenv(key);
+}
+
+function _system_args(): string[] {
+    return rt_args();
+}

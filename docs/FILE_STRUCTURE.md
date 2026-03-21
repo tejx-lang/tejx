@@ -45,6 +45,8 @@ The TejX standard library source:
 
 - `core/`: always-available core helpers such as `prelude.tx`, `array.tx`, `string.tx`
 - `std/`: opt-in modules imported through `std:...`
+- `std/<module>.tx`: stable public entrypoints such as `std:collections` or `std:time`
+- `std/<module>/`: grouped implementations that back those entrypoints and enable direct submodule imports such as `std:collections/linear`
 
 ### `src/runtime/`
 

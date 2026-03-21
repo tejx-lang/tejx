@@ -1,15 +1,39 @@
+import "./system/process.tx";
+
 export function exit(code: int): void {
-    rt_exit(code);
+    _system_exit(code);
 }
 
 export function env(key: string): string {
-    return rt_getenv(key);
+    return _system_env(key);
 }
 
 export function args(): string[] {
-    return rt_args();
+    return _system_args();
 }
 
-// Aliases
-export function argv(): string[] { return args(); }
-export function getEnv(key: string): string { return env(key); }
+export function argv(): string[] {
+    return args();
+}
+
+export function getEnv(key: string): string {
+    return env(key);
+}
+
+export namespace system {
+    export function exit(code: int): void {
+        _system_exit(code);
+    }
+
+    export function env(key: string): string {
+        return _system_env(key);
+    }
+
+    export function args(): string[] {
+        return _system_args();
+    }
+
+    export function argv(): string[] {
+        return _system_args();
+    }
+}

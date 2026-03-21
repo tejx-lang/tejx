@@ -1,79 +1,46 @@
-export class TcpStream {
-    private id: int64;
-
-    constructor(id: int64) {
-        this.id = id;
-    }
-
-    send(data: string): bool {
-        return rt_net_send(this.id, data) > 0;
-    }
-
-    receive(max_len: int): string {
-        return rt_net_receive(this.id, max_len);
-    }
-
-    close(): void {
-        if (this.id <= 0) return;
-        let res = rt_net_close(this.id);
-        if (res == -1) {
-            throw new Error("Invalid stream");
-        }
-        this.id = 0;
-    }
-}
-
-export class TcpListener {
-    private id: int64;
-
-    constructor(id: int64) {
-        this.id = id;
-    }
-
-    accept(): TcpStream {
-        let sid = rt_net_accept(this.id);
-        if (sid <= 0) {
-            throw new Error("Accept failed");
-        }
-        return new TcpStream(sid);
-    }
-
-    close(): void {
-        if (this.id <= 0) return;
-        rt_net_close_listener(this.id);
-        this.id = 0;
-    }
-}
+import "./net/internal.tx";
+import "./net/tcp.tx";
 
 export namespace net {
     export function connect(addr: string): Optional<TcpStream> {
-        let id = rt_net_connect(addr);
-        if (id <= 0) return None;
-        return new TcpStream(id);
+        return _net_connect_stream(addr);
+    }
+
+    export function connectHost(host: string, port: int = 80): Optional<TcpStream> {
+        return _net_connect_host_stream(host, port);
+    }
+
+    export function connectTls(host: string, port: int = 443): Optional<TcpStream> {
+        return _net_connect_tls_stream(host, port);
+    }
+
+    export function connectTlsInsecure(host: string, port: int = 443): Optional<TcpStream> {
+        return _net_connect_tls_stream(host, port, true);
+    }
+
+    export function createConnection(addr: string): Optional<TcpStream> {
+        return _net_connect_stream(addr);
     }
 
     export function listen(addr: string): TcpListener {
-        let id = rt_net_listen(addr);
-        if (id <= 0) {
-            throw new Error("Listen failed on " + addr);
-        }
-        return new TcpListener(id);
+        return _net_listen_on(addr);
+    }
+
+    export function createServer(addr: string): TcpListener {
+        return _net_listen_on(addr);
     }
 
     export function close(stream: Optional<any>): void {
-        if (stream == None) return;
-        if (stream != None) {
-            let value: any = stream;
-            if (value instanceof TcpStream) {
-                value.close();
-            } else {
-                let id: int64 = value as int64;
-                if (id <= 0) return;
-                let res = rt_net_close(id);
-                if (res == -1) {
-                    throw new Error("Invalid stream");
-                }
-            }
-        }
+        _net_close_any(stream);
+    }
+}
+
+export namespace dns {
+    export function lookup(host: string): Optional<string> {
+        return _net_lookup_host(host);
+    }
+
+    export function lookupAll(host: string): string[] {
+        return _net_lookup_all_hosts(host);
     }
 }

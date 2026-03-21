@@ -1,0 +1,41 @@
+export class Date {
+    private timestamp: int64;
+
+    constructor() {
+        this.timestamp = _time_now_ms();
+    }
+
+    static now(): int64 {
+        return _time_now_ms();
+    }
+
+    static fromTimestamp(timestamp: int64): Date {
+        let date = new Date();
+        date.timestamp = timestamp;
+        return date;
+    }
+
+    getTime(): int64 {
+        return this.timestamp;
+    }
+
+    valueOf(): int64 {
+        return this.timestamp;
+    }
+
+    toISOString(): string {
+        return _time_to_iso_string(this.timestamp);
+    }
+
+    toString(): string {
+        return this.toISOString();
+    }
+
+    isBefore(other: Date): bool {
+        return this.timestamp < other.getTime();
+    }
+
+    isAfter(other: Date): bool {
+        return this.timestamp > other.getTime();
+    }
+}
