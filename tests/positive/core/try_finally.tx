@@ -1,0 +1,116 @@
+// Try/Finally Control Flow Tests
+// ==============================
+import { assert_eq_int, assert_eq_string } from "../utils.tx";
+
+class IntBox {
+    value: int;
+    constructor(value: int) {
+        this.value = value;
+    }
+}
+
+function return_from_try_finally(marker: IntBox): int {
+    try {
+        return 10;
+    } finally {
+        marker.value = 42;
+    }
+}
+
+function return_from_catch_finally(marker: IntBox): int {
+    try {
+        throw "boom";
+    } catch (e) {
+        return 20;
+    } finally {
+        marker.value = 84;
+    }
+}
+
+function return_overridden_by_finally(marker: IntBox): int {
+    try {
+        return 1;
+    } finally {
+        marker.value = 100;
+        return 2;
+    }
+}
+
+function return_interrupted_by_finally_throw(): int {
+    try {
+        return 7;
+    } finally {
+        throw "finally boom";
+    }
+}
+
+function test_finally_on_return() {
+    print("--- Finally On Return ---");
+    let tryMarker = new IntBox(0);
+    let catchMarker = new IntBox(0);
+    let a = return_from_try_finally(tryMarker);
+    let b = return_from_catch_finally(catchMarker);
+    assert_eq_int(10, a, "try return value preserved after finally");
+    assert_eq_int(42, tryMarker.value, "finally ran after try return");
+    assert_eq_int(20, b, "catch return value preserved after finally");
+    assert_eq_int(84, catchMarker.value, "finally ran after catch return");
+}
+
+function test_finally_override_return() {
+    print("--- Finally Override Return ---");
+    let marker = new IntBox(0);
+    let value = return_overridden_by_finally(marker);
+    assert_eq_int(2, value, "finally return overrides earlier return");
+    assert_eq_int(100, marker.value, "finally override marker");
+}
+
+function test_finally_throw_overrides_return() {
+    print("--- Finally Throw Overrides Return ---");
+    let caught: int = 0;
+    try {
+        let value = return_interrupted_by_finally_throw();
+        assert_eq_int(-1, value, "unreachable after finally throw");
+    } catch (e) {
+        caught = 1;
+        assert_eq_string("finally boom", e, "finally throw caught");
+    }
+    assert_eq_int(1, caught, "finally throw overrides return");
+}
+
+function test_finally_on_break() {
+    print("--- Finally On Break ---");
+    let point: int = 0;
+    while (true) {
+        try {
+            point = point + 1;
+            break;
+        } finally {
+            point = point + 10;
+        }
+    }
+    assert_eq_int(11, point, "finally runs before break exits loop");
+}
+
+function test_finally_on_continue() {
+    print("--- Finally On Continue ---");
+    let point: int = 0;
+    for (let i = 0; i < 3; i = i + 1) {
+        try {
+            point = point + 1;
+            continue;
+        } finally {
+            point = point + 10;
+        }
+    }
+    assert_eq_int(33, point, "finally runs before continue advances loop");
+}
+
+function main() {
+    print("=== TRY/FINALLY TESTS START ===");
+    test_finally_on_return();
+    test_finally_override_return();
+    test_finally_throw_overrides_return();
+    test_finally_on_break();
+    test_finally_on_continue();
+    print("=== TRY/FINALLY TESTS COMPLETE ===");
+}
