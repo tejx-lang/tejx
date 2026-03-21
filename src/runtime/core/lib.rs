@@ -1102,6 +1102,124 @@ pub unsafe extern "C" fn rt_getenv(key: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_get_all_env() -> i64 {
+    let mut obj = rt_object_new();
+    rt_push_root(&mut obj);
+
+    for (key, value) in std::env::vars() {
+        let key_c = std::ffi::CString::new(key).unwrap_or_default();
+        let value_c = std::ffi::CString::new(value).unwrap_or_default();
+
+        let mut key_id = rt_string_from_c_str(key_c.as_ptr());
+        rt_push_root(&mut key_id);
+        let mut value_id = rt_string_from_c_str(value_c.as_ptr());
+        rt_push_root(&mut value_id);
+
+        rt_set_property(obj, key_id, value_id);
+
+        rt_pop_roots(2);
+    }
+
+    rt_pop_roots(1);
+    obj
+}
+
+unsafe fn rt_string_from_owned_string(value: String) -> i64 {
+    let c_str = std::ffi::CString::new(value).unwrap_or_default();
+    rt_string_from_c_str(c_str.as_ptr())
+}
+
+unsafe fn rt_string_from_optional_string(value: Option<String>) -> i64 {
+    if let Some(inner) = value {
+        return rt_string_from_owned_string(inner);
+    }
+    rt_string_from_c_str("\0".as_ptr() as *const _)
+}
+
+fn runtime_home_dir() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Some(home);
+        }
+    }
+
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        if !home.is_empty() {
+            return Some(home);
+        }
+    }
+
+    let drive = std::env::var("HOMEDRIVE").ok()?;
+    let path = std::env::var("HOMEPATH").ok()?;
+    let full = format!("{}{}", drive, path);
+    if full.is_empty() {
+        None
+    } else {
+        Some(full)
+    }
+}
+
+fn runtime_hostname() -> Option<String> {
+    if let Ok(hostname) = std::env::var("HOSTNAME") {
+        if !hostname.is_empty() {
+            return Some(hostname);
+        }
+    }
+
+    if let Ok(hostname) = std::env::var("COMPUTERNAME") {
+        if !hostname.is_empty() {
+            return Some(hostname);
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } == 0 {
+            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            if end > 0 {
+                return Some(String::from_utf8_lossy(&buf[..end]).into_owned());
+            }
+        }
+    }
+
+    None
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_os_type() -> i64 {
+    rt_string_from_owned_string(std::env::consts::OS.to_string())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_os_arch() -> i64 {
+    rt_string_from_owned_string(std::env::consts::ARCH.to_string())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_cwd() -> i64 {
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
+    rt_string_from_optional_string(cwd)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_home_dir() -> i64 {
+    rt_string_from_optional_string(runtime_home_dir())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_temp_dir() -> i64 {
+    rt_string_from_owned_string(std::env::temp_dir().to_string_lossy().into_owned())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_hostname() -> i64 {
+    rt_string_from_optional_string(runtime_hostname())
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_get_free_memory() -> i64 {
     0
 }

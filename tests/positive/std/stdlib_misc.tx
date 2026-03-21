@@ -45,9 +45,9 @@ function test_stdlib_wrappers() {
     remove(file);
     
     // OS
-    let argv = args();
-    assert_eq_int(1, argv.length(), "args count");
-    assert_eq_int(argv.length(), system.argv().length(), "system.argv length");
+    let runtimeArgs = args();
+    assert_eq_int(1, runtimeArgs.length(), "args count");
+    assert_eq_int(runtimeArgs.length(), system.args().length(), "system.args length");
 }
 
 function main() {
