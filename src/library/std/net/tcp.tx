@@ -101,12 +101,23 @@ export class TcpListener {
         return _net_listen_on(addr);
     }
 
-    accept(): TcpStream {
+    tryAccept(): Optional<TcpStream> {
         let sid = rt_net_accept(this.id);
-        if (sid <= 0) {
+        if (sid == 0) {
+            return None;
+        }
+        if (sid < 0) {
             throw new Error("Accept failed");
         }
         return new TcpStream(sid);
+    }
+
+    accept(): TcpStream {
+        let stream = this.tryAccept();
+        if (stream == None) {
+            throw new Error("Accept failed");
+        }
+        return stream as TcpStream;
     }
 
     isOpen(): bool {

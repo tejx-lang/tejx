@@ -446,13 +446,23 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
     }
 
     let listener = &*(listener_ptr as *const TcpListener);
-    match listener.accept() {
-        Ok((stream, _)) => {
-            let _ = stream.set_nodelay(true);
-            let boxed = Box::new(NetStream::Tcp(stream));
-            Box::into_raw(boxed) as i64
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let _ = stream.set_nodelay(true);
+                let boxed = Box::new(NetStream::Tcp(stream));
+                return Box::into_raw(boxed) as i64;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                return 0;
+            }
+            Err(_) => {
+                return -1;
+            }
         }
-        Err(_) => -1,
     }
 }
 
