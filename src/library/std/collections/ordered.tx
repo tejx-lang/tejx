@@ -51,7 +51,7 @@ export class OrderedMap<K, V> {
         return this.inner.values();
     }
 
-    entries(): any[] {
+    entries(): MapEntry<K, V>[] {
         return this.inner.entries();
     }
 

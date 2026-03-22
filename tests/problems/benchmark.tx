@@ -1,14 +1,6 @@
 import { now } from "std:time";
 import { random, sqrt, sin, cos, powi, floor } from "std:math";
 import {Map} from "std:collections";
-// --- Optimization Barrier ---
-let global_sink: any = 0;
-
-function DoNotOptimize(val: any): void {
-    if (typeof(val) == "int" || typeof(val) == "float") {
-        global_sink = val;
-    }
-}
 
 // --- Types ---
 type Node = {

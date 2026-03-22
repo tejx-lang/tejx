@@ -1,5 +1,14 @@
 extern function rt_String_charCodeAt(s: string, index: int): int;
-extern function rt_array_ensure_capacity(arr: any, required: int): any;
+
+export class MapEntry<K, V> {
+    key: K;
+    value: V;
+
+    constructor(key: K, value: V) {
+        this.key = key;
+        this.value = value;
+    }
+}
 
 export class Map<K, V> {
     private keysStore: K[];
@@ -45,7 +54,7 @@ export class Map<K, V> {
 
     private resetBuckets(capacity: int): void {
         let nextCapacity = this.normalizeCapacity(capacity);
-        this.buckets = rt_array_new(nextCapacity, 4) as int[];
+        this.buckets = rt_array_new<int>(nextCapacity, 4);
         this.bucketMask = nextCapacity - 1;
         this.growthLimit = (nextCapacity * 7) / 10;
         this.tombstoneCount = 0;
@@ -117,18 +126,18 @@ export class Map<K, V> {
         if (target <= 0 || this.storeCapacity >= target) return;
 
         if (this.storeCapacity == 0) {
-            this.keysStore = rt_array_new(target, sizeof(keySample)) as K[];
-            this.valuesStore = rt_array_new(target, sizeof(valueSample)) as V[];
-            this.hashStore = rt_array_new(target, 4) as int[];
-            this.liveStore = rt_array_new(target, 1) as bool[];
+            this.keysStore = rt_array_new<K>(target, sizeof(keySample));
+            this.valuesStore = rt_array_new<V>(target, sizeof(valueSample));
+            this.hashStore = rt_array_new<int>(target, 4);
+            this.liveStore = rt_array_new<bool>(target, 1);
             this.storeCapacity = target;
             return;
         }
 
-        this.keysStore = rt_array_ensure_capacity(this.keysStore, target) as K[];
-        this.valuesStore = rt_array_ensure_capacity(this.valuesStore, target) as V[];
-        this.hashStore = rt_array_ensure_capacity(this.hashStore, target) as int[];
-        this.liveStore = rt_array_ensure_capacity(this.liveStore, target) as bool[];
+        this.keysStore = rt_array_ensure_capacity<K>(this.keysStore, target);
+        this.valuesStore = rt_array_ensure_capacity<V>(this.valuesStore, target);
+        this.hashStore = rt_array_ensure_capacity<int>(this.hashStore, target);
+        this.liveStore = rt_array_ensure_capacity<bool>(this.liveStore, target);
         this.storeCapacity = target;
     }
 
@@ -165,10 +174,10 @@ export class Map<K, V> {
         }
 
         let nextCapacity = this.targetStoreCapacity(this.liveCount);
-        let nextKeys = rt_array_new(nextCapacity, sizeof(this.keysStore[firstLive])) as K[];
-        let nextValues = rt_array_new(nextCapacity, sizeof(this.valuesStore[firstLive])) as V[];
-        let nextHashes = rt_array_new(nextCapacity, 4) as int[];
-        let nextLive = rt_array_new(nextCapacity, 1) as bool[];
+        let nextKeys = rt_array_new<K>(nextCapacity, sizeof(this.keysStore[firstLive]));
+        let nextValues = rt_array_new<V>(nextCapacity, sizeof(this.valuesStore[firstLive]));
+        let nextHashes = rt_array_new<int>(nextCapacity, 4);
+        let nextLive = rt_array_new<bool>(nextCapacity, 1);
         let nextIndex = 0;
 
         for (let i = 0; i < this.storageCount; i++) {
@@ -497,11 +506,11 @@ export class Map<K, V> {
         return out;
     }
 
-    entries(): any[] {
-        let out: any[] = [];
+    entries(): MapEntry<K, V>[] {
+        let out: MapEntry<K, V>[] = [];
         for (let i = 0; i < this.storageCount; i++) {
             if (!this.liveStore[i]) continue;
-            out.push({ key: this.keysStore[i], value: this.valuesStore[i] });
+            out.push(new MapEntry(this.keysStore[i], this.valuesStore[i]));
         }
         return out;
     }

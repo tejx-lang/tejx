@@ -40,13 +40,14 @@ extern function rt_String_padEnd(s: string, len: int, pad: string): string;
 extern function rt_String_repeat(s: string, count: int): string;
 extern function rt_String_replace(s: string, search: string, replace: string): string;
 extern function rt_String_includes(s: string, search: string): bool;
-extern function rt_array_new(len: int, elemSize: int): any;
+extern function rt_array_new<T>(len: int, elemSize: int): T[];
+extern function rt_array_ensure_capacity<T>(arr: T[], required: int): T[];
 extern function rt_sizeof<T>(val: T): int;
-extern function rt_Object_keys(obj: any): string[];
-extern function rt_Object_values(obj: any): any[];
-extern function rt_Object_entries(obj: any): any[];
-extern function rt_Object_assign(target: any, source: any): any;
-extern function rt_Object_freeze(obj: any): any;
+extern function rt_Object_keys<T>(obj: T): string[];
+extern function rt_Object_values<T>(obj: T): any[];
+extern function rt_Object_entries<T>(obj: T): any[];
+extern function rt_Object_assign<T, U>(target: T, source: U): T;
+extern function rt_Object_freeze<T>(obj: T): T;
 
 export function sizeof<T>(val: T): int {
     return rt_sizeof(val);
@@ -119,7 +120,7 @@ export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
         return p;
     }
     
-    let results: T[] = rt_array_new(total, 8) as T[];
+    let results: T[] = rt_array_new<T>(total, 8);
     let state = new PromiseState();
     for (let i = 0; i < total; i++) {
         _promise_all_attach(promises[i], i, results, state, total, p);
@@ -245,23 +246,23 @@ export function rt_box_number_internal(val: float): float {
 
 
 export class Object {
-    static keys(obj: any): string[] {
+    static keys<T>(obj: T): string[] {
         return rt_Object_keys(obj);
     }
     
-    static values(obj: any): any[] {
+    static values<T>(obj: T): any[] {
         return rt_Object_values(obj);
     }
     
-    static entries(obj: any): any[] {
+    static entries<T>(obj: T): any[] {
         return rt_Object_entries(obj);
     }
     
-    static assign(target: any, source: any): any {
+    static assign<T, U>(target: T, source: U): T {
         return rt_Object_assign(target, source);
     }
     
-    static freeze(obj: any): any {
+    static freeze<T>(obj: T): T {
         return rt_Object_freeze(obj);
     }
 }
