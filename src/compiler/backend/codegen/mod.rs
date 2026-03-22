@@ -20,6 +20,7 @@ pub struct CodeGen {
     function_param_counts: HashMap<String, usize>,
     function_param_types: HashMap<String, Vec<TejxType>>,
     declared_globals: HashSet<String>,
+    global_types: HashMap<String, TejxType>,
     string_constant_cache: HashMap<String, (String, usize)>,
     boxed_string_cache: HashMap<String, String>,
     current_function_params: HashSet<String>,
@@ -106,6 +107,28 @@ impl CodeGen {
         }
     }
 
+    pub(crate) fn canonical_global_name(name: &str) -> String {
+        if name.starts_with("g_") {
+            return name.to_string();
+        }
+        format!("g_{}", name)
+    }
+
+    pub(crate) fn static_root_slot_name(name: &str) -> String {
+        format!("{}__slot", Self::canonical_global_name(name))
+    }
+
+    pub(crate) fn global_type(&self, name: &str) -> Option<&TejxType> {
+        let global_name = Self::canonical_global_name(name);
+        self.global_types.get(&global_name)
+    }
+
+    pub(crate) fn is_gc_global(&self, name: &str) -> bool {
+        self.global_type(name)
+            .map(Self::is_gc_managed)
+            .unwrap_or(false)
+    }
+
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -119,6 +142,7 @@ impl CodeGen {
             function_param_counts: HashMap::new(),
             function_param_types: HashMap::new(),
             declared_globals: HashSet::new(),
+            global_types: HashMap::new(),
             string_constant_cache: HashMap::new(),
             boxed_string_cache: HashMap::new(),
             current_function_params: HashSet::new(),

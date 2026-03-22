@@ -26,7 +26,8 @@ pub mod gc;
 pub use gc::{
     gc_allocate, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
     rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pop_roots, rt_push_root, rt_register_thread,
-    rt_set_static_root, rt_unregister_thread, rt_write_barrier,
+    rt_register_type, rt_set_static_root, rt_unregister_thread, rt_write_barrier,
+    MAX_TYPES,
     ObjectHeader,
 };
 use std::collections::{HashMap, HashSet};
@@ -37,6 +38,27 @@ const STRING_FLAG_FROZEN: u16 = 0x0800;
 static CONST_STRING_SLOTS: LazyLock<Mutex<HashMap<usize, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static RNG_STATE: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
+
+const FORMAT_MAX_DEPTH: usize = 6;
+const TYPE_INFO_MAX_FIELDS: usize = 64;
+const FIELD_KIND_REF: u8 = 0;
+const FIELD_KIND_BOOL: u8 = 1;
+const FIELD_KIND_INT16: u8 = 2;
+const FIELD_KIND_INT32: u8 = 3;
+const FIELD_KIND_INT64: u8 = 4;
+const FIELD_KIND_FLOAT32: u8 = 5;
+const FIELD_KIND_FLOAT64: u8 = 6;
+const FIELD_KIND_CHAR: u8 = 7;
+const FIELD_KIND_UNSUPPORTED: u8 = 255;
+
+static mut TYPE_NAME_PTRS: [*const std::ffi::c_char; MAX_TYPES] = [std::ptr::null(); MAX_TYPES];
+static mut TYPE_FIELD_COUNTS: [usize; MAX_TYPES] = [0; MAX_TYPES];
+static mut TYPE_FIELD_OFFSETS: [[usize; TYPE_INFO_MAX_FIELDS]; MAX_TYPES] =
+    [[0; TYPE_INFO_MAX_FIELDS]; MAX_TYPES];
+static mut TYPE_FIELD_KINDS: [[u8; TYPE_INFO_MAX_FIELDS]; MAX_TYPES] =
+    [[FIELD_KIND_UNSUPPORTED; TYPE_INFO_MAX_FIELDS]; MAX_TYPES];
+static mut TYPE_FIELD_NAMES: [[*const std::ffi::c_char; TYPE_INFO_MAX_FIELDS]; MAX_TYPES] =
+    [[std::ptr::null(); TYPE_INFO_MAX_FIELDS]; MAX_TYPES];
 
 fn runtime_seed_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -539,39 +561,7 @@ pub unsafe extern "C" fn rt_to_string_int(v: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string_float(v: f64) -> i64 {
-    let s = if v.is_nan() {
-        "NaN".to_string()
-    } else if v.is_infinite() {
-        if v.is_sign_negative() {
-            "-Infinity".to_string()
-        } else {
-            "Infinity".to_string()
-        }
-    } else {
-        // Round to a human-friendly decimal when very close to a shorter representation.
-        let eps = 1e-5_f64.max(v.abs() * 1e-7);
-        let mut out: Option<String> = None;
-        for decimals in 0..=6 {
-            let factor = 10_f64.powi(decimals);
-            let rounded = (v * factor).round() / factor;
-            if (v - rounded).abs() <= eps {
-                let mut s = format!("{:.*}", decimals as usize, rounded);
-                if let Some(dot) = s.find('.') {
-                    let mut end = s.len();
-                    while end > dot + 1 && s.as_bytes()[end - 1] == b'0' {
-                        end -= 1;
-                    }
-                    if end == dot + 1 {
-                        end = dot;
-                    }
-                    s.truncate(end);
-                }
-                out = Some(s);
-                break;
-            }
-        }
-        out.unwrap_or_else(|| v.to_string())
-    };
+    let s = rt_float_to_rust_string(v);
     let cstr = std::ffi::CString::new(s).unwrap_or_else(|_| {
         std::ffi::CString::new("0").expect("CString for float")
     });
@@ -610,84 +600,256 @@ fn looks_like_unboxed_float_bits(val: i64) -> bool {
     val >= HEAP_OFFSET || (bits & (1u64 << 63)) != 0
 }
 
+fn rt_float_to_rust_string(v: f64) -> String {
+    if v.is_nan() {
+        return "NaN".to_string();
+    }
+    if v.is_infinite() {
+        return if v.is_sign_negative() {
+            "-Infinity".to_string()
+        } else {
+            "Infinity".to_string()
+        };
+    }
+
+    let eps = 1e-5_f64.max(v.abs() * 1e-7);
+    for decimals in 0..=6 {
+        let factor = 10_f64.powi(decimals);
+        let rounded = (v * factor).round() / factor;
+        if (v - rounded).abs() <= eps {
+            let mut s = format!("{:.*}", decimals as usize, rounded);
+            if let Some(dot) = s.find('.') {
+                let mut end = s.len();
+                while end > dot + 1 && s.as_bytes()[end - 1] == b'0' {
+                    end -= 1;
+                }
+                if end == dot + 1 {
+                    end = dot;
+                }
+                s.truncate(end);
+            }
+            return s;
+        }
+    }
+
+    v.to_string()
+}
+
+unsafe fn rt_value_body_and_tag(val: i64) -> Option<(*mut u8, i64)> {
+    let is_gc = if val >= HEAP_OFFSET {
+        rt_is_gc_ptr((val - HEAP_OFFSET) as *mut u8)
+    } else {
+        false
+    };
+    let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
+    if !is_gc && !is_stack {
+        return None;
+    }
+
+    let body_ptr = if is_gc {
+        (val - HEAP_OFFSET) as *mut u8
+    } else {
+        (val - STACK_OFFSET) as *mut u8
+    };
+    let header = rt_get_header(body_ptr);
+    Some((body_ptr, (*header).type_id as i64))
+}
+
+unsafe fn rt_value_is_string(val: i64) -> bool {
+    matches!(rt_value_body_and_tag(val), Some((_body, tag)) if tag == TAG_STRING)
+}
+
+fn rt_quote_rust_string(text: &str) -> String {
+    format!("{:?}", text)
+}
+
+unsafe fn rt_type_name_string(type_id: usize) -> String {
+    if type_id >= MAX_TYPES {
+        return "object".to_string();
+    }
+    let ptr = TYPE_NAME_PTRS[type_id];
+    if ptr.is_null() {
+        return "object".to_string();
+    }
+    std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+}
+
+unsafe fn rt_field_name_string(type_id: usize, index: usize) -> String {
+    if type_id >= MAX_TYPES || index >= TYPE_INFO_MAX_FIELDS {
+        return format!("field{}", index);
+    }
+    let ptr = TYPE_FIELD_NAMES[type_id][index];
+    if ptr.is_null() {
+        return format!("field{}", index);
+    }
+    std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+}
+
+unsafe fn rt_format_scalar_value(val: i64) -> String {
+    if val == 0 {
+        return "None".to_string();
+    }
+    if looks_like_unboxed_float_bits(val) {
+        return rt_float_to_rust_string(f64::from_bits(val as u64));
+    }
+    val.to_string()
+}
+
+unsafe fn rt_format_composite_value(val: i64, depth: usize, seen: &mut Vec<i64>) -> String {
+    if depth == 0 {
+        return "...".to_string();
+    }
+
+    if let Some((body_ptr, tag)) = rt_value_body_and_tag(val) {
+        if tag == TAG_STRING {
+            return i64_to_rust_str(val).unwrap_or_default();
+        }
+        if tag == TAG_FLOAT {
+            return rt_float_to_rust_string(*(body_ptr as *const f64));
+        }
+        if tag == TAG_INT {
+            let n = *(body_ptr as *const i64);
+            if let Some((_nested_body, nested_tag)) = rt_value_body_and_tag(n) {
+                if nested_tag == TAG_FUNCTION {
+                    return "[Function]".to_string();
+                }
+            }
+            return n.to_string();
+        }
+        if tag == TAG_CHAR {
+            let ch = std::char::from_u32(*(body_ptr as *const i32) as u32).unwrap_or('\u{FFFD}');
+            return ch.to_string();
+        }
+        if tag == TAG_BOOLEAN {
+            return if *(body_ptr as *const i64) != 0 {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            };
+        }
+        if tag == TAG_FUNCTION {
+            return "[Function]".to_string();
+        }
+        if tag == TAG_PROMISE {
+            return "[Promise]".to_string();
+        }
+
+        if seen.contains(&val) {
+            return "[Circular]".to_string();
+        }
+
+        if tag == TAG_ARRAY {
+            seen.push(val);
+            let len = rt_len(val);
+            let mut items = Vec::new();
+            for i in 0..len {
+                let item = rt_array_get_fast(val, i);
+                let mut rendered = rt_format_composite_value(item, depth - 1, seen);
+                if rt_value_is_string(item) {
+                    rendered = rt_quote_rust_string(&rendered);
+                }
+                items.push(rendered);
+            }
+            seen.pop();
+            return format!("[{}]", items.join(", "));
+        }
+
+        if tag == TAG_OBJECT {
+            seen.push(val);
+            let keys = rt_object_keys_array(val);
+            let values = rt_object_values_array(val);
+            let len = rt_len(keys);
+            let mut items = Vec::new();
+            for i in 0..len {
+                let key_val = rt_array_get_fast(keys, i);
+                let key = if rt_value_is_string(key_val) {
+                    i64_to_rust_str(key_val).unwrap_or_default()
+                } else {
+                    rt_format_composite_value(key_val, depth - 1, seen)
+                };
+                let field_val = rt_array_get_fast(values, i);
+                let mut value_text = rt_format_composite_value(field_val, depth - 1, seen);
+                if rt_value_is_string(field_val) {
+                    value_text = rt_quote_rust_string(&value_text);
+                }
+                items.push(format!("{}: {}", key, value_text));
+            }
+            seen.pop();
+            if items.is_empty() {
+                return "{}".to_string();
+            }
+            return format!("{{ {} }}", items.join(", "));
+        }
+
+        let type_id = tag as usize;
+        if type_id < MAX_TYPES && !TYPE_NAME_PTRS[type_id].is_null() {
+            seen.push(val);
+            let type_name = rt_type_name_string(type_id);
+            let field_count = TYPE_FIELD_COUNTS[type_id];
+            let mut fields = Vec::new();
+            for i in 0..field_count.min(TYPE_INFO_MAX_FIELDS) {
+                let field_name = rt_field_name_string(type_id, i);
+                let offset = TYPE_FIELD_OFFSETS[type_id][i];
+                let kind = TYPE_FIELD_KINDS[type_id][i];
+                let field_text = match kind {
+                    FIELD_KIND_REF => {
+                        let field_val = *(body_ptr.add(offset) as *const i64);
+                        let mut rendered = rt_format_composite_value(field_val, depth - 1, seen);
+                        if rt_value_is_string(field_val) {
+                            rendered = rt_quote_rust_string(&rendered);
+                        }
+                        rendered
+                    }
+                    FIELD_KIND_BOOL => {
+                        if *(body_ptr.add(offset) as *const i8) != 0 {
+                            "true".to_string()
+                        } else {
+                            "false".to_string()
+                        }
+                    }
+                    FIELD_KIND_INT16 => (*(body_ptr.add(offset) as *const i16)).to_string(),
+                    FIELD_KIND_INT32 => (*(body_ptr.add(offset) as *const i32)).to_string(),
+                    FIELD_KIND_INT64 => (*(body_ptr.add(offset) as *const i64)).to_string(),
+                    FIELD_KIND_FLOAT32 => {
+                        rt_float_to_rust_string(*(body_ptr.add(offset) as *const f32) as f64)
+                    }
+                    FIELD_KIND_FLOAT64 => {
+                        rt_float_to_rust_string(*(body_ptr.add(offset) as *const f64))
+                    }
+                    FIELD_KIND_CHAR => {
+                        let ch =
+                            std::char::from_u32(*(body_ptr.add(offset) as *const i32) as u32)
+                                .unwrap_or('\u{FFFD}');
+                        ch.to_string()
+                    }
+                    _ => "<unprintable>".to_string(),
+                };
+                fields.push(format!("{}: {}", field_name, field_text));
+            }
+            seen.pop();
+            if fields.is_empty() {
+                return format!("{} {{}}", type_name);
+            }
+            return format!("{} {{ {} }}", type_name, fields.join(", "));
+        }
+
+        return "[object Object]".to_string();
+    }
+
+    rt_format_scalar_value(val)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     let mut v = val;
     let mut res_id = 0i64;
     rt_push_root(&mut v);
     rt_push_root(&mut res_id);
-
-    // Match rt_typeof: values boxed in Any/object/array slots should still stringify
-    // correctly even if the stricter "exact body" check fails.
-    let is_gc = if v >= HEAP_OFFSET {
-        rt_is_gc_ptr((v - HEAP_OFFSET) as *mut u8)
-    } else {
-        false
-    };
-    let is_stack = v >= STACK_OFFSET && v < HEAP_OFFSET;
-    let is_ptr = is_gc || is_stack;
-
-    if is_ptr {
-        let body_ptr = if is_gc {
-            (v - HEAP_OFFSET) as *mut u8
-        } else {
-            (v - STACK_OFFSET) as *mut u8
-        };
-        let header = rt_get_header(body_ptr);
-        let tag = (*header).type_id as i64;
-
-        if tag == TAG_STRING {
-            res_id = v;
-        } else if tag == TAG_FLOAT {
-            let n = *(body_ptr as *const f64);
-            res_id = rt_to_string_float(n);
-        } else if tag == TAG_INT {
-            let n = *(body_ptr as *const i64);
-            res_id = rt_to_string_int(n);
-        } else if tag == TAG_CHAR {
-            let mut buf = [0u8; 2];
-            buf[0] = *(body_ptr) as u8;
-            buf[1] = 0;
-            res_id = rt_string_from_c_str(buf.as_ptr() as *const _);
-        } else if tag == TAG_BOOLEAN {
-            let b = *(body_ptr as *const i64);
-            res_id = rt_to_string_boolean(b as i64);
-        } else if tag == TAG_ARRAY {
-            res_id = rt_string_from_c_str("[\0".as_ptr() as *const _);
-            let len = rt_len(v);
-            for i in 0..len {
-                let mut item = rt_array_get_fast(v, i);
-                rt_push_root(&mut item);
-                let mut item_str = rt_to_string(item);
-                rt_push_root(&mut item_str);
-                res_id = rt_str_concat_v2(res_id, item_str);
-                rt_pop_roots(2); // item_str, item
-
-                if i < len - 1 {
-                    let mut comma = rt_string_from_c_str(", \0".as_ptr() as *const _);
-                    rt_push_root(&mut comma);
-                    res_id = rt_str_concat_v2(res_id, comma);
-                    rt_pop_roots(1);
-                }
-            }
-            let mut bracket = rt_string_from_c_str("]\0".as_ptr() as *const _);
-            rt_push_root(&mut bracket);
-            res_id = rt_str_concat_v2(res_id, bracket);
-            rt_pop_roots(1);
-        } else {
-            res_id = rt_string_from_c_str("[object Object]\0".as_ptr() as *const _);
-        }
-    } else {
-        // Handle unboxed primitives (direct i64 representation)
-        if v == 0 {
-            res_id = rt_string_from_c_str("None\0".as_ptr() as *const _);
-        } else if looks_like_unboxed_float_bits(v) {
-            let n = f64::from_bits(v as u64);
-            res_id = rt_to_string_float(n);
-        } else {
-            res_id = rt_to_string_int(v);
-        }
-    }
+    let rendered = rt_format_composite_value(v, FORMAT_MAX_DEPTH, &mut Vec::new());
+    let cstr = std::ffi::CString::new(rendered).unwrap_or_else(|_| {
+        std::ffi::CString::new("<stringify error>").expect("CString for stringify fallback")
+    });
+    res_id = rt_string_from_c_str(cstr.as_ptr() as *const _);
 
     rt_pop_roots(2);
     res_id
@@ -1509,6 +1671,78 @@ pub unsafe extern "C" fn rt_to_number_v2(v: i64) -> i64 {
     // instead of boxing it back in TAG_FLOAT. This allows LLVM to `bitcast` it directly to `double`.
     let f = rt_to_number(v); // Returns a f64
     f.to_bits() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_add_static_root_global(val: i64) -> i64 {
+    rt_add_static_root(val) as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_static_root_global(slot: i64) -> i64 {
+    if slot < 0 {
+        return 0;
+    }
+    rt_get_static_root(slot as usize)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_static_root_global(slot: i64, val: i64) {
+    if slot < 0 {
+        return;
+    }
+    rt_set_static_root(slot as usize, val);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_register_type_info(
+    id: i32,
+    type_name_ptr: i64,
+    field_count: i64,
+    field_offsets: *const i64,
+    field_kinds: *const u8,
+    field_names: *const i64,
+) {
+    if id < 0 || id as usize >= MAX_TYPES {
+        return;
+    }
+
+    let type_index = id as usize;
+    TYPE_NAME_PTRS[type_index] = type_name_ptr as usize as *const std::ffi::c_char;
+
+    let count = if field_count <= 0 {
+        0
+    } else if field_count as usize > TYPE_INFO_MAX_FIELDS {
+        TYPE_INFO_MAX_FIELDS
+    } else {
+        field_count as usize
+    };
+    TYPE_FIELD_COUNTS[type_index] = count;
+
+    for i in 0..count {
+        TYPE_FIELD_OFFSETS[type_index][i] =
+            if field_offsets.is_null() { 0 } else { *field_offsets.add(i) as usize };
+        TYPE_FIELD_KINDS[type_index][i] =
+            if field_kinds.is_null() { FIELD_KIND_UNSUPPORTED } else { *field_kinds.add(i) };
+        TYPE_FIELD_NAMES[type_index][i] = if field_names.is_null() {
+            std::ptr::null()
+        } else {
+            (*field_names.add(i) as usize) as *const std::ffi::c_char
+        };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_box_function_value(val: i64) -> i64 {
+    if val == 0 {
+        return 0;
+    }
+    if let Some((_body, tag)) = rt_value_body_and_tag(val) {
+        if tag == TAG_FUNCTION {
+            return val;
+        }
+    }
+    rt_closure_from_ptr(val)
 }
 
 extern "C" {
@@ -2643,6 +2877,71 @@ mod tests {
 
             assert_eq!(to_rust_string(rt_to_string(boxed_zero)), "0");
             assert_eq!(to_rust_string(rt_typeof(boxed_zero)), "int");
+        }
+    }
+
+    #[test]
+    fn stringifies_plain_objects_with_values() {
+        unsafe {
+            rt_init_gc();
+
+            let mut obj = rt_object_new();
+            rt_push_root(&mut obj);
+
+            let key_message = rt_string_from_c_str_const("message\0".as_ptr() as *const _);
+            let value_message = rt_string_from_c_str_const("boom\0".as_ptr() as *const _);
+            let key_code = rt_string_from_c_str_const("code\0".as_ptr() as *const _);
+            let value_code = rt_box_int(7);
+
+            rt_set_property(obj, key_message, value_message);
+            rt_set_property(obj, key_code, value_code);
+
+            assert_eq!(
+                to_rust_string(rt_to_string(obj)),
+                "{ message: \"boom\", code: 7 }"
+            );
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn stringifies_registered_class_fields() {
+        unsafe {
+            rt_init_gc();
+
+            let offsets = [0usize];
+            rt_register_type(200, 16, 1, offsets.as_ptr(), None);
+
+            let field_offsets = [0i64, 8i64];
+            let field_kinds = [FIELD_KIND_REF, FIELD_KIND_BOOL];
+            let field_names = [
+                "message\0".as_ptr() as usize as i64,
+                "active\0".as_ptr() as usize as i64,
+            ];
+            rt_register_type_info(
+                200,
+                "Sample\0".as_ptr() as usize as i64,
+                2,
+                field_offsets.as_ptr(),
+                field_kinds.as_ptr(),
+                field_names.as_ptr(),
+            );
+
+            let mut obj = rt_class_new(200, 16, 1, std::ptr::null(), 0);
+            rt_push_root(&mut obj);
+
+            let message = rt_string_from_c_str_const("boom\0".as_ptr() as *const _);
+            let body = (obj - HEAP_OFFSET) as *mut u8;
+            *(body as *mut i64) = message;
+            *(body.add(8) as *mut i8) = 1;
+
+            assert_eq!(
+                to_rust_string(rt_to_string(obj)),
+                "Sample { message: \"boom\", active: true }"
+            );
+
+            rt_pop_roots(1);
         }
     }
 }

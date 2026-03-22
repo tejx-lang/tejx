@@ -63,9 +63,9 @@ export let undefined: any = None;
 export class Error {
     private message: string;
     code: int32;
-    constructor(msg: string) {
+    constructor(msg: string, code: Optional<int>) {
         this.message = msg;
-        this.code = 0;
+        this.code = code ?? 0;
     }
     getMessage(): string { return this.message; }
 }
@@ -87,27 +87,27 @@ export class Promise<T> {
             (e: Error) => { rt_promise_reject(this, e); }
         );
     }
-
+    
     then<U>(onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U> {
         return rt_promise_then(this, onResolve, onReject);
     }
-
+    
     catchError<U>(onReject: (e: Error) => U): Promise<U> {
         return rt_promise_then(this, 0 as any as (v: T) => U, onReject);
     }
-
+    
     static resolve<T>(v: T): Promise<T> {
         let p: Promise<T> = rt_promise_new<T>();
         rt_promise_resolve(p, v);
         return p;
     }
-
+    
     static reject<T>(e: Error): Promise<T> {
         let p: Promise<T> = rt_promise_new<T>();
         rt_promise_reject(p, e);
         return p;
     }
-
+    
 }
 
 export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
@@ -124,7 +124,7 @@ export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
     for (let i = 0; i < total; i++) {
         _promise_all_attach(promises[i], i, results, state, total, p);
     }
-    return p; 
+    return p;
 }
 
 function _promise_all_attach<T>(
@@ -168,7 +168,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
     if (rt_str_equals(ty, "function")) {
         return "[Function]";
     }
-
+    
     if (rt_is_array(v)) {
         for (let i: int = 0; i < seen.length(); i++) {
             if (seen[i] == v) return "[Circular]";
@@ -183,7 +183,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         seen.pop();
         return res + "]";
     }
-
+    
     // Treat as object if ty is "object" OR if it has keys but is not an array
     if (rt_str_equals(ty, "object")) {
         for (let i: int = 0; i < seen.length(); i++) {
@@ -198,7 +198,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
             if (s == "[object Object]") return "{}";
             return s;
         }
-
+        
         let res: string = "{ ";
         let first: bool = true;
         for (let i: int = 0; i < keys.length(); i++) {
@@ -213,7 +213,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         seen.pop();
         return res + " }";
     }
-
+    
     return rt_to_string(v);
 }
 
@@ -248,19 +248,19 @@ export class Object {
     static keys(obj: any): string[] {
         return rt_Object_keys(obj);
     }
-
+    
     static values(obj: any): any[] {
         return rt_Object_values(obj);
     }
-
+    
     static entries(obj: any): any[] {
         return rt_Object_entries(obj);
     }
-
+    
     static assign(target: any, source: any): any {
         return rt_Object_assign(target, source);
     }
-
+    
     static freeze(obj: any): any {
         return rt_Object_freeze(obj);
     }

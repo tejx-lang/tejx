@@ -5,7 +5,7 @@ import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 class CustomError extends Error {
     code: int32;
     constructor(m: string, c: int32) {
-        super(m);
+        super(m, c);
         this.code = c;
     }
 }
@@ -29,10 +29,10 @@ function test_nested_try_catch() {
             point += 1; // 2
             process(-1);
         } catch (innerErr) {
-             // Catch CustomError
-             assert_eq_string("Negative input", innerErr.message, "Inner catch message");
-             point += 1; // 3
-             throw innerErr;
+            // Catch CustomError
+            assert_eq_string("Negative input", innerErr.message, "Inner catch message");
+            point += 1; // 3
+            throw innerErr;
         } finally {
             point += 1; // 4
         }
@@ -55,7 +55,7 @@ function test_basic_throws() {
     } catch (e) {
         assert_eq_string("Zero is not allowed", e, "Caught string exception");
     }
-
+    
     // Object throw
     try {
         process(-5);
@@ -64,7 +64,7 @@ function test_basic_throws() {
         assert_eq_int(400, e.code, "Caught CustomError code");
         assert_eq_string("Negative input", e.message, "Caught CustomError message");
         // Check toString if available
-        // assert_eq_string("Error: Negative input", e.toString(), "Error toString"); 
+        // assert_eq_string("Error: Negative input", e.toString(), "Error toString");
     }
 }
 
@@ -82,11 +82,22 @@ function test_loop_error() {
     assert_true(caught_zero, "Caught error inside loop");
 }
 
+function test_base_error_throw() {
+    print("--- Base Error Throw ---");
+    try {
+        throw new Error("error");
+    } catch (e) {
+        print(e);
+        assert_eq_string("error", e.getMessage(), "Caught Error message");
+    }
+}
+
 function main() {
     print("=== ERROR TESTS START ===");
     test_basic_throws();
     test_nested_try_catch();
     test_loop_error();
+    test_base_error_throw();
     test_validation();
     print("=== ERROR TESTS COMPLETE ===");
 }
@@ -116,11 +127,11 @@ function test_validation() {
     print("--- Validation Tests ---");
     let r1 = validate("hello");
     assert_true(r1.isValid, "Valid input");
-
+    
     let r2 = validate("");
     assert_true(!r2.isValid, "Empty input not valid");
     assert_eq_string("Empty string", r2.error, "Empty input error msg");
-
+    
     let r3 = validate("error");
     assert_true(!r3.isValid, "Error keyword not valid");
     assert_eq_string("Invalid keyword", r3.error, "Error keyword error msg");

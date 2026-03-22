@@ -303,6 +303,20 @@ impl CodeGen {
             return boxed;
         }
 
+        if dst_is_any && matches!(src_ty, TejxType::Function(_, _)) {
+            self.declare_runtime_fn(
+                "rt_box_function_value",
+                "i64 @rt_box_function_value(i64)",
+            );
+            self.temp_counter += 1;
+            let boxed = format!("%boxed_fn_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_box_function_value(i64 {})",
+                boxed, val_name
+            ));
+            return boxed;
+        }
+
         if src_is_any && (dst_ty.is_numeric() || matches!(dst_ty, TejxType::Bool)) {
             if matches!(dst_ty, TejxType::Bool) {
                 self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
@@ -722,7 +736,15 @@ impl CodeGen {
                 if name.starts_with("g_") {
                     self.temp_counter += 1;
                     let tmp = format!("%t{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
+                    if self.is_gc_global(name) {
+                        let slot_name = Self::static_root_slot_name(name);
+                        self.emit_line(&format!(
+                            "{} = call i64 @tejx_get_global_root(i64* @{}, i64* @{})",
+                            tmp, slot_name, name
+                        ));
+                    } else {
+                        self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
+                    }
                     return tmp;
                 }
                 if name == "__env" {
@@ -832,17 +854,21 @@ impl CodeGen {
                 if name.starts_with("g_") || self.declared_globals.contains(name) {
                     self.temp_counter += 1;
                     let val_reg = format!("%gval_{}", self.temp_counter);
-                    let g_name = if name.starts_with("g_") {
-                        name.to_string()
-                    } else {
-                        format!("g_{}", name)
-                    };
+                    let g_name = Self::canonical_global_name(name);
                     if !self.declared_globals.contains(&g_name) {
                         self.global_buffer
                             .push_str(&format!("@{} = global i64 0\n", g_name));
                         self.declared_globals.insert(g_name.clone());
                     }
-                    self.emit_line(&format!("{} = load i64, i64* @{}", val_reg, g_name));
+                    if self.is_gc_global(&g_name) {
+                        let slot_name = Self::static_root_slot_name(&g_name);
+                        self.emit_line(&format!(
+                            "{} = call i64 @tejx_get_global_root(i64* @{}, i64* @{})",
+                            val_reg, slot_name, g_name
+                        ));
+                    } else {
+                        self.emit_line(&format!("{} = load i64, i64* @{}", val_reg, g_name));
+                    }
                     return val_reg;
                 }
 
@@ -914,6 +940,32 @@ impl CodeGen {
         } else {
             val.to_string()
         };
+
+        let is_global_name = name.starts_with("g_")
+            || self.declared_globals.contains(name)
+            || (!name.contains("$")
+                && !self.local_vars.contains(name)
+                && !self.current_function_params.contains(name));
+        if is_global_name && self.is_gc_global(name) {
+            let global_name = Self::canonical_global_name(name);
+            let slot_name = Self::static_root_slot_name(&global_name);
+            let value_to_store = if ty.is_float() {
+                self.temp_counter += 1;
+                let bits = format!("%gfbits_{}", self.temp_counter);
+                self.emit_line(&format!("{} = bitcast double {} to i64", bits, val));
+                bits
+            } else if ty.is_numeric() || *ty == TejxType::Bool || *ty == TejxType::Char {
+                self.emit_abi_cast(&val, ty, &TejxType::Int64)
+            } else {
+                val.to_string()
+            };
+            self.emit_line(&format!(
+                "call void @tejx_set_global_root(i64* @{}, i64* @{}, i64 {})",
+                slot_name, global_name, value_to_store
+            ));
+            return;
+        }
+
         if let Some(cap_idx) = self.get_captured_index(name) {
             if let Some(env) = self.current_env.clone() {
                 self.declare_runtime_fn(
