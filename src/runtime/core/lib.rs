@@ -26,9 +26,8 @@ pub mod gc;
 pub use gc::{
     gc_allocate, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
     rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pop_roots, rt_push_root, rt_register_thread,
-    rt_register_type, rt_set_static_root, rt_unregister_thread, rt_write_barrier,
+    rt_register_type, rt_set_static_root, rt_unregister_thread, rt_write_barrier, ObjectHeader,
     MAX_TYPES,
-    ObjectHeader,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,7 +67,11 @@ fn runtime_seed_now() -> u64 {
         .as_nanos() as u64;
     let addr_mix = (&nanos as *const u64 as usize) as u64;
     let seed = nanos ^ addr_mix.rotate_left(13);
-    if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed }
+    if seed == 0 {
+        0x9E37_79B9_7F4A_7C15
+    } else {
+        seed
+    }
 }
 
 fn splitmix64_next(state: &mut u64) -> u64 {
@@ -323,12 +326,6 @@ pub unsafe extern "C" fn rt_to_number(val: i64) -> f64 {
     f64::from_bits(val as u64)
 }
 
-
-
-
-
-
-
 // --- Memory Management ---
 
 #[no_mangle]
@@ -458,7 +455,6 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
     }
 }
 
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_string_from_c_str(s: *const std::ffi::c_char) -> i64 {
     if s.is_null() {
@@ -562,9 +558,8 @@ pub unsafe extern "C" fn rt_to_string_int(v: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string_float(v: f64) -> i64 {
     let s = rt_float_to_rust_string(v);
-    let cstr = std::ffi::CString::new(s).unwrap_or_else(|_| {
-        std::ffi::CString::new("0").expect("CString for float")
-    });
+    let cstr = std::ffi::CString::new(s)
+        .unwrap_or_else(|_| std::ffi::CString::new("0").expect("CString for float"));
     rt_string_from_c_str(cstr.as_ptr() as *const _)
 }
 
@@ -817,9 +812,8 @@ unsafe fn rt_format_composite_value(val: i64, depth: usize, seen: &mut Vec<i64>)
                         rt_float_to_rust_string(*(body_ptr.add(offset) as *const f64))
                     }
                     FIELD_KIND_CHAR => {
-                        let ch =
-                            std::char::from_u32(*(body_ptr.add(offset) as *const i32) as u32)
-                                .unwrap_or('\u{FFFD}');
+                        let ch = std::char::from_u32(*(body_ptr.add(offset) as *const i32) as u32)
+                            .unwrap_or('\u{FFFD}');
                         ch.to_string()
                     }
                     _ => "<unprintable>".to_string(),
@@ -1009,21 +1003,6 @@ pub unsafe extern "C" fn rt_class_new(
 
 // --- Array Primitives ---
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Map layout: [size, capacity, keys_ptr, values_ptr, data_base] (after ObjectHeader)
 // keys and values are parallel arrays of i64
 // data_base: number of method-slot entries (set before user data)
@@ -1207,12 +1186,6 @@ unsafe fn new_string_from_bytes(data: *const u8, len: i64) -> i64 {
 
 // --- String Operations ---
 
-
-
-
-
-
-
 // Internal helper to create a string from parts of another, safe for GC moves
 unsafe fn new_string_from_parts(source_s: i64, offset: i64, len: i64) -> i64 {
     if len <= 0 {
@@ -1238,15 +1211,6 @@ unsafe fn new_string_from_parts(source_s: i64, offset: i64, len: i64) -> i64 {
         0
     }
 }
-
-
-
-
-
-
-
-
-
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_exit(code: i64) {
@@ -1518,7 +1482,6 @@ pub unsafe extern "C" fn rt_timer_worker(closure_id: i64) {
     rt_call_closure_no_args(closure_id);
 }
 
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
@@ -1641,7 +1604,10 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
                 let task_args = rt_Array_new_fixed(2, 8);
                 rt_array_set_fast(task_args, 0, actual_pid);
                 rt_array_set_fast(task_args, 1, 0);
-                crate::event_loop::tejx_enqueue_task(rt_promise_resolver_worker as *const () as i64, task_args);
+                crate::event_loop::tejx_enqueue_task(
+                    rt_promise_resolver_worker as *const () as i64,
+                    task_args,
+                );
             }
         } else {
             if let Ok(mut c) = CANCELLED_TIMERS.lock() {
@@ -1654,14 +1620,6 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
 
     pid
 }
-
-
-
-
-
-
-
-
 
 // --- Fast Path Helpers (for Codegen) ---
 
@@ -1720,10 +1678,16 @@ pub unsafe extern "C" fn rt_register_type_info(
     TYPE_FIELD_COUNTS[type_index] = count;
 
     for i in 0..count {
-        TYPE_FIELD_OFFSETS[type_index][i] =
-            if field_offsets.is_null() { 0 } else { *field_offsets.add(i) as usize };
-        TYPE_FIELD_KINDS[type_index][i] =
-            if field_kinds.is_null() { FIELD_KIND_UNSUPPORTED } else { *field_kinds.add(i) };
+        TYPE_FIELD_OFFSETS[type_index][i] = if field_offsets.is_null() {
+            0
+        } else {
+            *field_offsets.add(i) as usize
+        };
+        TYPE_FIELD_KINDS[type_index][i] = if field_kinds.is_null() {
+            FIELD_KIND_UNSUPPORTED
+        } else {
+            *field_kinds.add(i)
+        };
         TYPE_FIELD_NAMES[type_index][i] = if field_names.is_null() {
             std::ptr::null()
         } else {
@@ -1899,16 +1863,16 @@ pub unsafe extern "C" fn rt_call_closure_void(closure: i64, arg: i64) {
     }
 
     if is_raw_ptr {
-        let func: unsafe extern "C" fn(i64, i64, i64, i64) =
-            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64)>(
-                raw_func_ptr as *const (),
-            );
+        let func: unsafe extern "C" fn(i64, i64, i64, i64) = std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(i64, i64, i64, i64),
+        >(raw_func_ptr as *const ());
         func(a, 0, 0, 0);
     } else {
-        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) = std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(i64, i64, i64, i64, i64),
-        >(raw_func_ptr as *const ());
+        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64, i64)>(
+                raw_func_ptr as *const (),
+            );
         func(env, a, 0, 0, 0);
     }
 
@@ -2036,19 +2000,22 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
     let result = if is_raw_ptr {
         // Raw function pointers explicitly have NO env argument.
         let func: unsafe extern "C" fn() -> i64 = std::mem::transmute::<
-            *const (), unsafe extern "C" fn() -> i64,
+            *const (),
+            unsafe extern "C" fn() -> i64,
         >(raw_func_ptr as *const ());
         func()
     } else if env == 0 {
         // Closure created from raw pointer: no env parameter
         let func: unsafe extern "C" fn() -> i64 = std::mem::transmute::<
-            *const (), unsafe extern "C" fn() -> i64,
+            *const (),
+            unsafe extern "C" fn() -> i64,
         >(raw_func_ptr as *const ());
         func()
     } else {
         // Heap closures expect at least an env argument.
         let func: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute::<
-            *const (), unsafe extern "C" fn(i64) -> i64,
+            *const (),
+            unsafe extern "C" fn(i64) -> i64,
         >(raw_func_ptr as *const ());
         func(env)
     };
@@ -2094,14 +2061,6 @@ unsafe fn get_atomic(this: i64) -> Option<&'static AtomicI64> {
     Some(&*atom_ptr)
 }
 
-
-
-
-
-
-
-
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
     let atom = Box::new(AtomicI64::new(val));
@@ -2123,10 +2082,6 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-
-
-
-
 #[no_mangle]
 pub unsafe extern "C" fn f_any_lock(m: i64) {
     rt_Mutex_acquire(m);
@@ -2145,14 +2100,7 @@ struct ThreadData {
     args_slot: usize,
 }
 
-
-
-
 // --- SharedQueue Operations ---
-
-
-
-
 
 // Map aliases removed.
 
@@ -2164,18 +2112,7 @@ struct ConditionData {
     condvar: Condvar,
 }
 
-
-
-
-
 // --- Promises ---
-
-
-
-
-
-
-
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_move_member(id: i64, index: i32) -> i64 {
@@ -2794,7 +2731,6 @@ pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
 
     rt_pop_roots(5);
 }
-
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_obj_keys(obj: i64) -> i64 {

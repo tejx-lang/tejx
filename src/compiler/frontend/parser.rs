@@ -68,12 +68,13 @@ impl Parser {
             TokenType::Async => {
                 if !self.async_enabled {
                     let t = self.peek();
-                    self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                        "async/await is disabled".to_string(),
-                        t.line,
-                        t.column,
-                        self.filename.clone(),
-                    ));
+                    self.errors
+                        .push(crate::common::diagnostics::Diagnostic::new(
+                            "async/await is disabled".to_string(),
+                            t.line,
+                            t.column,
+                            self.filename.clone(),
+                        ));
                 }
                 if self.check_next(TokenType::Function) {
                     self.advance(); // consume async
@@ -162,12 +163,13 @@ impl Parser {
         }
 
         if initializer.is_none() && matches!(type_annotation, TypeNode::Object(_)) {
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                "Object-typed variables must be initialized at declaration".to_string(),
-                start_token.line,
-                start_token.column,
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    "Object-typed variables must be initialized at declaration".to_string(),
+                    start_token.line,
+                    start_token.column,
+                    self.filename.clone(),
+                ));
         }
 
         let mut declarations = vec![Statement::VarDeclaration {
@@ -182,21 +184,22 @@ impl Parser {
         // Handle multiple declarations: let x = 1, y = 2;
         while self.match_token(TokenType::Comma) {
             let p = self.parse_binding_pattern();
-        let mut ta = TypeNode::Named("".to_string());
-        if self.match_token(TokenType::Colon) {
-            ta = self.parse_type_annotation();
-        }
+            let mut ta = TypeNode::Named("".to_string());
+            if self.match_token(TokenType::Colon) {
+                ta = self.parse_type_annotation();
+            }
             let mut init = None;
             if self.match_token(TokenType::Equals) {
                 init = Some(Box::new(self.parse_assignment()));
             }
             if init.is_none() && matches!(ta, TypeNode::Object(_)) {
-                self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                    "Object-typed variables must be initialized at declaration".to_string(),
-                    start_token.line,
-                    start_token.column,
-                    self.filename.clone(),
-                ));
+                self.errors
+                    .push(crate::common::diagnostics::Diagnostic::new(
+                        "Object-typed variables must be initialized at declaration".to_string(),
+                        start_token.line,
+                        start_token.column,
+                        self.filename.clone(),
+                    ));
             }
             declarations.push(Statement::VarDeclaration {
                 pattern: p,
@@ -237,12 +240,13 @@ impl Parser {
             t
         } else {
             let t = self.peek().clone();
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                error_msg.to_string(),
-                t.line,
-                t.column,
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    error_msg.to_string(),
+                    t.line,
+                    t.column,
+                    self.filename.clone(),
+                ));
             // Advance to avoid infinite loops
             self.advance();
             t
@@ -337,12 +341,13 @@ impl Parser {
             BindingNode::Identifier(name)
         } else {
             let t = self.peek().clone();
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                "Expected binding pattern".to_string(),
-                t.line,
-                t.column,
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    "Expected binding pattern".to_string(),
+                    t.line,
+                    t.column,
+                    self.filename.clone(),
+                ));
             // Advance to prevent infinite loops if we get stuck on an invalid pattern
             self.advance();
             BindingNode::Identifier("__error__".to_string())
@@ -703,15 +708,16 @@ impl Parser {
             }
         }
         if self.is_at_end() && !self.check(TokenType::CloseBrace) {
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                format!(
-                    "Unclosed class body for '{}' starting at line {}:{}",
-                    name, start.line, start.column
-                ),
-                self.previous().line,
-                self.previous().column + self.previous().value.len(),
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    format!(
+                        "Unclosed class body for '{}' starting at line {}:{}",
+                        name, start.line, start.column
+                    ),
+                    self.previous().line,
+                    self.previous().column + self.previous().value.len(),
+                    self.filename.clone(),
+                ));
         } else {
             self.consume(TokenType::CloseBrace, "Expected '}' after class body.");
         }
@@ -1023,23 +1029,25 @@ impl Parser {
                         union_types[0].clone()
                     };
                     let token = self.previous().clone();
-                    self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                        "Use `Optional<T>` instead of `T | None`.".to_string(),
-                        token.line,
-                        token.column,
-                        self.filename.clone(),
-                    ));
+                    self.errors
+                        .push(crate::common::diagnostics::Diagnostic::new(
+                            "Use `Optional<T>` instead of `T | None`.".to_string(),
+                            token.line,
+                            token.column,
+                            self.filename.clone(),
+                        ));
                     return TypeNode::Optional(Box::new(inner));
                 }
             }
 
             let token = self.previous().clone();
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                "Union types are not supported. Only `Optional<T>` is allowed.".to_string(),
-                token.line,
-                token.column,
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    "Union types are not supported. Only `Optional<T>` is allowed.".to_string(),
+                    token.line,
+                    token.column,
+                    self.filename.clone(),
+                ));
             base_type = TypeNode::Any;
         }
 
@@ -1083,7 +1091,7 @@ impl Parser {
             params_str.push(')');
             self.consume(TokenType::Arrow, "Expected '=>'");
             let ret_type = self.parse_type_annotation();
-            
+
             return TypeNode::Function(param_nodes, Box::new(ret_type));
         }
 
@@ -1108,7 +1116,7 @@ impl Parser {
             }
             self.consume(TokenType::CloseBrace, "Expected '}'");
             let mut node = TypeNode::Object(member_nodes);
-            
+
             while self.match_token(TokenType::OpenBracket) {
                 if self.match_token(TokenType::CloseBracket) {
                     node = TypeNode::Array(Box::new(node));
@@ -1150,7 +1158,7 @@ impl Parser {
                 loop {
                     let type_ann = self.parse_type_annotation();
                     generic_args.push(type_ann);
-                    
+
                     if self.match_token(TokenType::Comma) {
                         base_type_name.push_str(", ");
                     } else {
@@ -1178,12 +1186,13 @@ impl Parser {
                     "Optional" => {
                         if generic_args.len() != 1 {
                             let tok = self.previous().clone();
-                            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                                "`Optional<T>` expects exactly one type argument.".to_string(),
-                                tok.line,
-                                tok.column,
-                                self.filename.clone(),
-                            ));
+                            self.errors
+                                .push(crate::common::diagnostics::Diagnostic::new(
+                                    "`Optional<T>` expects exactly one type argument.".to_string(),
+                                    tok.line,
+                                    tok.column,
+                                    self.filename.clone(),
+                                ));
                             TypeNode::Any
                         } else {
                             TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
@@ -1191,12 +1200,13 @@ impl Parser {
                     }
                     "Option" => {
                         let tok = self.previous().clone();
-                        self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                            "Use `Optional<T>` instead of `Option<T>`.".to_string(),
-                            tok.line,
-                            tok.column,
-                            self.filename.clone(),
-                        ));
+                        self.errors
+                            .push(crate::common::diagnostics::Diagnostic::new(
+                                "Use `Optional<T>` instead of `Option<T>`.".to_string(),
+                                tok.line,
+                                tok.column,
+                                self.filename.clone(),
+                            ));
                         if generic_args.len() == 1 {
                             TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
                         } else {
@@ -1233,12 +1243,13 @@ impl Parser {
                 base_type_name = "bool".to_string();
             } else {
                 let t = self.peek().clone();
-                self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                    "Expected type".to_string(),
-                    t.line,
-                    t.column,
-                    self.filename.clone(),
-                ));
+                self.errors
+                    .push(crate::common::diagnostics::Diagnostic::new(
+                        "Expected type".to_string(),
+                        t.line,
+                        t.column,
+                        self.filename.clone(),
+                    ));
                 self.advance();
                 return TypeNode::Named("{unknown}".to_string());
             }
@@ -1277,7 +1288,7 @@ impl Parser {
             }
             intersection_types.push(next_type);
         }
-        
+
         if !intersection_types.is_empty() {
             base_node = TypeNode::Intersection(intersection_types);
         }
@@ -1348,15 +1359,16 @@ impl Parser {
         }
 
         if self.is_at_end() && !self.check(TokenType::CloseBrace) {
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                format!(
-                    "Unclosed block starting at line {}:{}",
-                    start.line, start.column
-                ),
-                self.previous().line,
-                self.previous().column + self.previous().value.len(),
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    format!(
+                        "Unclosed block starting at line {}:{}",
+                        start.line, start.column
+                    ),
+                    self.previous().line,
+                    self.previous().column + self.previous().value.len(),
+                    self.filename.clone(),
+                ));
         } else {
             self.consume(TokenType::CloseBrace, "Expected '}' after block.");
         }
@@ -1412,15 +1424,16 @@ impl Parser {
         let mut is_for_of = false;
         let start_pos = self.current;
         if (self.match_token(TokenType::Let) || self.match_token(TokenType::Const))
-            && self.check(TokenType::Identifier) {
-                self.advance(); // consume ident
-                if self.match_token(TokenType::Colon) {
-                    self.parse_type_annotation();
-                }
-                if self.check(TokenType::Of) {
-                    is_for_of = true;
-                }
+            && self.check(TokenType::Identifier)
+        {
+            self.advance(); // consume ident
+            if self.match_token(TokenType::Colon) {
+                self.parse_type_annotation();
             }
+            if self.check(TokenType::Of) {
+                is_for_of = true;
+            }
+        }
         self.current = start_pos; // Reset for actual parsing
 
         if is_for_of {
@@ -1808,9 +1821,7 @@ impl Parser {
 
     fn parse_equality(&mut self) -> Expression {
         let mut expr = self.parse_comparison();
-        while self.match_token(TokenType::EqualEqual)
-            || self.match_token(TokenType::BangEqual)
-        {
+        while self.match_token(TokenType::EqualEqual) || self.match_token(TokenType::BangEqual) {
             let op_token = self.tokens[self.current - 1].clone();
             let right = self.parse_comparison();
             expr = Expression::BinaryExpr {
@@ -1900,12 +1911,13 @@ impl Parser {
         if self.match_token(TokenType::Await) {
             let op_token = self.previous().clone();
             if !self.async_enabled {
-                self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                    "async/await is disabled".to_string(),
-                    op_token.line,
-                    op_token.column,
-                    self.filename.clone(),
-                ));
+                self.errors
+                    .push(crate::common::diagnostics::Diagnostic::new(
+                        "async/await is disabled".to_string(),
+                        op_token.line,
+                        op_token.column,
+                        self.filename.clone(),
+                    ));
             }
             let right = self.parse_unary();
             return Expression::AwaitExpr {
@@ -1957,10 +1969,15 @@ impl Parser {
                     depth -= 1;
                     if depth == 0 {
                         let next_type = self.tokens[i + 1].token_type;
-                        return next_type == TokenType::OpenParen || next_type == TokenType::QuestionDot;
+                        return next_type == TokenType::OpenParen
+                            || next_type == TokenType::QuestionDot;
                     }
                 }
-                TokenType::Semicolon | TokenType::OpenBrace | TokenType::Equals | TokenType::Let | TokenType::Function => return false,
+                TokenType::Semicolon
+                | TokenType::OpenBrace
+                | TokenType::Equals
+                | TokenType::Let
+                | TokenType::Function => return false,
                 _ => {}
             }
             i += 1;
@@ -2030,12 +2047,13 @@ impl Parser {
                     };
                 } else if self.match_token(TokenType::OpenBracket) {
                     if type_args.is_some() {
-                        self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                            "Type arguments not allowed before array access".to_string(),
-                            start_token.line,
-                            start_token.column,
-                            self.filename.clone(),
-                        ));
+                        self.errors
+                            .push(crate::common::diagnostics::Diagnostic::new(
+                                "Type arguments not allowed before array access".to_string(),
+                                start_token.line,
+                                start_token.column,
+                                self.filename.clone(),
+                            ));
                     }
                     let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
                                                                               // match_token(QuestionDot) advanced. current is at next token.
@@ -2051,12 +2069,13 @@ impl Parser {
                     };
                 } else {
                     if type_args.is_some() {
-                        self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                            "Type arguments not allowed before member access".to_string(),
-                            start_token.line,
-                            start_token.column,
-                            self.filename.clone(),
-                        ));
+                        self.errors
+                            .push(crate::common::diagnostics::Diagnostic::new(
+                                "Type arguments not allowed before member access".to_string(),
+                                start_token.line,
+                                start_token.column,
+                                self.filename.clone(),
+                            ));
                     }
                     let member = self
                         .consume_identifier("Expected property name after '?.'")
@@ -2071,12 +2090,13 @@ impl Parser {
                 }
             } else if self.match_token(TokenType::Dot) || self.match_token(TokenType::DoubleColon) {
                 if type_args.is_some() {
-                    self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                        "Type arguments not allowed before static/member access".to_string(),
-                        start_token.line,
-                        start_token.column,
-                        self.filename.clone(),
-                    ));
+                    self.errors
+                        .push(crate::common::diagnostics::Diagnostic::new(
+                            "Type arguments not allowed before static/member access".to_string(),
+                            start_token.line,
+                            start_token.column,
+                            self.filename.clone(),
+                        ));
                 }
                 let is_double_colon =
                     self.tokens[self.current - 1].token_type == TokenType::DoubleColon;
@@ -2095,12 +2115,13 @@ impl Parser {
                 };
             } else if self.match_token(TokenType::OpenBracket) {
                 if type_args.is_some() {
-                    self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                        "Type arguments not allowed before array access".to_string(),
-                        start_token.line,
-                        start_token.column,
-                        self.filename.clone(),
-                    ));
+                    self.errors
+                        .push(crate::common::diagnostics::Diagnostic::new(
+                            "Type arguments not allowed before array access".to_string(),
+                            start_token.line,
+                            start_token.column,
+                            self.filename.clone(),
+                        ));
                 }
                 let index = self.parse_assignment();
                 self.consume(TokenType::CloseBracket, "Expected ']'");
@@ -2120,12 +2141,13 @@ impl Parser {
                 };
             } else {
                 if type_args.is_some() {
-                    self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                        "Unused type arguments".to_string(),
-                        start_token.line,
-                        start_token.column,
-                        self.filename.clone(),
-                    ));
+                    self.errors
+                        .push(crate::common::diagnostics::Diagnostic::new(
+                            "Unused type arguments".to_string(),
+                            start_token.line,
+                            start_token.column,
+                            self.filename.clone(),
+                        ));
                 }
                 break;
             }
@@ -2288,9 +2310,7 @@ impl Parser {
                     _col: token.column,
                 }
             }
-            TokenType::OpenBracket => {
-                self.parse_array_literal()
-            }
+            TokenType::OpenBracket => self.parse_array_literal(),
             TokenType::OpenParen => {
                 // Check if this is a lambda: (a, b) => ...
                 let mut is_lambda = false;
@@ -2320,17 +2340,16 @@ impl Parser {
                 self.consume(TokenType::CloseParen, "Expected ')'");
                 expr
             }
-            TokenType::OpenBrace => {
-                self.parse_object_literal()
-            }
+            TokenType::OpenBrace => self.parse_object_literal(),
             _ => {
                 let err_token = token.clone();
-                self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                    format!("Unexpected token '{}'", err_token.value),
-                    err_token.line,
-                    err_token.column,
-                    self.filename.clone(),
-                ));
+                self.errors
+                    .push(crate::common::diagnostics::Diagnostic::new(
+                        format!("Unexpected token '{}'", err_token.value),
+                        err_token.line,
+                        err_token.column,
+                        self.filename.clone(),
+                    ));
                 self.advance();
                 Expression::Identifier {
                     name: "__error__".to_string(),
@@ -2609,12 +2628,13 @@ impl Parser {
                 (t.line, t.column)
             };
 
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                message.to_string(),
-                line,
-                col,
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    message.to_string(),
+                    line,
+                    col,
+                    self.filename.clone(),
+                ));
 
             // Advance to avoid infinite loops
             self.advance()

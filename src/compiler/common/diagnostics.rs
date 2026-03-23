@@ -99,10 +99,7 @@ impl Diagnostic {
                 pointer.push('^');
             }
 
-            if let Some(inline_label) = self
-                .label
-                .as_deref()
-                .filter(|label| *label != self.message)
+            if let Some(inline_label) = self.label.as_deref().filter(|label| *label != self.message)
             {
                 eprintln!(
                     "  \x1b[34m{} |\x1b[0m {}{}{}\x1b[0m {}\x1b[0m",

@@ -1,0 +1,35 @@
+import { assert_eq_int, assert_true } from "../utils.tx";
+
+function getUserName(id: int): Optional<string> {
+    if (id == 1) return "Alice";
+    return None;
+}
+
+class UserBox {
+    name: string;
+
+    constructor(name: string) {
+        this.name = name;
+    }
+
+    length(): int {
+        return this.name.length();
+    }
+}
+
+function getUser(id: int): Optional<UserBox> {
+    if (id == 1) return new UserBox("Bob");
+    return None;
+}
+
+function main() {
+    let missingName: Optional<string> = getUserName(2);
+    let presentName: Optional<string> = getUserName(1);
+    let missingUser: Optional<UserBox> = getUser(2);
+    let presentUser: Optional<UserBox> = getUser(1);
+
+    assert_true(missingName?.length() == None, "optional string method call returns None");
+    assert_eq_int(5, presentName?.length() ?? 0, "optional string method call returns value");
+    assert_true(missingUser?.length() == None, "optional class method call returns None");
+    assert_eq_int(3, presentUser?.length() ?? 0, "optional class method call returns value");
+}

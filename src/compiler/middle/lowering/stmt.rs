@@ -1,9 +1,9 @@
 use super::Lowering;
-use crate::frontend::ast::*;
-use crate::middle::hir::*;
 use crate::common::intrinsics::*;
-use crate::frontend::token::TokenType;
 use crate::common::types::TejxType;
+use crate::frontend::ast::*;
+use crate::frontend::token::TokenType;
+use crate::middle::hir::*;
 
 impl Lowering {
     fn has_effective_narrowing_ty(ty: &TejxType) -> bool {
@@ -58,9 +58,9 @@ impl Lowering {
             | Statement::ThrowStmt { .. }
             | Statement::BreakStmt { .. }
             | Statement::ContinueStmt { .. } => true,
-            Statement::BlockStmt { statements, .. } => statements
-                .iter()
-                .any(Self::statement_guarantees_exit),
+            Statement::BlockStmt { statements, .. } => {
+                statements.iter().any(Self::statement_guarantees_exit)
+            }
             Statement::IfStmt {
                 then_branch,
                 else_branch: Some(else_branch),
@@ -76,14 +76,17 @@ impl Lowering {
     pub(crate) fn lower_statement(&self, stmt: &Statement) -> Option<HIRStatement> {
         let line = stmt.get_line();
         match stmt {
-            Statement::TypeAliasDeclaration { name, _type_def, .. } => {
+            Statement::TypeAliasDeclaration {
+                name, _type_def, ..
+            } => {
                 let alias_ty = TejxType::from_node(_type_def);
                 self.register_type_alias(name, alias_ty);
                 None
             }
             Statement::ExportDecl { declaration, .. } => {
-                if let Statement::TypeAliasDeclaration { name, _type_def, .. } =
-                    declaration.as_ref()
+                if let Statement::TypeAliasDeclaration {
+                    name, _type_def, ..
+                } = declaration.as_ref()
                 {
                     let alias_ty = TejxType::from_node(_type_def);
                     self.register_type_alias(name, alias_ty);
@@ -484,7 +487,7 @@ impl Lowering {
                         self.narrow_type(name.clone(), then_ty.clone());
                     }
                 }
-                
+
                 let then_hir = self
                     .lower_statement(then_branch)
                     .unwrap_or(HIRStatement::Block {
@@ -511,9 +514,7 @@ impl Lowering {
                 if let Some((ref name, ref then_ty, ref else_ty)) = narrowing {
                     if then_exits && !else_exits && Self::has_effective_narrowing_ty(else_ty) {
                         self.narrow_type(name.clone(), else_ty.clone());
-                    } else if else_exits
-                        && !then_exits
-                        && Self::has_effective_narrowing_ty(then_ty)
+                    } else if else_exits && !then_exits && Self::has_effective_narrowing_ty(then_ty)
                     {
                         self.narrow_type(name.clone(), then_ty.clone());
                     }
@@ -546,7 +547,9 @@ impl Lowering {
                             {
                                 Some(generics[0].clone())
                             }
-                            TejxType::Class(name, _) if name.starts_with("Promise<") && name.ends_with('>') => {
+                            TejxType::Class(name, _)
+                                if name.starts_with("Promise<") && name.ends_with('>') =>
+                            {
                                 Some(TejxType::from_name(&name[8..name.len() - 1]))
                             }
                             _ => None,
@@ -629,10 +632,7 @@ impl Lowering {
                         statements: stmts,
                     })
                 } else {
-                    Some(HIRStatement::Return {
-                        line,
-                        value: val,
-                    })
+                    Some(HIRStatement::Return { line, value: val })
                 }
             }
             Statement::DelStmt { target, .. } => {
@@ -723,10 +723,7 @@ impl Lowering {
             }
             Statement::ThrowStmt { _expression, .. } => {
                 let val = self.lower_expression(_expression);
-                Some(HIRStatement::Throw {
-                    line,
-                    value: val,
-                })
+                Some(HIRStatement::Throw { line, value: val })
             }
             Statement::FunctionDeclaration(func) => {
                 if func.is_extern {
@@ -791,7 +788,11 @@ impl Lowering {
         condition: &Expression,
     ) -> Option<(String, TejxType, TejxType)> {
         match condition {
-            Expression::UnaryExpr { op: TokenType::Bang, right, .. } => {
+            Expression::UnaryExpr {
+                op: TokenType::Bang,
+                right,
+                ..
+            } => {
                 if let Some((name, then_ty, else_ty)) = self.get_narrowing_from_condition(right) {
                     return Some((name, else_ty, then_ty));
                 }
@@ -802,27 +803,26 @@ impl Lowering {
             } => {
                 if *op == TokenType::AmpersandAmpersand || *op == TokenType::PipePipe {
                     let left_narrowing = self.get_narrowing_from_condition(left);
-                    let right_narrowing = if let Some((ref name, ref then_ty, ref else_ty)) =
-                        left_narrowing
-                    {
-                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
-                            then_ty
-                        } else {
-                            else_ty
-                        };
+                    let right_narrowing =
+                        if let Some((ref name, ref then_ty, ref else_ty)) = left_narrowing {
+                            let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                                then_ty
+                            } else {
+                                else_ty
+                            };
 
-                        if !matches!(rhs_ty, TejxType::Void) {
-                            self.enter_scope();
-                            self.narrow_type(name.clone(), rhs_ty.clone());
-                            let narrowed = self.get_narrowing_from_condition(right);
-                            self._exit_scope();
-                            narrowed
+                            if !matches!(rhs_ty, TejxType::Void) {
+                                self.enter_scope();
+                                self.narrow_type(name.clone(), rhs_ty.clone());
+                                let narrowed = self.get_narrowing_from_condition(right);
+                                self._exit_scope();
+                                narrowed
+                            } else {
+                                self.get_narrowing_from_condition(right)
+                            }
                         } else {
                             self.get_narrowing_from_condition(right)
-                        }
-                    } else {
-                        self.get_narrowing_from_condition(right)
-                    };
+                        };
 
                     if *op == TokenType::AmpersandAmpersand {
                         return self.combine_and_narrowing(left_narrowing, right_narrowing);
@@ -832,13 +832,23 @@ impl Lowering {
                 }
 
                 if *op == TokenType::Instanceof {
-                    if let (Expression::Identifier { name: var_name, .. }, Expression::Identifier { name: type_name, .. }) = (left.as_ref(), right.as_ref()) {
+                    if let (
+                        Expression::Identifier { name: var_name, .. },
+                        Expression::Identifier {
+                            name: type_name, ..
+                        },
+                    ) = (left.as_ref(), right.as_ref())
+                    {
                         if let Some((_, original_ty)) = self.lookup(var_name) {
                             if matches!(original_ty, TejxType::Optional(_)) {
                                 return None;
                             }
                             let original_type = original_ty.clone();
-                            return Some((var_name.clone(), TejxType::from_name(type_name), original_type));
+                            return Some((
+                                var_name.clone(),
+                                TejxType::from_name(type_name),
+                                original_type,
+                            ));
                         }
                     }
                 }

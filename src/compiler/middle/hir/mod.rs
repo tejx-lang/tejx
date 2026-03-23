@@ -1,7 +1,7 @@
-use crate::frontend::token::TokenType;
 /// High-level Intermediate Representation (HIR), mirroring C++ HIR.h
 /// HIR is a typed AST with desugared control flow (all loops → unified HIRLoop)
 use crate::common::types::TejxType;
+use crate::frontend::token::TokenType;
 
 #[derive(Debug, Clone)]
 pub enum HIRExpression {

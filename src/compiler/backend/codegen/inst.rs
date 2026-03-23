@@ -728,7 +728,10 @@ impl CodeGen {
                 let shape_name = self.object_shape_names.get(&ty.to_name())?.clone();
                 Some((
                     shape_name,
-                    props.iter().map(|(name, _, ty)| (name.clone(), ty.clone())).collect(),
+                    props
+                        .iter()
+                        .map(|(name, _, ty)| (name.clone(), ty.clone()))
+                        .collect(),
                 ))
             }
             _ => None,
@@ -826,7 +829,10 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let body_ptr = format!("%body_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = ptrtoint i8* {} to i64", body_ptr, body_ptr_i8));
+            self.emit_line(&format!(
+                "{} = ptrtoint i8* {} to i64",
+                body_ptr, body_ptr_i8
+            ));
 
             self.declare_runtime_fn(
                 RT_CLASS_NEW,
@@ -1276,7 +1282,11 @@ impl CodeGen {
                     ));
                     self.emit_line(&format!("store i16 3, i16* {}", tid_ptr));
 
-                    let ptr_flag = if Self::is_gc_managed(inner) { 0x0400 } else { 0 };
+                    let ptr_flag = if Self::is_gc_managed(inner) {
+                        0x0400
+                    } else {
+                        0
+                    };
                     let flags = 0x0100 | ptr_flag | (elem_size as i64 & 0xFF);
 
                     self.temp_counter += 1;
@@ -1312,7 +1322,10 @@ impl CodeGen {
 
                     self.temp_counter += 1;
                     let body_ptr = format!("%arr_body_ptr_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = ptrtoint i8* {} to i64", body_ptr, body_ptr_i8));
+                    self.emit_line(&format!(
+                        "{} = ptrtoint i8* {} to i64",
+                        body_ptr, body_ptr_i8
+                    ));
 
                     self.temp_counter += 1;
                     let stack_offset = format!("%stack_offset_{}", self.temp_counter);
@@ -1338,9 +1351,9 @@ impl CodeGen {
                     && self.can_use_fixed_object_layout_for_ty(func, dst, dst_ty));
             if use_fixed_layout {
                 if let Some((shape_name, fields)) = self.fixed_layout_shape(dst_ty) {
-                self.emit_fixed_layout_alloc(func, dst, &shape_name, &fields);
-                return;
-            }
+                    self.emit_fixed_layout_alloc(func, dst, &shape_name, &fields);
+                    return;
+                }
             }
         }
 
@@ -1473,8 +1486,7 @@ impl CodeGen {
 
                 let arg1_f = self.resolve_float_value(&args[0]);
                 let arg2_raw = self.resolve_value(&args[1]);
-                let arg2_i =
-                    self.emit_abi_cast(&arg2_raw, args[1].get_type(), &TejxType::Int32);
+                let arg2_i = self.emit_abi_cast(&arg2_raw, args[1].get_type(), &TejxType::Int32);
 
                 self.temp_counter += 1;
                 let result_f = format!("%intrinsic_res_{}", self.temp_counter);
@@ -1977,10 +1989,9 @@ impl CodeGen {
                 };
 
                 let casted = if array_value_arg
-                    && array_elem_ty
-                        .as_ref()
-                        .is_some_and(|ty| ty.is_float() || matches!(ty, TejxType::Bool | TejxType::Char))
-                {
+                    && array_elem_ty.as_ref().is_some_and(|ty| {
+                        ty.is_float() || matches!(ty, TejxType::Bool | TejxType::Char)
+                    }) {
                     final_reg.clone()
                 } else if is_math_fn || final_callee == "rt_to_string_float" {
                     self.emit_abi_cast(&final_reg, arg_ty, &TejxType::Float64)
@@ -2042,20 +2053,20 @@ impl CodeGen {
             }
 
             let decl_ret = if is_math_fn || final_callee == "rt_to_number" {
-                    "double".to_string()
-                } else if is_runtime_fn {
-                    if final_callee == "rt_promise_resolve"
-                        || final_callee == "rt_promise_reject"
-                        || final_callee == "rt_promise_await_resume"
-                        || final_callee == "rt_print_string_array"
-                    {
-                        "void".to_string()
-                    } else {
-                        "i64".to_string()
-                    }
+                "double".to_string()
+            } else if is_runtime_fn {
+                if final_callee == "rt_promise_resolve"
+                    || final_callee == "rt_promise_reject"
+                    || final_callee == "rt_promise_await_resume"
+                    || final_callee == "rt_print_string_array"
+                {
+                    "void".to_string()
                 } else {
-                    Self::get_llvm_type(&ret_ty).to_string()
-                };
+                    "i64".to_string()
+                }
+            } else {
+                Self::get_llvm_type(&ret_ty).to_string()
+            };
 
             let use_quotes = !is_runtime_fn;
             let is_virtual = final_callee.starts_with("virtual_call_");
@@ -2124,9 +2135,7 @@ impl CodeGen {
                 } else if is_runtime_fn && decl_ret == "i64" {
                     let runtime_returns_primitive = matches!(
                         final_callee.as_str(),
-                        "rt_len"
-                            | "rt_strlen"
-                            | "rt_is_array"
+                        "rt_len" | "rt_strlen" | "rt_is_array"
                     );
                     let runtime_src_ty = if runtime_returns_primitive {
                         TejxType::Int64
@@ -2138,11 +2147,7 @@ impl CodeGen {
                     } else {
                         TejxType::Class("Any".to_string(), vec![])
                     };
-                    final_val = self.emit_abi_cast(
-                        &result_tmp,
-                        &runtime_src_ty,
-                        &store_ty,
-                    );
+                    final_val = self.emit_abi_cast(&result_tmp, &runtime_src_ty, &store_ty);
                 }
             }
 

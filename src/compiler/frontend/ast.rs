@@ -30,7 +30,9 @@ impl TypeNode {
                 }
             }
             Expression::Identifier { name, .. } => name.clone(),
-            Expression::BinaryExpr { left, op, right, .. } => {
+            Expression::BinaryExpr {
+                left, op, right, ..
+            } => {
                 let op_str = match op {
                     TokenType::Plus => "+",
                     TokenType::Minus => "-",
@@ -54,7 +56,11 @@ impl TypeNode {
         match self {
             TypeNode::Named(n) => n.clone(),
             TypeNode::Generic(n, args) => {
-                let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                let args_str = args
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{}<{}>", n, args_str)
             }
             TypeNode::Optional(inner) => format!("Optional<{}>", inner),
@@ -63,23 +69,33 @@ impl TypeNode {
                 format!("{}[{}]", t, Self::size_expr_to_string(size))
             }
             TypeNode::Function(args, ret) => {
-                let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                let args_str = args
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("({}) => {}", args_str, ret)
             }
             TypeNode::Object(members) => {
-                let m_str = members.iter().map(|(k, opt, t)| {
-                    let o = if *opt { "?" } else { "" };
-                    format!("{}{}: {}", k, o, t.to_string())
-                }).collect::<Vec<_>>().join("; ");
+                let m_str = members
+                    .iter()
+                    .map(|(k, opt, t)| {
+                        let o = if *opt { "?" } else { "" };
+                        format!("{}{}: {}", k, o, t.to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 format!("{{ {} }}", m_str)
             }
-            TypeNode::Intersection(types) => types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" & "),
+            TypeNode::Intersection(types) => types
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(" & "),
             TypeNode::Any => "any".to_string(),
         }
     }
 }
-
-
 
 #[derive(Debug, Clone)]
 pub enum Statement {
@@ -525,6 +541,14 @@ impl Expression {
                 let base = object.to_callee_name();
                 if base.is_empty() {
                     "".to_string() // Return empty if base is not a simple name
+                } else {
+                    format!("{}.{}", base, member)
+                }
+            }
+            Expression::OptionalMemberAccessExpr { object, member, .. } => {
+                let base = object.to_callee_name();
+                if base.is_empty() {
+                    "".to_string()
                 } else {
                     format!("{}.{}", base, member)
                 }

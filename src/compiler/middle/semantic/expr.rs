@@ -350,10 +350,7 @@ impl TypeChecker {
                     TokenType::Tilde => {
                         if matches!(
                             right_type,
-                            TejxType::Int16
-                                | TejxType::Int32
-                                | TejxType::Int64
-                                | TejxType::Int128
+                            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
                         ) || right_type == TejxType::from_name("<inferred>")
                         {
                             Ok(right_type)
@@ -523,34 +520,32 @@ impl TypeChecker {
                 _col,
             } => {
                 let left_type = self.check_expression(left)?;
-                let right_type = if matches!(
-                    op,
-                    TokenType::AmpersandAmpersand | TokenType::PipePipe
-                ) {
-                    if let Some((name, then_ty, else_ty)) =
-                        self.get_narrowing_from_condition(left)
-                    {
-                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
-                            then_ty
-                        } else {
-                            else_ty
-                        };
+                let right_type =
+                    if matches!(op, TokenType::AmpersandAmpersand | TokenType::PipePipe) {
+                        if let Some((name, then_ty, else_ty)) =
+                            self.get_narrowing_from_condition(left)
+                        {
+                            let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                                then_ty
+                            } else {
+                                else_ty
+                            };
 
-                        if !rhs_ty.is_empty() {
-                            self.enter_scope();
-                            self.define_narrowed(name, rhs_ty);
-                            let ty = self.check_expression(right)?;
-                            self.exit_scope();
-                            ty
+                            if !rhs_ty.is_empty() {
+                                self.enter_scope();
+                                self.define_narrowed(name, rhs_ty);
+                                let ty = self.check_expression(right)?;
+                                self.exit_scope();
+                                ty
+                            } else {
+                                self.check_expression(right)?
+                            }
                         } else {
                             self.check_expression(right)?
                         }
                     } else {
                         self.check_expression(right)?
-                    }
-                } else {
-                    self.check_expression(right)?
-                };
+                    };
 
                 let is_comparison = matches!(
                     op,
@@ -563,8 +558,9 @@ impl TypeChecker {
                 );
 
                 if is_comparison {
-                    let is_none_comparison = matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
-                        && (left_type.to_name() == "None" || right_type.to_name() == "None");
+                    let is_none_comparison =
+                        matches!(op, TokenType::EqualEqual | TokenType::BangEqual)
+                            && (left_type.to_name() == "None" || right_type.to_name() == "None");
                     let compatible = self.are_types_compatible(&left_type, &right_type)
                         || self.are_types_compatible(&right_type, &left_type);
                     let both_numeric = left_type.is_numeric() && right_type.is_numeric();
@@ -595,9 +591,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0106",
-                        Some(
-                            "Check the value is not None first, e.g. 'if (x != None) { ... }'",
-                        ),
+                        Some("Check the value is not None first, e.g. 'if (x != None) { ... }'"),
                     );
                     return Ok(TejxType::Bool);
                 }
@@ -687,9 +681,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        Some(
-                            "Check the value is not None first, or use optional access '?.'",
-                        ),
+                        Some("Check the value is not None first, or use optional access '?.'"),
                     );
                     return Ok(TejxType::from_name("<inferred>"));
                 }
@@ -988,9 +980,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        Some(
-                            "Check the value is not None first, or use optional access '?.[...]'",
-                        ),
+                        Some("Check the value is not None first, or use optional access '?.[...]'"),
                     );
                     return Ok(TejxType::from_name("<inferred>"));
                 }
@@ -1040,7 +1030,9 @@ impl TypeChecker {
                 }
                 if let TejxType::Object(props) = &parsed {
                     if let Expression::StringLiteral { value, .. } = index.as_ref() {
-                        if let Some((_, _, prop_ty)) = props.iter().find(|(name, _, _)| name == value) {
+                        if let Some((_, _, prop_ty)) =
+                            props.iter().find(|(name, _, _)| name == value)
+                        {
                             return Ok(prop_ty.clone());
                         }
                     }
@@ -1268,8 +1260,15 @@ impl TypeChecker {
                 _col,
             } => {
                 let mut callee_str = callee.to_callee_name();
-                if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
-                    if let Expression::Identifier { name, .. } = object.as_ref() {
+                let member_callee = match &**callee {
+                    Expression::MemberAccessExpr { object, member, .. }
+                    | Expression::OptionalMemberAccessExpr { object, member, .. } => {
+                        Some((object.as_ref(), member.as_str()))
+                    }
+                    _ => None,
+                };
+                if let Some((object, member)) = member_callee {
+                    if let Expression::Identifier { name, .. } = object {
                         if name == "Promise" && member == "all" {
                             callee_str = "Promise_all".to_string();
                         }
@@ -1299,6 +1298,13 @@ impl TypeChecker {
                         return Ok(TejxType::from_name("<inferred>"));
                     }
                 }
+
+                let optional_member_return =
+                    if let Expression::OptionalMemberAccessExpr { object, .. } = &**callee {
+                        matches!(self.check_expression(object)?, TejxType::Optional(_))
+                    } else {
+                        false
+                    };
 
                 let callee_type = self.check_expression(callee)?.to_name();
                 let mut return_type = "<inferred>".to_string();
@@ -1347,8 +1353,17 @@ impl TypeChecker {
                 }
 
                 if !_signature_found {
-                    if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
-                        if let Ok(receiver_ty) = self.check_expression(object) {
+                    if let Some((object, member)) = member_callee {
+                        if let Ok(mut receiver_ty) = self.check_expression(object) {
+                            if let TejxType::Optional(inner) = receiver_ty {
+                                receiver_ty = *inner;
+                            }
+                            if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                if let Some(aliased) = &sym.aliased_type {
+                                    receiver_ty = aliased.clone();
+                                }
+                            }
+
                             if let Some(TejxType::Function(params, ret)) =
                                 self.builtin_member_function_type(&receiver_ty, member)
                             {
@@ -1356,6 +1371,19 @@ impl TypeChecker {
                                 s_params = params.iter().map(|p| p.to_name()).collect();
                                 is_variadic = false;
                                 _signature_found = true;
+                            } else if let Some(info) =
+                                self.resolve_instance_member(&receiver_ty.to_name(), member)
+                            {
+                                let member_ty = TejxType::from_name(&self.substitute_generics(
+                                    &info.ty.to_name(),
+                                    &receiver_ty.to_name(),
+                                ));
+                                if let TejxType::Function(params, ret) = member_ty {
+                                    return_type = ret.to_name();
+                                    s_params = params.iter().map(|p| p.to_name()).collect();
+                                    is_variadic = false;
+                                    _signature_found = true;
+                                }
                             }
                         }
                     }
@@ -1366,15 +1394,24 @@ impl TypeChecker {
                 let mut call_generic_params: Vec<crate::frontend::ast::GenericParam> = Vec::new();
                 let mut call_generic_owner = callee_str.clone();
                 let mut member_lookup_resolved = false;
-                if let Expression::MemberAccessExpr { object, member, .. } = &**callee {
-                    if let Ok(obj_type) = self.check_expression(object) {
+                if let Some((object, member)) = member_callee {
+                    if let Ok(mut obj_type) = self.check_expression(object) {
+                        if let TejxType::Optional(inner) = obj_type {
+                            obj_type = *inner;
+                        }
+                        if let Some(sym) = self.lookup(&obj_type.to_name()) {
+                            if let Some(aliased) = &sym.aliased_type {
+                                obj_type = aliased.clone();
+                            }
+                        }
+
                         if let Some(info) =
                             self.resolve_instance_member(&obj_type.to_name(), member)
                         {
                             member_lookup_resolved = true;
                             if !info.generic_params.is_empty() {
                                 call_generic_params = info.generic_params.clone();
-                                call_generic_owner = member.clone();
+                                call_generic_owner = member.to_string();
                             }
                         } else if obj_type == TejxType::String
                             && self
@@ -1395,7 +1432,7 @@ impl TypeChecker {
                 }
 
                 // Pre-fill generic bindings from the receiver type (e.g., Stack<int> -> T = int)
-                if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                if let Some((object, _)) = member_callee {
                     if let Ok(mut receiver_ty) = self.check_expression(object) {
                         if let TejxType::Optional(inner) = receiver_ty.clone() {
                             if inner.to_name() != "<inferred>" {
@@ -1428,7 +1465,7 @@ impl TypeChecker {
                 }
 
                 let mut param_offset = 0;
-                if let Expression::MemberAccessExpr { .. } = &**callee {
+                if member_callee.is_some() {
                     if !s_params.is_empty() && s_params.len() > args.len() {
                         param_offset = 1;
                     }
@@ -1546,7 +1583,7 @@ impl TypeChecker {
 
                 if param_offset == 1 {
                     let mut resolved_receiver = String::new();
-                    if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                    if let Some((object, _)) = member_callee {
                         resolved_receiver = self
                             .check_expression(object)
                             .map(|t| t.to_name())
@@ -1611,7 +1648,7 @@ impl TypeChecker {
                     // For Array methods, transform `T` and `T[]` parameters based on instance context
                     // If UFCS, the method receiver is actually the object of the MemberAccessExpr
                     let mut resolved_receiver = String::new();
-                    if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                    if let Some((object, _)) = member_callee {
                         if let Ok(obj_type) = self.check_expression(object).map(|t| t.to_name()) {
                             resolved_receiver = obj_type;
                         }
@@ -1853,7 +1890,7 @@ impl TypeChecker {
                                 .get(&format!("$MISSING_GENERIC_{}", concrete_args.len()))
                             {
                                 Some(existing.clone())
-                            } else if let Expression::MemberAccessExpr { object, .. } = &**callee {
+                            } else if let Some((object, _)) = member_callee {
                                 self.check_expression(object)
                                     .ok()
                                     .and_then(|receiver_ty| match gp.name.as_str() {
@@ -1987,7 +2024,12 @@ impl TypeChecker {
                     bindings.insert(k.clone(), parse_type_string(self, v));
                 }
                 let final_ret_ty = apply_bindings_to_type_str(self, &return_type, &bindings);
-                Ok(parse_type_string(self, &final_ret_ty))
+                let parsed_ret_ty = parse_type_string(self, &final_ret_ty);
+                Ok(if optional_member_return {
+                    TejxType::Optional(Box::new(parsed_ret_ty))
+                } else {
+                    parsed_ret_ty
+                })
             }
             Expression::ObjectLiteralExpr {
                 entries, _spreads, ..
@@ -2201,9 +2243,7 @@ impl TypeChecker {
                 };
                 if matches!(
                     &parsed,
-                    TejxType::DynamicArray(_)
-                        | TejxType::FixedArray(_, _)
-                        | TejxType::Slice(_)
+                    TejxType::DynamicArray(_) | TejxType::FixedArray(_, _) | TejxType::Slice(_)
                 ) {
                     let elem_ty = parsed.get_array_element_type();
                     return Ok(if is_optional_target {
@@ -2228,6 +2268,18 @@ impl TypeChecker {
                     other => other,
                 };
 
+                if member == "length"
+                    && (resolved_obj_ty == TejxType::String
+                        || resolved_obj_ty.is_array()
+                        || resolved_obj_ty.is_slice())
+                {
+                    return Ok(if is_optional_object {
+                        TejxType::Optional(Box::new(TejxType::Int32))
+                    } else {
+                        TejxType::Int32
+                    });
+                }
+
                 if let TejxType::Object(props) = resolved_obj_ty.clone() {
                     for (k, _, t) in props {
                         if k == *member {
@@ -2240,14 +2292,20 @@ impl TypeChecker {
                     }
                 }
 
-                if let Some(info) =
-                    self.resolve_instance_member(&resolved_obj_ty.to_name(), member)
+                if let Some(builtin_ty) =
+                    self.builtin_member_function_type(&resolved_obj_ty, member)
+                {
+                    return Ok(if is_optional_object {
+                        TejxType::Optional(Box::new(builtin_ty))
+                    } else {
+                        builtin_ty
+                    });
+                }
+
+                if let Some(info) = self.resolve_instance_member(&resolved_obj_ty.to_name(), member)
                 {
                     let member_ty = TejxType::from_name(
-                        &self.substitute_generics(
-                            &info.ty.to_name(),
-                            &resolved_obj_ty.to_name(),
-                        ),
+                        &self.substitute_generics(&info.ty.to_name(), &resolved_obj_ty.to_name()),
                     );
                     return Ok(if is_optional_object {
                         TejxType::Optional(Box::new(member_ty))

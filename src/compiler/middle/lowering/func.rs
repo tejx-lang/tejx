@@ -1,7 +1,7 @@
 use super::Lowering;
+use crate::common::types::TejxType;
 use crate::frontend::ast::*;
 use crate::middle::hir::*;
-use crate::common::types::TejxType;
 use std::collections::{HashMap, HashSet};
 
 impl Lowering {
@@ -29,15 +29,18 @@ impl Lowering {
                         && name.chars().all(|c| c.is_alphanumeric());
                     !looks_like_generic_param
                 } else {
-                    generics.iter().all(|generic| self.is_concrete_type(generic))
+                    generics
+                        .iter()
+                        .all(|generic| self.is_concrete_type(generic))
                 }
             }
-            TejxType::FixedArray(inner, _) | TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
-                self.is_concrete_type(inner)
-            }
+            TejxType::FixedArray(inner, _)
+            | TejxType::DynamicArray(inner)
+            | TejxType::Slice(inner) => self.is_concrete_type(inner),
             TejxType::Optional(inner) => self.is_concrete_type(inner),
             TejxType::Function(params, ret) => {
-                params.iter().all(|param| self.is_concrete_type(param)) && self.is_concrete_type(ret)
+                params.iter().all(|param| self.is_concrete_type(param))
+                    && self.is_concrete_type(ret)
             }
             TejxType::Object(props) => props
                 .iter()
@@ -97,7 +100,9 @@ impl Lowering {
                     .collect(),
             );
             if self.can_erase_generic_function(func) {
-                self.erased_generic_functions.borrow_mut().insert(name.clone());
+                self.erased_generic_functions
+                    .borrow_mut()
+                    .insert(name.clone());
             }
         }
 
@@ -208,7 +213,12 @@ impl Lowering {
     }
 
     pub(crate) fn monomorphized_name(&self, base_name: &str, concrete_args: &[TejxType]) -> String {
-        let mut mangled = base_name.split('<').next().unwrap_or(base_name).trim().to_string();
+        let mut mangled = base_name
+            .split('<')
+            .next()
+            .unwrap_or(base_name)
+            .trim()
+            .to_string();
         for arg in concrete_args {
             mangled.push('_');
             mangled.push_str(&self.sanitize_monomorph_part(&arg.to_name()));
@@ -243,14 +253,25 @@ impl Lowering {
         bindings: &mut HashMap<String, TejxType>,
     ) {
         match formal {
-            TejxType::Class(name, generics) if generics.is_empty() && generic_params.contains(name) => {
-                bindings.entry(name.clone()).or_insert_with(|| actual.clone());
+            TejxType::Class(name, generics)
+                if generics.is_empty() && generic_params.contains(name) =>
+            {
+                bindings
+                    .entry(name.clone())
+                    .or_insert_with(|| actual.clone());
             }
             TejxType::Class(name, formal_generics) => {
                 if let TejxType::Class(actual_name, actual_generics) = actual {
                     if name == actual_name && formal_generics.len() == actual_generics.len() {
-                        for (formal_arg, actual_arg) in formal_generics.iter().zip(actual_generics.iter()) {
-                            self.collect_generic_bindings(formal_arg, actual_arg, generic_params, bindings);
+                        for (formal_arg, actual_arg) in
+                            formal_generics.iter().zip(actual_generics.iter())
+                        {
+                            self.collect_generic_bindings(
+                                formal_arg,
+                                actual_arg,
+                                generic_params,
+                                bindings,
+                            );
                         }
                     }
                 }
@@ -259,7 +280,12 @@ impl Lowering {
                 TejxType::DynamicArray(actual_inner)
                 | TejxType::FixedArray(actual_inner, _)
                 | TejxType::Slice(actual_inner) => {
-                    self.collect_generic_bindings(formal_inner, actual_inner, generic_params, bindings);
+                    self.collect_generic_bindings(
+                        formal_inner,
+                        actual_inner,
+                        generic_params,
+                        bindings,
+                    );
                 }
                 _ => {}
             },
@@ -267,36 +293,57 @@ impl Lowering {
                 TejxType::DynamicArray(actual_inner)
                 | TejxType::FixedArray(actual_inner, _)
                 | TejxType::Slice(actual_inner) => {
-                    self.collect_generic_bindings(formal_inner, actual_inner, generic_params, bindings);
+                    self.collect_generic_bindings(
+                        formal_inner,
+                        actual_inner,
+                        generic_params,
+                        bindings,
+                    );
                 }
                 _ => {}
             },
             TejxType::Function(formal_params, formal_ret) => {
                 if let TejxType::Function(actual_params, actual_ret) = actual {
-                    for (formal_param, actual_param) in formal_params.iter().zip(actual_params.iter()) {
-                        self.collect_generic_bindings(formal_param, actual_param, generic_params, bindings);
+                    for (formal_param, actual_param) in
+                        formal_params.iter().zip(actual_params.iter())
+                    {
+                        self.collect_generic_bindings(
+                            formal_param,
+                            actual_param,
+                            generic_params,
+                            bindings,
+                        );
                     }
                     self.collect_generic_bindings(formal_ret, actual_ret, generic_params, bindings);
                 }
             }
-            TejxType::Optional(formal_inner) => {
-                match actual {
-                    TejxType::Optional(actual_inner) => {
-                        self.collect_generic_bindings(formal_inner, actual_inner, generic_params, bindings);
-                    }
-                    other if other.to_name() != "None" => {
-                        self.collect_generic_bindings(formal_inner, other, generic_params, bindings);
-                    }
-                    _ => {}
+            TejxType::Optional(formal_inner) => match actual {
+                TejxType::Optional(actual_inner) => {
+                    self.collect_generic_bindings(
+                        formal_inner,
+                        actual_inner,
+                        generic_params,
+                        bindings,
+                    );
                 }
-            }
+                other if other.to_name() != "None" => {
+                    self.collect_generic_bindings(formal_inner, other, generic_params, bindings);
+                }
+                _ => {}
+            },
             TejxType::Object(formal_props) => {
                 if let TejxType::Object(actual_props) = actual {
                     for (formal_key, _, formal_ty) in formal_props {
-                        if let Some((_, _, actual_ty)) =
-                            actual_props.iter().find(|(actual_key, _, _)| actual_key == formal_key)
+                        if let Some((_, _, actual_ty)) = actual_props
+                            .iter()
+                            .find(|(actual_key, _, _)| actual_key == formal_key)
                         {
-                            self.collect_generic_bindings(formal_ty, actual_ty, generic_params, bindings);
+                            self.collect_generic_bindings(
+                                formal_ty,
+                                actual_ty,
+                                generic_params,
+                                bindings,
+                            );
                         }
                     }
                 }
@@ -347,7 +394,10 @@ impl Lowering {
                 return None;
             };
 
-            for (formal, actual) in param_types.iter().zip(args.iter().map(|arg| arg.get_type())) {
+            for (formal, actual) in param_types
+                .iter()
+                .zip(args.iter().map(|arg| arg.get_type()))
+            {
                 self.collect_generic_bindings(formal, &actual, &generic_set, &mut bindings);
             }
         }
@@ -374,7 +424,10 @@ impl Lowering {
             .or_default()
             .insert(ordered_args.clone());
 
-        Some((self.monomorphized_name(callee_name, &ordered_args), bindings))
+        Some((
+            self.monomorphized_name(callee_name, &ordered_args),
+            bindings,
+        ))
     }
 
     fn can_erase_generic_function(&self, func: &FunctionDeclaration) -> bool {
@@ -383,9 +436,7 @@ impl Lowering {
                 TypeNode::Named(name) => generic_names.contains(name.as_str()),
                 TypeNode::Generic(name, args) => {
                     generic_names.contains(name.as_str())
-                        || args
-                            .iter()
-                            .any(|arg| contains_generic(arg, generic_names))
+                        || args.iter().any(|arg| contains_generic(arg, generic_names))
                 }
                 TypeNode::Array(inner) => contains_generic(inner, generic_names),
                 TypeNode::SizedArray(inner, _) => contains_generic(inner, generic_names),
@@ -410,8 +461,11 @@ impl Lowering {
             return false;
         }
 
-        let generic_names: HashSet<&str> =
-            func.generic_params.iter().map(|param| param.name.as_str()).collect();
+        let generic_names: HashSet<&str> = func
+            .generic_params
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect();
 
         !contains_generic(&func.return_type, &generic_names)
     }

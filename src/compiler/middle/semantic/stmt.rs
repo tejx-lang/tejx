@@ -223,7 +223,14 @@ impl TypeChecker {
                     if let Expression::ArrayLiteral { elements, .. } = expr.as_ref() {
                         literal_length = Some(elements.len());
                     }
-                    let _ = self.define_pattern(pattern, _target_type, *is_const, *line, *_col, literal_length);
+                    let _ = self.define_pattern(
+                        pattern,
+                        _target_type,
+                        *is_const,
+                        *line,
+                        *_col,
+                        literal_length,
+                    );
                 } else if !has_explicit_type {
                     self.report_error_detailed(
                         "Type annotation required for uninitialized variable".to_string(),
@@ -580,15 +587,16 @@ impl TypeChecker {
 
                 // Verify parent exists
                 if !class_decl._parent_name.is_empty()
-                    && self.lookup(&class_decl._parent_name).is_none() {
-                        self.report_error_detailed(
-                            format!("Parent class '{}' not found", class_decl._parent_name),
-                            class_decl._line,
-                            class_decl._col,
-                            "E0101",
-                            Some("Ensure the parent class is defined before the child class"),
-                        );
-                    }
+                    && self.lookup(&class_decl._parent_name).is_none()
+                {
+                    self.report_error_detailed(
+                        format!("Parent class '{}' not found", class_decl._parent_name),
+                        class_decl._line,
+                        class_decl._col,
+                        "E0101",
+                        Some("Ensure the parent class is defined before the child class"),
+                    );
+                }
 
                 // Verify interface implementation
                 for interface_name in &class_decl._implemented_protocols {
@@ -613,13 +621,17 @@ impl TypeChecker {
                 if !class_decl._parent_name.is_empty() {
                     let mut current_parent = class_decl._parent_name.clone();
                     while !current_parent.is_empty() && current_parent != "<inferred>" {
-                        if let Some(parent_members) = self.class_members.get(&current_parent).cloned() {
+                        if let Some(parent_members) =
+                            self.class_members.get(&current_parent).cloned()
+                        {
                             for m in &class_decl.methods {
                                 if let Some(parent_m) = parent_members.get(&m.func.name) {
                                     let mut param_types = Vec::new();
                                     for p in &m.func.params {
                                         let mut pt = p.type_name.to_string();
-                                        if pt.is_empty() { pt = "<inferred>".to_string(); }
+                                        if pt.is_empty() {
+                                            pt = "<inferred>".to_string();
+                                        }
                                         param_types.push(pt);
                                     }
                                     let p_str = param_types.join(",");
@@ -633,11 +645,12 @@ impl TypeChecker {
                                     } else {
                                         format!("function:{}:{}", rt_str, p_str)
                                     };
-                                    
+
                                     let derived_ty = TejxType::from_name(&sig_str);
 
                                     // Check that child method signature is compatible with parent's
-                                    let is_compat = self.are_types_compatible(&parent_m.ty, &derived_ty);
+                                    let is_compat =
+                                        self.are_types_compatible(&parent_m.ty, &derived_ty);
                                     if !is_compat {
                                         self.report_error_detailed(
                                             format!("Method '{}' overrides parent method but signature is incompatible", m.func.name),
@@ -682,11 +695,23 @@ impl TypeChecker {
                     let p_len = param.len();
                     while let Some(idx) = ty_str[last_pos..].find(param) {
                         let abs_idx = last_pos + idx;
-                        let before_char = if abs_idx > 0 { ty_str[..abs_idx].chars().last() } else { None };
+                        let before_char = if abs_idx > 0 {
+                            ty_str[..abs_idx].chars().last()
+                        } else {
+                            None
+                        };
                         let after_char = ty_str[abs_idx + p_len..].chars().next();
-                        let is_word_start = match before_char { Some(c) => !c.is_alphanumeric() && c != '_', None => true };
-                        let is_word_end = match after_char { Some(c) => !c.is_alphanumeric() && c != '_', None => true };
-                        if is_word_start && is_word_end { return true; }
+                        let is_word_start = match before_char {
+                            Some(c) => !c.is_alphanumeric() && c != '_',
+                            None => true,
+                        };
+                        let is_word_end = match after_char {
+                            Some(c) => !c.is_alphanumeric() && c != '_',
+                            None => true,
+                        };
+                        if is_word_start && is_word_end {
+                            return true;
+                        }
                         last_pos = abs_idx + p_len;
                     }
                     false
@@ -787,9 +812,14 @@ impl TypeChecker {
                             all_types.push(',');
                         }
                         all_types.push_str(&method.func.return_type.to_string());
-                        
+
                         for gp in &class_decl.generic_params {
-                            if !method.func.generic_params.iter().any(|mgp| mgp.name == gp.name) {
+                            if !method
+                                .func
+                                .generic_params
+                                .iter()
+                                .any(|mgp| mgp.name == gp.name)
+                            {
                                 if type_string_contains(&all_types, &gp.name) {
                                     self.report_error_detailed(
                                         format!("Static method '{}' cannot reference class type parameter '{}'", method.func.name, gp.name),
@@ -874,12 +904,16 @@ impl TypeChecker {
                                 break;
                             }
                         }
-                        let is_implicit = constructor._line == class_decl._line && constructor._col == class_decl._col;
+                        let is_implicit = constructor._line == class_decl._line
+                            && constructor._col == class_decl._col;
 
                         if let Statement::BlockStmt { statements, .. } = &*constructor.body {
                             let mut has_super_first = is_implicit;
                             for (i, stmt) in statements.iter().enumerate() {
-                                if let Statement::ExpressionStmt { _expression: expr, .. } = stmt {
+                                if let Statement::ExpressionStmt {
+                                    _expression: expr, ..
+                                } = stmt
+                                {
                                     if let Expression::CallExpr { callee, .. } = &**expr {
                                         if let Expression::SuperExpr { .. } = &**callee {
                                             if i == 0 {
@@ -898,7 +932,7 @@ impl TypeChecker {
                                     }
                                 }
                             }
-                            
+
                             if !has_super_first && needs_super {
                                 self.report_error_detailed(
                                     "Missing super() call in derived class constructor".to_string(),
@@ -1179,14 +1213,7 @@ impl TypeChecker {
                     } else {
                         format!("{}[]", inner_type)
                     };
-                    let _ = self.define_pattern(
-                        rest_pattern,
-                        rest_type,
-                        is_const,
-                        line,
-                        col,
-                        None,
-                    );
+                    let _ = self.define_pattern(rest_pattern, rest_type, is_const, line, col, None);
                 }
             }
             BindingNode::ObjectBinding { entries } => {
@@ -1232,27 +1259,26 @@ impl TypeChecker {
             } => {
                 if *op == TokenType::AmpersandAmpersand || *op == TokenType::PipePipe {
                     let left_narrowing = self.get_narrowing_from_condition(left);
-                    let right_narrowing = if let Some((ref name, ref then_ty, ref else_ty)) =
-                        left_narrowing
-                    {
-                        let rhs_ty = if *op == TokenType::AmpersandAmpersand {
-                            then_ty
-                        } else {
-                            else_ty
-                        };
+                    let right_narrowing =
+                        if let Some((ref name, ref then_ty, ref else_ty)) = left_narrowing {
+                            let rhs_ty = if *op == TokenType::AmpersandAmpersand {
+                                then_ty
+                            } else {
+                                else_ty
+                            };
 
-                        if !rhs_ty.is_empty() {
-                            self.enter_scope();
-                            self.define_narrowed(name.clone(), rhs_ty.clone());
-                            let narrowed = self.get_narrowing_from_condition(right);
-                            self.exit_scope();
-                            narrowed
+                            if !rhs_ty.is_empty() {
+                                self.enter_scope();
+                                self.define_narrowed(name.clone(), rhs_ty.clone());
+                                let narrowed = self.get_narrowing_from_condition(right);
+                                self.exit_scope();
+                                narrowed
+                            } else {
+                                self.get_narrowing_from_condition(right)
+                            }
                         } else {
                             self.get_narrowing_from_condition(right)
-                        }
-                    } else {
-                        self.get_narrowing_from_condition(right)
-                    };
+                        };
 
                     if *op == TokenType::AmpersandAmpersand {
                         return self.combine_and_narrowing(left_narrowing, right_narrowing);

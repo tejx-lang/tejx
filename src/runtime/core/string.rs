@@ -509,43 +509,45 @@ pub unsafe extern "C" fn rt_str_clear_local(lhs_id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
-    let res = if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) =
-        (get_string_body_and_len(lhs_id), get_string_body_and_len(rhs_id))
-    {
-        let required = lhs_len + rhs_len;
-        let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
-            && ((*lhs_header).capacity as i64) >= required;
+    let res =
+        if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) = (
+            get_string_body_and_len(lhs_id),
+            get_string_body_and_len(rhs_id),
+        ) {
+            let required = lhs_len + rhs_len;
+            let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
+                && ((*lhs_header).capacity as i64) >= required;
 
-        if can_mutate {
-            memcpy(
-                lhs_body.add(lhs_len as usize) as *mut _,
-                rhs_body as *const _,
-                rhs_len as usize,
-            );
-            *lhs_body.add(required as usize) = 0;
-            (*lhs_header).length = required as u32;
-            rt_update_array_cache(lhs_id, lhs_body, required, 1);
-            lhs_id
+            if can_mutate {
+                memcpy(
+                    lhs_body.add(lhs_len as usize) as *mut _,
+                    rhs_body as *const _,
+                    rhs_len as usize,
+                );
+                *lhs_body.add(required as usize) = 0;
+                (*lhs_header).length = required as u32;
+                rt_update_array_cache(lhs_id, lhs_body, required, 1);
+                lhs_id
+            } else {
+                let capacity = next_string_capacity(required);
+                let body_ptr = alloc_string_body(capacity, required);
+                memcpy(body_ptr as *mut _, lhs_body as *const _, lhs_len as usize);
+                memcpy(
+                    body_ptr.add(lhs_len as usize) as *mut _,
+                    rhs_body as *const _,
+                    rhs_len as usize,
+                );
+                *body_ptr.add(required as usize) = 0;
+                let res_id = (body_ptr as i64) + HEAP_OFFSET;
+                rt_update_array_cache(res_id, body_ptr, required, 1);
+                res_id
+            }
+        } else if get_string_body_and_len(lhs_id).is_some() {
+            rt_clone(lhs_id)
+        } else if get_string_body_and_len(rhs_id).is_some() {
+            rt_clone(rhs_id)
         } else {
-            let capacity = next_string_capacity(required);
-            let body_ptr = alloc_string_body(capacity, required);
-            memcpy(body_ptr as *mut _, lhs_body as *const _, lhs_len as usize);
-            memcpy(
-                body_ptr.add(lhs_len as usize) as *mut _,
-                rhs_body as *const _,
-                rhs_len as usize,
-            );
-            *body_ptr.add(required as usize) = 0;
-            let res_id = (body_ptr as i64) + HEAP_OFFSET;
-            rt_update_array_cache(res_id, body_ptr, required, 1);
-            res_id
-        }
-    } else if get_string_body_and_len(lhs_id).is_some() {
-        rt_clone(lhs_id)
-    } else if get_string_body_and_len(rhs_id).is_some() {
-        rt_clone(rhs_id)
-    } else {
-        rt_string_from_c_str("\0".as_ptr() as *const _)
-    };
+            rt_string_from_c_str("\0".as_ptr() as *const _)
+        };
     res
 }

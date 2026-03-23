@@ -55,7 +55,12 @@ pub(crate) fn split_top_level(input: &str, sep: char) -> Vec<&str> {
             _ => {}
         }
 
-        if ch == sep && depth_angle == 0 && depth_brace == 0 && depth_bracket == 0 && depth_paren == 0 {
+        if ch == sep
+            && depth_angle == 0
+            && depth_brace == 0
+            && depth_bracket == 0
+            && depth_paren == 0
+        {
             parts.push(input[start..i].trim());
             start = i + ch.len_utf8();
         }
@@ -177,13 +182,12 @@ pub(crate) fn find_top_level_arrow(input: &str) -> Option<usize> {
             ')' => {
                 depth_paren = depth_paren.saturating_sub(1);
             }
-            '='
-                if i + 1 < bytes.len()
-                    && bytes[i + 1] == b'>'
-                    && depth_angle == 0
-                    && depth_brace == 0
-                    && depth_bracket == 0
-                    && depth_paren == 0 =>
+            '=' if i + 1 < bytes.len()
+                && bytes[i + 1] == b'>'
+                && depth_angle == 0
+                && depth_brace == 0
+                && depth_bracket == 0
+                && depth_paren == 0 =>
             {
                 return Some(i);
             }
@@ -225,7 +229,10 @@ impl TejxType {
     }
 
     pub fn is_object(&self) -> bool {
-        matches!(self, TejxType::Class(_, _) | TejxType::Object(_) | TejxType::Any)
+        matches!(
+            self,
+            TejxType::Class(_, _) | TejxType::Object(_) | TejxType::Any
+        )
     }
 
     pub fn is_slice(&self) -> bool {
@@ -244,7 +251,6 @@ impl TejxType {
             TejxType::Function(_, _) => TejxType::Void,
             _ => TejxType::Any,
         }
-
     }
 
     pub fn size(&self) -> usize {
@@ -261,7 +267,7 @@ impl TejxType {
             | TejxType::DynamicArray(_)
             | TejxType::Object(_) => 8, // Pointers/Boxed/Borrows
             TejxType::Function(_, _) => 16, // Pointer + env (fat pointer)
-            TejxType::Slice(_) => 16, // Fat pointer: {ptr, len}
+            TejxType::Slice(_) => 16,       // Fat pointer: {ptr, len}
             TejxType::FixedArray(inner, count) => inner.size() * count,
             TejxType::Any => 8, // Boxed value ptr
             TejxType::Void => 0,
@@ -297,7 +303,10 @@ impl TejxType {
                 TejxType::Function(parsed_params, Box::new(TejxType::from_node(ret)))
             }
             crate::frontend::ast::TypeNode::Object(members) => {
-                let parsed_members = members.iter().map(|(k, o, t)| (k.clone(), *o, TejxType::from_node(t))).collect();
+                let parsed_members = members
+                    .iter()
+                    .map(|(k, o, t)| (k.clone(), *o, TejxType::from_node(t)))
+                    .collect();
                 TejxType::Object(parsed_members)
             }
             crate::frontend::ast::TypeNode::Intersection(_) => TejxType::Any,
@@ -327,7 +336,9 @@ impl TejxType {
                     crate::frontend::ast::TypeNode::Generic(name.clone(), type_args)
                 }
             }
-            TejxType::Optional(inner) => crate::frontend::ast::TypeNode::Optional(Box::new(inner.to_type_node())),
+            TejxType::Optional(inner) => {
+                crate::frontend::ast::TypeNode::Optional(Box::new(inner.to_type_node()))
+            }
             TejxType::FixedArray(inner, size) => crate::frontend::ast::TypeNode::SizedArray(
                 Box::new(inner.to_type_node()),
                 Box::new(crate::frontend::ast::Expression::NumberLiteral {
@@ -337,13 +348,23 @@ impl TejxType {
                     _col: 0,
                 }),
             ),
-            TejxType::DynamicArray(inner) => crate::frontend::ast::TypeNode::Array(Box::new(inner.to_type_node())),
-            TejxType::Slice(inner) => crate::frontend::ast::TypeNode::Generic("slice".to_string(), vec![inner.to_type_node()]),
+            TejxType::DynamicArray(inner) => {
+                crate::frontend::ast::TypeNode::Array(Box::new(inner.to_type_node()))
+            }
+            TejxType::Slice(inner) => crate::frontend::ast::TypeNode::Generic(
+                "slice".to_string(),
+                vec![inner.to_type_node()],
+            ),
             TejxType::Function(params, ret) => {
                 let p_nodes = params.iter().map(|p| p.to_type_node()).collect();
                 crate::frontend::ast::TypeNode::Function(p_nodes, Box::new(ret.to_type_node()))
             }
-            TejxType::Object(members) => crate::frontend::ast::TypeNode::Object(members.iter().map(|(k, o, t)| (k.clone(), *o, t.to_type_node())).collect()),
+            TejxType::Object(members) => crate::frontend::ast::TypeNode::Object(
+                members
+                    .iter()
+                    .map(|(k, o, t)| (k.clone(), *o, t.to_type_node()))
+                    .collect(),
+            ),
         }
     }
 
@@ -433,10 +454,11 @@ impl TejxType {
                         depth_paren = depth_paren.saturating_sub(1);
                         current.push(ch);
                     }
-                    ';' | ',' if depth_brace == 0
-                        && depth_angle == 0
-                        && depth_bracket == 0
-                        && depth_paren == 0 =>
+                    ';' | ','
+                        if depth_brace == 0
+                            && depth_angle == 0
+                            && depth_bracket == 0
+                            && depth_paren == 0 =>
                     {
                         let buf = current.clone();
                         flush_prop(&buf, &mut props);
@@ -456,7 +478,8 @@ impl TejxType {
             let params_part = name[..arrow].trim();
             let return_part = name[arrow + 2..].trim();
 
-            if params_part.starts_with('(') && params_part.ends_with(')') && !return_part.is_empty() {
+            if params_part.starts_with('(') && params_part.ends_with(')') && !return_part.is_empty()
+            {
                 let inner = params_part[1..params_part.len() - 1].trim();
                 let params = if inner.is_empty() {
                     Vec::new()
@@ -571,16 +594,22 @@ impl TejxType {
                 format!("({}) => {}", p_names.join(", "), ret.to_name())
             }
             TejxType::Object(props) => {
-                let p_names: Vec<String> = props.iter().map(|(k, o, t)| {
-                    let opt = if *o { "?" } else { "" };
-                    format!("{}{}: {}", k, opt, t.to_name())
-                }).collect();
+                let p_names: Vec<String> = props
+                    .iter()
+                    .map(|(k, o, t)| {
+                        let opt = if *o { "?" } else { "" };
+                        format!("{}{}: {}", k, opt, t.to_name())
+                    })
+                    .collect();
                 format!("{{ {} }}", p_names.join("; "))
             }
         }
     }
 
-    pub fn substitute_generics(&self, bindings: &std::collections::HashMap<String, TejxType>) -> TejxType {
+    pub fn substitute_generics(
+        &self,
+        bindings: &std::collections::HashMap<String, TejxType>,
+    ) -> TejxType {
         match self {
             TejxType::Class(name, generics) => {
                 if generics.is_empty() {
@@ -589,22 +618,37 @@ impl TejxType {
                     }
                     TejxType::Class(name.clone(), vec![])
                 } else {
-                    let new_generics = generics.iter().map(|g| g.substitute_generics(bindings)).collect();
+                    let new_generics = generics
+                        .iter()
+                        .map(|g| g.substitute_generics(bindings))
+                        .collect();
                     TejxType::Class(name.clone(), new_generics)
                 }
             }
             TejxType::Optional(inner) => {
                 TejxType::Optional(Box::new(inner.substitute_generics(bindings)))
             }
-            TejxType::FixedArray(inner, size) => TejxType::FixedArray(Box::new(inner.substitute_generics(bindings)), *size),
-            TejxType::DynamicArray(inner) => TejxType::DynamicArray(Box::new(inner.substitute_generics(bindings))),
-            TejxType::Slice(inner) => TejxType::Slice(Box::new(inner.substitute_generics(bindings))),
+            TejxType::FixedArray(inner, size) => {
+                TejxType::FixedArray(Box::new(inner.substitute_generics(bindings)), *size)
+            }
+            TejxType::DynamicArray(inner) => {
+                TejxType::DynamicArray(Box::new(inner.substitute_generics(bindings)))
+            }
+            TejxType::Slice(inner) => {
+                TejxType::Slice(Box::new(inner.substitute_generics(bindings)))
+            }
             TejxType::Function(params, ret) => {
-                let new_params = params.iter().map(|p| p.substitute_generics(bindings)).collect();
+                let new_params = params
+                    .iter()
+                    .map(|p| p.substitute_generics(bindings))
+                    .collect();
                 TejxType::Function(new_params, Box::new(ret.substitute_generics(bindings)))
             }
             TejxType::Object(props) => TejxType::Object(
-                props.iter().map(|(k, o, t)| (k.clone(), *o, t.substitute_generics(bindings))).collect()
+                props
+                    .iter()
+                    .map(|(k, o, t)| (k.clone(), *o, t.substitute_generics(bindings)))
+                    .collect(),
             ),
             _ => self.clone(),
         }

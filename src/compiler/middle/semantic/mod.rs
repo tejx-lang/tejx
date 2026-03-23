@@ -5,9 +5,9 @@ pub mod func;
 pub mod generics;
 pub mod stmt;
 
-use crate::frontend::ast::{Program, Statement};
 use crate::common::diagnostics::Diagnostic; // Import Diagnostic
 use crate::common::types::TejxType;
+use crate::frontend::ast::{Program, Statement};
 use std::collections::HashMap;
 
 // TypeInfo struct removed (unused)
@@ -76,7 +76,7 @@ impl TypeChecker {
         let class_members = HashMap::new();
         let class_hierarchy = HashMap::new();
         // Standard library symbols are now loaded from the prelude and explicit imports.
-        
+
         TypeChecker {
             scopes: vec![globals],
             current_class: None,
@@ -158,12 +158,15 @@ impl TypeChecker {
         let (_, final_params, is_variadic) = self.parse_signature(type_name.clone());
         let ty_obj = if type_name.starts_with("function:") {
             let (ret_str, _, _) = self.parse_signature(type_name.clone());
-            let final_param_types: Vec<TejxType> = final_params.iter().map(|p| TejxType::from_name(p)).collect();
+            let final_param_types: Vec<TejxType> = final_params
+                .iter()
+                .map(|p| TejxType::from_name(p))
+                .collect();
             TejxType::Function(final_param_types, Box::new(TejxType::from_name(&ret_str)))
         } else {
             TejxType::from_name(&type_name)
         };
-        
+
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
@@ -203,12 +206,13 @@ impl TypeChecker {
     ) {
         let ty_obj = if type_name.starts_with("function:") {
             let (ret_str, _, _) = self.parse_signature(type_name.clone());
-            let param_types: Vec<TejxType> = params.iter().map(|p| TejxType::from_name(p)).collect();
+            let param_types: Vec<TejxType> =
+                params.iter().map(|p| TejxType::from_name(p)).collect();
             TejxType::Function(param_types, Box::new(TejxType::from_name(&ret_str)))
         } else {
             TejxType::from_name(&type_name)
         };
-        
+
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
@@ -241,7 +245,10 @@ impl TypeChecker {
 
         let ty_obj = if type_name.starts_with("function:") {
             let (ret_str, _, _) = self.parse_signature(type_name.clone());
-            let final_param_types: Vec<TejxType> = final_params.iter().map(|p| TejxType::from_name(p)).collect();
+            let final_param_types: Vec<TejxType> = final_params
+                .iter()
+                .map(|p| TejxType::from_name(p))
+                .collect();
             TejxType::Function(final_param_types, Box::new(TejxType::from_name(&ret_str)))
         } else {
             TejxType::from_name(&type_name)

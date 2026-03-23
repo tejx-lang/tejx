@@ -407,7 +407,11 @@ pub unsafe extern "C" fn rt_net_start_tls(stream: i64, host_ptr: i64) -> i64 {
     };
 
     let socket = &mut *(stream as *mut NetStream);
-    if start_tls_stream(socket, &host, true) { 0 } else { -1 }
+    if start_tls_stream(socket, &host, true) {
+        0
+    } else {
+        -1
+    }
 }
 
 #[no_mangle]
@@ -421,7 +425,11 @@ pub unsafe extern "C" fn rt_net_start_tls_insecure(stream: i64, host_ptr: i64) -
     };
 
     let socket = &mut *(stream as *mut NetStream);
-    if start_tls_stream(socket, &host, false) { 0 } else { -1 }
+    if start_tls_stream(socket, &host, false) {
+        0
+    } else {
+        -1
+    }
 }
 
 #[no_mangle]

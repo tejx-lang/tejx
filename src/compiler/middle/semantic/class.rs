@@ -9,7 +9,10 @@ impl TypeChecker {
             Statement::ClassDeclaration(class_decl) => {
                 if self.scopes.len() > 1 {
                     self.report_error_detailed(
-                        format!("Class '{}' cannot be defined inside a function or block", class_decl.name),
+                        format!(
+                            "Class '{}' cannot be defined inside a function or block",
+                            class_decl.name
+                        ),
                         class_decl._line,
                         class_decl._col,
                         "E0114",
@@ -48,14 +51,17 @@ impl TypeChecker {
                     members.insert(
                         m._name.clone(),
                         MemberInfo {
-                            ty: TejxType::from_name(&self.parameterize_generics(
-                                &member_ty,
-                                &class_decl.generic_params,
-                            )),
+                            ty: TejxType::from_name(
+                                &self.parameterize_generics(&member_ty, &class_decl.generic_params),
+                            ),
                             is_static: m._is_static,
                             access: match m._access {
-                                crate::frontend::ast::AccessModifier::Private => AccessLevel::Private,
-                                crate::frontend::ast::AccessModifier::Protected => AccessLevel::Protected,
+                                crate::frontend::ast::AccessModifier::Private => {
+                                    AccessLevel::Private
+                                }
+                                crate::frontend::ast::AccessModifier::Protected => {
+                                    AccessLevel::Protected
+                                }
                                 _ => AccessLevel::Public,
                             },
                             is_readonly: false,
@@ -104,8 +110,12 @@ impl TypeChecker {
                             ty: TejxType::from_name(&parameterized_type),
                             is_static: method.is_static,
                             access: match method._access {
-                                crate::frontend::ast::AccessModifier::Private => AccessLevel::Private,
-                                crate::frontend::ast::AccessModifier::Protected => AccessLevel::Protected,
+                                crate::frontend::ast::AccessModifier::Private => {
+                                    AccessLevel::Private
+                                }
+                                crate::frontend::ast::AccessModifier::Protected => {
+                                    AccessLevel::Protected
+                                }
                                 _ => AccessLevel::Public,
                             },
                             is_readonly: true, // Methods are readonly
@@ -397,17 +407,17 @@ impl TypeChecker {
         member: &str,
     ) -> Option<MemberInfo> {
         let obj_ty = TejxType::from_name(obj_type);
-            if let TejxType::Object(props) = obj_ty {
-                if let Some((_, _, ty)) = props.into_iter().find(|(name, _, _)| name == member) {
-                    return Some(MemberInfo {
-                        ty,
-                        is_static: false,
-                        access: AccessLevel::Public,
-                        is_readonly: false,
-                        generic_params: Vec::new(),
-                    });
-                }
+        if let TejxType::Object(props) = obj_ty {
+            if let Some((_, _, ty)) = props.into_iter().find(|(name, _, _)| name == member) {
+                return Some(MemberInfo {
+                    ty,
+                    is_static: false,
+                    access: AccessLevel::Public,
+                    is_readonly: false,
+                    generic_params: Vec::new(),
+                });
             }
+        }
         let mut current_type = self.normalize_member_container(obj_type);
 
         while !current_type.is_empty() && current_type != "<inferred>" {

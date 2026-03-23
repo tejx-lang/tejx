@@ -1,10 +1,10 @@
 pub mod lowering;
 pub mod opt;
 
-use crate::frontend::token::TokenType;
 /// Mid-level Intermediate Representation (MIR), mirroring C++ MIR.h
 /// SSA-like form with basic blocks and low-level instructions.
 use crate::common::types::TejxType;
+use crate::frontend::token::TokenType;
 
 #[derive(Debug, Clone)]
 pub enum MIRValue {

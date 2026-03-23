@@ -25,7 +25,10 @@ impl TypeChecker {
                             if let Some(bound) = &gp.bound {
                                 let bound_str = bound.to_string();
                                 let concrete = &args[i].to_name();
-                                if !self.is_assignable(&TejxType::from_name(&bound_str), &TejxType::from_name(concrete)) {
+                                if !self.is_assignable(
+                                    &TejxType::from_name(&bound_str),
+                                    &TejxType::from_name(concrete),
+                                ) {
                                     self.report_error_detailed(
                                         format!("Type '{}' does not satisfy constraint '{}' for generic parameter '{}'", concrete, bound_str, gp.name),
                                         line,

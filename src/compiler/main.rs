@@ -5,11 +5,11 @@ pub mod common;
 pub mod frontend;
 pub mod middle;
 
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process;
-use std::collections::HashSet;
 
 use crate::backend::codegen::CodeGen;
 use crate::backend::linker::Linker;
