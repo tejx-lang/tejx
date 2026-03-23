@@ -6,6 +6,25 @@ use crate::frontend::token::TokenType;
 use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
+    fn stringify_field_kind(ty: &TejxType) -> u8 {
+        match ty {
+            TejxType::String
+            | TejxType::Class(_, _)
+            | TejxType::Optional(_)
+            | TejxType::DynamicArray(_)
+            | TejxType::Object(_)
+            | TejxType::Any => 0,
+            TejxType::Bool => 1,
+            TejxType::Int16 => 2,
+            TejxType::Int32 => 3,
+            TejxType::Int64 => 4,
+            TejxType::Float32 => 5,
+            TejxType::Float64 => 6,
+            TejxType::Char => 7,
+            _ => 255,
+        }
+    }
+
     fn is_null_like_value(value: &MIRValue) -> bool {
         matches!(value, MIRValue::Constant { value, .. } if value == "0")
     }
@@ -635,6 +654,7 @@ impl CodeGen {
         self.function_param_counts.clear();
         self.function_param_types.clear();
         self.declared_globals.clear();
+        self.global_types.clear();
 
         self.collect_object_shapes(functions);
 
@@ -669,6 +689,14 @@ impl CodeGen {
         // Collect and declare global variables
         let mut globals = HashSet::new();
         for func in functions {
+            for (name, ty) in &func.variables {
+                if name.starts_with("g_") {
+                    globals.insert(name.clone());
+                    self.global_types
+                        .entry(name.clone())
+                        .or_insert_with(|| ty.clone());
+                }
+            }
             for bb in &func.blocks {
                 for inst in &bb.instructions {
                     match inst {
@@ -716,12 +744,71 @@ impl CodeGen {
                 }
             }
         }
-        for g in globals {
-            if !self.declared_globals.contains(&g) {
+        let mut has_gc_globals = false;
+        for g in &globals {
+            if !self.declared_globals.contains(g) {
                 self.global_buffer
                     .push_str(&format!("@{} = global i64 0\n", g));
-                self.declared_globals.insert(g);
+                self.declared_globals.insert(g.clone());
             }
+            if self.is_gc_global(g) {
+                has_gc_globals = true;
+                let slot_name = Self::static_root_slot_name(g);
+                self.global_buffer
+                    .push_str(&format!("@{} = global i64 -1\n", slot_name));
+            }
+        }
+
+        if has_gc_globals {
+            self.declare_runtime_fn(
+                "rt_add_static_root_global",
+                "i64 @rt_add_static_root_global(i64)",
+            );
+            self.declare_runtime_fn(
+                "rt_get_static_root_global",
+                "i64 @rt_get_static_root_global(i64)",
+            );
+            self.declare_runtime_fn(
+                "rt_set_static_root_global",
+                "void @rt_set_static_root_global(i64, i64)",
+            );
+
+            self.global_buffer.push_str(
+                "define i64 @tejx_get_global_root(i64* %slot_ptr, i64* %value_ptr) nounwind {\n\
+entry:\n\
+  %slot0 = load i64, i64* %slot_ptr\n\
+  %ready0 = icmp sge i64 %slot0, 0\n\
+  br i1 %ready0, label %loaded, label %init\n\
+\n\
+init:\n\
+  %legacy = load i64, i64* %value_ptr\n\
+  %slot1 = call i64 @rt_add_static_root_global(i64 %legacy)\n\
+  store i64 %slot1, i64* %slot_ptr\n\
+  ret i64 %legacy\n\
+\n\
+loaded:\n\
+  %value = call i64 @rt_get_static_root_global(i64 %slot0)\n\
+  ret i64 %value\n\
+}\n",
+            );
+            self.global_buffer.push_str(
+                "define void @tejx_set_global_root(i64* %slot_ptr, i64* %value_ptr, i64 %value) nounwind {\n\
+entry:\n\
+  store i64 %value, i64* %value_ptr\n\
+  %slot0 = load i64, i64* %slot_ptr\n\
+  %ready0 = icmp sge i64 %slot0, 0\n\
+  br i1 %ready0, label %update, label %init\n\
+\n\
+init:\n\
+  %slot1 = call i64 @rt_add_static_root_global(i64 %value)\n\
+  store i64 %slot1, i64* %slot_ptr\n\
+  ret void\n\
+\n\
+update:\n\
+  call void @rt_set_static_root_global(i64 %slot0, i64 %value)\n\
+  ret void\n\
+}\n",
+            );
         }
 
         self.global_buffer
@@ -743,15 +830,25 @@ impl CodeGen {
         let mut init_type_buffer = String::new();
         init_type_buffer.push_str("define void @rt_init_types() {\n");
 
-        for (class_name, fields) in &self.class_fields {
+        let class_defs: Vec<(String, Vec<(String, TejxType)>)> = self
+            .class_fields
+            .iter()
+            .map(|(class_name, fields)| (class_name.clone(), fields.clone()))
+            .collect();
+
+        for (class_name, fields) in class_defs {
             let id = type_id;
             type_id += 1;
             self.type_id_map.insert(class_name.clone(), id);
 
             let mut ptr_offsets = Vec::new();
+            let mut field_offsets = Vec::new();
+            let mut field_kinds = Vec::new();
             let mut current_offset = 0;
-            for (_name, ty) in fields {
+            for (_name, ty) in &fields {
                 current_offset = Self::get_aligned_offset(current_offset, ty);
+                field_offsets.push(current_offset);
+                field_kinds.push(Self::stringify_field_kind(ty));
                 if Self::is_gc_managed(ty) {
                     ptr_offsets.push(current_offset);
                 }
@@ -785,7 +882,7 @@ impl CodeGen {
 
             // Check for finalizer
             let mut finalizer_ptr = "null".to_string();
-            if let Some(methods) = self.class_methods.get(class_name) {
+            if let Some(methods) = self.class_methods.get(&class_name) {
                 if methods.contains(&"finalize".to_string())
                     || methods.contains(&"~destructor".to_string())
                 {
@@ -805,6 +902,79 @@ impl CodeGen {
                 }
             }
 
+            let display_name = if class_name.starts_with("__objshape_") {
+                "object"
+            } else {
+                class_name.as_str()
+            };
+            let type_name_ptr = self.emit_string_constant(display_name);
+
+            let field_offsets_arr_name = format!("@type_{}_field_offsets", id);
+            if !field_offsets.is_empty() {
+                let offsets_str: Vec<String> =
+                    field_offsets.iter().map(|o| format!("i64 {}", o)).collect();
+                self.global_buffer.push_str(&format!(
+                    "{} = private constant [{} x i64] [{}]\n",
+                    field_offsets_arr_name,
+                    field_offsets.len(),
+                    offsets_str.join(", ")
+                ));
+            }
+
+            let field_kinds_arr_name = format!("@type_{}_field_kinds", id);
+            if !field_kinds.is_empty() {
+                let kinds_str: Vec<String> =
+                    field_kinds.iter().map(|k| format!("i8 {}", k)).collect();
+                self.global_buffer.push_str(&format!(
+                    "{} = private constant [{} x i8] [{}]\n",
+                    field_kinds_arr_name,
+                    field_kinds.len(),
+                    kinds_str.join(", ")
+                ));
+            }
+
+            let field_names_arr_name = format!("@type_{}_field_names", id);
+            if !fields.is_empty() {
+                let name_ptrs: Vec<String> = fields
+                    .iter()
+                    .map(|(name, _)| format!("i64 {}", self.emit_string_constant(name)))
+                    .collect();
+                self.global_buffer.push_str(&format!(
+                    "{} = private constant [{} x i64] [{}]\n",
+                    field_names_arr_name,
+                    fields.len(),
+                    name_ptrs.join(", ")
+                ));
+            }
+
+            let field_offsets_ptr = if field_offsets.is_empty() {
+                "null".to_string()
+            } else {
+                format!(
+                    "bitcast ([{} x i64]* {} to i64*)",
+                    field_offsets.len(),
+                    field_offsets_arr_name
+                )
+            };
+            let field_kinds_ptr = if field_kinds.is_empty() {
+                "null".to_string()
+            } else {
+                format!(
+                    "bitcast ([{} x i8]* {} to i8*)",
+                    field_kinds.len(),
+                    field_kinds_arr_name
+                )
+            };
+            let field_names_ptr = if fields.is_empty() {
+                "null".to_string()
+            } else {
+                format!(
+                    "bitcast ([{} x i64]* {} to i64*)",
+                    fields.len(),
+                    field_names_arr_name
+                )
+            };
+
             init_type_buffer.push_str(&format!(
                 "  call void @rt_register_type(i32 {}, i64 {}, i64 {}, i64* {}, i8* {})\n",
                 id,
@@ -813,6 +983,15 @@ impl CodeGen {
                 offsets_ptr,
                 finalizer_ptr
             ));
+            init_type_buffer.push_str(&format!(
+                "  call void @rt_register_type_info(i32 {}, i64 {}, i64 {}, i64* {}, i8* {}, i64* {})\n",
+                id,
+                type_name_ptr,
+                fields.len(),
+                field_offsets_ptr,
+                field_kinds_ptr,
+                field_names_ptr
+            ));
         }
         init_type_buffer.push_str("  ret void\n}\n");
         self.buffer.push_str(&init_type_buffer);
@@ -820,6 +999,10 @@ impl CodeGen {
         self.declare_runtime_fn(
             "rt_register_type",
             "void @rt_register_type(i32, i64, i64, i64*, i8*)",
+        );
+        self.declare_runtime_fn(
+            "rt_register_type_info",
+            "void @rt_register_type_info(i32, i64, i64, i64*, i8*, i64*)",
         );
 
         // Pre-declare commonly used runtime functions

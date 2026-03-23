@@ -1,0 +1,151 @@
+// System Tests
+// ============
+import std:system;
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+function hasKey(keys: string[], target: string): bool {
+    for (let i = 0; i < keys.length(); i = i + 1) {
+        if (keys[i] == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function hasValue(values: string[], target: string): bool {
+    for (let i = 0; i < values.length(); i = i + 1) {
+        if (values[i] == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function test_args_aliases() {
+    print("--- Args Test ---");
+    let topArgs = args();
+    let nsArgs = system.args();
+    assert_eq_int(1, topArgs.length(), "args count");
+    assert_eq_int(topArgs.length(), nsArgs.length(), "system.args length");
+    
+    assert_eq_string(topArgs[0], nsArgs[0], "system.args first arg");
+    assert_true(topArgs[0].length() > 0, "args[0] contains program path");
+    assert_true(topArgs[0].includes("system"), "args[0] contains executable name");
+}
+
+function test_env_aliases() {
+    print("--- Env Test ---");
+    let missingKey = "__TEJX_SYSTEM_TEST_MISSING_ENV__";
+    assert_eq_string("", getEnv(missingKey), "getEnv missing returns empty");
+    assert_eq_string("", system.getEnv(missingKey), "system.getEnv missing returns empty");
+
+    let allEnv: any = getAllEnv();
+    let nsAllEnv: any = system.getAllEnv();
+    let keys = Object.keys(allEnv);
+    let nsKeys = Object.keys(nsAllEnv);
+
+    assert_true(keys.length() > 0, "getAllEnv returns entries");
+    assert_eq_int(keys.length(), nsKeys.length(), "system.getAllEnv key count");
+
+    let firstKey = keys[0];
+    let topValue = allEnv[firstKey] as string;
+    let nsValue = nsAllEnv[firstKey] as string;
+
+    assert_eq_string(topValue, getEnv(firstKey), "getAllEnv value matches getEnv");
+    assert_eq_string(topValue, system.getEnv(firstKey), "system.getEnv alias");
+    assert_eq_string(topValue, nsValue, "system.getAllEnv value matches");
+}
+
+function test_os_level_envs() {
+    print("--- OS Level Test ---");
+    let allEnv: any = getAllEnv();
+    let nsAllEnv: any = system.getAllEnv();
+    let osAllEnv: any = os.getAllEnv();
+    let keys = Object.keys(allEnv);
+
+    assert_true(hasKey(keys, "PATH"), "OS PATH env exists");
+
+    let pathValue = getEnv("PATH");
+    let nsPathValue = system.getEnv("PATH");
+    let osPathValue = os.getEnv("PATH");
+    assert_true(pathValue.length() > 0, "PATH has content");
+    assert_eq_string(pathValue, nsPathValue, "system.getEnv PATH alias");
+    assert_eq_string(pathValue, osPathValue, "os.getEnv PATH alias");
+    assert_eq_string(pathValue, allEnv["PATH"] as string, "getAllEnv PATH matches");
+    assert_eq_string(pathValue, nsAllEnv["PATH"] as string, "system.getAllEnv PATH matches");
+    assert_eq_string(pathValue, osAllEnv["PATH"] as string, "os.getAllEnv PATH matches");
+
+    let homeValue = getEnv("HOME");
+    if (homeValue.length() > 0) {
+        assert_eq_string(homeValue, allEnv["HOME"] as string, "getAllEnv HOME matches");
+    }
+}
+
+function test_os_info() {
+    print("--- OS Info Test ---");
+
+    let osType = getOSType();
+    let nsOsType = system.getOSType();
+    let osNsType = os.getType();
+    let validTypes = ["macos", "linux", "windows", "android", "ios", "freebsd", "dragonfly", "openbsd", "netbsd"];
+    assert_true(osType.length() > 0, "OS type has content");
+    assert_true(hasValue(validTypes, osType), "OS type is recognized");
+    assert_eq_string(osType, nsOsType, "system.getOSType alias");
+    assert_eq_string(osType, osNsType, "os.getType alias");
+
+    let osArch = getOSArch();
+    let nsOsArch = system.getOSArch();
+    let osNsArch = os.getArch();
+    let validArch = ["aarch64", "x86_64", "x86", "arm", "riscv64", "powerpc64", "s390x"];
+    assert_true(osArch.length() > 0, "OS arch has content");
+    assert_true(hasValue(validArch, osArch), "OS arch is recognized");
+    assert_eq_string(osArch, nsOsArch, "system.getOSArch alias");
+    assert_eq_string(osArch, osNsArch, "os.getArch alias");
+
+    let cwd = getCwd();
+    let nsCwd = system.getCwd();
+    let osNsCwd = os.getCwd();
+    assert_true(cwd.length() > 0, "cwd has content");
+    assert_true(cwd.includes("tejx-lang"), "cwd points at repo");
+    assert_eq_string(cwd, nsCwd, "system.getCwd alias");
+    assert_eq_string(cwd, osNsCwd, "os.getCwd alias");
+
+    let homeDir = getHomeDir();
+    let nsHomeDir = system.getHomeDir();
+    let osNsHomeDir = os.getHomeDir();
+    assert_true(homeDir.length() > 0, "home dir has content");
+    assert_eq_string(homeDir, nsHomeDir, "system.getHomeDir alias");
+    assert_eq_string(homeDir, osNsHomeDir, "os.getHomeDir alias");
+    let homeEnv = getEnv("HOME");
+    if (homeEnv.length() > 0) {
+        assert_eq_string(homeEnv, homeDir, "home dir matches HOME");
+    }
+
+    let tempDir = getTempDir();
+    let nsTempDir = system.getTempDir();
+    let osNsTempDir = os.getTempDir();
+    assert_true(tempDir.length() > 0, "temp dir has content");
+    assert_eq_string(tempDir, nsTempDir, "system.getTempDir alias");
+    assert_eq_string(tempDir, osNsTempDir, "os.getTempDir alias");
+
+    let tmpEnv = getEnv("TMPDIR");
+    if (tmpEnv.length() > 0) {
+        assert_eq_string(tmpEnv, tempDir, "temp dir matches TMPDIR");
+    }
+
+    let hostname = getHostname();
+    let nsHostname = system.getHostname();
+    let osNsHostname = os.getHostname();
+    assert_true(hostname.length() > 0, "hostname has content");
+    assert_eq_string(hostname, nsHostname, "system.getHostname alias");
+    assert_eq_string(hostname, osNsHostname, "os.getHostname alias");
+}
+
+function main() {
+    print("=== SYSTEM TESTS START ===");
+    test_args_aliases();
+    test_env_aliases();
+    test_os_level_envs();
+    test_os_info();
+    print("=== SYSTEM TESTS COMPLETE ===");
+}

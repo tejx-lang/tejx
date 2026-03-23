@@ -1,0 +1,61 @@
+import "./internal.tx";
+
+export function abs(x: float): float {
+    return _math_abs(x);
+}
+
+export function min(a: float, b: float): float {
+    return _math_min(a, b);
+}
+
+export function max(a: float, b: float): float {
+    return _math_max(a, b);
+}
+
+export function clamp(value: float, lower: float, upper: float): float {
+    return _math_clamp(value, lower, upper);
+}
+
+export function sign(value: float): int {
+    return _math_sign(value);
+}
+
+export function lerp(start: float, end: float, amount: float): float {
+    return _math_lerp(start, end, amount);
+}
+
+export function trunc(x: float): float {
+    return _math_trunc(x);
+}
+
+export function floor(x: float): float {
+    return _math_floor(x);
+}
+
+export function ceil(x: float): float {
+    return _math_ceil(x);
+}
+
+export function round(x: float): float {
+    return _math_round(x);
+}
+
+export function sqrt(x: float): float {
+    return _math_sqrt(x);
+}
+
+export function exp(x: float): float {
+    return _math_exp(x);
+}
+
+export function ln(x: float): float {
+    return _math_ln(x);
+}
+
+export function pow(base: float, exponent: float): float {
+    return _math_pow(base, exponent);
+}
+
+export function powi(base: float, exponent: int): float {
+    return _math_powi(base, exponent);
+}

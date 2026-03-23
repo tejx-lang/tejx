@@ -19,8 +19,8 @@ if [ $? -eq 0 ]; then
     PROFILE_DIR="$SCRIPT_DIR/target/release"
     [ ! -d "$PROFILE_DIR" ] && PROFILE_DIR="$SCRIPT_DIR/target/debug"
 
-    # Find libtejx_rt*.a in deps/ and copy it to a predictable location
-    RT_FILE=$(find "$PROFILE_DIR/deps" -name "libtejx_rt*.a" | head -n 1)
+    # Find the newest libtejx_rt*.a in deps/ and copy it to a predictable location
+    RT_FILE=$(ls -t "$PROFILE_DIR"/deps/libtejx_rt*.a 2>/dev/null | head -n 1)
     if [ -n "$RT_FILE" ]; then
         cp "$RT_FILE" "$PROFILE_DIR/tejx_rt.a"
         echo "   Runtime: $PROFILE_DIR/tejx_rt.a"

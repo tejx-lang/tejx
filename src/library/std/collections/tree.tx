@@ -1,0 +1,114 @@
+class StdTrieNode {
+    children: Map<string, StdTrieNode>;
+    hasValue: bool;
+    value: int;
+
+    constructor() {
+        this.children = new Map<string, StdTrieNode>();
+        this.hasValue = false;
+        this.value = 0;
+    }
+}
+
+export class Trie {
+    private root: StdTrieNode;
+    private entryCount: int;
+
+    constructor() {
+        this.root = new StdTrieNode();
+        this.entryCount = 0;
+    }
+
+    private walk(path: string): Optional<StdTrieNode> {
+        let current = this.root;
+        for (let i = 0; i < path.length(); i++) {
+            let ch = path[i];
+            let next: Optional<StdTrieNode> = current.children.get(ch);
+            if (next == None) return None;
+            current = next as StdTrieNode;
+        }
+        return current;
+    }
+
+    private collect(node: StdTrieNode, prefix: string, out: string[]): void {
+        if (node.hasValue) {
+            out.push(prefix);
+        }
+
+        node.children.forEach((child: StdTrieNode, key: string) => {
+            this.collect(child, prefix + key, out);
+        });
+    }
+
+    set(key: string, val: int): void {
+        let current = this.root;
+        for (let i = 0; i < key.length(); i++) {
+            let ch = key[i];
+            let next: Optional<StdTrieNode> = current.children.get(ch);
+            if (next == None) {
+                let created = new StdTrieNode();
+                current.children.set(ch, created);
+                current = created;
+            } else {
+                current = next as StdTrieNode;
+            }
+        }
+
+        if (!current.hasValue) {
+            this.entryCount = this.entryCount + 1;
+        }
+        current.hasValue = true;
+        current.value = val;
+    }
+
+    addPath(key: string, val: int): void {
+        this.set(key, val);
+    }
+
+    get(key: string): int {
+        let node: Optional<StdTrieNode> = this.walk(key);
+        if (node == None || !(node as StdTrieNode).hasValue) return 0;
+        return (node as StdTrieNode).value;
+    }
+
+    find(key: string): int {
+        return this.get(key);
+    }
+
+    has(key: string): bool {
+        let node: Optional<StdTrieNode> = this.walk(key);
+        return node != None && (node as StdTrieNode).hasValue;
+    }
+
+    startsWith(prefix: string): bool {
+        return this.walk(prefix) != None;
+    }
+
+    delete(key: string): bool {
+        let node: Optional<StdTrieNode> = this.walk(key);
+        if (node == None || !(node as StdTrieNode).hasValue) return false;
+        (node as StdTrieNode).hasValue = false;
+        (node as StdTrieNode).value = 0;
+        this.entryCount = this.entryCount - 1;
+        return true;
+    }
+
+    remove(key: string): bool {
+        return this.delete(key);
+    }
+
+    keys(): string[] {
+        let out: string[] = [];
+        this.collect(this.root, "", out);
+        return out;
+    }
+
+    clear(): void {
+        this.root = new StdTrieNode();
+        this.entryCount = 0;
+    }
+
+    size(): int {
+        return this.entryCount;
+    }
+}

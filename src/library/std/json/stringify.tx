@@ -1,0 +1,136 @@
+function _json_escape_string(str: string): string {
+    let res = "\"";
+    let len = str.length();
+    for (let i = 0; i < len; i++) {
+        let ch = str[i];
+        if (ch == "\"") res = res + "\\\"";
+        else if (ch == "\\") res = res + "\\\\";
+        else if (ch == "\b") res = res + "\\b";
+        else if (ch == "\f") res = res + "\\f";
+        else if (ch == "\n") res = res + "\\n";
+        else if (ch == "\r") res = res + "\\r";
+        else if (ch == "\t") res = res + "\\t";
+        else res = res + ch;
+    }
+    return res + "\"";
+}
+
+function _json_serialize(val: any, out: string[], seen: any[], indent: string, gap: string): void {
+    if (typeof(val) == "object" && val != None) {
+        if (typeof(val["toJSON"]) == "function") {
+            val = val.toJSON();
+        }
+    }
+
+    if (val == None) {
+        out.push("null");
+        return;
+    }
+
+    let ty = typeof(val);
+    if (ty == "string") {
+        out.push(_json_escape_string(val as string));
+        return;
+    }
+    if (ty == "int" || ty == "float" || ty == "bool") {
+        out.push(rt_to_string(val));
+        return;
+    }
+
+    if (ty == "object" || rt_is_array(val)) {
+        let seenLen = seen.length();
+        for (let i = 0; i < seenLen; i++) {
+            if (seen[i] == val) {
+                out.push("\"[Circular Reference]\"");
+                return;
+            }
+        }
+        seen.push(val);
+    }
+
+    let step = indent + gap;
+    let isPretty = gap.length() > 0;
+
+    if (rt_is_array(val)) {
+        let arr = val as any[];
+        let len = arr.length();
+        if (len == 0) {
+            out.push("[]");
+        } else {
+            out.push("[");
+            if (isPretty) out.push("\n");
+            for (let i = 0; i < len; i++) {
+                if (isPretty) out.push(step);
+                _json_serialize(arr[i], out, seen, step, gap);
+                if (i < len - 1) {
+                    out.push(",");
+                    if (isPretty) out.push("\n");
+                }
+            }
+            if (isPretty) {
+                out.push("\n");
+                out.push(indent);
+            }
+            out.push("]");
+        }
+        seen.pop();
+        return;
+    }
+
+    if (ty == "object") {
+        let keys = Object.keys(val);
+        let len = keys.length();
+        if (len == 0) {
+            out.push("{}");
+        } else {
+            out.push("{");
+            if (isPretty) out.push("\n");
+            let added = false;
+            for (let i = 0; i < len; i++) {
+                let key = keys[i];
+                if (key == "toString" || key == "constructor" || key == "__proto__") continue;
+
+                let childVal: any = val[key];
+                if (typeof(childVal) == "function" || childVal == undefined) continue;
+
+                if (added) {
+                    out.push(",");
+                    if (isPretty) out.push("\n");
+                }
+
+                if (isPretty) out.push(step);
+                out.push(_json_escape_string(key));
+                out.push(isPretty ? ": " : ":");
+                _json_serialize(childVal, out, seen, step, gap);
+                added = true;
+            }
+            if (isPretty && added) {
+                out.push("\n");
+                out.push(indent);
+            }
+            out.push("}");
+        }
+        seen.pop();
+        return;
+    }
+
+    out.push("null");
+}
+
+function _json_stringify(val: any, space: any): string {
+    let out: string[] = [];
+    let seen: any[] = [];
+    let gap = "";
+
+    if (typeof(space) == "number") {
+        let spaces = space as float;
+        if (spaces > 10) spaces = 10;
+        for (let i = 0; i < spaces; i++) gap = gap + " ";
+    } else if (typeof(space) == "string") {
+        gap = space as string;
+        if (gap.length() > 10) gap = gap.substring(0, 10);
+    }
+
+    _json_serialize(val, out, seen, "", gap);
+    return out.join("");
+}

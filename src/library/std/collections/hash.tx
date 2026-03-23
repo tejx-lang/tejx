@@ -1,0 +1,626 @@
+extern function rt_String_charCodeAt(s: string, index: int): int;
+
+export class MapEntry<K, V> {
+    key: K;
+    value: V;
+
+    constructor(key: K, value: V) {
+        this.key = key;
+        this.value = value;
+    }
+}
+
+export class Map<K, V> {
+    private keysStore: K[];
+    private valuesStore: V[];
+    private hashStore: int[];
+    private liveStore: bool[];
+    private buckets: int[];
+    private bucketMask: int;
+    private growthLimit: int;
+    private storageCount: int;
+    private storeCapacity: int;
+    private liveCount: int;
+    private tombstoneCount: int;
+    private reservedStoreCapacity: int;
+    private keyMode: int;
+
+    constructor() {
+        this.keysStore = [];
+        this.valuesStore = [];
+        this.hashStore = [];
+        this.liveStore = [];
+        this.buckets = [];
+        this.bucketMask = 0;
+        this.growthLimit = 0;
+        this.storageCount = 0;
+        this.storeCapacity = 0;
+        this.liveCount = 0;
+        this.tombstoneCount = 0;
+        this.reservedStoreCapacity = 0;
+        this.keyMode = 0;
+        this.resetBuckets(8);
+    }
+
+    private normalizeCapacity(minCapacity: int): int {
+        let capacity = 8;
+        let target = minCapacity;
+        if (target < 8) target = 8;
+        while (capacity < target) {
+            capacity = capacity << 1;
+        }
+        return capacity;
+    }
+
+    private resetBuckets(capacity: int): void {
+        let nextCapacity = this.normalizeCapacity(capacity);
+        this.buckets = rt_array_new<int>(nextCapacity, 4);
+        this.bucketMask = nextCapacity - 1;
+        this.growthLimit = (nextCapacity * 7) / 10;
+        this.tombstoneCount = 0;
+    }
+
+    private normalizeHash(hash: int): int {
+        return hash & 2147483647;
+    }
+
+    private hashInt(value: int): int {
+        return value & 2147483647;
+    }
+
+    private hashString(value: string): int {
+        let hash = 5381;
+        let length = value.length();
+        for (let i = 0; i < length; i++) {
+            let code = rt_String_charCodeAt(value, i);
+            hash = (((hash << 5) + hash) ^ code) & 2147483647;
+        }
+        return this.normalizeHash(hash);
+    }
+
+    private detectKeyMode(key: K): int {
+        let kind = typeof(key);
+        if (kind == "int" || kind == "int32" || kind == "int64") return 1;
+        if (kind == "bool") return 2;
+        if (kind == "string") return 3;
+        if (kind == "char") return 4;
+        return 5;
+    }
+
+    private hashKey(key: K): int {
+        let mode = this.keyMode;
+        if (mode == 0) {
+            mode = this.detectKeyMode(key);
+            this.keyMode = mode;
+        }
+
+        if (mode == 1) {
+            return this.hashInt(key as int);
+        }
+        if (mode == 2) {
+            return (key as bool) ? 1 : 0;
+        }
+        if (mode == 3) {
+            return this.hashString(key as string);
+        }
+        if (mode == 4) return this.hashString(rt_to_string(key));
+        return this.hashString(rt_to_string(key));
+    }
+
+    private targetStoreCapacity(minCapacity: int): int {
+        if (this.reservedStoreCapacity > minCapacity) {
+            return this.reservedStoreCapacity;
+        }
+        return minCapacity;
+    }
+
+    private firstLiveIndex(): int {
+        for (let i = 0; i < this.storageCount; i++) {
+            if (this.liveStore[i]) return i;
+        }
+        return -1;
+    }
+
+    private ensureStoreCapacity(required: int, keySample: K, valueSample: V): void {
+        let target = this.targetStoreCapacity(required);
+        if (target <= 0 || this.storeCapacity >= target) return;
+
+        if (this.storeCapacity == 0) {
+            this.keysStore = rt_array_new<K>(target, sizeof(keySample));
+            this.valuesStore = rt_array_new<V>(target, sizeof(valueSample));
+            this.hashStore = rt_array_new<int>(target, 4);
+            this.liveStore = rt_array_new<bool>(target, 1);
+            this.storeCapacity = target;
+            return;
+        }
+
+        this.keysStore = rt_array_ensure_capacity<K>(this.keysStore, target);
+        this.valuesStore = rt_array_ensure_capacity<V>(this.valuesStore, target);
+        this.hashStore = rt_array_ensure_capacity<int>(this.hashStore, target);
+        this.liveStore = rt_array_ensure_capacity<bool>(this.liveStore, target);
+        this.storeCapacity = target;
+    }
+
+    private deletedEntryCount(): int {
+        return this.storageCount - this.liveCount;
+    }
+
+    private shouldCompactStorage(): bool {
+        return this.storageCount > 64 && this.deletedEntryCount() > this.liveCount;
+    }
+
+    private compactStorage(): void {
+        if (this.liveCount == 0) {
+            this.keysStore = [];
+            this.valuesStore = [];
+            this.hashStore = [];
+            this.liveStore = [];
+            this.storageCount = 0;
+            this.storeCapacity = 0;
+            this.keyMode = 0;
+            return;
+        }
+
+        let firstLive = this.firstLiveIndex();
+        if (firstLive < 0) {
+            this.keysStore = [];
+            this.valuesStore = [];
+            this.hashStore = [];
+            this.liveStore = [];
+            this.storageCount = 0;
+            this.storeCapacity = 0;
+            this.keyMode = 0;
+            return;
+        }
+
+        let nextCapacity = this.targetStoreCapacity(this.liveCount);
+        let nextKeys = rt_array_new<K>(nextCapacity, sizeof(this.keysStore[firstLive]));
+        let nextValues = rt_array_new<V>(nextCapacity, sizeof(this.valuesStore[firstLive]));
+        let nextHashes = rt_array_new<int>(nextCapacity, 4);
+        let nextLive = rt_array_new<bool>(nextCapacity, 1);
+        let nextIndex = 0;
+
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            nextKeys[nextIndex] = this.keysStore[i];
+            nextValues[nextIndex] = this.valuesStore[i];
+            nextHashes[nextIndex] = this.hashStore[i];
+            nextLive[nextIndex] = true;
+            nextIndex = nextIndex + 1;
+        }
+
+        this.keysStore = nextKeys;
+        this.valuesStore = nextValues;
+        this.hashStore = nextHashes;
+        this.liveStore = nextLive;
+        this.storageCount = nextIndex;
+        this.storeCapacity = nextCapacity;
+    }
+
+    private shouldGrow(nextCount: int): bool {
+        return nextCount + this.tombstoneCount >= this.growthLimit;
+    }
+
+    private shouldShrink(): bool {
+        let capacity = this.buckets.length();
+        if (capacity <= 8) return false;
+        return this.liveCount * 10 <= capacity * 2;
+    }
+
+    private rebuildBuckets(capacity: int): void {
+        this.resetBuckets(capacity);
+        let bucketCapacity = this.buckets.length();
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            let index = this.hashStore[i] & this.bucketMask;
+            for (let probed = 0; probed < bucketCapacity; probed++) {
+                if (this.buckets[index] == 0) {
+                    this.buckets[index] = i + 1;
+                    break;
+                }
+                index = index + 1;
+                if (index == bucketCapacity) index = 0;
+            }
+        }
+    }
+
+    private rehash(capacity: int): void {
+        if (this.shouldCompactStorage()) {
+            this.compactStorage();
+        }
+        this.rebuildBuckets(capacity);
+    }
+
+    reserve(entries: int): void {
+        if (entries <= 0) return;
+        if (entries > this.reservedStoreCapacity) {
+            this.reservedStoreCapacity = entries;
+        }
+
+        let firstLive = this.firstLiveIndex();
+        if (firstLive >= 0) {
+            this.ensureStoreCapacity(entries, this.keysStore[firstLive], this.valuesStore[firstLive]);
+        }
+
+        let desired = ((entries * 10) / 7) + 1;
+        let capacity = this.normalizeCapacity(desired);
+        if (capacity > this.buckets.length() || this.tombstoneCount > 0) {
+            this.rehash(capacity);
+        }
+    }
+
+    shrinkToFit(): void {
+        if (this.liveCount == 0) {
+            this.keysStore = [];
+            this.valuesStore = [];
+            this.hashStore = [];
+            this.liveStore = [];
+            this.storageCount = 0;
+            this.storeCapacity = 0;
+            this.reservedStoreCapacity = 0;
+            this.keyMode = 0;
+            this.resetBuckets(8);
+            return;
+        }
+        this.reservedStoreCapacity = this.liveCount;
+        this.compactStorage();
+        let desired = ((this.liveCount * 10) / 7) + 1;
+        this.rebuildBuckets(desired);
+    }
+
+    set(key: K, val: V): void {
+        let hash = this.hashKey(key);
+        if (this.shouldGrow(this.liveCount + 1)) {
+            this.rehash(this.buckets.length() * 2);
+        }
+
+        let capacity = this.buckets.length();
+        let index = hash & this.bucketMask;
+        let firstDeleted = -1;
+        let bucket = -1;
+
+        for (let probed = 0; probed < capacity; probed++) {
+            let slot = this.buckets[index];
+            if (slot == 0) {
+                bucket = firstDeleted >= 0 ? firstDeleted : index;
+                break;
+            }
+            if (slot > 0) {
+                let entryIndex = slot - 1;
+                if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
+                    this.valuesStore[entryIndex] = val;
+                    return;
+                }
+            } else if (firstDeleted < 0) {
+                firstDeleted = index;
+            }
+
+            index = index + 1;
+            if (index == capacity) index = 0;
+        }
+
+        if (bucket < 0) {
+            this.rehash(capacity * 2);
+            capacity = this.buckets.length();
+            index = hash & this.bucketMask;
+            firstDeleted = -1;
+            for (let probed = 0; probed < capacity; probed++) {
+                let slot = this.buckets[index];
+                if (slot == 0) {
+                    bucket = firstDeleted >= 0 ? firstDeleted : index;
+                    break;
+                }
+                if (slot > 0) {
+                    let entryIndex = slot - 1;
+                    if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
+                        this.valuesStore[entryIndex] = val;
+                        return;
+                    }
+                } else if (firstDeleted < 0) {
+                    firstDeleted = index;
+                }
+
+                index = index + 1;
+                if (index == capacity) index = 0;
+            }
+        }
+
+        if (this.buckets[bucket] < 0) {
+            this.tombstoneCount = this.tombstoneCount - 1;
+        }
+
+        if (this.storageCount == this.storeCapacity) {
+            this.ensureStoreCapacity(this.storageCount + 1, key, val);
+        }
+
+        let entryIndex = this.storageCount;
+        this.keysStore[entryIndex] = key;
+        this.valuesStore[entryIndex] = val;
+        this.hashStore[entryIndex] = hash;
+        this.liveStore[entryIndex] = true;
+        this.storageCount = this.storageCount + 1;
+        this.buckets[bucket] = entryIndex + 1;
+        this.liveCount = this.liveCount + 1;
+    }
+
+    put(key: K, val: V): void {
+        this.set(key, val);
+    }
+
+    get(key: K): V {
+        let hash = this.hashKey(key);
+        let capacity = this.buckets.length();
+        let index = hash & this.bucketMask;
+
+        for (let probed = 0; probed < capacity; probed++) {
+            let slot = this.buckets[index];
+            if (slot == 0) return None;
+            if (slot > 0) {
+                let entryIndex = slot - 1;
+                if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
+                    return this.valuesStore[entryIndex];
+                }
+            }
+            index = index + 1;
+            if (index == capacity) index = 0;
+        }
+
+        return None;
+    }
+
+    at(key: K): V {
+        return this.get(key);
+    }
+
+    getOrDefault(key: K, fallback: V): V {
+        let hash = this.hashKey(key);
+        let capacity = this.buckets.length();
+        let index = hash & this.bucketMask;
+
+        for (let probed = 0; probed < capacity; probed++) {
+            let slot = this.buckets[index];
+            if (slot == 0) return fallback;
+            if (slot > 0) {
+                let entryIndex = slot - 1;
+                if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
+                    return this.valuesStore[entryIndex];
+                }
+            }
+            index = index + 1;
+            if (index == capacity) index = 0;
+        }
+
+        return fallback;
+    }
+
+    has(key: K): bool {
+        let hash = this.hashKey(key);
+        let capacity = this.buckets.length();
+        let index = hash & this.bucketMask;
+
+        for (let probed = 0; probed < capacity; probed++) {
+            let slot = this.buckets[index];
+            if (slot == 0) return false;
+            if (slot > 0) {
+                let entryIndex = slot - 1;
+                if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
+                    return true;
+                }
+            }
+            index = index + 1;
+            if (index == capacity) index = 0;
+        }
+
+        return false;
+    }
+
+    delete(key: K): bool {
+        let hash = this.hashKey(key);
+        let capacity = this.buckets.length();
+        let index = hash & this.bucketMask;
+        let bucket = -1;
+
+        for (let probed = 0; probed < capacity; probed++) {
+            let slot = this.buckets[index];
+            if (slot == 0) return false;
+            if (slot > 0) {
+                let entryIndex = slot - 1;
+                if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
+                    bucket = index;
+                    break;
+                }
+            }
+            index = index + 1;
+            if (index == capacity) index = 0;
+        }
+
+        if (bucket < 0) return false;
+
+        let entryIndex = this.buckets[bucket] - 1;
+        this.buckets[bucket] = -1;
+        this.liveStore[entryIndex] = false;
+        this.liveCount = this.liveCount - 1;
+        this.tombstoneCount = this.tombstoneCount + 1;
+
+        if (this.liveCount == 0) {
+            this.keysStore = [];
+            this.valuesStore = [];
+            this.hashStore = [];
+            this.liveStore = [];
+            this.storageCount = 0;
+            this.storeCapacity = 0;
+            this.keyMode = 0;
+            this.resetBuckets(8);
+            return true;
+        }
+
+        if (this.shouldCompactStorage()) {
+            this.compactStorage();
+            this.rebuildBuckets(this.buckets.length());
+            return true;
+        }
+
+        if (this.tombstoneCount > this.liveCount || this.shouldShrink()) {
+            let nextCapacity = this.shouldShrink()
+                ? this.normalizeCapacity(this.buckets.length() / 2)
+                : this.buckets.length();
+            this.rehash(nextCapacity);
+        }
+
+        return true;
+    }
+
+    remove(key: K): bool {
+        return this.delete(key);
+    }
+
+    clear(): void {
+        let capacity = this.buckets.length();
+        this.keysStore = [];
+        this.valuesStore = [];
+        this.hashStore = [];
+        this.liveStore = [];
+        this.storageCount = 0;
+        this.storeCapacity = 0;
+        this.liveCount = 0;
+        this.tombstoneCount = 0;
+        this.keyMode = 0;
+        this.resetBuckets(capacity);
+    }
+
+    keys(): K[] {
+        let out: K[] = [];
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            out.push(this.keysStore[i]);
+        }
+        return out;
+    }
+
+    values(): V[] {
+        let out: V[] = [];
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            out.push(this.valuesStore[i]);
+        }
+        return out;
+    }
+
+    entries(): MapEntry<K, V>[] {
+        let out: MapEntry<K, V>[] = [];
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            out.push(new MapEntry(this.keysStore[i], this.valuesStore[i]));
+        }
+        return out;
+    }
+
+    forEach(callback: (value: V, key: K, index: int) => void): void {
+        let index = 0;
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            callback(this.valuesStore[i], this.keysStore[i], index);
+            index = index + 1;
+        }
+    }
+
+    clone(): Map<K, V> {
+        let out = new Map<K, V>();
+        out.reserve(this.liveCount);
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            out.set(this.keysStore[i], this.valuesStore[i]);
+        }
+        return out;
+    }
+
+    size(): int {
+        return this.liveCount;
+    }
+
+    isEmpty(): bool {
+        return this.liveCount == 0;
+    }
+}
+
+export class Set<T> {
+    private items: Map<T, bool>;
+
+    constructor() {
+        this.items = new Map<T, bool>();
+    }
+
+    add(val: T): void {
+        this.items.set(val, true);
+    }
+
+    reserve(entries: int): void {
+        this.items.reserve(entries);
+    }
+
+    shrinkToFit(): void {
+        this.items.shrinkToFit();
+    }
+
+    has(val: T): bool {
+        return this.items.has(val);
+    }
+
+    contains(val: T): bool {
+        return this.has(val);
+    }
+
+    delete(val: T): bool {
+        return this.items.delete(val);
+    }
+
+    remove(val: T): bool {
+        return this.delete(val);
+    }
+
+    values(): T[] {
+        return this.items.keys();
+    }
+
+    keys(): T[] {
+        return this.values();
+    }
+
+    entries(): any[] {
+        let out: any[] = [];
+        let values = this.values();
+        for (let i = 0; i < values.length(); i++) {
+            out.push({ key: values[i], value: values[i] });
+        }
+        return out;
+    }
+
+    forEach(callback: (value: T, index: int) => void): void {
+        let values = this.values();
+        for (let i = 0; i < values.length(); i++) {
+            callback(values[i], i);
+        }
+    }
+
+    toArray(): T[] {
+        return this.values();
+    }
+
+    clone(): Set<T> {
+        let out = new Set<T>();
+        this.forEach((value: T) => { out.add(value); });
+        return out;
+    }
+
+    size(): int {
+        return this.items.size();
+    }
+
+    isEmpty(): bool {
+        return this.items.isEmpty();
+    }
+
+    clear(): void {
+        this.items.clear();
+    }
+}

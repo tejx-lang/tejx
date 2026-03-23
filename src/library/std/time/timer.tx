@@ -1,0 +1,35 @@
+export class Timeout {
+    private id: int;
+
+    constructor(callback: () => void, ms: int64) {
+        this.id = _time_set_timeout(callback, ms);
+    }
+
+    cancel(): void {
+        if (this.id == 0) return;
+        _time_clear_timeout(this.id);
+        this.id = 0;
+    }
+
+    isActive(): bool {
+        return this.id != 0;
+    }
+}
+
+export class Interval {
+    private id: int;
+
+    constructor(callback: () => void, ms: int64) {
+        this.id = _time_set_interval(callback, ms);
+    }
+
+    cancel(): void {
+        if (this.id == 0) return;
+        _time_clear_interval(this.id);
+        this.id = 0;
+    }
+
+    isActive(): bool {
+        return this.id != 0;
+    }
+}

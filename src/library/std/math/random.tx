@@ -1,0 +1,13 @@
+import "./internal.tx";
+
+export function seedRandom(seed: int64): void {
+    _math_seed_random(seed);
+}
+
+export function random(): float {
+    return _math_random();
+}
+
+export function randomInt(lower: int, upper: int): int {
+    return _math_random_int(lower, upper);
+}

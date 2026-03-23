@@ -56,8 +56,12 @@ pub mod stdlib {
 
             // System
             modules.insert("system".to_string(), HashSet::from([
-                "args".to_string(), "exit".to_string(), "env".to_string(),
-                "argv".to_string(), "os".to_string(), "system".to_string(),
+                "args".to_string(), "exit".to_string(), "getEnv".to_string(),
+                "getAllEnv".to_string(),
+                "getOSType".to_string(), "getOSArch".to_string(),
+                "getCwd".to_string(), "getHomeDir".to_string(),
+                "getTempDir".to_string(), "getHostname".to_string(),
+                "os".to_string(), "system".to_string(),
             ]));
 
             // Time

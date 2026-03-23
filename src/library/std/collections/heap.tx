@@ -1,0 +1,219 @@
+export class MinHeap<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    insert(val: T): void {
+        this.items.push(val);
+        this.bubbleUp(this.items.length() - 1);
+    }
+
+    peek(): T {
+        if (this.items.length() == 0) return None;
+        return this.items[0];
+    }
+
+    extractMin(): T {
+        if (this.items.length() == 0) return None;
+        if (this.items.length() == 1) return this.items.pop();
+
+        let min: T = this.items[0];
+        this.items[0] = this.items.pop();
+        this.bubbleDown(0);
+        return min;
+    }
+
+    clear(): void {
+        this.items = [];
+    }
+
+    toArray(): T[] {
+        let out: T[] = [];
+        for (let i = 0; i < this.items.length(); i++) {
+            out.push(this.items[i]);
+        }
+        return out;
+    }
+
+    private bubbleUp(index: int): void {
+        while (index > 0) {
+            let parent = (index - 1) / 2;
+            if (this.items[index] < this.items[parent]) {
+                this.swap(index, parent);
+                index = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    private bubbleDown(index: int): void {
+        while (true) {
+            let left = 2 * index + 1;
+            let right = 2 * index + 2;
+            let smallest = index;
+
+            if (left < this.items.length() && this.items[left] < this.items[smallest]) {
+                smallest = left;
+            }
+            if (right < this.items.length() && this.items[right] < this.items[smallest]) {
+                smallest = right;
+            }
+
+            if (smallest != index) {
+                this.swap(index, smallest);
+                index = smallest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    private swap(left: int, right: int): void {
+        let temp: T = this.items[left];
+        this.items[left] = this.items[right];
+        this.items[right] = temp;
+    }
+
+    size(): int {
+        return this.items.length();
+    }
+
+    isEmpty(): bool {
+        return this.items.length() == 0;
+    }
+}
+
+export class MaxHeap<T> {
+    private items: T[];
+
+    constructor() {
+        this.items = [];
+    }
+
+    insert(val: T): void {
+        this.items.push(val);
+        this.bubbleUp(this.items.length() - 1);
+    }
+
+    insertMax(val: T): void {
+        this.insert(val);
+    }
+
+    peek(): T {
+        if (this.items.length() == 0) return None;
+        return this.items[0];
+    }
+
+    extractMax(): T {
+        if (this.items.length() == 0) return None;
+        if (this.items.length() == 1) return this.items.pop();
+
+        let max: T = this.items[0];
+        this.items[0] = this.items.pop();
+        this.bubbleDown(0);
+        return max;
+    }
+
+    clear(): void {
+        this.items = [];
+    }
+
+    toArray(): T[] {
+        let out: T[] = [];
+        for (let i = 0; i < this.items.length(); i++) {
+            out.push(this.items[i]);
+        }
+        return out;
+    }
+
+    private bubbleUp(index: int): void {
+        while (index > 0) {
+            let parent = (index - 1) / 2;
+            if (this.items[index] > this.items[parent]) {
+                this.swap(index, parent);
+                index = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    private bubbleDown(index: int): void {
+        while (true) {
+            let left = 2 * index + 1;
+            let right = 2 * index + 2;
+            let largest = index;
+
+            if (left < this.items.length() && this.items[left] > this.items[largest]) {
+                largest = left;
+            }
+            if (right < this.items.length() && this.items[right] > this.items[largest]) {
+                largest = right;
+            }
+
+            if (largest != index) {
+                this.swap(index, largest);
+                index = largest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    private swap(left: int, right: int): void {
+        let temp: T = this.items[left];
+        this.items[left] = this.items[right];
+        this.items[right] = temp;
+    }
+
+    size(): int {
+        return this.items.length();
+    }
+
+    isEmpty(): bool {
+        return this.items.length() == 0;
+    }
+}
+
+export class PriorityQueue<T> {
+    private heap: MinHeap<T>;
+
+    constructor() {
+        this.heap = new MinHeap<T>();
+    }
+
+    insert(val: T): void {
+        this.heap.insert(val);
+    }
+
+    enqueue(val: T): void {
+        this.heap.insert(val);
+    }
+
+    peek(): T {
+        return this.heap.peek();
+    }
+
+    extractMin(): T {
+        return this.heap.extractMin();
+    }
+
+    dequeue(): T {
+        return this.heap.extractMin();
+    }
+
+    clear(): void {
+        this.heap.clear();
+    }
+
+    size(): int {
+        return this.heap.size();
+    }
+
+    isEmpty(): bool {
+        return this.heap.isEmpty();
+    }
+}

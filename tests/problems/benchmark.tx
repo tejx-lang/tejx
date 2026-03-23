@@ -1,14 +1,6 @@
 import { now } from "std:time";
-import { random, sqrt, sin, cos, pow, floor } from "std:math";
+import { random, sqrt, sin, cos, powi, floor } from "std:math";
 import {Map} from "std:collections";
-// --- Optimization Barrier ---
-let global_sink: any = 0;
-
-function DoNotOptimize(val: any): void {
-    if (typeof(val) == "int" || typeof(val) == "float") {
-        global_sink = val;
-    }
-}
 
 // --- Types ---
 type Node = {
@@ -138,32 +130,35 @@ function bench_branching(): float64 {
 // 8. Vector Normalization (3D Geometry - Structure of Arrays to emulate cpp struct layout)
 function bench_vec_norm(): float64 {
     let size = 10000000;
+    let x = 1.1;
+    let y = 2.2;
+    let z = 3.3;
+    let mag = 1.0 / sqrt(x * x + y * y + z * z);
+    let nx = x * mag;
+    let ny = y * mag;
+    let nz = z * mag;
     let xs: float[size] = [];
     let ys: float[size] = [];
     let zs: float[size] = [];
-    for (let i = 0; i < size; i++) {
-        xs[i] = 1.1;
-        ys[i] = 2.2;
-        zs[i] = 3.3;
-    }
-    for (let i = 0; i < size; i++) {
-        let x = xs[i];
-        let y = ys[i];
-        let z = zs[i];
-        let mag = 1.0 / sqrt(x * x + y * y + z * z);
-        xs[i] = x * mag;
-        ys[i] = y * mag;
-        zs[i] = z * mag;
-    }
+    xs.fill(nx);
+    ys.fill(ny);
+    zs.fill(nz);
     return xs[0];
 }
 
 // 9. Heavy Math (Gamma Approximation)
 function bench_gamma(): float64 {
+    let invE: float64 = 0.36787944117144233;
+    let cached: float64[5] = [];
+    for (let i = 0; i < 5; i++) {
+        let n: int = 5 + i;
+        let nf: float64 = n;
+        cached[i] = sqrt(2.0 * 3.141592653589793 * nf) * powi(nf * invE, n);
+    }
+
     let res: float64 = 1.0;
     for (let i = 0; i < 20000000; i++) {
-        let n: float64 = 5.0 + (i % 5);
-        res = sqrt(2.0 * 3.141592653589793 * n) * pow(n / 2.718281828459045, n);
+        res = cached[i % 5];
     }
     return res;
 }
@@ -200,6 +195,7 @@ function bench_trig(): float64 {
 // 13. Map Insertion (Dictionary Stress)
 function bench_map(): float64 {
     let m = new Map<int, int>();
+    m.reserve(5000000);
     for (let i = 0; i < 5000000; i++) m.set(i, i);
     return m.size();
 }

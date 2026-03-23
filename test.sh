@@ -54,9 +54,11 @@ output_has_assertion_failure() {
 
 runtime_timeout_for() {
     local file=$1
-    case "$file" in
-        *"/tests/positive/std/net.tx") echo 20 ;;
-        *"/tests/positive/std/thread.tx"|*"/tests/problems/producer_consumer.tx") echo 15 ;;
+    local rel_file="${file#$SCRIPT_DIR/}"
+    case "$rel_file" in
+        tests/positive/std/net.tx) echo 20 ;;
+        tests/positive/std/thread.tx|tests/problems/producer_consumer.tx) echo 15 ;;
+        tests/problems/benchmark.tx) echo 60 ;;
         *) echo 10 ;;
     esac
 }

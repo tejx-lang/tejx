@@ -1,15 +1,117 @@
-export function exit(code: int): void {
-    rt_exit(code);
-}
+import "./system/process.tx";
 
-export function env(key: string): string {
-    return rt_getenv(key);
+export function exit(code: int): void {
+    _system_exit(code);
 }
 
 export function args(): string[] {
-    return rt_args();
+    return _system_args();
 }
 
-// Aliases
-export function argv(): string[] { return args(); }
-export function getEnv(key: string): string { return env(key); }
+export function getEnv(key: string): string {
+    return _system_get_env(key);
+}
+
+export function getAllEnv(): any {
+    return _system_get_all_env();
+}
+
+export function getOSType(): string {
+    return _system_get_os_type();
+}
+
+export function getOSArch(): string {
+    return _system_get_os_arch();
+}
+
+export function getCwd(): string {
+    return _system_get_cwd();
+}
+
+export function getHomeDir(): string {
+    return _system_get_home_dir();
+}
+
+export function getTempDir(): string {
+    return _system_get_temp_dir();
+}
+
+export function getHostname(): string {
+    return _system_get_hostname();
+}
+
+export namespace system {
+    export function exit(code: int): void {
+        _system_exit(code);
+    }
+
+    export function args(): string[] {
+        return _system_args();
+    }
+
+    export function getEnv(key: string): string {
+        return _system_get_env(key);
+    }
+
+    export function getAllEnv(): any {
+        return _system_get_all_env();
+    }
+
+    export function getOSType(): string {
+        return _system_get_os_type();
+    }
+
+    export function getOSArch(): string {
+        return _system_get_os_arch();
+    }
+
+    export function getCwd(): string {
+        return _system_get_cwd();
+    }
+
+    export function getHomeDir(): string {
+        return _system_get_home_dir();
+    }
+
+    export function getTempDir(): string {
+        return _system_get_temp_dir();
+    }
+
+    export function getHostname(): string {
+        return _system_get_hostname();
+    }
+}
+
+export namespace os {
+    export function getEnv(key: string): string {
+        return _system_get_env(key);
+    }
+
+    export function getAllEnv(): any {
+        return _system_get_all_env();
+    }
+
+    export function getType(): string {
+        return _system_get_os_type();
+    }
+
+    export function getArch(): string {
+        return _system_get_os_arch();
+    }
+
+    export function getCwd(): string {
+        return _system_get_cwd();
+    }
+
+    export function getHomeDir(): string {
+        return _system_get_home_dir();
+    }
+
+    export function getTempDir(): string {
+        return _system_get_temp_dir();
+    }
+
+    export function getHostname(): string {
+        return _system_get_hostname();
+    }
+}

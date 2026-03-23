@@ -6,24 +6,37 @@ import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_i
 
 function main() {
     print("--- Map Tests ---");
-    let m = new Map<string, any>();
-    m.put("name", "TejX");
-    m.put("version", 1);
+    let labels = new Map<string, string>();
+    labels.put("name", "TejX");
+    labels.put("runtime", "tejx_rt");
 
-    assert_true(m.has("name"), "Map.has('name')");
-    assert_false(m.has("missing"), "Map not has('missing')");
-    assert_eq_string("TejX", m.at("name"), "Map.get('name')");
-    assert_eq_int(2, m.size(), "Map.size()");
-    assert_ne_int(0, m.size(), "Map.size() not zero");
+    let versions = new Map<string, int>();
+    versions.put("version", 1);
+    versions.put("abi", 2);
 
-    // Verify instance keys()
-    // Note: keys() format check might need adjustment depending on toString implementation
-    // For now just checking it doesn't crash and returns something
-    let k = m.keys();
-    // print("Map keys: ", k); 
+    assert_true(labels.has("name"), "Map.has('name')");
+    assert_false(labels.has("missing"), "Map not has('missing')");
+    assert_eq_string("TejX", labels.at("name"), "Map.get('name')");
+    assert_eq_int(2, labels.size(), "Map.size()");
+    assert_ne_int(0, labels.size(), "Map.size() not zero");
+    assert_eq_int(-1, versions.getOrDefault("missing", -1), "Map.getOrDefault()");
 
-    m.clear();
-    assert_eq_int(0, m.size(), "Map size after clear");
+    let k = labels.keys();
+    assert_eq_string("name", k[0], "Map keys preserve insertion order");
+    assert_eq_string("runtime", k[1], "Map keys preserve insertion order (2)");
+
+    let labelEntries = labels.entries();
+    assert_eq_string("name", labelEntries[0].key, "Map.entries key is typed");
+    assert_eq_string("TejX", labelEntries[0].value, "Map.entries value is typed");
+
+    let versionEntries = versions.entries();
+    assert_eq_string("version", versionEntries[0].key, "Map.entries int key");
+    assert_eq_int(1, versionEntries[0].value, "Map.entries int value");
+
+    labels.clear();
+    versions.clear();
+    assert_eq_int(0, labels.size(), "Map size after clear");
+    assert_eq_int(0, versions.size(), "Map int size after clear");
 
     print("--- Set Tests ---");
     let setObj = new Set<int>();
@@ -41,4 +54,8 @@ function main() {
     assert_ne_int(3, setObj.size(), "Set size not pre-delete");
     assert_false(setObj.has(1), "Set.has(1) after delete");
     assert_true(setObj.has(2), "Set still has(2) after delete");
+    let setValues = setObj.values();
+    assert_eq_int(2, setValues[0], "Set preserves insertion order after delete");
+    assert_eq_int(3, setValues[1], "Set preserves insertion order after delete (2)");
+
 }

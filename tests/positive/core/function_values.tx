@@ -1,0 +1,36 @@
+import { assert_eq_string } from "../utils.tx";
+
+function greet(name: string): string {
+    return "hello " + name;
+}
+
+function applyGreeter(
+    fn: (name: string) => string,
+    name: string
+): string {
+    return fn(name);
+}
+
+class GreeterBox {
+    greeter: (name: string) => string;
+
+    constructor(greeter: (name: string) => string) {
+        this.greeter = greeter;
+    }
+
+    greet(name: string): string {
+        return this.greeter(name);
+    }
+}
+
+function main() {
+    let greeter: (name: string) => string = greet;
+    let direct: string = greeter("tejx");
+    let applied: string = applyGreeter(greeter, "router");
+    let boxed: GreeterBox = new GreeterBox(greet);
+    let boxedResult: string = boxed.greet("field");
+
+    assert_eq_string("hello tejx", direct, "function value variable call");
+    assert_eq_string("hello router", applied, "function value parameter call");
+    assert_eq_string("hello field", boxedResult, "function value class field call");
+}

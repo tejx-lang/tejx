@@ -33,17 +33,21 @@ function test_stdlib_wrappers() {
     assert_eq_int(42, abs(-42), "abs");
     assert_eq_int(1024, pow(2, 10), "pow");
     assert_eq_int(5, sqrt(25), "sqrt");
+    assert_eq_int(5, clamp(99, 0, 5), "clamp");
     
-    // FS Wrappers (if globals exist, otherwise via fs module)
-    // The original file used `exists(fname)`, `remove(fname)`, `write(fname, ...)`
-    // Assuming they are imported from std:fs or global.
-    // Let's use fs.* for safety unless we know they are global.
-    // If features_stdlib_std.tx worked, and it imported std:fs, maybe they are exported top-level?
-    // Let's assume fs.* for now to be safe, or just skip if redundant with io.tx.
+    let file = "stdlib_misc.txt";
+    if (fs.existsSync(file)) {
+        fs.removeSync(file);
+    }
+    writeText(file, "std");
+    assert_true(exists(file), "top-level fs exists");
+    assert_eq_string("std", readText(file), "top-level fs readText");
+    remove(file);
     
     // OS
-    let argv = args();
-    assert_eq_int(1, argv.length(), "args count");
+    let runtimeArgs = args();
+    assert_eq_int(1, runtimeArgs.length(), "args count");
+    assert_eq_int(runtimeArgs.length(), system.args().length(), "system.args length");
 }
 
 function main() {

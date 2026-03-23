@@ -1,0 +1,49 @@
+import std:binary;
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+function test_string_round_trip(): void {
+    print("--- Binary String Round Trip ---");
+    let data = binary.fromString("mongo");
+    assert_eq_int(5, data.length(), "binary.fromString length");
+    assert_eq_int(109, data[0], "binary.fromString first byte");
+    assert_eq_string("mongo", binary.toString(data), "binary.toString round trip");
+}
+
+function test_reader_writer(): void {
+    print("--- Binary Reader/Writer ---");
+
+    let writer = binary.writer();
+    writer.writeU8(7);
+    writer.writeU16LE(513);
+    writer.writeU24LE(1193046);
+    writer.writeU32BE(305419896);
+    writer.writeCString("sql");
+
+    let data = writer.toBytes();
+    let reader = binary.reader(data);
+
+    assert_eq_int(7, reader.readU8(), "readU8");
+    assert_eq_int(513, reader.readU16LE(), "readU16LE");
+    assert_eq_int(1193046, reader.readU24LE(), "readU24LE");
+    assert_true(reader.readU32BE() == 305419896, "readU32BE");
+    assert_eq_string("sql", reader.readCString(), "readCString");
+    assert_eq_int(0, reader.remaining(), "reader remaining");
+}
+
+function test_signed_int32(): void {
+    print("--- Binary Signed Int32 ---");
+
+    let writer = new ByteWriter();
+    writer.writeI32LE(-42);
+
+    let reader = new ByteReader(writer.toBytes());
+    assert_eq_int(-42, reader.readI32LE(), "readI32LE");
+}
+
+function main(): void {
+    print("=== BINARY TESTS START ===");
+    test_string_round_trip();
+    test_reader_writer();
+    test_signed_int32();
+    print("=== BINARY TESTS COMPLETE ===");
+}

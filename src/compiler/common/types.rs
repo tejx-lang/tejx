@@ -112,6 +112,88 @@ pub(crate) fn find_top_level_generic_bounds(input: &str) -> Option<(usize, usize
     None
 }
 
+pub(crate) fn find_top_level_char(input: &str, target: char) -> Option<usize> {
+    let mut depth_angle = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => {
+                depth_angle = depth_angle.saturating_sub(1);
+            }
+            '{' => depth_brace += 1,
+            '}' => {
+                depth_brace = depth_brace.saturating_sub(1);
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                depth_bracket = depth_bracket.saturating_sub(1);
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                depth_paren = depth_paren.saturating_sub(1);
+            }
+            _ => {}
+        }
+
+        if ch == target
+            && depth_angle == 0
+            && depth_brace == 0
+            && depth_bracket == 0
+            && depth_paren == 0
+        {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
+pub(crate) fn find_top_level_arrow(input: &str) -> Option<usize> {
+    let mut depth_angle = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+    let bytes = input.as_bytes();
+
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => {
+                depth_angle = depth_angle.saturating_sub(1);
+            }
+            '{' => depth_brace += 1,
+            '}' => {
+                depth_brace = depth_brace.saturating_sub(1);
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                depth_bracket = depth_bracket.saturating_sub(1);
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                depth_paren = depth_paren.saturating_sub(1);
+            }
+            '='
+                if i + 1 < bytes.len()
+                    && bytes[i + 1] == b'>'
+                    && depth_angle == 0
+                    && depth_brace == 0
+                    && depth_bracket == 0
+                    && depth_paren == 0 =>
+            {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 impl TejxType {
     pub fn is_numeric(&self) -> bool {
         match self {
@@ -368,6 +450,33 @@ impl TejxType {
                 flush_prop(&buf, &mut props);
             }
             return TejxType::Object(props);
+        }
+
+        if let Some(arrow) = find_top_level_arrow(name) {
+            let params_part = name[..arrow].trim();
+            let return_part = name[arrow + 2..].trim();
+
+            if params_part.starts_with('(') && params_part.ends_with(')') && !return_part.is_empty() {
+                let inner = params_part[1..params_part.len() - 1].trim();
+                let params = if inner.is_empty() {
+                    Vec::new()
+                } else {
+                    split_top_level(inner, ',')
+                        .into_iter()
+                        .filter(|param| !param.trim().is_empty())
+                        .map(|param| {
+                            let trimmed = param.trim();
+                            let ty_str = if let Some(colon) = find_top_level_char(trimmed, ':') {
+                                trimmed[colon + 1..].trim()
+                            } else {
+                                trimmed
+                            };
+                            TejxType::from_name(ty_str)
+                        })
+                        .collect()
+                };
+                return TejxType::Function(params, Box::new(TejxType::from_name(return_part)));
+            }
         }
 
         if name.ends_with("]") {

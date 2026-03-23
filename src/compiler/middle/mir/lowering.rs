@@ -17,10 +17,23 @@ struct LoopContext {
 }
 
 #[derive(Clone)]
-struct FinallyContext {
+struct ThrowFinallyContext {
+    id: usize,
     is_unwinding_var: String,
     saved_ex_var: String,
     finally_body_idx: usize,
+}
+
+#[derive(Clone)]
+struct ControlFinallyContext {
+    id: usize,
+    finally_stmt: HIRStatement,
+}
+
+#[derive(Clone)]
+enum PendingControlTransfer {
+    Return(Option<MIRValue>),
+    Jump(usize),
 }
 
 pub struct MIRLowering {
@@ -28,6 +41,7 @@ pub struct MIRLowering {
     current_block: usize, // index into current_function.blocks
     temp_counter: usize,
     block_counter: usize,
+    finally_counter: usize,
     loop_stack: Vec<LoopContext>,
     exception_handler_stack: Vec<usize>,
     expected_ty: Option<TejxType>,
@@ -42,7 +56,8 @@ pub struct MIRLowering {
     pub current_async_params: Option<Vec<(String, TejxType)>>,
     pub current_promise_id: Option<String>,
     pub async_locals: Vec<String>,
-    finally_context_stack: Vec<FinallyContext>,
+    control_finally_stack: Vec<ControlFinallyContext>,
+    throw_finally_stack: Vec<ThrowFinallyContext>,
 }
 
 impl MIRLowering {
@@ -55,6 +70,7 @@ impl MIRLowering {
             current_block: 0,
             temp_counter: 0,
             block_counter: 0,
+            finally_counter: 0,
             loop_stack: Vec::new(),
             exception_handler_stack: Vec::new(),
             expected_ty: None,
@@ -69,7 +85,8 @@ impl MIRLowering {
             current_async_params: None,
             current_promise_id: None,
             async_locals: Vec::new(),
-            finally_context_stack: Vec::new(),
+            control_finally_stack: Vec::new(),
+            throw_finally_stack: Vec::new(),
         }
     }
 
@@ -569,6 +586,129 @@ impl MIRLowering {
         name
     }
 
+    fn new_finally_id(&mut self) -> usize {
+        let id = self.finally_counter;
+        self.finally_counter += 1;
+        id
+    }
+
+    fn pop_control_finally_if(&mut self, id: usize) {
+        if self
+            .control_finally_stack
+            .last()
+            .map(|ctx| ctx.id)
+            == Some(id)
+        {
+            self.control_finally_stack.pop();
+        }
+    }
+
+    fn pop_throw_finally_if(&mut self, id: usize) {
+        if self.throw_finally_stack.last().map(|ctx| ctx.id) == Some(id) {
+            self.throw_finally_stack.pop();
+        }
+    }
+
+    fn emit_return_statement(&mut self, mut val: Option<MIRValue>) {
+        if let Some(ret_val) = val {
+            val = Some(self.auto_box(ret_val, &self.current_return_type.clone()));
+        }
+
+        let is_async_worker = self.current_function.name.ends_with("_worker");
+        if is_async_worker {
+            let ctx_val = MIRValue::Variable {
+                name: "ctx".to_string(),
+                ty: TejxType::DynamicArray(Box::new(TejxType::Int64)),
+            };
+            let promise_id = self.new_async_temp(TejxType::Int64);
+            self.emit(MIRInstruction::Call {
+                line: 0,
+                dst: promise_id.clone(),
+                callee: "rt_array_get_fast".to_string(),
+                args: vec![
+                    ctx_val.clone(),
+                    MIRValue::Constant {
+                        value: "0".to_string(),
+                        ty: TejxType::Int32,
+                    },
+                ],
+            });
+
+            let resolve_val = val.clone().unwrap_or(MIRValue::Constant {
+                value: "0".to_string(),
+                ty: TejxType::Int32,
+            });
+
+            let unused = self.new_async_temp(TejxType::Void);
+            self.emit(MIRInstruction::Call {
+                line: 0,
+                dst: unused.clone(),
+                callee: "rt_promise_resolve".to_string(),
+                args: vec![
+                    MIRValue::Variable {
+                        name: promise_id,
+                        ty: TejxType::Int64,
+                    },
+                    resolve_val,
+                ],
+            });
+
+            let unused2 = self.new_async_temp(TejxType::Void);
+            self.emit(MIRInstruction::Call {
+                line: 0,
+                dst: unused2,
+                callee: "tejx_dec_async_ops".to_string(),
+                args: vec![],
+            });
+
+            self.emit(MIRInstruction::Return {
+                line: 0,
+                value: None,
+            });
+        } else {
+            self.emit(MIRInstruction::Return {
+                line: 0,
+                value: val,
+            });
+        }
+    }
+
+    fn emit_control_transfer(&mut self, transfer: PendingControlTransfer) {
+        if self.control_finally_stack.last().is_some() {
+            self.lower_control_transfer_through_finally(transfer);
+            return;
+        }
+
+        match transfer {
+            PendingControlTransfer::Return(val) => self.emit_return_statement(val),
+            PendingControlTransfer::Jump(target) => {
+                self.emit(MIRInstruction::Jump { line: 0, target });
+            }
+        }
+    }
+
+    fn lower_control_transfer_through_finally(&mut self, transfer: PendingControlTransfer) {
+        let Some(ctx) = self.control_finally_stack.pop() else {
+            self.emit_control_transfer(transfer);
+            return;
+        };
+
+        self.pop_throw_finally_if(ctx.id);
+
+        if self.current_function.blocks[self.current_block]
+            .exception_handler
+            .is_some()
+        {
+            self.emit(MIRInstruction::PopHandler { line: 0 });
+        }
+
+        self.lower_statement(&ctx.finally_stmt);
+
+        if !self.current_function.blocks[self.current_block].is_terminated() {
+            self.emit_control_transfer(transfer);
+        }
+    }
+
     fn collect_async_locals(
         &mut self,
         async_params: &Option<Vec<(String, TejxType)>>,
@@ -808,18 +948,12 @@ impl MIRLowering {
             }
             HIRStatement::Break { .. } => {
                 if let Some(ctx) = self.loop_stack.last() {
-                    self.emit(MIRInstruction::Jump {
-                        line: 0,
-                        target: ctx.break_target,
-                    });
+                    self.emit_control_transfer(PendingControlTransfer::Jump(ctx.break_target));
                 }
             }
             HIRStatement::Continue { .. } => {
                 if let Some(ctx) = self.loop_stack.last() {
-                    self.emit(MIRInstruction::Jump {
-                        line: 0,
-                        target: ctx.continue_target,
-                    });
+                    self.emit_control_transfer(PendingControlTransfer::Jump(ctx.continue_target));
                 }
             }
             HIRStatement::If {
@@ -867,69 +1001,8 @@ impl MIRLowering {
                 self.current_block = merge_block;
             }
             HIRStatement::Return { value, .. } => {
-                let mut val = value.as_ref().map(|e| self.lower_expression(e));
-
-                if let Some(ret_val) = val {
-                    val = Some(self.auto_box(ret_val, &self.current_return_type.clone()));
-                }
-
-                let is_async_worker = self.current_function.name.ends_with("_worker");
-                if is_async_worker {
-                    let ctx_val = MIRValue::Variable {
-                        name: "ctx".to_string(),
-                        ty: TejxType::DynamicArray(Box::new(TejxType::Int64)),
-                    };
-                    let promise_id = self.new_async_temp(TejxType::Int64);
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        dst: promise_id.clone(),
-                        callee: "rt_array_get_fast".to_string(),
-                        args: vec![
-                            ctx_val.clone(),
-                            MIRValue::Constant {
-                                value: "0".to_string(),
-                                ty: TejxType::Int32,
-                            },
-                        ],
-                    });
-
-                    let resolve_val = val.clone().unwrap_or(MIRValue::Constant {
-                        value: "0".to_string(),
-                        ty: TejxType::Int32,
-                    });
-
-                    let unused = self.new_async_temp(TejxType::Void);
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        dst: unused.clone(),
-                        callee: "rt_promise_resolve".to_string(),
-                        args: vec![
-                            MIRValue::Variable {
-                                name: promise_id,
-                                ty: TejxType::Int64,
-                            },
-                            resolve_val,
-                        ],
-                    });
-
-                    let unused2 = self.new_async_temp(TejxType::Void);
-                    self.emit(MIRInstruction::Call {
-                        line: 0,
-                        dst: unused2,
-                        callee: "tejx_dec_async_ops".to_string(),
-                        args: vec![],
-                    });
-
-                    self.emit(MIRInstruction::Return {
-                        line: 0,
-                        value: None,
-                    });
-                } else {
-                    self.emit(MIRInstruction::Return {
-                        line: 0,
-                        value: val,
-                    });
-                }
+                let val = value.as_ref().map(|e| self.lower_expression(e));
+                self.emit_control_transfer(PendingControlTransfer::Return(val));
             }
             HIRStatement::ExpressionStmt { expr, .. } => {
                 self.lower_expression(expr);
@@ -1058,6 +1131,7 @@ impl MIRLowering {
                 ..
             } => {
                 let exit_block_idx = self.new_block("try_exit");
+                let finally_id = finally_block.as_ref().map(|_| self.new_finally_id());
 
                 // Variables to track unwinding state across finally block
                 let is_unwinding_var = self.new_temp(TejxType::Bool);
@@ -1097,8 +1171,17 @@ impl MIRLowering {
                 });
 
                 self.current_block = try_start_idx;
+                if let (Some(id), Some(f_stmt)) = (finally_id, finally_block.as_deref()) {
+                    self.control_finally_stack.push(ControlFinallyContext {
+                        id,
+                        finally_stmt: f_stmt.clone(),
+                    });
+                }
 
                 self.lower_statement(try_block);
+                if let Some(id) = finally_id {
+                    self.pop_control_finally_if(id);
+                }
 
                 // Try success path
                 let cb = self.current_block;
@@ -1154,16 +1237,24 @@ impl MIRLowering {
                         },
                     });
                 }
-                if let Some(fb_idx) = finally_body_idx {
-                    self.finally_context_stack.push(FinallyContext {
+                if let (Some(fb_idx), Some(id), Some(f_stmt)) =
+                    (finally_body_idx, finally_id, finally_block.as_deref())
+                {
+                    self.control_finally_stack.push(ControlFinallyContext {
+                        id,
+                        finally_stmt: f_stmt.clone(),
+                    });
+                    self.throw_finally_stack.push(ThrowFinallyContext {
+                        id,
                         is_unwinding_var: is_unwinding_var.clone(),
                         saved_ex_var: saved_ex_var.clone(),
                         finally_body_idx: fb_idx,
                     });
                 }
                 self.lower_statement(catch_block);
-                if finally_body_idx.is_some() {
-                    self.finally_context_stack.pop();
+                if let Some(id) = finally_id {
+                    self.pop_throw_finally_if(id);
+                    self.pop_control_finally_if(id);
                 }
 
                 // Catch success path
@@ -1274,7 +1365,7 @@ impl MIRLowering {
             }
             HIRStatement::Throw { value, .. } => {
                 let val = self.lower_expression(value);
-                if let Some(ctx) = self.finally_context_stack.last().cloned() {
+                if let Some(ctx) = self.throw_finally_stack.last().cloned() {
                     if self.current_function.blocks[self.current_block]
                         .exception_handler
                         .is_some()

@@ -3,6 +3,7 @@
 import { 
     Stack, Queue, MinHeap, MaxHeap, Map, Set, OrderedMap, OrderedSet, BloomFilter, Trie
 } from "std:collections";
+import { Deque } from "std:collections";
 import { assert_eq_int, assert_true, assert_false } from "../utils.tx";
 
 
@@ -33,7 +34,11 @@ function test_queue(): void {
 function test_map(): void {
     print("Testing Map...");
     let m = new Map<string, int>();
+    m.reserve(32);
     m.set("key", 123);
+    m.set("other", 456);
+    m.delete("other");
+    m.shrinkToFit();
     assert_true(m.has("key"), "Map has key");
     assert_eq_int(m.get("key"), 123, "Map get key");
     assert_eq_int(m.size(), 1, "Map size");
@@ -57,6 +62,14 @@ function test_set(): void {
 function main() {
     print("=== ADVANCED COLLECTIONS START ===");
 
+    let deque = new Deque<int>();
+    deque.pushBack(2);
+    deque.pushFront(1);
+    deque.pushBack(3);
+    assert_eq_int(1, deque.popFront(), "Deque popFront");
+    assert_eq_int(3, deque.popBack(), "Deque popBack");
+    assert_eq_int(1, deque.size(), "Deque size");
+
     // MinHeap
     let minH = new MinHeap<int>();
     minH.insert(50); minH.insert(10); minH.insert(30);
@@ -70,15 +83,21 @@ function main() {
     
     // OrderedMap
     let om = new OrderedMap<string, int>();
+    om.reserve(8);
     om.put("b", 2); om.put("a", 1);
     assert_eq_int(1, om.at("a"), "OrderedMap get a");
     assert_eq_int(2, om.size(), "OrderedMap size");
+    let orderedKeys = om.keys();
+    assert_true(orderedKeys[0] == "b" && orderedKeys[1] == "a", "OrderedMap insertion order");
     
     // OrderedSet
     let os = new OrderedSet<int>();
+    os.reserve(8);
     os.add(100); os.add(50);
     assert_true(os.has(50), "OrderedSet has 50");
     assert_false(os.has(99), "OrderedSet !has 99");
+    let orderedValues = os.values();
+    assert_eq_int(100, orderedValues[0], "OrderedSet insertion order");
     
     // BloomFilter
     let bf = new BloomFilter(100, 3);
@@ -91,12 +110,14 @@ function main() {
     t.addPath("hello", 1);
     assert_eq_int(1, t.find("hello"), "Trie find hello");
     assert_eq_int(0, t.find("hell"), "Trie !find hell");
+    assert_true(t.startsWith("he"), "Trie startsWith he");
+    assert_true(t.delete("hello"), "Trie delete hello");
+    assert_false(t.has("hello"), "Trie !has hello after delete");
 
- test_stack();
+    test_stack();
     test_queue();
     test_map();
     test_set();
 
-    
     print("=== ADVANCED COLLECTIONS COMPLETE ===");
 }

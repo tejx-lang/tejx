@@ -1,0 +1,25 @@
+import "./internal.tx";
+
+export function sin(x: float): float {
+    return _math_sin(x);
+}
+
+export function cos(x: float): float {
+    return _math_cos(x);
+}
+
+export function tan(x: float): float {
+    return _math_tan(x);
+}
+
+export function asin(x: float): float {
+    return _math_asin(x);
+}
+
+export function acos(x: float): float {
+    return _math_acos(x);
+}
+
+export function atan(x: float): float {
+    return _math_atan(x);
+}

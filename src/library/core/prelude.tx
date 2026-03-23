@@ -40,75 +40,14 @@ extern function rt_String_padEnd(s: string, len: int, pad: string): string;
 extern function rt_String_repeat(s: string, count: int): string;
 extern function rt_String_replace(s: string, search: string, replace: string): string;
 extern function rt_String_includes(s: string, search: string): bool;
-extern function rt_array_new(len: int, elemSize: int): any;
+extern function rt_array_new<T>(len: int, elemSize: int): T[];
+extern function rt_array_ensure_capacity<T>(arr: T[], required: int): T[];
 extern function rt_sizeof<T>(val: T): int;
-extern function rt_exit(code: int): void;
-extern function rt_getenv(key: string): string;
-extern function rt_args(): string[];
-extern function rt_fs_read_sync(path: string): string;
-extern function rt_fs_write_sync(path: string, content: string): int;
-extern function rt_fs_append_sync(path: string, content: string): int;
-extern function rt_fs_exists(path: string): int;
-extern function rt_fs_unlink_sync(path: string): int;
-extern function rt_fs_mkdir_sync(path: string): int;
-extern function rt_fs_readdir_sync(path: string): string[];
-extern function rt_time_now(): float64;
-extern function rt_time_now_ms(): int64;
-extern function rt_sleep(ms: int64): void;
-extern function rt_delay(ms: int64): Promise<void>;
-extern function rt_setTimeout(callback: () => void, ms: int64): int;
-extern function rt_setInterval(callback: () => void, ms: int64): int;
-extern function rt_clearTimeout(id: int): void;
-extern function rt_clearInterval(id: int): void;
-extern function std_math_sin(x: float): float;
-extern function std_math_cos(x: float): float;
-extern function std_math_sqrt(x: float): float;
-extern function std_math_floor(x: float): float;
-extern function std_math_ceil(x: float): float;
-extern function std_math_round(x: float): float;
-extern function std_math_pow(base: float, exp: float): float;
-extern function std_math_abs(x: float): float;
-extern function rt_math_random(): float;
-extern function rt_net_connect(addr: string): int64;
-extern function rt_net_send(stream: int64, data: string): int;
-extern function rt_net_receive(stream: int64, max_len: int): string;
-extern function rt_net_close(stream: int64): int;
-extern function rt_http_request(url: string, method: string, body: string): string;
-extern function rt_http_request_async(url: string, method: string, body: string): Promise<string>;
-extern function rt_Object_keys(obj: any): string[];
-extern function rt_Object_values(obj: any): any[];
-extern function rt_Object_entries(obj: any): any[];
-extern function rt_Object_assign(target: any, source: any): any;
-extern function rt_Object_freeze(obj: any): any;
-extern function rt_map_new(): any;
-extern function rt_map_set<K, V>(map: any, key: K, val: V): void;
-extern function rt_map_get<K>(map: any, key: K): any;
-extern function rt_map_has<K>(map: any, key: K): bool;
-extern function rt_map_delete<K>(map: any, key: K): bool;
-extern function rt_map_size(map: any): int;
-extern function rt_map_keys(map: any): any[];
-extern function rt_map_values(map: any): any[];
-extern function rt_Mutex_constructor(_this: any): void;
-extern function rt_Mutex_acquire(_this: any): void;
-extern function rt_Mutex_release(_this: any): void;
-extern function rt_SharedQueue_constructor(_this: any): void;
-extern function rt_SharedQueue_enqueue(_this: any, val: any): void;
-extern function rt_SharedQueue_dequeue(_this: any): any;
-extern function rt_SharedQueue_size(_this: any): int;
-extern function rt_Atomic_constructor(_this: any, val: int): void;
-extern function rt_Atomic_add(_this: any, val: int): int;
-extern function rt_Atomic_sub(_this: any, val: int): int;
-extern function rt_Atomic_load(_this: any): int;
-extern function rt_Atomic_store(_this: any, val: int): void;
-extern function rt_Atomic_exchange(_this: any, val: int): int;
-extern function rt_Atomic_compareExchange(_this: any, expected: int, desired: int): int;
-extern function rt_Condition_constructor(_this: any): void;
-extern function rt_Condition_wait(_this: any, mutex: any): void;
-extern function rt_Condition_notify(_this: any): void;
-extern function rt_Condition_notifyAll(_this: any): void;
-extern function rt_Thread_constructor(_this: any, cb: any, args: any[]): void;
-extern function rt_Thread_start(_this: any): void;
-extern function rt_Thread_join(_this: any): void;
+extern function rt_Object_keys<T>(obj: T): string[];
+extern function rt_Object_values<T>(obj: T): any[];
+extern function rt_Object_entries<T>(obj: T): any[];
+extern function rt_Object_assign<T, U>(target: T, source: U): T;
+extern function rt_Object_freeze<T>(obj: T): T;
 
 export function sizeof<T>(val: T): int {
     return rt_sizeof(val);
@@ -125,9 +64,9 @@ export let undefined: any = None;
 export class Error {
     private message: string;
     code: int32;
-    constructor(msg: string) {
+    constructor(msg: string, code: Optional<int>) {
         this.message = msg;
-        this.code = 0;
+        this.code = code ?? 0;
     }
     getMessage(): string { return this.message; }
 }
@@ -149,27 +88,27 @@ export class Promise<T> {
             (e: Error) => { rt_promise_reject(this, e); }
         );
     }
-
+    
     then<U>(onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U> {
         return rt_promise_then(this, onResolve, onReject);
     }
-
+    
     catchError<U>(onReject: (e: Error) => U): Promise<U> {
         return rt_promise_then(this, 0 as any as (v: T) => U, onReject);
     }
-
+    
     static resolve<T>(v: T): Promise<T> {
         let p: Promise<T> = rt_promise_new<T>();
         rt_promise_resolve(p, v);
         return p;
     }
-
+    
     static reject<T>(e: Error): Promise<T> {
         let p: Promise<T> = rt_promise_new<T>();
         rt_promise_reject(p, e);
         return p;
     }
-
+    
 }
 
 export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
@@ -181,12 +120,12 @@ export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
         return p;
     }
     
-    let results: T[] = rt_array_new(total, 8) as T[];
+    let results: T[] = rt_array_new<T>(total, 8);
     let state = new PromiseState();
     for (let i = 0; i < total; i++) {
         _promise_all_attach(promises[i], i, results, state, total, p);
     }
-    return p; 
+    return p;
 }
 
 function _promise_all_attach<T>(
@@ -230,7 +169,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
     if (rt_str_equals(ty, "function")) {
         return "[Function]";
     }
-
+    
     if (rt_is_array(v)) {
         for (let i: int = 0; i < seen.length(); i++) {
             if (seen[i] == v) return "[Circular]";
@@ -245,7 +184,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         seen.pop();
         return res + "]";
     }
-
+    
     // Treat as object if ty is "object" OR if it has keys but is not an array
     if (rt_str_equals(ty, "object")) {
         for (let i: int = 0; i < seen.length(); i++) {
@@ -260,7 +199,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
             if (s == "[object Object]") return "{}";
             return s;
         }
-
+        
         let res: string = "{ ";
         let first: bool = true;
         for (let i: int = 0; i < keys.length(); i++) {
@@ -275,7 +214,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         seen.pop();
         return res + " }";
     }
-
+    
     return rt_to_string(v);
 }
 
@@ -307,23 +246,23 @@ export function rt_box_number_internal(val: float): float {
 
 
 export class Object {
-    static keys(obj: any): string[] {
+    static keys<T>(obj: T): string[] {
         return rt_Object_keys(obj);
     }
-
-    static values(obj: any): any[] {
+    
+    static values<T>(obj: T): any[] {
         return rt_Object_values(obj);
     }
-
-    static entries(obj: any): any[] {
+    
+    static entries<T>(obj: T): any[] {
         return rt_Object_entries(obj);
     }
-
-    static assign(target: any, source: any): any {
+    
+    static assign<T, U>(target: T, source: U): T {
         return rt_Object_assign(target, source);
     }
-
-    static freeze(obj: any): any {
+    
+    static freeze<T>(obj: T): T {
         return rt_Object_freeze(obj);
     }
 }

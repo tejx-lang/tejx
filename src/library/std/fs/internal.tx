@@ -1,0 +1,56 @@
+extern function rt_fs_read_sync(path: string): string;
+extern function rt_fs_write_sync(path: string, content: string): int;
+extern function rt_fs_append_sync(path: string, content: string): int;
+extern function rt_fs_exists(path: string): int;
+extern function rt_fs_unlink_sync(path: string): int;
+extern function rt_fs_mkdir_sync(path: string): int;
+extern function rt_fs_readdir_sync(path: string): string[];
+
+function _fs_exists_sync(path: string): bool {
+    return rt_fs_exists(path) != 0;
+}
+
+function _fs_read_sync(path: string): string {
+    return rt_fs_read_sync(path);
+}
+
+function _fs_write_sync(path: string, content: string): bool {
+    return rt_fs_write_sync(path, content) == 1;
+}
+
+function _fs_append_sync(path: string, content: string): bool {
+    return rt_fs_append_sync(path, content) == 1;
+}
+
+function _fs_remove_sync(path: string): bool {
+    return rt_fs_unlink_sync(path) == 1;
+}
+
+function _fs_mkdir_sync(path: string): bool {
+    return rt_fs_mkdir_sync(path) == 1;
+}
+
+function _fs_ensure_dir_sync(path: string): bool {
+    if (_fs_exists_sync(path)) return true;
+    return _fs_mkdir_sync(path);
+}
+
+function _fs_readdir_sync(path: string): string[] {
+    return rt_fs_readdir_sync(path);
+}
+
+async function _fs_read_async(path: string): Promise<string> {
+    return _fs_read_sync(path);
+}
+
+async function _fs_write_async(path: string, content: string): Promise<bool> {
+    return _fs_write_sync(path, content);
+}
+
+async function _fs_append_async(path: string, content: string): Promise<bool> {
+    return _fs_append_sync(path, content);
+}
+
+async function _fs_remove_async(path: string): Promise<bool> {
+    return _fs_remove_sync(path);
+}

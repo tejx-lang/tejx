@@ -1,41 +1,119 @@
+import "./fs/internal.tx";
+
 export namespace fs {
     export function existsSync(path: string): bool {
-        return rt_fs_exists(path) != 0;
+        return _fs_exists_sync(path);
+    }
+
+    export function exists(path: string): bool {
+        return _fs_exists_sync(path);
     }
 
     export function readFileSync(path: string): string {
-        return rt_fs_read_sync(path);
+        return _fs_read_sync(path);
+    }
+
+    export function readTextSync(path: string): string {
+        return _fs_read_sync(path);
     }
 
     export function writeFileSync(path: string, content: string): bool {
-        return rt_fs_write_sync(path, content) == 1;
+        return _fs_write_sync(path, content);
+    }
+
+    export function writeTextSync(path: string, content: string): bool {
+        return _fs_write_sync(path, content);
     }
 
     export function appendFileSync(path: string, content: string): bool {
-        return rt_fs_append_sync(path, content) == 1;
+        return _fs_append_sync(path, content);
+    }
+
+    export function appendTextSync(path: string, content: string): bool {
+        return _fs_append_sync(path, content);
     }
 
     export function unlinkSync(path: string): bool {
-        return rt_fs_unlink_sync(path) == 1;
+        return _fs_remove_sync(path);
+    }
+
+    export function removeSync(path: string): bool {
+        return _fs_remove_sync(path);
     }
 
     export function mkdirSync(path: string): bool {
-        return rt_fs_mkdir_sync(path) == 1;
+        return _fs_mkdir_sync(path);
+    }
+
+    export function ensureDirSync(path: string): bool {
+        return _fs_ensure_dir_sync(path);
     }
 
     export function readdirSync(path: string): string[] {
-        return rt_fs_readdir_sync(path);
+        return _fs_readdir_sync(path);
+    }
+
+    export function listDirSync(path: string): string[] {
+        return _fs_readdir_sync(path);
     }
 
     export async function readFile(path: string): Promise<string> {
-        return fs.readFileSync(path);
+        return _fs_read_async(path);
+    }
+
+    export async function readText(path: string): Promise<string> {
+        return _fs_read_async(path);
     }
 
     export async function writeFile(path: string, content: string): Promise<bool> {
-        return fs.writeFileSync(path, content);
+        return _fs_write_async(path, content);
+    }
+
+    export async function writeText(path: string, content: string): Promise<bool> {
+        return _fs_write_async(path, content);
+    }
+
+    export async function appendFile(path: string, content: string): Promise<bool> {
+        return _fs_append_async(path, content);
+    }
+
+    export async function appendText(path: string, content: string): Promise<bool> {
+        return _fs_append_async(path, content);
+    }
+
+    export async function remove(path: string): Promise<bool> {
+        return _fs_remove_async(path);
     }
 }
 
-// Aliases
-export const read_to_string = fs.readFileSync;
-export const mkdir = fs.mkdirSync;
+export function read_to_string(path: string): string {
+    return fs.readFileSync(path);
+}
+
+export function mkdir(path: string): bool {
+    return fs.mkdirSync(path);
+}
+
+export function exists(path: string): bool {
+    return fs.existsSync(path);
+}
+
+export function readText(path: string): string {
+    return fs.readTextSync(path);
+}
+
+export function writeText(path: string, content: string): bool {
+    return fs.writeTextSync(path, content);
+}
+
+export function appendText(path: string, content: string): bool {
+    return fs.appendTextSync(path, content);
+}
+
+export function remove(path: string): bool {
+    return fs.removeSync(path);
+}
+
+export function listDir(path: string): string[] {
+    return fs.listDirSync(path);
+}

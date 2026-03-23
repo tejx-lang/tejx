@@ -746,6 +746,27 @@ impl Lowering {
                     }
                 }
 
+                if let Expression::MemberAccessExpr { object, member, .. } = callee.as_ref() {
+                    let obj_name = match object.as_ref() {
+                        Expression::Identifier { name, .. } => name.clone(),
+                        _ => "".to_string(),
+                    };
+                    let lowered_member = self.lower_member_access_with_obj(
+                        line,
+                        &obj_name,
+                        self.lower_expression(object),
+                        member,
+                    );
+                    if let TejxType::Function(_, ret) = lowered_member.get_type() {
+                        return HIRExpression::IndirectCall {
+                            line,
+                            callee: Box::new(lowered_member),
+                            args: hir_args.clone(),
+                            ty: (*ret).clone(),
+                        };
+                    }
+                }
+
                 // 1. Built-in special functions (Most are now in prelude or intrinsics)
                 if callee_str == "super" {
                     if let Some(parent) = &*self.parent_class.borrow() {

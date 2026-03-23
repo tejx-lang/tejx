@@ -1,0 +1,50 @@
+extern function rt_exit(code: int): void;
+extern function rt_getenv(key: string): string;
+extern function rt_get_all_env(): any;
+extern function rt_get_os_type(): string;
+extern function rt_get_os_arch(): string;
+extern function rt_get_cwd(): string;
+extern function rt_get_home_dir(): string;
+extern function rt_get_temp_dir(): string;
+extern function rt_get_hostname(): string;
+extern function rt_args(): string[];
+
+function _system_exit(code: int): void {
+    rt_exit(code);
+}
+
+function _system_get_env(key: string): string {
+    return rt_getenv(key);
+}
+
+function _system_get_all_env(): any {
+    return rt_get_all_env();
+}
+
+function _system_get_os_type(): string {
+    return rt_get_os_type();
+}
+
+function _system_get_os_arch(): string {
+    return rt_get_os_arch();
+}
+
+function _system_get_cwd(): string {
+    return rt_get_cwd();
+}
+
+function _system_get_home_dir(): string {
+    return rt_get_home_dir();
+}
+
+function _system_get_temp_dir(): string {
+    return rt_get_temp_dir();
+}
+
+function _system_get_hostname(): string {
+    return rt_get_hostname();
+}
+
+function _system_args(): string[] {
+    return rt_args();
+}
