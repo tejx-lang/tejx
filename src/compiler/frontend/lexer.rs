@@ -460,12 +460,13 @@ impl Lexer {
             } else if c == '\n' {
                 // Error: Unclosed string (newline in string not allowed without escaping usually)
                 // But we can choose to allow it and just report error to continue lexing.
-                self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                    format!("Unclosed string literal starting with {}", quote),
-                    start_line,
-                    start_col,
-                    self.filename.clone(),
-                ));
+                self.errors
+                    .push(crate::common::diagnostics::Diagnostic::new(
+                        format!("Unclosed string literal starting with {}", quote),
+                        start_line,
+                        start_col,
+                        self.filename.clone(),
+                    ));
                 // Break to avoid gobbling the whole file into one string if possible?
                 // Actually, let's just break and treat the rest as new tokens.
                 break;
@@ -475,12 +476,13 @@ impl Lexer {
         }
 
         if self.is_at_end() || self.peek(0) != quote {
-            self.errors.push(crate::common::diagnostics::Diagnostic::new(
-                format!("Unclosed string literal starting with {}", quote),
-                start_line,
-                start_col,
-                self.filename.clone(),
-            ));
+            self.errors
+                .push(crate::common::diagnostics::Diagnostic::new(
+                    format!("Unclosed string literal starting with {}", quote),
+                    start_line,
+                    start_col,
+                    self.filename.clone(),
+                ));
         } else {
             self.advance(); // Skip closing quote
         }

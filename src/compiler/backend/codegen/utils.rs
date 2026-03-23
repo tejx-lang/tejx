@@ -1,7 +1,7 @@
 use super::*;
 use crate::common::intrinsics::*;
-use crate::middle::mir::*;
 use crate::common::types::TejxType;
+use crate::middle::mir::*;
 
 impl CodeGen {
     pub(crate) fn ensure_closure_adapter(&mut self, name: &str, ty: &TejxType) -> String {
@@ -12,8 +12,7 @@ impl CodeGen {
 
         self.label_counter += 1;
         let adapter_name = format!("closure_adapter_{}", self.label_counter);
-        self.closure_adapters
-            .insert(key, adapter_name.clone());
+        self.closure_adapters.insert(key, adapter_name.clone());
 
         if let TejxType::Function(params, ret) = ty {
             let ret_llvm = Self::get_llvm_type(ret);
@@ -296,18 +295,12 @@ impl CodeGen {
             }
             self.temp_counter += 1;
             let boxed = format!("%boxed_char_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = call i64 @rt_box_char(i32 {})",
-                boxed, c_val
-            ));
+            self.emit_line(&format!("{} = call i64 @rt_box_char(i32 {})", boxed, c_val));
             return boxed;
         }
 
         if dst_is_any && matches!(src_ty, TejxType::Function(_, _)) {
-            self.declare_runtime_fn(
-                "rt_box_function_value",
-                "i64 @rt_box_function_value(i64)",
-            );
+            self.declare_runtime_fn("rt_box_function_value", "i64 @rt_box_function_value(i64)");
             self.temp_counter += 1;
             let boxed = format!("%boxed_fn_{}", self.temp_counter);
             self.emit_line(&format!(
@@ -343,25 +336,16 @@ impl CodeGen {
                 if dst_llvm == "double" {
                     self.temp_counter += 1;
                     let f_val = format!("%f_val_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i64 {} to double",
-                        f_val, bits
-                    ));
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", f_val, bits));
                     return f_val;
                 }
                 if dst_llvm == "float" {
                     self.temp_counter += 1;
                     let d_val = format!("%d_val_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast i64 {} to double",
-                        d_val, bits
-                    ));
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", d_val, bits));
                     self.temp_counter += 1;
                     let f_val = format!("%f_val_{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = fptrunc double {} to float",
-                        f_val, d_val
-                    ));
+                    self.emit_line(&format!("{} = fptrunc double {} to float", f_val, d_val));
                     return f_val;
                 }
             }
@@ -408,8 +392,11 @@ impl CodeGen {
                         "{} = sext {} {} to i64",
                         cast_reg, src_llvm, val_name
                     ));
-                } else if dst_llvm == "i64" && matches!(dst_ty, TejxType::Class(_, _)) && matches!(src_ty, TejxType::Int32 | TejxType::Int64 | TejxType::Bool) {
-                     // Same for other object types if they are unboxed
+                } else if dst_llvm == "i64"
+                    && matches!(dst_ty, TejxType::Class(_, _))
+                    && matches!(src_ty, TejxType::Int32 | TejxType::Int64 | TejxType::Bool)
+                {
+                    // Same for other object types if they are unboxed
                     self.emit_line(&format!(
                         "{} = sext {} {} to i64",
                         cast_reg, src_llvm, val_name
@@ -428,10 +415,7 @@ impl CodeGen {
                         cast_reg, val_name
                     ));
                 } else {
-                    self.emit_line(&format!(
-                        "{} = fptosi double {} to i64",
-                        cast_reg, val_name
-                    ));
+                    self.emit_line(&format!("{} = fptosi double {} to i64", cast_reg, val_name));
                 }
             }
             ("i64", "double") => {
@@ -441,48 +425,27 @@ impl CodeGen {
                         cast_reg, val_name
                     ));
                 } else {
-                    self.emit_line(&format!(
-                        "{} = sitofp i64 {} to double",
-                        cast_reg, val_name
-                    ));
+                    self.emit_line(&format!("{} = sitofp i64 {} to double", cast_reg, val_name));
                 }
             }
             ("i64", "float") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
                     let d_tmp = format!("%d_cast_{}", self.temp_counter);
                     self.temp_counter += 1;
-                    self.emit_line(&format!(
-                        "{} = bitcast i64 {} to double",
-                        d_tmp, val_name
-                    ));
-                    self.emit_line(&format!(
-                        "{} = fptrunc double {} to float",
-                        cast_reg, d_tmp
-                    ));
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", d_tmp, val_name));
+                    self.emit_line(&format!("{} = fptrunc double {} to float", cast_reg, d_tmp));
                 } else {
-                    self.emit_line(&format!(
-                        "{} = sitofp i64 {} to float",
-                        cast_reg, val_name
-                    ));
+                    self.emit_line(&format!("{} = sitofp i64 {} to float", cast_reg, val_name));
                 }
             }
             ("float", "i64") => {
                 if dst_ty.is_float() || matches!(dst_ty, TejxType::Any) {
                     let d_tmp = format!("%d_ext_{}", self.temp_counter);
                     self.temp_counter += 1;
-                    self.emit_line(&format!(
-                        "{} = fpext float {} to double",
-                        d_tmp, val_name
-                    ));
-                    self.emit_line(&format!(
-                        "{} = bitcast double {} to i64",
-                        cast_reg, d_tmp
-                    ));
+                    self.emit_line(&format!("{} = fpext float {} to double", d_tmp, val_name));
+                    self.emit_line(&format!("{} = bitcast double {} to i64", cast_reg, d_tmp));
                 } else {
-                    self.emit_line(&format!(
-                        "{} = fptosi float {} to i64",
-                        cast_reg, val_name
-                    ));
+                    self.emit_line(&format!("{} = fptosi float {} to i64", cast_reg, val_name));
                 }
             }
             ("float", "double") => {
@@ -807,9 +770,10 @@ impl CodeGen {
                             "i16" => Some(TejxType::Int16),
                             "i32" => Some(TejxType::Int32),
                             "i64" => Some(match ty {
-                                TejxType::Int16 | TejxType::Int32 | TejxType::Bool | TejxType::Char => {
-                                    TejxType::Int64
-                                }
+                                TejxType::Int16
+                                | TejxType::Int32
+                                | TejxType::Bool
+                                | TejxType::Char => TejxType::Int64,
                                 _ => ty.clone(),
                             }),
                             "float" => Some(TejxType::Float32),
@@ -1006,10 +970,7 @@ impl CodeGen {
                     env, cap_idx, val_to_store
                 ));
                 if temp_root_count > 0 {
-                    self.emit_line(&format!(
-                        "call void @rt_pop_roots(i64 {})",
-                        temp_root_count
-                    ));
+                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
                 }
                 return;
             }

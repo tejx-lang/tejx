@@ -32,7 +32,11 @@ impl TypeChecker {
                     }
                     '(' => depth_paren += 1,
                     ')' => depth_paren -= 1,
-                    ',' if depth_brace == 0 && depth_angle == 0 && depth_bracket == 0 && depth_paren == 0 => {
+                    ',' if depth_brace == 0
+                        && depth_angle == 0
+                        && depth_bracket == 0
+                        && depth_paren == 0 =>
+                    {
                         params.push(current.trim().to_string());
                         current.clear();
                         continue;

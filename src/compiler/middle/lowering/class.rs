@@ -1,7 +1,7 @@
 use super::Lowering;
+use crate::common::types::TejxType;
 use crate::frontend::ast::*;
 use crate::middle::hir::*;
-use crate::common::types::TejxType;
 use std::collections::HashSet;
 
 impl Lowering {
@@ -224,8 +224,7 @@ impl Lowering {
                 ));
             }
             let name = format!("f_{}_{}", class_decl.name, func_decl.name);
-            let return_type =
-                self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
+            let return_type = self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
             let env_owner_name = if func_decl._is_async {
                 format!("f_{}_worker", name)
@@ -273,40 +272,40 @@ impl Lowering {
                         .lookup("this")
                         .map(|(n, _)| n)
                         .unwrap_or("this".to_string());
-                    
+
                     let mut injections = Vec::<HIRStatement>::new();
- 
-                     // 3. Instance fields initialization
-                     let i_fields_borrow = self.class_instance_fields.borrow();
-                     if let Some(i_list) = i_fields_borrow.get(&class_decl.name) {
-                         for (f_name, f_ty, f_init) in i_list {
+
+                    // 3. Instance fields initialization
+                    let i_fields_borrow = self.class_instance_fields.borrow();
+                    if let Some(i_list) = i_fields_borrow.get(&class_decl.name) {
+                        for (f_name, f_ty, f_init) in i_list {
                             let prev_expected = self.current_expected_type.borrow_mut().take();
                             *self.current_expected_type.borrow_mut() = Some(f_ty.clone());
                             let hir_init = self.lower_expression(f_init);
                             *self.current_expected_type.borrow_mut() = prev_expected;
                             injections.push(HIRStatement::ExpressionStmt {
-                                 line,
-                                 expr: HIRExpression::Assignment {
-                                     line,
-                                     target: Box::new(HIRExpression::MemberAccess {
-                                         line,
-                                         target: Box::new(HIRExpression::Variable {
-                                             line,
-                                             name: mangled_this.clone(),
-                                             ty: TejxType::Class(class_decl.name.clone(), vec![]),
-                                         }),
-                                         member: f_name.clone(),
-                                         ty: f_ty.clone(),
-                                     }),
-                                     value: Box::new(hir_init),
-                                     ty: f_ty.clone(),
-                                 },
-                             });
-                         }
-                     }
- 
-                     // 5. Getters/Setters: Modern compiler doesn't attach them to instances
-                     // (They should be resolved via VTable or static dispatch in CodeGen)
+                                line,
+                                expr: HIRExpression::Assignment {
+                                    line,
+                                    target: Box::new(HIRExpression::MemberAccess {
+                                        line,
+                                        target: Box::new(HIRExpression::Variable {
+                                            line,
+                                            name: mangled_this.clone(),
+                                            ty: TejxType::Class(class_decl.name.clone(), vec![]),
+                                        }),
+                                        member: f_name.clone(),
+                                        ty: f_ty.clone(),
+                                    }),
+                                    value: Box::new(hir_init),
+                                    ty: f_ty.clone(),
+                                },
+                            });
+                        }
+                    }
+
+                    // 5. Getters/Setters: Modern compiler doesn't attach them to instances
+                    // (They should be resolved via VTable or static dispatch in CodeGen)
 
                     // Splice injections into statements at insert_pos
                     for (i, injection) in injections.into_iter().enumerate() {
@@ -339,7 +338,11 @@ impl Lowering {
             } else {
                 self._exit_scope();
                 self.pop_env_owner();
-                let mangled_name = format!("f_{}_{}", class_decl.name.replace("[", "_").replace("]", "_"), func_decl.name);
+                let mangled_name = format!(
+                    "f_{}_{}",
+                    class_decl.name.replace("[", "_").replace("]", "_"),
+                    func_decl.name
+                );
                 functions.push(HIRStatement::Function {
                     async_params: None,
                     line,
@@ -354,34 +357,73 @@ impl Lowering {
 
         // Lower getters
         for getter in &class_decl._getters {
-            let params = [("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![]))];
+            let params = [(
+                "this".to_string(),
+                TejxType::Class(class_decl.name.clone(), vec![]),
+            )];
             let name = format!("f_{}_get_{}", class_decl.name, getter._name);
-            let return_type =
-                self.resolve_alias_type(&TejxType::from_node(&getter._return_type));
+            let return_type = self.resolve_alias_type(&TejxType::from_node(&getter._return_type));
             self.push_env_owner(name.clone());
             self.enter_scope();
-            let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
-            let hir_body = self.lower_statement(&getter._body).unwrap_or(HIRStatement::Block { line, statements: vec![] });
+            let mangled_params: Vec<_> = params
+                .iter()
+                .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
+                .collect();
+            let hir_body = self
+                .lower_statement(&getter._body)
+                .unwrap_or(HIRStatement::Block {
+                    line,
+                    statements: vec![],
+                });
             self._exit_scope();
             self.pop_env_owner();
-            functions.push(HIRStatement::Function { async_params: None, line, name, params: mangled_params, _return_type: return_type, body: Box::new(hir_body), is_extern: false });
+            functions.push(HIRStatement::Function {
+                async_params: None,
+                line,
+                name,
+                params: mangled_params,
+                _return_type: return_type,
+                body: Box::new(hir_body),
+                is_extern: false,
+            });
         }
 
         // Lower setters
         for setter in &class_decl._setters {
-            let params = [("this".to_string(), TejxType::Class(class_decl.name.clone(), vec![])),
+            let params = [
+                (
+                    "this".to_string(),
+                    TejxType::Class(class_decl.name.clone(), vec![]),
+                ),
                 (
                     setter._param_name.clone(),
                     self.resolve_alias_type(&TejxType::from_node(&setter._param_type)),
-                )];
+                ),
+            ];
             let name = format!("f_{}_set_{}", class_decl.name, setter._name);
             self.push_env_owner(name.clone());
             self.enter_scope();
-            let mangled_params: Vec<_> = params.iter().map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone())).collect();
-            let hir_body = self.lower_statement(&setter._body).unwrap_or(HIRStatement::Block { line, statements: vec![] });
+            let mangled_params: Vec<_> = params
+                .iter()
+                .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
+                .collect();
+            let hir_body = self
+                .lower_statement(&setter._body)
+                .unwrap_or(HIRStatement::Block {
+                    line,
+                    statements: vec![],
+                });
             self._exit_scope();
             self.pop_env_owner();
-            functions.push(HIRStatement::Function { async_params: None, line, name, params: mangled_params, _return_type: TejxType::Void, body: Box::new(hir_body), is_extern: false });
+            functions.push(HIRStatement::Function {
+                async_params: None,
+                line,
+                name,
+                params: mangled_params,
+                _return_type: TejxType::Void,
+                body: Box::new(hir_body),
+                is_extern: false,
+            });
         }
 
         // Lower static fields
@@ -394,7 +436,11 @@ impl Lowering {
                     line,
                     expr: HIRExpression::Assignment {
                         line,
-                        target: Box::new(HIRExpression::Variable { line, name: mangled_name, ty: f_ty.clone() }),
+                        target: Box::new(HIRExpression::Variable {
+                            line,
+                            name: mangled_name,
+                            ty: f_ty.clone(),
+                        }),
                         value: Box::new(hir_init),
                         ty: TejxType::Int64,
                     },
@@ -462,8 +508,7 @@ impl Lowering {
                     func_decl.name
                 )
             };
-            let return_type =
-                self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
+            let return_type = self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
             self.push_env_owner(name.clone());
             self.enter_scope();

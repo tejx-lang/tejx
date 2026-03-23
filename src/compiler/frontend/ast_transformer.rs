@@ -1,5 +1,5 @@
-use crate::frontend::ast::*;
 use crate::common::types::TejxType;
+use crate::frontend::ast::*;
 use std::collections::HashMap;
 
 pub struct TypeSubstitutor<'a> {
@@ -63,7 +63,11 @@ impl<'a> TypeSubstitutor<'a> {
 
     pub fn transform_statement(&self, stmt: &mut Statement) {
         match stmt {
-            Statement::VarDeclaration { type_annotation, initializer, .. } => {
+            Statement::VarDeclaration {
+                type_annotation,
+                initializer,
+                ..
+            } => {
                 self.substitute_type(type_annotation);
                 if let Some(expr) = initializer {
                     self.transform_expression(expr);
@@ -105,41 +109,73 @@ impl<'a> TypeSubstitutor<'a> {
                     self.transform_statement(s);
                 }
             }
-            Statement::IfStmt { condition, then_branch, else_branch, .. } => {
+            Statement::IfStmt {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.transform_expression(condition);
                 self.transform_statement(then_branch);
                 if let Some(e) = else_branch {
                     self.transform_statement(e);
                 }
             }
-            Statement::WhileStmt { condition, body, .. } => {
+            Statement::WhileStmt {
+                condition, body, ..
+            } => {
                 self.transform_expression(condition);
                 self.transform_statement(body);
             }
-            Statement::ForStmt { init, condition, increment, body, .. } => {
-                if let Some(i) = init { self.transform_statement(i); }
-                if let Some(c) = condition { self.transform_expression(c); }
-                if let Some(inc) = increment { self.transform_expression(inc); }
+            Statement::ForStmt {
+                init,
+                condition,
+                increment,
+                body,
+                ..
+            } => {
+                if let Some(i) = init {
+                    self.transform_statement(i);
+                }
+                if let Some(c) = condition {
+                    self.transform_expression(c);
+                }
+                if let Some(inc) = increment {
+                    self.transform_expression(inc);
+                }
                 self.transform_statement(body);
             }
             Statement::ForOfStmt { iterable, body, .. } => {
                 self.transform_expression(iterable);
                 self.transform_statement(body);
             }
-            Statement::SwitchStmt { condition, cases, .. } => {
+            Statement::SwitchStmt {
+                condition, cases, ..
+            } => {
                 self.transform_expression(condition);
                 for c in cases {
-                    if let Some(v) = &mut c.value { self.transform_expression(v); }
-                    for s in &mut c.statements { self.transform_statement(s); }
+                    if let Some(v) = &mut c.value {
+                        self.transform_expression(v);
+                    }
+                    for s in &mut c.statements {
+                        self.transform_statement(s);
+                    }
                 }
             }
             Statement::ExpressionStmt { _expression, .. } => {
                 self.transform_expression(_expression);
             }
-            Statement::TryStmt { _try_block, _catch_block, _finally_block, .. } => {
+            Statement::TryStmt {
+                _try_block,
+                _catch_block,
+                _finally_block,
+                ..
+            } => {
                 self.transform_statement(_try_block);
                 self.transform_statement(_catch_block);
-                if let Some(f) = _finally_block { self.transform_statement(f); }
+                if let Some(f) = _finally_block {
+                    self.transform_statement(f);
+                }
             }
             Statement::DelStmt { target, .. } => self.transform_expression(target),
             Statement::ThrowStmt { _expression, .. } => self.transform_expression(_expression),
@@ -161,25 +197,41 @@ impl<'a> TypeSubstitutor<'a> {
             }
             Expression::CallExpr { callee, args, .. } => {
                 self.transform_expression(callee);
-                for a in args { self.transform_expression(a); }
+                for a in args {
+                    self.transform_expression(a);
+                }
             }
             Expression::SequenceExpr { expressions, .. } => {
-                for e in expressions { self.transform_expression(e); }
+                for e in expressions {
+                    self.transform_expression(e);
+                }
             }
             Expression::MemberAccessExpr { object, .. } => self.transform_expression(object),
             Expression::ArrayAccessExpr { target, index, .. } => {
                 self.transform_expression(target);
                 self.transform_expression(index);
             }
-            Expression::ObjectLiteralExpr { entries, _spreads, .. } => {
-                for (_, e) in entries { self.transform_expression(e); }
-                for s in _spreads { self.transform_expression(s); }
+            Expression::ObjectLiteralExpr {
+                entries, _spreads, ..
+            } => {
+                for (_, e) in entries {
+                    self.transform_expression(e);
+                }
+                for s in _spreads {
+                    self.transform_expression(s);
+                }
             }
             Expression::ArrayLiteral { elements, .. } => {
-                for e in elements { self.transform_expression(e); }
+                for e in elements {
+                    self.transform_expression(e);
+                }
             }
-            Expression::NewExpr { args, class_name, .. } => {
-                for a in args { self.transform_expression(a); }
+            Expression::NewExpr {
+                args, class_name, ..
+            } => {
+                for a in args {
+                    self.transform_expression(a);
+                }
 
                 let mut bindings = HashMap::new();
                 for (k, v) in self.substitutions.iter() {
@@ -190,19 +242,30 @@ impl<'a> TypeSubstitutor<'a> {
                 *class_name = substituted.to_name();
             }
             Expression::LambdaExpr { params, body, .. } => {
-                for p in params { self.substitute_type(&mut p.type_name); }
+                for p in params {
+                    self.substitute_type(&mut p.type_name);
+                }
                 self.transform_statement(body);
             }
             Expression::AwaitExpr { expr, .. } => self.transform_expression(expr),
-            Expression::TernaryExpr { _condition, _true_branch, _false_branch, .. } => {
+            Expression::TernaryExpr {
+                _condition,
+                _true_branch,
+                _false_branch,
+                ..
+            } => {
                 self.transform_expression(_condition);
                 self.transform_expression(_true_branch);
                 self.transform_expression(_false_branch);
             }
-            Expression::OptionalMemberAccessExpr { object, .. } => self.transform_expression(object),
+            Expression::OptionalMemberAccessExpr { object, .. } => {
+                self.transform_expression(object)
+            }
             Expression::OptionalCallExpr { callee, args, .. } => {
                 self.transform_expression(callee);
-                for a in args { self.transform_expression(a); }
+                for a in args {
+                    self.transform_expression(a);
+                }
             }
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
                 self.transform_expression(target);
@@ -214,7 +277,9 @@ impl<'a> TypeSubstitutor<'a> {
             }
             Expression::SpreadExpr { _expr, .. } => self.transform_expression(_expr),
             Expression::SomeExpr { value, .. } => self.transform_expression(value),
-            Expression::CastExpr { expr, target_type, .. } => {
+            Expression::CastExpr {
+                expr, target_type, ..
+            } => {
                 self.transform_expression(expr);
                 self.substitute_type(target_type);
             }

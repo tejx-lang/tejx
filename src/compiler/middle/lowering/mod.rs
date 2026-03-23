@@ -7,11 +7,11 @@ pub mod imports;
 pub mod patterns;
 pub mod stmt;
 
-use crate::frontend::ast::*;
 use crate::common::diagnostics::Diagnostic;
-use crate::middle::hir::*;
 use crate::common::intrinsics::*;
 use crate::common::types::TejxType;
+use crate::frontend::ast::*;
+use crate::middle::hir::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -38,7 +38,8 @@ pub struct Lowering {
     class_generic_params: RefCell<HashMap<String, Vec<String>>>,
     function_generic_params: RefCell<HashMap<String, Vec<String>>>,
     erased_generic_functions: RefCell<HashSet<String>>,
-    discovered_function_instantiations: RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
+    discovered_function_instantiations:
+        RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     type_aliases: RefCell<HashMap<String, TejxType>>,
     pub async_enabled: bool,
     current_async_promise_id: RefCell<Option<String>>,
@@ -133,10 +134,9 @@ impl Lowering {
             Expression::CharLiteral { .. } => TejxType::Char,
             Expression::BooleanLiteral { .. } => TejxType::Bool,
             Expression::NoneLiteral { .. } => TejxType::Any,
-            Expression::Identifier { name, .. } => self
-                .lookup(name)
-                .map(|(_, ty)| ty)
-                .unwrap_or(TejxType::Any),
+            Expression::Identifier { name, .. } => {
+                self.lookup(name).map(|(_, ty)| ty).unwrap_or(TejxType::Any)
+            }
             Expression::MemberAccessExpr { object, member, .. } => {
                 let object_ty = self.infer_top_level_initializer_type(object);
                 if let TejxType::Object(props) = object_ty {
@@ -159,7 +159,11 @@ impl Lowering {
             } => {
                 let mut props = Vec::new();
                 for (key, value) in entries {
-                    props.push((key.clone(), false, self.infer_top_level_initializer_type(value)));
+                    props.push((
+                        key.clone(),
+                        false,
+                        self.infer_top_level_initializer_type(value),
+                    ));
                 }
                 for spread in _spreads {
                     if let TejxType::Object(spread_props) =
@@ -239,17 +243,11 @@ impl Lowering {
     }
 
     pub(crate) fn register_type_alias(&self, name: &str, ty: TejxType) {
-        self.type_aliases
-            .borrow_mut()
-            .insert(name.to_string(), ty);
+        self.type_aliases.borrow_mut().insert(name.to_string(), ty);
     }
 
     pub(crate) fn resolve_alias_type(&self, ty: &TejxType) -> TejxType {
-        fn resolve_inner(
-            ctx: &Lowering,
-            ty: &TejxType,
-            depth: usize,
-        ) -> TejxType {
+        fn resolve_inner(ctx: &Lowering, ty: &TejxType, depth: usize) -> TejxType {
             if depth > 20 {
                 return ty.clone();
             }
@@ -270,20 +268,15 @@ impl Lowering {
                         )
                     }
                 }
-                TejxType::FixedArray(inner, size) => TejxType::FixedArray(
-                    Box::new(resolve_inner(ctx, inner, depth + 1)),
-                    *size,
-                ),
-                TejxType::DynamicArray(inner) => TejxType::DynamicArray(Box::new(resolve_inner(
-                    ctx,
-                    inner,
-                    depth + 1,
-                ))),
-                TejxType::Slice(inner) => TejxType::Slice(Box::new(resolve_inner(
-                    ctx,
-                    inner,
-                    depth + 1,
-                ))),
+                TejxType::FixedArray(inner, size) => {
+                    TejxType::FixedArray(Box::new(resolve_inner(ctx, inner, depth + 1)), *size)
+                }
+                TejxType::DynamicArray(inner) => {
+                    TejxType::DynamicArray(Box::new(resolve_inner(ctx, inner, depth + 1)))
+                }
+                TejxType::Slice(inner) => {
+                    TejxType::Slice(Box::new(resolve_inner(ctx, inner, depth + 1)))
+                }
                 TejxType::Function(params, ret) => TejxType::Function(
                     params
                         .iter()
@@ -467,7 +460,8 @@ impl Lowering {
                     continue;
                 }
 
-                let Some(mut class_decl) = self.find_class_template(merged_statements, &base_name) else {
+                let Some(mut class_decl) = self.find_class_template(merged_statements, &base_name)
+                else {
                     continue;
                 };
 
@@ -477,14 +471,16 @@ impl Lowering {
 
                 let mut substitutions = HashMap::new();
                 let mangled_name = self.monomorphized_name(&base_name, &concrete_args);
-                for (param, arg_type) in class_decl.generic_params.iter().zip(concrete_args.iter()) {
+                for (param, arg_type) in class_decl.generic_params.iter().zip(concrete_args.iter())
+                {
                     substitutions.insert(param.name.clone(), arg_type.to_type_node());
                 }
 
                 class_decl.name = mangled_name;
                 class_decl.generic_params.clear();
 
-                let transformer = crate::frontend::ast_transformer::TypeSubstitutor::new(&substitutions);
+                let transformer =
+                    crate::frontend::ast_transformer::TypeSubstitutor::new(&substitutions);
                 transformer.transform_class(&mut class_decl);
 
                 self.register_class(&class_decl);
@@ -497,7 +493,9 @@ impl Lowering {
                     function_instantiations.push((base_name.clone(), args.clone()));
                 }
             }
-            for (base_name, instantiations) in self.discovered_function_instantiations.borrow().iter() {
+            for (base_name, instantiations) in
+                self.discovered_function_instantiations.borrow().iter()
+            {
                 for args in instantiations {
                     function_instantiations.push((base_name.clone(), args.clone()));
                 }
@@ -513,7 +511,9 @@ impl Lowering {
                     continue;
                 }
 
-                let Some(mut func_decl) = self.find_function_template(merged_statements, &base_name) else {
+                let Some(mut func_decl) =
+                    self.find_function_template(merged_statements, &base_name)
+                else {
                     continue;
                 };
 
@@ -530,7 +530,8 @@ impl Lowering {
                 func_decl.name = mangled_name;
                 func_decl.generic_params.clear();
 
-                let transformer = crate::frontend::ast_transformer::TypeSubstitutor::new(&substitutions);
+                let transformer =
+                    crate::frontend::ast_transformer::TypeSubstitutor::new(&substitutions);
                 transformer.transform_function(&mut func_decl);
 
                 self.register_function(&func_decl);
@@ -702,7 +703,11 @@ impl Lowering {
                     }
                     Statement::ClassDeclaration(class_decl) => {
                         if self.should_lower_class(class_decl) {
-                            self.lower_class_declaration(class_decl, &mut functions, &mut main_stmts);
+                            self.lower_class_declaration(
+                                class_decl,
+                                &mut functions,
+                                &mut main_stmts,
+                            );
                         }
                     }
                     Statement::ExtensionDeclaration(ext_decl) => {
@@ -918,18 +923,18 @@ impl Lowering {
         let mut class_fields = HashMap::new();
         let parents = self.class_parents.borrow();
         let i_fields = self.class_instance_fields.borrow();
-        
+
         for (class_name, _) in i_fields.iter() {
             let mut all_fields = Vec::new();
             let mut current = Some(class_name.clone());
             let mut chain = Vec::new();
-            
+
             // Walk up to collect inheritance chain
             while let Some(c) = current {
                 chain.push(c.clone());
                 current = parents.get(&c).cloned();
             }
-            
+
             // Collect fields from top of hierarchy down
             for c in chain.into_iter().rev() {
                 if let Some(fields) = i_fields.get(&c) {

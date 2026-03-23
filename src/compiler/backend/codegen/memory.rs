@@ -1,6 +1,6 @@
 use super::*;
-use crate::middle::mir::*;
 use crate::common::types::TejxType;
+use crate::middle::mir::*;
 
 impl CodeGen {
     pub(crate) fn resolve_fixed_field_info(
@@ -26,7 +26,9 @@ impl CodeGen {
             },
         };
 
-        let pos = fields.iter().position(|(field_name, _)| field_name == member)?;
+        let pos = fields
+            .iter()
+            .position(|(field_name, _)| field_name == member)?;
         let mut offset = 0usize;
         for (_, ty) in &fields[..pos] {
             offset = Self::get_aligned_offset(offset, ty);
@@ -65,42 +67,44 @@ impl CodeGen {
                     if Self::fixed_layout_object_type(ty).is_some()
                         && self.can_use_fixed_object_layout_for_ty(func, name, ty));
             if allow_fixed_layout {
-                if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
-                let llvm_ty = Self::get_llvm_storage_type(&field_ty);
+                if let Some((offset, field_ty)) =
+                    self.resolve_fixed_field_info(obj.get_type(), member)
+                {
+                    let llvm_ty = Self::get_llvm_storage_type(&field_ty);
 
-                let ptr_reg = format!("%ptr_{}", self.temp_counter);
-                self.temp_counter += 1;
-                let raw_obj = self.emit_strip_heap_offset(&obj_val);
-                self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
+                    let ptr_reg = format!("%ptr_{}", self.temp_counter);
+                    self.temp_counter += 1;
+                    let raw_obj = self.emit_strip_heap_offset(&obj_val);
+                    self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
 
-                let field_ptr = format!("%field_ptr_{}", self.temp_counter);
-                self.temp_counter += 1;
-                self.emit_line(&format!(
-                    "{} = getelementptr i8, i8* {}, i32 {}",
-                    field_ptr, ptr_reg, offset
-                ));
+                    let field_ptr = format!("%field_ptr_{}", self.temp_counter);
+                    self.temp_counter += 1;
+                    self.emit_line(&format!(
+                        "{} = getelementptr i8, i8* {}, i32 {}",
+                        field_ptr, ptr_reg, offset
+                    ));
 
-                let typed_field_ptr = format!("%typed_field_ptr_{}", self.temp_counter);
-                self.temp_counter += 1;
-                self.emit_line(&format!(
-                    "{} = bitcast i8* {} to {}*",
-                    typed_field_ptr, field_ptr, llvm_ty
-                ));
+                    let typed_field_ptr = format!("%typed_field_ptr_{}", self.temp_counter);
+                    self.temp_counter += 1;
+                    self.emit_line(&format!(
+                        "{} = bitcast i8* {} to {}*",
+                        typed_field_ptr, field_ptr, llvm_ty
+                    ));
 
-                let loaded_val = format!("%loaded_val_{}", self.temp_counter);
-                self.temp_counter += 1;
-                self.emit_line(&format!(
-                    "{} = load {}, {}* {}",
-                    loaded_val, llvm_ty, llvm_ty, typed_field_ptr
-                ));
+                    let loaded_val = format!("%loaded_val_{}", self.temp_counter);
+                    self.temp_counter += 1;
+                    self.emit_line(&format!(
+                        "{} = load {}, {}* {}",
+                        loaded_val, llvm_ty, llvm_ty, typed_field_ptr
+                    ));
 
-                let mut value_val = loaded_val;
-                if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
-                    value_val = self.emit_storage_to_value(&value_val, &field_ty);
+                    let mut value_val = loaded_val;
+                    if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
+                        value_val = self.emit_storage_to_value(&value_val, &field_ty);
+                    }
+                    res_tmp = self.emit_abi_cast(&value_val, &field_ty, dst_ty);
+                    used_fast = true;
                 }
-                res_tmp = self.emit_abi_cast(&value_val, &field_ty, dst_ty);
-                used_fast = true;
-            }
             }
 
             if !used_fast {
@@ -136,13 +140,13 @@ impl CodeGen {
                     temp_root_count += 1;
                 }
                 self.declare_runtime_fn("rt_get_property", "i64 @rt_get_property(i64, i64)");
-                self.emit_line(&format!("{} = call i64 @rt_get_property(i64 {}, i64 {})", res_tmp, obj_val, k_val));
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_get_property(i64 {}, i64 {})",
+                    res_tmp, obj_val, k_val
+                ));
 
                 if temp_root_count > 0 {
-                    self.emit_line(&format!(
-                        "call void @rt_pop_roots(i64 {})",
-                        temp_root_count
-                    ));
+                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
                 }
             }
         }
@@ -153,7 +157,10 @@ impl CodeGen {
             self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
             self.temp_counter += 1;
             let f_val = format!("%f_val_{}", self.temp_counter);
-            self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", f_val, res_tmp));
+            self.emit_line(&format!(
+                "{} = call double @rt_to_number(i64 {})",
+                f_val, res_tmp
+            ));
             self.temp_counter += 1;
             let bc_val = format!("%bc_val_{}", self.temp_counter);
             self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
@@ -162,7 +169,10 @@ impl CodeGen {
             self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
             self.temp_counter += 1;
             let f_val = format!("%f_val_{}", self.temp_counter);
-            self.emit_line(&format!("{} = call double @rt_to_number(i64 {})", f_val, res_tmp));
+            self.emit_line(&format!(
+                "{} = call double @rt_to_number(i64 {})",
+                f_val, res_tmp
+            ));
             self.temp_counter += 1;
             let i_val = format!("%i_val_{}", self.temp_counter);
             self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
@@ -171,7 +181,10 @@ impl CodeGen {
             self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
             self.temp_counter += 1;
             let b_val = format!("%b_val_{}", self.temp_counter);
-            self.emit_line(&format!("{} = call i64 @rt_to_boolean(i64 {})", b_val, res_tmp));
+            self.emit_line(&format!(
+                "{} = call i64 @rt_to_boolean(i64 {})",
+                b_val, res_tmp
+            ));
             self.emit_abi_cast(&b_val, &TejxType::Int64, &TejxType::Bool)
         } else {
             res_tmp
@@ -205,48 +218,49 @@ impl CodeGen {
                 if Self::fixed_layout_object_type(ty).is_some()
                     && self.can_use_fixed_object_layout_for_ty(func, name, ty));
         if allow_fixed_layout {
-            if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member) {
-            let llvm_ty = Self::get_llvm_storage_type(&field_ty);
+            if let Some((offset, field_ty)) = self.resolve_fixed_field_info(obj.get_type(), member)
+            {
+                let llvm_ty = Self::get_llvm_storage_type(&field_ty);
 
-            let ptr_reg = format!("%ptr_store_{}", self.temp_counter);
-            self.temp_counter += 1;
-            let raw_obj = self.emit_strip_heap_offset(&obj_val);
-            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
+                let ptr_reg = format!("%ptr_store_{}", self.temp_counter);
+                self.temp_counter += 1;
+                let raw_obj = self.emit_strip_heap_offset(&obj_val);
+                self.emit_line(&format!("{} = inttoptr i64 {} to i8*", ptr_reg, raw_obj));
 
-            let field_ptr = format!("%field_ptr_store_{}", self.temp_counter);
-            self.temp_counter += 1;
-            self.emit_line(&format!(
-                "{} = getelementptr i8, i8* {}, i32 {}",
-                field_ptr, ptr_reg, offset
-            ));
-
-            let typed_field_ptr = format!("%typed_field_ptr_store_{}", self.temp_counter);
-            self.temp_counter += 1;
-            self.emit_line(&format!(
-                "{} = bitcast i8* {} to {}*",
-                typed_field_ptr, field_ptr, llvm_ty
-            ));
-
-            let final_src = self.emit_abi_cast(&v_val, &v_ty, &field_ty);
-            let store_val = if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
-                self.emit_value_to_storage(&final_src, &field_ty)
-            } else {
-                final_src
-            };
-            self.emit_line(&format!(
-                "store {} {}, {}* {}",
-                llvm_ty, store_val, llvm_ty, typed_field_ptr
-            ));
-            if Self::is_gc_managed(&field_ty) {
-                let barrier_val = self.emit_abi_cast(&v_val, &v_ty, &TejxType::Int64);
-                self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
+                let field_ptr = format!("%field_ptr_store_{}", self.temp_counter);
+                self.temp_counter += 1;
                 self.emit_line(&format!(
-                    "call void @rt_write_barrier(i64 {}, i64 {})",
-                    obj_val, barrier_val
+                    "{} = getelementptr i8, i8* {}, i32 {}",
+                    field_ptr, ptr_reg, offset
                 ));
+
+                let typed_field_ptr = format!("%typed_field_ptr_store_{}", self.temp_counter);
+                self.temp_counter += 1;
+                self.emit_line(&format!(
+                    "{} = bitcast i8* {} to {}*",
+                    typed_field_ptr, field_ptr, llvm_ty
+                ));
+
+                let final_src = self.emit_abi_cast(&v_val, &v_ty, &field_ty);
+                let store_val = if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
+                    self.emit_value_to_storage(&final_src, &field_ty)
+                } else {
+                    final_src
+                };
+                self.emit_line(&format!(
+                    "store {} {}, {}* {}",
+                    llvm_ty, store_val, llvm_ty, typed_field_ptr
+                ));
+                if Self::is_gc_managed(&field_ty) {
+                    let barrier_val = self.emit_abi_cast(&v_val, &v_ty, &TejxType::Int64);
+                    self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
+                    self.emit_line(&format!(
+                        "call void @rt_write_barrier(i64 {}, i64 {})",
+                        obj_val, barrier_val
+                    ));
+                }
+                used_fast_store = true;
             }
-            used_fast_store = true;
-        }
         }
 
         if !used_fast_store {
@@ -292,13 +306,13 @@ impl CodeGen {
             temp_root_count += 1;
 
             self.declare_runtime_fn("rt_set_property", "void @rt_set_property(i64, i64, i64)");
-            self.emit_line(&format!("call void @rt_set_property(i64 {}, i64 {}, i64 {})", obj_val, k_val, boxed_v));
+            self.emit_line(&format!(
+                "call void @rt_set_property(i64 {}, i64 {}, i64 {})",
+                obj_val, k_val, boxed_v
+            ));
 
             if temp_root_count > 0 {
-                self.emit_line(&format!(
-                    "call void @rt_pop_roots(i64 {})",
-                    temp_root_count
-                ));
+                self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
             }
         }
     }
@@ -315,7 +329,8 @@ impl CodeGen {
         let idx_ty = index.get_type();
         let idx_val = self.resolve_value(index);
 
-        if matches!(obj.get_type(), TejxType::FixedArray(_, _)) && !matches!(idx_ty, TejxType::String)
+        if matches!(obj.get_type(), TejxType::FixedArray(_, _))
+            && !matches!(idx_ty, TejxType::String)
         {
             let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
             let llvm_ty = Self::get_llvm_storage_type(element_ty);
@@ -390,43 +405,43 @@ impl CodeGen {
             }
 
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-            let final_res = if dst_ty.is_numeric() && !matches!(dst_ty, TejxType::Int64 | TejxType::Any)
-            {
-                self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
-                self.temp_counter += 1;
-                let f_val = format!("%f_val_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call double @rt_to_number(i64 {})",
-                    f_val, res_tmp
-                ));
-                self.temp_counter += 1;
-                let i_val = format!("%i_val_{}", self.temp_counter);
-                self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
-                self.emit_abi_cast(&i_val, &TejxType::Int64, dst_ty)
-            } else if dst_ty.is_float() {
-                self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
-                self.temp_counter += 1;
-                let f_val = format!("%f_val_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call double @rt_to_number(i64 {})",
-                    f_val, res_tmp
-                ));
-                self.temp_counter += 1;
-                let bc_val = format!("%bc_val_{}", self.temp_counter);
-                self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
-                bc_val
-            } else if matches!(dst_ty, TejxType::Bool) {
-                self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
-                self.temp_counter += 1;
-                let b_val = format!("%b_val_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @rt_to_boolean(i64 {})",
-                    b_val, res_tmp
-                ));
-                self.emit_abi_cast(&b_val, &TejxType::Int64, &TejxType::Bool)
-            } else {
-                self.emit_abi_cast(&res_tmp, &TejxType::Any, dst_ty)
-            };
+            let final_res =
+                if dst_ty.is_numeric() && !matches!(dst_ty, TejxType::Int64 | TejxType::Any) {
+                    self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
+                    self.temp_counter += 1;
+                    let f_val = format!("%f_val_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call double @rt_to_number(i64 {})",
+                        f_val, res_tmp
+                    ));
+                    self.temp_counter += 1;
+                    let i_val = format!("%i_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = fptosi double {} to i64", i_val, f_val));
+                    self.emit_abi_cast(&i_val, &TejxType::Int64, dst_ty)
+                } else if dst_ty.is_float() {
+                    self.declare_runtime_fn("rt_to_number", "double @rt_to_number(i64)");
+                    self.temp_counter += 1;
+                    let f_val = format!("%f_val_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call double @rt_to_number(i64 {})",
+                        f_val, res_tmp
+                    ));
+                    self.temp_counter += 1;
+                    let bc_val = format!("%bc_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast double {} to i64", bc_val, f_val));
+                    bc_val
+                } else if matches!(dst_ty, TejxType::Bool) {
+                    self.declare_runtime_fn("rt_to_boolean", "i64 @rt_to_boolean(i64)");
+                    self.temp_counter += 1;
+                    let b_val = format!("%b_val_{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_to_boolean(i64 {})",
+                        b_val, res_tmp
+                    ));
+                    self.emit_abi_cast(&b_val, &TejxType::Int64, &TejxType::Bool)
+                } else {
+                    self.emit_abi_cast(&res_tmp, &TejxType::Any, dst_ty)
+                };
 
             self.emit_store_variable(dst, &final_res, dst_ty);
             return;
@@ -481,25 +496,16 @@ impl CodeGen {
             if matches!(element_ty, TejxType::Float32) {
                 self.temp_counter += 1;
                 let trunc_i32 = format!("%f_trunc_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = trunc i64 {} to i32",
-                    trunc_i32, res_tmp
-                ));
+                self.emit_line(&format!("{} = trunc i64 {} to i32", trunc_i32, res_tmp));
                 self.temp_counter += 1;
                 let f_val = format!("%f_val_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast i32 {} to float",
-                    f_val, trunc_i32
-                ));
+                self.emit_line(&format!("{} = bitcast i32 {} to float", f_val, trunc_i32));
                 let casted = self.emit_abi_cast(&f_val, &TejxType::Float32, dst_ty);
                 self.emit_store_variable(dst, &casted, dst_ty);
             } else {
                 self.temp_counter += 1;
                 let f_val = format!("%f_val_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast i64 {} to double",
-                    f_val, res_tmp
-                ));
+                self.emit_line(&format!("{} = bitcast i64 {} to double", f_val, res_tmp));
                 let casted = self.emit_abi_cast(&f_val, &TejxType::Float64, dst_ty);
                 self.emit_store_variable(dst, &casted, dst_ty);
             }
@@ -530,7 +536,8 @@ impl CodeGen {
         let mut v_val = self.resolve_value(src);
         let v_ty = src.get_type();
 
-        if matches!(obj.get_type(), TejxType::FixedArray(_, _)) && !matches!(idx_ty, TejxType::String)
+        if matches!(obj.get_type(), TejxType::FixedArray(_, _))
+            && !matches!(idx_ty, TejxType::String)
         {
             let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
             let llvm_ty = Self::get_llvm_storage_type(element_ty);
@@ -624,25 +631,16 @@ impl CodeGen {
                 let f_val = self.emit_abi_cast(&v_val, src_ty, &TejxType::Float32);
                 self.temp_counter += 1;
                 let bits_i32 = format!("%f_bits_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast float {} to i32",
-                    bits_i32, f_val
-                ));
+                self.emit_line(&format!("{} = bitcast float {} to i32", bits_i32, f_val));
                 self.temp_counter += 1;
                 let bits_i64 = format!("%f_bits64_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = zext i32 {} to i64",
-                    bits_i64, bits_i32
-                ));
+                self.emit_line(&format!("{} = zext i32 {} to i64", bits_i64, bits_i32));
                 v_val = bits_i64;
             } else {
                 let f_val = self.emit_abi_cast(&v_val, src_ty, &TejxType::Float64);
                 self.temp_counter += 1;
                 let bits_i64 = format!("%f_bits64_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast double {} to i64",
-                    bits_i64, f_val
-                ));
+                self.emit_line(&format!("{} = bitcast double {} to i64", bits_i64, f_val));
                 v_val = bits_i64;
             }
         } else {

@@ -1,8 +1,8 @@
 use super::Lowering;
-use crate::frontend::ast::*;
-use crate::middle::hir::*;
 use crate::common::intrinsics::*;
 use crate::common::types::TejxType;
+use crate::frontend::ast::*;
+use crate::middle::hir::*;
 
 impl Lowering {
     pub(crate) fn lower_async_function(

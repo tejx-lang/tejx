@@ -1,10 +1,10 @@
+use crate::common::intrinsics::*;
+use crate::common::types::TejxType;
+use crate::frontend::token::TokenType;
 /// HIR → MIR Lowering pass, mirroring C++ MIRLowering.cpp
 /// Converts high-level typed IR into basic blocks with low-level instructions.
 use crate::middle::hir::*;
-use crate::common::intrinsics::*;
 use crate::middle::mir::*;
-use crate::frontend::token::TokenType;
-use crate::common::types::TejxType;
 use std::collections::HashMap;
 
 const ARRAY_FLAG_FIXED: i64 = 0x0100;
@@ -593,12 +593,7 @@ impl MIRLowering {
     }
 
     fn pop_control_finally_if(&mut self, id: usize) {
-        if self
-            .control_finally_stack
-            .last()
-            .map(|ctx| ctx.id)
-            == Some(id)
-        {
+        if self.control_finally_stack.last().map(|ctx| ctx.id) == Some(id) {
             self.control_finally_stack.pop();
         }
     }
@@ -723,11 +718,10 @@ impl MIRLowering {
         if let Some(aps) = async_params {
             for (pname, _pty) in aps {
                 let mangled = self.resolve_variable(pname);
-                if !mangled.is_empty()
-                    && !added.contains(&mangled) {
-                        self.async_locals.push(mangled.clone());
-                        added.insert(mangled.clone());
-                    }
+                if !mangled.is_empty() && !added.contains(&mangled) {
+                    self.async_locals.push(mangled.clone());
+                    added.insert(mangled.clone());
+                }
             }
         }
 
@@ -814,11 +808,7 @@ impl MIRLowering {
         val
     }
 
-    fn emit_array_receiver_storeback(
-        &mut self,
-        receiver: &HIRExpression,
-        updated_array: MIRValue,
-    ) {
+    fn emit_array_receiver_storeback(&mut self, receiver: &HIRExpression, updated_array: MIRValue) {
         match receiver {
             HIRExpression::Variable { name, .. } => {
                 self.emit(MIRInstruction::Move {
@@ -1426,10 +1416,9 @@ impl MIRLowering {
 
     fn is_heap_ref_type(&self, ty: &TejxType) -> bool {
         match ty {
-            TejxType::String
-            | TejxType::DynamicArray(_)
-            | TejxType::Object(_)
-            | TejxType::Any => true,
+            TejxType::String | TejxType::DynamicArray(_) | TejxType::Object(_) | TejxType::Any => {
+                true
+            }
             TejxType::Class(name, _) => {
                 let lookup_name = if name.contains('<') {
                     name.split('<').next().unwrap()
@@ -1771,7 +1760,7 @@ impl MIRLowering {
                     }
                     TokenType::Comma => {
                         let _l = self.lower_expression(left);
-                        
+
                         self.lower_expression(right)
                     }
                     TokenType::PipePipe => {
@@ -2035,8 +2024,8 @@ impl MIRLowering {
                         | "rt_array_fill"
                         | "rt_array_sort"
                 );
-                let returns_length = final_callee == "rt_array_push"
-                    || final_callee == "rt_array_unshift";
+                let returns_length =
+                    final_callee == "rt_array_push" || final_callee == "rt_array_unshift";
 
                 if is_array_mut {
                     let arr_val = mir_args.first().cloned();
@@ -2102,8 +2091,6 @@ impl MIRLowering {
                     args: mir_args,
                 });
 
-                
-
                 MIRValue::Variable {
                     name: raw_temp.clone(),
                     ty: ty.clone(),
@@ -2113,7 +2100,8 @@ impl MIRLowering {
                 callee, args, ty, ..
             } => {
                 let mir_callee = self.lower_expression(callee);
-                let mir_args: Vec<MIRValue> = args.iter().map(|a| self.lower_expression(a)).collect();
+                let mir_args: Vec<MIRValue> =
+                    args.iter().map(|a| self.lower_expression(a)).collect();
                 let temp = self.new_temp(ty.clone());
                 self.emit(MIRInstruction::IndirectCall {
                     line: 0,
@@ -2421,20 +2409,22 @@ impl MIRLowering {
 
                 // Special handling for 'length' on arrays, strings, and slices
                 if member == "length"
-                    && (matches!(obj_ty, TejxType::String) || obj_ty.is_array() || obj_ty.is_slice())
-                    {
-                        let temp = self.new_temp(TejxType::Int32);
-                        self.emit(MIRInstruction::Call {
-                            line: 0,
-                            dst: temp.clone(),
-                            callee: "rt_len".to_string(),
-                            args: vec![obj],
-                        });
-                        return MIRValue::Variable {
-                            name: temp,
-                            ty: TejxType::Int32,
-                        };
-                    }
+                    && (matches!(obj_ty, TejxType::String)
+                        || obj_ty.is_array()
+                        || obj_ty.is_slice())
+                {
+                    let temp = self.new_temp(TejxType::Int32);
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        dst: temp.clone(),
+                        callee: "rt_len".to_string(),
+                        args: vec![obj],
+                    });
+                    return MIRValue::Variable {
+                        name: temp,
+                        ty: TejxType::Int32,
+                    };
+                }
 
                 let temp = self.new_temp(ty.clone());
                 self.emit(MIRInstruction::LoadMember {

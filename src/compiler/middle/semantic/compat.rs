@@ -65,7 +65,8 @@ impl TypeChecker {
                     if sym.generic_params.is_empty() && !generics.is_empty() {
                         return false;
                     }
-                    if sym.generic_params.len() != generics.len() && !sym.generic_params.is_empty() {
+                    if sym.generic_params.len() != generics.len() && !sym.generic_params.is_empty()
+                    {
                         // We enforce generic counts only if the class actually declared some.
                         return false;
                     }
@@ -212,11 +213,12 @@ impl TypeChecker {
         let resolved_actual = resolve_type(actual);
 
         if (resolved_expected != *expected || resolved_actual != *actual)
-            && resolved_expected == resolved_actual {
-                return true;
-            }
-            // Let's re-eval with resolved if they are different
-            // But to avoid recursion, we just check structurally below on the resolved types
+            && resolved_expected == resolved_actual
+        {
+            return true;
+        }
+        // Let's re-eval with resolved if they are different
+        // But to avoid recursion, we just check structurally below on the resolved types
 
         let expected = &resolved_expected;
         let actual = &resolved_actual;
@@ -290,8 +292,7 @@ impl TypeChecker {
             _ => {}
         }
 
-        if let (TejxType::Class(e_name, e_gen), TejxType::Class(a_name, a_gen)) =
-            (expected, actual)
+        if let (TejxType::Class(e_name, e_gen), TejxType::Class(a_name, a_gen)) = (expected, actual)
         {
             if e_name == a_name && e_gen.len() == a_gen.len() {
                 let mut all_ok = true;
@@ -311,13 +312,15 @@ impl TypeChecker {
         let e_str = expected.to_name();
 
         if let TejxType::Class(n, g) = actual {
-            if n == "[]" && g.is_empty()
+            if n == "[]"
+                && g.is_empty()
                 && matches!(
                     expected,
                     TejxType::DynamicArray(_) | TejxType::FixedArray(_, _) | TejxType::Slice(_)
-                ) {
-                    return true;
-                }
+                )
+            {
+                return true;
+            }
         }
 
         // Inheritance check
@@ -360,22 +363,21 @@ impl TypeChecker {
                     self.are_types_compatible(e_ret, a_ret)
                 };
 
-                if ret_ok
-                    && a_params.len() <= e_params.len() {
-                        let mut all_params_ok = true;
-                        for (ep, ap) in e_params.iter().zip(a_params.iter()) {
-                            if !self.are_types_compatible(ep, ap)
-                                && ep != &TejxType::Any
-                                && ap != &TejxType::Any
-                            {
-                                all_params_ok = false;
-                                break;
-                            }
-                        }
-                        if all_params_ok {
-                            return true;
+                if ret_ok && a_params.len() <= e_params.len() {
+                    let mut all_params_ok = true;
+                    for (ep, ap) in e_params.iter().zip(a_params.iter()) {
+                        if !self.are_types_compatible(ep, ap)
+                            && ep != &TejxType::Any
+                            && ap != &TejxType::Any
+                        {
+                            all_params_ok = false;
+                            break;
                         }
                     }
+                    if all_params_ok {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -582,23 +584,22 @@ impl TypeChecker {
                 _ => {}
             }
 
-            if min.is_some() && max.is_some()
-                && (v < min.unwrap() || v > max.unwrap()) {
-                    self.report_error_detailed(
-                        format!(
-                            "Numeric literal '{}' is out of bounds for type '{}'",
-                            v, t_name
-                        ),
-                        line,
-                        col,
-                        "E0111",
-                        Some(&format!(
-                            "Ensure the value is between {} and {}",
-                            min.unwrap(),
-                            max.unwrap()
-                        )),
-                    );
-                }
+            if min.is_some() && max.is_some() && (v < min.unwrap() || v > max.unwrap()) {
+                self.report_error_detailed(
+                    format!(
+                        "Numeric literal '{}' is out of bounds for type '{}'",
+                        v, t_name
+                    ),
+                    line,
+                    col,
+                    "E0111",
+                    Some(&format!(
+                        "Ensure the value is between {} and {}",
+                        min.unwrap(),
+                        max.unwrap()
+                    )),
+                );
+            }
         }
     }
 }

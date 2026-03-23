@@ -1,7 +1,7 @@
 use super::Lowering;
+use crate::common::types::TejxType;
 use crate::frontend::ast::*;
 use crate::middle::hir::*;
-use crate::common::types::TejxType;
 
 impl Lowering {
     pub(crate) fn lower_binding_pattern(
@@ -97,13 +97,7 @@ impl Lowering {
                         ],
                         ty: ty.clone(),
                     };
-                    self.lower_binding_pattern(
-                        r,
-                        Some(slice_init),
-                        ty,
-                        is_const,
-                        stmts,
-                    );
+                    self.lower_binding_pattern(r, Some(slice_init), ty, is_const, stmts);
                 }
             }
             BindingNode::ObjectBinding { entries } => {
@@ -148,13 +142,7 @@ impl Lowering {
                         member: key.clone(),
                         ty: prop_ty.clone(),
                     };
-                    self.lower_binding_pattern(
-                        target,
-                        Some(el_init),
-                        &prop_ty,
-                        is_const,
-                        stmts,
-                    );
+                    self.lower_binding_pattern(target, Some(el_init), &prop_ty, is_const, stmts);
                 }
             }
         }

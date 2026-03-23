@@ -1,8 +1,8 @@
 use super::*;
 use crate::common::intrinsics::*;
-use crate::middle::mir::*;
 use crate::common::types::TejxType;
 use crate::frontend::token::TokenType;
+use crate::middle::mir::*;
 use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
@@ -42,7 +42,9 @@ impl CodeGen {
                 format!("Array<{}>", Self::fixed_layout_field_key(inner))
             }
             TejxType::Slice(inner) => format!("slice<{}>", Self::fixed_layout_field_key(inner)),
-            TejxType::Optional(inner) => format!("Optional<{}>", Self::fixed_layout_field_key(inner)),
+            TejxType::Optional(inner) => {
+                format!("Optional<{}>", Self::fixed_layout_field_key(inner))
+            }
             TejxType::Function(params, ret) => {
                 let params = params
                     .iter()
@@ -60,7 +62,9 @@ impl CodeGen {
             TejxType::Object(props) => Some(
                 props
                     .iter()
-                    .map(|(name, _, field_ty)| format!("{}:{}", name, Self::fixed_layout_field_key(field_ty)))
+                    .map(|(name, _, field_ty)| {
+                        format!("{}:{}", name, Self::fixed_layout_field_key(field_ty))
+                    })
                     .collect::<Vec<_>>()
                     .join(","),
             ),
@@ -85,7 +89,10 @@ impl CodeGen {
                         .insert(signature.clone(), shape_name.clone());
                     self.class_fields.insert(
                         shape_name,
-                        props.iter().map(|(name, _, ty)| (name.clone(), ty.clone())).collect(),
+                        props
+                            .iter()
+                            .map(|(name, _, ty)| (name.clone(), ty.clone()))
+                            .collect(),
                     );
                 }
                 for (_, _, field_ty) in props {
@@ -198,10 +205,9 @@ impl CodeGen {
                         }
                         MIRInstruction::Move { dst, src, .. } => {
                             if let MIRValue::Variable { name, .. } = src {
-                                if name == &current_var
-                                    && !check_vars.contains(dst) {
-                                        check_vars.push(dst.clone());
-                                    }
+                                if name == &current_var && !check_vars.contains(dst) {
+                                    check_vars.push(dst.clone());
+                                }
                             }
                         }
                         MIRInstruction::Cast {
@@ -209,10 +215,9 @@ impl CodeGen {
                             src: MIRValue::Variable { name, .. },
                             ..
                         } => {
-                            if name == &current_var
-                                && !check_vars.contains(dst) {
-                                    check_vars.push(dst.clone());
-                                }
+                            if name == &current_var && !check_vars.contains(dst) {
+                                check_vars.push(dst.clone());
+                            }
                         }
                         _ => {}
                     }
@@ -232,15 +237,15 @@ impl CodeGen {
     ) -> bool {
         matches!(value.get_type(), TejxType::Class(_, _))
             || matches!(
-                value,
-                MIRValue::Variable { name, ty, .. }
-                    if Self::fixed_layout_object_type(ty).is_some()
-                        && if visiting.contains(name) {
-                            true
-                        } else {
-                            self.can_use_fixed_object_layout_for_ty(func, name, ty)
-                        }
-        )
+                    value,
+                    MIRValue::Variable { name, ty, .. }
+                        if Self::fixed_layout_object_type(ty).is_some()
+                            && if visiting.contains(name) {
+                                true
+                            } else {
+                                self.can_use_fixed_object_layout_for_ty(func, name, ty)
+                            }
+            )
     }
 
     fn can_use_fixed_object_layout_with_key(
@@ -316,32 +321,27 @@ impl CodeGen {
                                 defs_to_check.push(name.clone());
                             }
                             MIRInstruction::LoadMember {
-                                dst,
-                                obj,
-                                member,
-                                ..
+                                dst, obj, member, ..
                             } if dst == &current_var => {
                                 found_definition = true;
-                                let parent_is_fixed_layout = self.value_uses_fixed_object_layout(
-                                    func, obj, cache, visiting,
-                                );
-                                let field_matches_shape =
-                                    match self.resolve_fixed_field_info(obj.get_type(), member) {
-                                        Some((_, field_ty)) => {
-                                            Self::fixed_layout_shape_key(&field_ty)
-                                                .as_deref()
-                                                == Some(target_key)
-                                                || match &field_ty {
-                                                    TejxType::Optional(inner) => {
-                                                        Self::fixed_layout_shape_key(inner)
-                                                            .as_deref()
-                                                            == Some(target_key)
-                                                    }
-                                                    _ => false,
+                                let parent_is_fixed_layout =
+                                    self.value_uses_fixed_object_layout(func, obj, cache, visiting);
+                                let field_matches_shape = match self
+                                    .resolve_fixed_field_info(obj.get_type(), member)
+                                {
+                                    Some((_, field_ty)) => {
+                                        Self::fixed_layout_shape_key(&field_ty).as_deref()
+                                            == Some(target_key)
+                                            || match &field_ty {
+                                                TejxType::Optional(inner) => {
+                                                    Self::fixed_layout_shape_key(inner).as_deref()
+                                                        == Some(target_key)
                                                 }
-                                        }
-                                        None => false,
-                                    };
+                                                _ => false,
+                                            }
+                                    }
+                                    None => false,
+                                };
                                 if parent_is_fixed_layout && field_matches_shape {
                                     has_trusted_source = true;
                                 } else {
@@ -428,9 +428,8 @@ impl CodeGen {
                                 src: MIRValue::Variable { name, .. },
                                 ..
                             } if name == &current_var => {
-                                if !self.value_uses_fixed_object_layout(
-                                    func, obj, cache, visiting,
-                                ) {
+                                if !self.value_uses_fixed_object_layout(func, obj, cache, visiting)
+                                {
                                     break 'analysis false;
                                 }
                             }
@@ -443,9 +442,20 @@ impl CodeGen {
                                         continue;
                                     }
 
-                                    let safe_array_store =
-                                        (callee == "rt_array_push"
-                                            && arg_index == 1
+                                    let safe_array_store = (callee == "rt_array_push"
+                                        && arg_index == 1
+                                        && args
+                                            .first()
+                                            .map(|array_arg| {
+                                                Self::array_element_fixed_layout_shape_key(
+                                                    array_arg.get_type(),
+                                                )
+                                                .as_deref()
+                                                    == Some(target_key)
+                                            })
+                                            .unwrap_or(false))
+                                        || (callee == "rt_array_set_fast"
+                                            && arg_index == 2
                                             && args
                                                 .first()
                                                 .map(|array_arg| {
@@ -455,19 +465,7 @@ impl CodeGen {
                                                     .as_deref()
                                                         == Some(target_key)
                                                 })
-                                                .unwrap_or(false))
-                                            || (callee == "rt_array_set_fast"
-                                                && arg_index == 2
-                                                && args
-                                                    .first()
-                                                    .map(|array_arg| {
-                                                        Self::array_element_fixed_layout_shape_key(
-                                                            array_arg.get_type(),
-                                                        )
-                                                        .as_deref()
-                                                            == Some(target_key)
-                                                    })
-                                                    .unwrap_or(false));
+                                                .unwrap_or(false));
 
                                     if !safe_array_store {
                                         break 'analysis false;
@@ -507,10 +505,7 @@ impl CodeGen {
                                 }
                             }
                             MIRInstruction::BinaryOp {
-                                left,
-                                op,
-                                right,
-                                ..
+                                left, op, right, ..
                             } => {
                                 let left_matches = matches!(
                                     left,
@@ -598,7 +593,8 @@ impl CodeGen {
                     {
                         return true;
                     }
-                    if callee == "rt_object_new" && !dst.is_empty() && !self.does_escape(func, dst) {
+                    if callee == "rt_object_new" && !dst.is_empty() && !self.does_escape(func, dst)
+                    {
                         return true;
                     }
                     if callee == RT_CLASS_NEW && !dst.is_empty() && !self.does_escape(func, dst) {
@@ -711,7 +707,11 @@ impl CodeGen {
                             }
                         }
                         MIRInstruction::BinaryOp {
-                            dst, left, right, op_width: _, ..
+                            dst,
+                            left,
+                            right,
+                            op_width: _,
+                            ..
                         } => {
                             if dst.starts_with("g_") {
                                 globals.insert(dst.clone());
@@ -1027,10 +1027,7 @@ update:\n\
         self.declare_runtime_fn("rt_array_push", "i64 @rt_array_push(i64, i64)");
         self.declare_runtime_fn("rt_array_pop", "i64 @rt_array_pop(i64)");
         self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
-        self.declare_runtime_fn(
-            "rt_array_set_fast",
-            "i64 @rt_array_set_fast(i64, i64, i64)",
-        );
+        self.declare_runtime_fn("rt_array_set_fast", "i64 @rt_array_set_fast(i64, i64, i64)");
         self.declare_runtime_fn("rt_Object_keys", "i64 @rt_Object_keys(i64)");
         self.declare_runtime_fn("rt_Object_values", "i64 @rt_Object_values(i64)");
         self.declare_runtime_fn("rt_Object_entries", "i64 @rt_Object_entries(i64)");
@@ -1123,10 +1120,7 @@ update:\n\
         self.current_env = None;
         self.current_arena = None;
         self.num_roots = 0;
-        self.volatile_locals = func
-            .blocks
-            .iter()
-            .any(|b| b.exception_handler.is_some());
+        self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
 
         let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
 
@@ -1300,7 +1294,10 @@ update:\n\
 
             let env_reg = format!("%env_id{}", self.temp_counter);
             let cap_count = self.captured_vars.len();
-            self.emit_line(&format!("{} = call i64 @rt_array_new(i64 {}, i64 8)", env_reg, cap_count));
+            self.emit_line(&format!(
+                "{} = call i64 @rt_array_new(i64 {}, i64 8)",
+                env_reg, cap_count
+            ));
             self.emit_line(&format!("store i64 {}, i64* {}", env_reg, env_alloca));
             self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
             self.num_roots += 1;
