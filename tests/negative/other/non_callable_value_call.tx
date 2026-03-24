@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Calling a plain non-function value should fail during type checking.
+
+function main() {
+    let count: int = 1;
+    print(count());
+}

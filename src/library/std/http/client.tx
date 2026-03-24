@@ -1,0 +1,458 @@
+import std:collections;
+import std:net;
+
+extern function rt_http_fetch_async(host: string, port: int, useTls: bool, request: string, timeoutMs: int, insecureTls: bool): Promise<string[]>;
+
+function parseDecimalInt(text: string): int {
+    let digits = "0123456789";
+    let normalized = text.trim();
+    let result = 0;
+
+    for (let i = 0; i < normalized.length(); i++) {
+        let digit = normalized.substring(i, i + 1);
+        let value = digits.indexOf(digit);
+        if (value < 0) {
+            return 0;
+        }
+        result = (result * 10) + value;
+    }
+
+    return result;
+}
+
+function parseHexInt(hexValue: string): int {
+    let digits = "0123456789abcdef";
+    let normalized = hexValue.trim().toLowerCase();
+    let extensionSeparator = normalized.indexOf(";");
+    if (extensionSeparator >= 0) {
+        normalized = normalized.substring(0, extensionSeparator);
+    }
+
+    let result = 0;
+    for (let i = 0; i < normalized.length(); i++) {
+        let digit = normalized.substring(i, i + 1);
+        let value = digits.indexOf(digit);
+        if (value < 0) {
+            throw new Error("Invalid chunk size: " + hexValue);
+        }
+        result = (result * 16) + value;
+    }
+
+    return result;
+}
+
+function decodeChunkedBody(body: string): string {
+    let decoded = "";
+    let cursor = 0;
+    let keepDecoding = true;
+
+    while (keepDecoding) {
+        let pending = body.substring(cursor, body.length());
+        let lineEnd = pending.indexOf("\r\n");
+        if (lineEnd < 0) {
+            return decoded;
+        }
+
+        let chunkSize = parseHexInt(pending.substring(0, lineEnd));
+        cursor = cursor + lineEnd + 2;
+
+        if (chunkSize == 0) {
+            keepDecoding = false;
+        } else {
+            decoded = decoded + body.substring(cursor, cursor + chunkSize);
+            cursor = cursor + chunkSize + 2;
+        }
+    }
+
+    return decoded;
+}
+
+function headerString(value: any): string {
+    if (value == None) {
+        return "";
+    }
+    if (typeof(value) == "string") {
+        return value as string;
+    }
+    return String(value);
+}
+
+function canonicalHeaderName(name: string): string {
+    let lower: string = name.trim().toLowerCase();
+    if (lower == "contenttype" || lower == "content-type") return "content-type";
+    if (lower == "contentlength" || lower == "content-length") return "content-length";
+    if (lower == "useragent" || lower == "user-agent") return "user-agent";
+    return lower;
+}
+
+export class Headers {
+    private values: Map<string, string>;
+
+    constructor(init: Optional<any>) {
+        this.values = new Map<string, string>();
+        this.merge(init);
+    }
+
+    set(name: string, value: string): void {
+        let headerValue = value.trim();
+        let canonical = canonicalHeaderName(name);
+        if (headerValue == "") {
+            this.values.delete(canonical);
+            return;
+        }
+        this.values.set(canonical, headerValue);
+    }
+
+    get(name: string): string {
+        let value: Optional<string> = this.values.get(canonicalHeaderName(name));
+        if (value == None) {
+            return "";
+        }
+        return value as string;
+    }
+
+    delete(name: string): void {
+        this.values.delete(canonicalHeaderName(name));
+    }
+
+    keys(): string[] {
+        return this.values.keys();
+    }
+
+    has(name: string): bool {
+        return this.values.has(canonicalHeaderName(name));
+    }
+
+    merge(init: Optional<any>): void {
+        if (init == None) {
+            return;
+        }
+
+        if (init instanceof Headers) {
+            let existing: Headers = init as Headers;
+            let keys: string[] = existing.keys();
+            for (let i = 0; i < keys.length(); i++) {
+                let key: string = keys[i];
+                this.set(key, existing.get(key));
+            }
+            return;
+        }
+
+        if (init instanceof Map) {
+            let existing: any = init;
+            let keys: string[] = existing.keys();
+            for (let i = 0; i < keys.length(); i++) {
+                let key: string = keys[i];
+                let value: Optional<string> = existing.get(key);
+                if (value != None) {
+                    this.set(key, value as string);
+                }
+            }
+            return;
+        }
+
+        if (rt_is_array(init) || typeof(init) != "object") {
+            return;
+        }
+
+        let keys: string[] = Object.keys(init);
+        for (let i = 0; i < keys.length(); i++) {
+            let key: string = keys[i];
+            let value: any = init[key];
+            if (value != None) {
+                this.set(key, headerString(value));
+            }
+        }
+    }
+
+    copy(): Headers {
+        return new Headers(this);
+    }
+}
+
+class Url {
+    raw: string;
+    scheme: string;
+    host: string;
+    port: string;
+    hostHeader: string;
+    resource: string;
+
+    constructor(url: string) {
+        this.raw = url;
+        this.scheme = "";
+        this.host = "";
+        this.port = "";
+        this.hostHeader = "";
+        this.resource = "/";
+
+        let schemeSeparator = url.indexOf("://");
+        if (schemeSeparator < 0) {
+            throw new Error("URL must include a scheme");
+        }
+
+        this.scheme = url.substring(0, schemeSeparator).toLowerCase();
+
+        let remainder = url.substring(schemeSeparator + 3, url.length());
+        let pathStart = remainder.indexOf("/");
+        let authority = remainder;
+        let resource = "/";
+        if (pathStart >= 0) {
+            authority = remainder.substring(0, pathStart);
+            resource = remainder.substring(pathStart, remainder.length());
+        }
+
+        if (authority == "") {
+            throw new Error("URL host is required");
+        }
+
+        this.host = authority;
+        this.port = "";
+        let portSeparator = authority.indexOf(":");
+        if (portSeparator >= 0) {
+            this.host = authority.substring(0, portSeparator);
+            this.port = authority.substring(portSeparator + 1, authority.length());
+        }
+
+        if (this.host == "") {
+            throw new Error("URL host is required");
+        }
+
+        if (this.port == "") {
+            this.port = this.scheme == "https" ? "443" : "80";
+        }
+
+        this.hostHeader = this.host;
+        if ((this.scheme == "http" && this.port != "80") || (this.scheme == "https" && this.port != "443")) {
+            this.hostHeader = this.host + ":" + this.port;
+        }
+
+        this.resource = resource == "" ? "/" : resource;
+    }
+}
+
+function parseHeaders(lines: string[], startIndex: int): Headers {
+    let headers: Headers = new Headers(None);
+    let i = startIndex;
+    while (i < lines.length() && lines[i] != "") {
+        let line = lines[i];
+        let separatorIndex = line.indexOf(":");
+        if (separatorIndex > 0) {
+            let key = line.substring(0, separatorIndex).trim();
+            let value = line.substring(separatorIndex + 1, line.length()).trim();
+            headers.set(key, value);
+        }
+        i++;
+    }
+    return headers;
+}
+
+class HttpClientResponse {
+    httpVersion: string;
+    status: int;
+    statusText: string;
+    headers: Headers;
+    body: string;
+
+    constructor(rawResponse: string) {
+        this.httpVersion = "HTTP/1.1";
+        this.status = 0;
+        this.statusText = "";
+        this.headers = new Headers(None);
+        this.body = "";
+
+        let separator = rawResponse.indexOf("\r\n\r\n");
+        let headerText = rawResponse;
+        if (separator >= 0) {
+            headerText = rawResponse.substring(0, separator);
+            this.body = rawResponse.substring(separator + 4, rawResponse.length());
+        }
+
+        let lines = headerText.split("\r\n");
+        if (lines.length() == 0) {
+            return;
+        }
+
+        let parts: string[] = lines[0].split(" ");
+        if (parts.length() >= 1) {
+            this.httpVersion = parts[0];
+        }
+        if (parts.length() >= 2) {
+            this.status = parseDecimalInt(parts[1]);
+        }
+        if (parts.length() >= 3) {
+            for (let i = 2; i < parts.length(); i++) {
+                if (this.statusText != "") {
+                    this.statusText = this.statusText + " ";
+                }
+                this.statusText = this.statusText + parts[i];
+            }
+        }
+
+        this.headers = parseHeaders(lines, 1);
+        if (this.header("transfer-encoding") == "chunked") {
+            this.body = decodeChunkedBody(this.body);
+        }
+    }
+
+    header(name: string): string {
+        return this.headers.get(name);
+    }
+
+    ok(): bool {
+        return this.status >= 200 && this.status < 300;
+    }
+}
+
+function appendHeaderLine(request: string, name: string, value: string): string {
+    if (value == "") {
+        return request;
+    }
+    return request + name + ": " + value + "\r\n";
+}
+
+function buildRequest(method: string, url: Url, body: string, headers: Headers): string {
+    let request = method.toUpperCase() + " " + url.resource + " HTTP/1.1\r\n";
+
+    let hostHeader = headers.get("host");
+    if (hostHeader == "") {
+        hostHeader = url.hostHeader;
+    }
+    request = appendHeaderLine(request, "host", hostHeader);
+
+    let connectionHeader = headers.get("connection");
+    if (connectionHeader == "") {
+        connectionHeader = "close";
+    }
+    request = appendHeaderLine(request, "connection", connectionHeader);
+    request = appendHeaderLine(request, "user-agent", headers.get("user-agent"));
+    request = appendHeaderLine(request, "accept", headers.get("accept"));
+    request = appendHeaderLine(request, "authorization", headers.get("authorization"));
+    request = appendHeaderLine(request, "content-type", headers.get("content-type"));
+
+    let contentLength = headers.get("content-length");
+    if (contentLength == "" && body != "") {
+        contentLength = String(body.length());
+    }
+    request = appendHeaderLine(request, "content-length", contentLength);
+
+    let keys = headers.keys();
+    for (let i = 0; i < keys.length(); i++) {
+        let key = keys[i];
+        let canonical = canonicalHeaderName(key);
+        if (canonical == "host" || canonical == "connection" || canonical == "user-agent" || canonical == "accept" || canonical == "authorization" || canonical == "content-type" || canonical == "content-length") {
+            continue;
+        }
+        request = request + key + ": " + headers.get(key) + "\r\n";
+    }
+
+    request = request + "\r\n";
+    if (body != "") {
+        request = request + body;
+    }
+
+    return request;
+}
+
+function resolvedPort(parsedUrl: Url): int {
+    let port = parseDecimalInt(parsedUrl.port);
+    if (port <= 0 || port > 65535) {
+        throw new Error("Invalid port for " + parsedUrl.raw);
+    }
+    return port;
+}
+
+function readRawResponse(stream: TcpStream): string {
+    let rawResponse = "";
+    let keepReading = true;
+    while (keepReading) {
+        let chunk = stream.receive(4096);
+        if (chunk == "") {
+            keepReading = false;
+        } else {
+            rawResponse = rawResponse + chunk;
+        }
+    }
+    return rawResponse;
+}
+
+function asyncResultRaw(result: string[]): string {
+    if (result.length() < 2) {
+        throw new Error("Invalid async fetch response");
+    }
+
+    if (result[0] == "ok") {
+        return result[1];
+    }
+
+    throw new Error(result[1]);
+}
+
+class HttpClient {
+    scheme: string;
+    insecureTls: bool;
+
+    constructor(scheme: string, insecureTls: bool) {
+        this.scheme = scheme;
+        this.insecureTls = insecureTls;
+    }
+
+    private requireUrl(url: string): Url {
+        let parsedUrl = new Url(url);
+        if (parsedUrl.scheme != this.scheme) {
+            throw new Error("Expected " + this.scheme + ":// URL but received " + url);
+        }
+        return parsedUrl;
+    }
+
+    private connect(parsedUrl: Url, port: int): TcpStream {
+        let maybeStream: Optional<TcpStream> = None;
+        if (parsedUrl.scheme == "https") {
+            maybeStream = this.insecureTls
+                ? net.connectTlsInsecure(parsedUrl.host, port)
+                : net.connectTls(parsedUrl.host, port);
+        } else {
+            maybeStream = net.connectHost(parsedUrl.host, port);
+        }
+
+        if (maybeStream == None) {
+            throw new Error("Failed to connect to " + parsedUrl.host + ":" + parsedUrl.port);
+        }
+
+        return maybeStream as TcpStream;
+    }
+
+    request(method: string, url: string, body: string, headers: Headers, timeoutMs: int): HttpClientResponse {
+        let parsedUrl: Url = this.requireUrl(url);
+        let port: int = resolvedPort(parsedUrl);
+
+        let stream = this.connect(parsedUrl, port);
+        stream.setTimeout(timeoutMs);
+
+        let requestText: string = buildRequest(method, parsedUrl, body, headers);
+        if (!stream.write(requestText)) {
+            stream.close();
+            throw new Error("Failed to write request to " + parsedUrl.host);
+        }
+
+        let rawResponse: string = readRawResponse(stream);
+        stream.close();
+        if (rawResponse == "") {
+            throw new Error("Empty response from " + parsedUrl.host);
+        }
+
+        return new HttpClientResponse(rawResponse);
+    }
+
+    requestAsync(method: string, url: string, body: string, headers: Headers, timeoutMs: int): Promise<HttpClientResponse> {
+        let parsedUrl: Url = this.requireUrl(url);
+        let port: int = resolvedPort(parsedUrl);
+        let requestText: string = buildRequest(method, parsedUrl, body, headers);
+        return rt_promise_then(rt_http_fetch_async(parsedUrl.host, port, parsedUrl.scheme == "https", requestText, timeoutMs, this.insecureTls),
+            (result) => {
+                return new HttpClientResponse(asyncResultRaw(result));
+            },
+            0 as any as (e: Error) => HttpClientResponse
+        );
+    }
+}

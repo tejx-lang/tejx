@@ -1,0 +1,257 @@
+extern function tejx_libc_puts(s: string): int;
+extern function tejx_libc_write(fd: int, s: string): int;
+extern function rt_panic(msg: string): void;
+extern function rt_len<T>(val: T): int;
+extern function rt_to_number<T>(val: T): float;
+extern function rt_box_number(val: float): float;
+extern function rt_box_int(val: int): int;
+extern function rt_array_push<T>(arr: T[], val: T): int;
+extern function rt_array_pop<T>(arr: T[]): T;
+extern function rt_array_shift<T>(arr: T[]): T;
+extern function rt_array_unshift<T>(arr: T[], val: T): int;
+extern function rt_array_indexOf<T>(arr: T[], val: T): int;
+extern function rt_array_concat<T>(a: T[], b: T[]): T[];
+extern function rt_array_join<T>(arr: T[], sep: string): string;
+extern function rt_array_slice<T>(arr: T[], start: int, end: int): T[];
+extern function rt_array_reverse<T>(arr: T[]): T[];
+extern function rt_array_fill<T>(arr: T[], val: T): T[];
+extern function rt_array_sort<T>(arr: T[]): void;
+extern function rt_is_array<T>(val: T): bool;
+extern function rt_to_string<T>(val: T): string;
+extern function rt_promise_new<T>(): Promise<T>;
+extern function rt_promise_resolve<T>(p: Promise<T>, val: T): void;
+extern function rt_promise_reject<T>(p: Promise<T>, err: Error): void;
+extern function rt_promise_then<T, U>(p: Promise<T>, onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U>;
+extern function rt_str_equals(a: string, b: string): bool;
+extern function rt_str_concat_v2(a: string, b: string): string;
+extern function rt_String_concat(a: string, b: string): string;
+extern function rt_String_toUpperCase(s: string): string;
+extern function rt_String_toLowerCase(s: string): string;
+extern function rt_String_trim(s: string): string;
+extern function rt_String_trimStart(s: string): string;
+extern function rt_String_trimEnd(s: string): string;
+extern function rt_String_substring(s: string, start: int, end: int): string;
+extern function rt_String_split(s: string, sep: string): string[];
+extern function rt_String_indexOf(s: string, search: string): int;
+extern function rt_String_startsWith(s: string, prefix: string): bool;
+extern function rt_String_endsWith(s: string, suffix: string): bool;
+extern function rt_String_padStart(s: string, len: int, pad: string): string;
+extern function rt_String_padEnd(s: string, len: int, pad: string): string;
+extern function rt_String_repeat(s: string, count: int): string;
+extern function rt_String_replace(s: string, search: string, replace: string): string;
+extern function rt_String_includes(s: string, search: string): bool;
+extern function rt_array_new<T>(len: int, elemSize: int): T[];
+extern function rt_array_ensure_capacity<T>(arr: T[], required: int): T[];
+extern function rt_sizeof<T>(val: T): int;
+extern function rt_Object_keys<T>(obj: T): string[];
+extern function rt_Object_values<T>(obj: T): any[];
+extern function rt_Object_entries<T>(obj: T): any[];
+extern function rt_Object_assign<T, U>(target: T, source: U): T;
+extern function rt_Object_freeze<T>(obj: T): T;
+
+export function sizeof<T>(val: T): int {
+    return rt_sizeof(val);
+}
+
+export function parseFloat(s: string): float { return rt_to_number(s); }
+
+export let undefined: any = None;
+
+export class Error {
+    private message: string;
+    code: int32;
+    constructor(msg: string, code: Optional<int>) {
+        this.message = msg;
+        this.code = code ?? 0;
+    }
+    getMessage(): string { return this.message; }
+}
+
+class PromiseState {
+    count: int;
+    rejected: bool;
+    constructor() {
+        this.count = 0;
+        this.rejected = false;
+    }
+}
+
+export class Promise<T> {
+    constructor(executor: (resolve: (v: T) => void, reject: (e: Error) => void) => void) {
+        let p: Promise<T> = rt_promise_new<T>();
+        executor(
+            (v: T) => { rt_promise_resolve(this, v); },
+            (e: Error) => { rt_promise_reject(this, e); }
+        );
+    }
+
+    then<U>(onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U> {
+        return rt_promise_then(this, onResolve, onReject);
+    }
+
+    catchError<U>(onReject: (e: Error) => U): Promise<U> {
+        return rt_promise_then(this, 0 as any as (v: T) => U, onReject);
+    }
+
+    static resolve<T>(v: T): Promise<T> {
+        let p: Promise<T> = rt_promise_new<T>();
+        rt_promise_resolve(p, v);
+        return p;
+    }
+
+    static reject<T>(e: Error): Promise<T> {
+        let p: Promise<T> = rt_promise_new<T>();
+        rt_promise_reject(p, e);
+        return p;
+    }
+}
+
+export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
+    let p: Promise<T[]> = rt_promise_new<T[]>();
+    let total = promises.length();
+    if (total == 0) {
+        let empty: T[] = [];
+        rt_promise_resolve(p, empty);
+        return p;
+    }
+
+    let results: T[] = rt_array_new<T>(total, 8);
+    let state = new PromiseState();
+    for (let i = 0; i < total; i++) {
+        _promise_all_attach(promises[i], i, results, state, total, p);
+    }
+    return p;
+}
+
+function _promise_all_attach<T>(
+    promise: Promise<T>,
+    index: int,
+    results: T[],
+    state: PromiseState,
+    total: int,
+    out: Promise<T[]>
+): void {
+    rt_promise_then(promise, (v: T) => {
+        if (state.rejected) return;
+        results[index] = v;
+        state.count = state.count + 1;
+        if (state.count == total) {
+            rt_promise_resolve(out, results);
+        }
+    }, (e) => {
+        if (!state.rejected) {
+            state.rejected = true;
+            rt_promise_reject(out, e);
+        }
+    });
+}
+
+function String(v: any): string {
+    return rt_to_string(v);
+}
+
+function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
+    let ty: string = typeof(v);
+    if (rt_str_equals(ty, "None")) return "None";
+
+    if (rt_str_equals(ty, "string")) {
+        let s: string = v as string;
+        return quoteString ? "\"" + s + "\"" : s;
+    }
+    if (rt_str_equals(ty, "int") || rt_str_equals(ty, "float") || rt_str_equals(ty, "bool") || rt_str_equals(ty, "int32") || rt_str_equals(ty, "int64") || rt_str_equals(ty, "float32") || rt_str_equals(ty, "float64") || rt_str_equals(ty, "number")) {
+        return rt_to_string(v);
+    }
+    if (rt_str_equals(ty, "function")) {
+        return "[Function]";
+    }
+
+    if (rt_is_array(v)) {
+        for (let i: int = 0; i < seen.length(); i++) {
+            if (seen[i] == v) return "[Circular]";
+        }
+        seen.push(v);
+        let arr: any[] = v as any[];
+        let res: string = "[";
+        for (let i: int = 0; i < arr.length(); i++) {
+            res = res + _stringify_for_print(arr[i], seen, true);
+            if (i < arr.length() - 1) res = res + ", ";
+        }
+        seen.pop();
+        return res + "]";
+    }
+
+    if (rt_str_equals(ty, "object")) {
+        for (let i: int = 0; i < seen.length(); i++) {
+            if (seen[i] == v) return "[Circular]";
+        }
+        seen.push(v);
+
+        let keys: string[] = rt_Object_keys(v);
+        if (keys.length() == 0) {
+            seen.pop();
+            let s: string = rt_to_string(v);
+            if (s == "[object Object]") return "{}";
+            return s;
+        }
+
+        let res: string = "{ ";
+        let first: bool = true;
+        for (let i: int = 0; i < keys.length(); i++) {
+            let k: string = keys[i];
+            let val: any = v[k];
+            if (typeof(val) == "function") continue;
+
+            if (!first) res = res + ", ";
+            res = res + k + ": " + _stringify_for_print(val, seen, true);
+            first = false;
+        }
+        seen.pop();
+        return res + " }";
+    }
+
+    return rt_to_string(v);
+}
+
+export function print(...args: any[]): void {
+    let count: int = args.length();
+    let seen: any[] = [];
+    let parts: string[] = [];
+    for (let i: int = 0; i < count; i++) {
+        parts.push(_stringify_for_print(args[i], seen, false));
+    }
+    tejx_libc_puts(parts.join(" "));
+}
+
+export function panic(msg: string): void {
+    rt_panic(msg);
+}
+
+export function rt_to_number_internal<T>(val: T): float {
+    return rt_to_number(val);
+}
+
+export function rt_box_number_internal(val: float): float {
+    return rt_box_number(val);
+}
+
+export class Object {
+    static keys<T>(obj: T): string[] {
+        return rt_Object_keys(obj);
+    }
+
+    static values<T>(obj: T): any[] {
+        return rt_Object_values(obj);
+    }
+
+    static entries<T>(obj: T): any[] {
+        return rt_Object_entries(obj);
+    }
+
+    static assign<T, U>(target: T, source: U): T {
+        return rt_Object_assign(target, source);
+    }
+
+    static freeze<T>(obj: T): T {
+        return rt_Object_freeze(obj);
+    }
+}
