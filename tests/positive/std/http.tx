@@ -1,0 +1,136 @@
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+
+let dummyProductUrl = "https://dummyjson.com/products/1";
+
+type ProductIdResponse = {
+    id: int
+};
+
+type ProductTitleResponse = {
+    id: int;
+    title: string
+};
+
+type DeleteResponse = {
+    isDeleted: bool
+};
+
+function test_header_json_preserves_key_case() {
+    print("--- HTTP Header JSON Keys ---");
+    
+    let headers = new Headers({
+        "Content-Type": "application/json",
+        "X-Trace-Id": "abc123"
+    });
+    
+    assert_eq_string("application/json", headers.get("content-type"), "headers normalize standard key");
+    assert_eq_string("abc123", headers.get("x-trace-id"), "headers normalize custom key");
+    assert_true(headers.has("Content-Type"), "headers has is case-insensitive");
+}
+
+function test_fetch_sync_with_options_object() {
+    print("--- HTTP fetchSync (Options Object) ---");
+    
+    let response = fetchSync(dummyProductUrl, {
+        headers: {
+            accept: "application/json",
+            userAgent: "TejXHttpTest/1.0"
+        },
+        timeout: 30000
+    });
+    
+    let contentType: string = response.headers.get("content-type");
+    let legacyContentType: string = response.header.get("content-type");
+    assert_true(response.ok(), "fetchSync ok");
+    assert_eq_int(200, response.status, "fetchSync status");
+    assert_true(contentType.toLowerCase().includes("application/json"), "fetchSync content type");
+    assert_true(legacyContentType.toLowerCase().includes("application/json"), "legacy header object");
+    assert_true(response.body.includes("\"id\":1"), "fetchSync body contains product id");
+    
+    let parsed: ProductIdResponse = response.json<ProductIdResponse>();
+    assert_eq_int(1, parsed.id, "fetchSync json id");
+}
+
+async function test_fetch_post() {
+    print("--- HTTP fetch (POST) ---");
+    let response = await fetch("https://dummyjson.com/products/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: { title: "TejX Test Product" }
+    });
+    
+    assert_true(response.ok(), "POST response ok");
+    let data: ProductTitleResponse = response.json<ProductTitleResponse>();
+    assert_eq_string("TejX Test Product", data.title, "POST body title matches");
+    assert_true(data.id != None, "POST response has id");
+}
+
+async function test_fetch_put() {
+    print("--- HTTP fetch (PUT) ---");
+    let response = await fetch("https://dummyjson.com/products/1", {
+        method: "PUT",
+        body: { title: "Updated Product" }
+    });
+    
+    assert_true(response.ok(), "PUT response ok");
+    let data: ProductTitleResponse = response.json<ProductTitleResponse>();
+    assert_eq_string("Updated Product", data.title, "PUT body title matches");
+}
+
+async function test_fetch_patch() {
+    print("--- HTTP fetch (PATCH) ---");
+    let response = await fetch("https://dummyjson.com/products/1", {
+        method: "PATCH",
+        body: { title: "Patched Product" }
+    });
+    
+    assert_true(response.ok(), "PATCH response ok");
+    let data: ProductTitleResponse = response.json<ProductTitleResponse>();
+    assert_eq_string("Patched Product", data.title, "PATCH body title matches");
+}
+
+async function test_fetch_delete() {
+    print("--- HTTP fetch (DELETE) ---");
+    let response = await fetch("https://dummyjson.com/products/1", {
+        method: "DELETE"
+    });
+    
+    assert_true(response.ok(), "DELETE response ok");
+    let data: DeleteResponse = response.json<DeleteResponse>();
+    assert_true(data.isDeleted == true, "DELETE response isDeleted is true");
+}
+
+async function test_fetch_async_with_request_instance(): Promise<void> {
+    print("--- HTTP fetch (Request Instance) ---");
+    
+    let request = new Request(dummyProductUrl, {
+        headers: {
+            accept: "application/json",
+            userAgent: "TejXHttpTest/1.0"
+        },
+        timeoutMs: 30000
+    });
+    
+    assert_true(request.headers.get("accept") == "application/json", "request accept header");
+    assert_eq_int(30000, request.timeoutMs, "request timeout");
+    
+    let response = await fetch(request);
+    let contentType: string = response.headers.get("content-type");
+    
+    assert_true(response.ok(), "fetch ok");
+    assert_eq_int(200, response.status, "fetch status");
+    assert_true(contentType.toLowerCase().includes("application/json"), "fetch content type");
+    assert_true(response.body.includes("\"id\":1"), "fetch body contains product id");
+}
+
+async function main() {
+    print("=== HTTP TESTS START ===");
+    test_header_json_preserves_key_case();
+    test_fetch_sync_with_options_object();
+    await test_fetch_post();
+    await test_fetch_put();
+    await test_fetch_patch();
+    await test_fetch_delete();
+    await test_fetch_async_with_request_instance();
+    print("=== HTTP TESTS COMPLETE ===");
+}

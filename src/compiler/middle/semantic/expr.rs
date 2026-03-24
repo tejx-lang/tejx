@@ -4,6 +4,16 @@ use crate::frontend::token::TokenType;
 use std::collections::HashMap;
 
 impl TypeChecker {
+    fn is_callable_type_name(ty_name: &str) -> bool {
+        ty_name.starts_with("function:") || ty_name.contains("=>")
+    }
+
+    fn unwrap_optional_type_name_str(ty_name: &str) -> Option<&str> {
+        ty_name
+            .strip_prefix("Optional<")
+            .and_then(|inner| inner.strip_suffix('>'))
+    }
+
     fn is_unresolved_generic_name(name: &str) -> bool {
         name.starts_with("$MISSING_GENERIC_")
             || name == "$0"
@@ -1307,6 +1317,11 @@ impl TypeChecker {
                     };
 
                 let callee_type = self.check_expression(callee)?.to_name();
+                let callable_callee_type = if optional_member_return {
+                    Self::unwrap_optional_type_name_str(&callee_type).unwrap_or(&callee_type)
+                } else {
+                    &callee_type
+                };
                 let mut return_type = "<inferred>".to_string();
                 let mut s_params = Vec::new();
                 let mut is_variadic = false;
@@ -1315,8 +1330,9 @@ impl TypeChecker {
 
                 // Always try symbol lookup to fill s_params and is_variadic exactly.
                 if let Some(s) = self.lookup(&callee_str) {
-                    if return_type == "<inferred>" && s.ty.to_name().starts_with("function:") {
-                        let type_name_str = s.ty.to_name();
+                    let type_name_str = s.ty.to_name();
+                    let mut symbol_is_callable = false;
+                    if return_type == "<inferred>" && type_name_str.starts_with("function:") {
                         let parts: Vec<&str> = type_name_str.split(':').collect();
                         if parts.len() >= 2 {
                             let mut ret = parts[1].to_string();
@@ -1325,19 +1341,31 @@ impl TypeChecker {
                             }
                             return_type = ret;
                         }
+                        symbol_is_callable = true;
                     } else if let TejxType::Function(_, ret) = &s.ty {
                         return_type = ret.to_name();
+                        symbol_is_callable = true;
+                    } else if return_type == "<inferred>" && type_name_str.contains("=>") {
+                        let (parsed_ret, _, _) = self.parse_signature(type_name_str.clone());
+                        let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
+                        if parts.len() >= 2 {
+                            return_type = parts[1].to_string();
+                        } else {
+                            return_type = parsed_ret;
+                        }
+                        symbol_is_callable = true;
                     }
-                    s_params = s.params.iter().map(|p| p.to_name()).collect();
-                    is_variadic = s.is_variadic;
-                    _signature_found = true;
+
+                    if symbol_is_callable {
+                        s_params = s.params.iter().map(|p| p.to_name()).collect();
+                        is_variadic = s.is_variadic;
+                        _signature_found = true;
+                    }
                 }
 
-                if !_signature_found
-                    && (callee_type.starts_with("function:") || callee_type.contains("=>"))
-                {
+                if !_signature_found && Self::is_callable_type_name(callable_callee_type) {
                     let (parsed_ret, parsed_params, parsed_variadic) =
-                        self.parse_signature(callee_type.clone());
+                        self.parse_signature(callable_callee_type.to_string());
                     // The returned final_type from parse_signature is "function:ret", so we strip it.
                     let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
                     if parts.len() >= 2 {
@@ -1374,19 +1402,98 @@ impl TypeChecker {
                             } else if let Some(info) =
                                 self.resolve_instance_member(&receiver_ty.to_name(), member)
                             {
-                                let member_ty = TejxType::from_name(&self.substitute_generics(
+                                let member_ty_name = self.substitute_generics(
                                     &info.ty.to_name(),
                                     &receiver_ty.to_name(),
-                                ));
-                                if let TejxType::Function(params, ret) = member_ty {
-                                    return_type = ret.to_name();
-                                    s_params = params.iter().map(|p| p.to_name()).collect();
-                                    is_variadic = false;
+                                );
+                                if Self::is_callable_type_name(&member_ty_name) {
+                                    let (parsed_ret, parsed_params, parsed_variadic) =
+                                        self.parse_signature(member_ty_name);
+                                    let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
+                                    if parts.len() >= 2 {
+                                        let mut ret = parts[1].to_string();
+                                        if ret.ends_with(':') {
+                                            ret.pop();
+                                        }
+                                        return_type = ret;
+                                    } else {
+                                        return_type = parsed_ret;
+                                    }
+                                    s_params = parsed_params;
+                                    is_variadic = parsed_variadic;
                                     _signature_found = true;
                                 }
                             }
                         }
                     }
+                }
+
+                if !_signature_found {
+                    if let Some((object, member)) = member_callee {
+                        if let Ok(mut receiver_ty) = self.check_expression(object) {
+                            if let TejxType::Optional(inner) = receiver_ty {
+                                receiver_ty = *inner;
+                            }
+                            if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                if let Some(aliased) = &sym.aliased_type {
+                                    receiver_ty = aliased.clone();
+                                }
+                            }
+
+                            if let Some(info) =
+                                self.resolve_instance_member(&receiver_ty.to_name(), member)
+                            {
+                                let member_ty_name = self.substitute_generics(
+                                    &info.ty.to_name(),
+                                    &receiver_ty.to_name(),
+                                );
+                                if !info.is_static
+                                    && !Self::is_callable_type_name(&member_ty_name)
+                                {
+                                    let receiver_name = receiver_ty.to_name();
+                                    let hint = format!(
+                                        "Access '{}.{}' as a value, or declare '{}' with a function type if you want to call it",
+                                        receiver_name, member, member
+                                    );
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Member '{}.{}' is not callable; it has type '{}'",
+                                            receiver_name, member, member_ty_name
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0123",
+                                        Some(&hint),
+                                    );
+                                    return Ok(TejxType::from_name("<inferred>"));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !_signature_found
+                    && member_callee.is_none()
+                    && callee_type != "<inferred>"
+                    && callee_type != "any"
+                    && !callee_type.is_empty()
+                    && !Self::is_callable_type_name(&callee_type)
+                {
+                    let target = if callee_str.is_empty() {
+                        "Expression".to_string()
+                    } else {
+                        format!("Expression '{}'", callee_str)
+                    };
+                    self.report_error_detailed(
+                        format!("{} is not callable; it has type '{}'", target, callee_type),
+                        *_line,
+                        *_col,
+                        "E0123",
+                        Some(
+                            "Call a function value, or remove the trailing parentheses if you meant to use the value directly",
+                        ),
+                    );
+                    return Ok(TejxType::from_name("<inferred>"));
                 }
 
                 let mut generic_map: std::collections::HashMap<String, String> =
@@ -1458,9 +1565,11 @@ impl TypeChecker {
                 if !_signature_found {
                     let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
                     if let Some(s) = self.lookup(func_name) {
-                        s_params = s.params.iter().map(|p| p.to_name()).collect();
-                        is_variadic = s.is_variadic;
-                        _signature_found = true;
+                        if Self::is_callable_type_name(&s.ty.to_name()) {
+                            s_params = s.params.iter().map(|p| p.to_name()).collect();
+                            is_variadic = s.is_variadic;
+                            _signature_found = true;
+                        }
                     }
                 }
 

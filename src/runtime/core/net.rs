@@ -59,6 +59,53 @@ fn connect_tls_host(host: &str, port: i64, verify: bool) -> Option<TlsStream<Tcp
     connector.connect(host, stream).ok()
 }
 
+fn blocking_http_fetch(
+    host: String,
+    port: i64,
+    use_tls: bool,
+    request: String,
+    timeout_ms: i64,
+    insecure_tls: bool,
+) -> Result<Vec<u8>, String> {
+    let mut stream = if use_tls {
+        connect_tls_host(&host, port, !insecure_tls)
+            .map(NetStream::Tls)
+            .ok_or_else(|| format!("Failed to connect to {}:{}", host, port))?
+    } else {
+        connect_host_port(&host, port)
+            .map(NetStream::Tcp)
+            .ok_or_else(|| format!("Failed to connect to {}:{}", host, port))?
+    };
+
+    let _ = set_stream_timeout(&mut stream, timeout_ms);
+    stream_write_all(&mut stream, request.as_bytes())
+        .map_err(|_| format!("Failed to write request to {}", host))?;
+
+    let bytes = read_all(&mut stream, 4096);
+    if bytes.is_empty() {
+        return Err(format!("Empty response from {}", host));
+    }
+
+    Ok(bytes)
+}
+
+unsafe fn http_result_array(status: &str, payload: &[u8]) -> i64 {
+    let mut result = rt_Array_new_fixed(2, 8);
+    rt_push_root(&mut result);
+
+    let mut status_id = string_from_bytes(status.as_bytes());
+    rt_push_root(&mut status_id);
+
+    let mut payload_id = string_from_bytes(payload);
+    rt_push_root(&mut payload_id);
+
+    rt_array_set_fast(result, 0, status_id);
+    rt_array_set_fast(result, 1, payload_id);
+
+    rt_pop_roots(3);
+    result
+}
+
 fn start_tls_stream(stream: &mut NetStream, host: &str, verify: bool) -> bool {
     let current = std::mem::replace(stream, NetStream::Closed);
     match current {
@@ -430,6 +477,82 @@ pub unsafe extern "C" fn rt_net_start_tls_insecure(stream: i64, host_ptr: i64) -
     } else {
         -1
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_http_fetch_async(
+    host_ptr: i64,
+    port: i64,
+    use_tls: i64,
+    request_ptr: i64,
+    timeout_ms: i64,
+    insecure_tls: i64,
+) -> i64 {
+    let pid = rt_promise_new();
+    let mut v_pid = pid;
+    rt_push_root(&mut v_pid);
+
+    let Some(host) = i64_to_rust_str(host_ptr) else {
+        let mut result = http_result_array("err", b"Invalid fetch host");
+        rt_push_root(&mut result);
+        rt_promise_resolve(v_pid, result);
+        rt_pop_roots(2);
+        return pid;
+    };
+
+    let Some(request) = i64_to_rust_str(request_ptr) else {
+        let mut result = http_result_array("err", b"Invalid fetch request");
+        rt_push_root(&mut result);
+        rt_promise_resolve(v_pid, result);
+        rt_pop_roots(2);
+        return pid;
+    };
+
+    let handle = crate::event_loop::tejx_create_global_handle(pid);
+    crate::event_loop::tejx_inc_async_ops();
+    rt_pop_roots(1);
+
+    crate::event_loop::TOKIO_RT.spawn(async move {
+        let fetch_result = match tokio::task::spawn_blocking(move || {
+            blocking_http_fetch(host, port, use_tls != 0, request, timeout_ms, insecure_tls != 0)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(format!("Async fetch task failed: {}", err)),
+        };
+
+        unsafe {
+            let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+            if actual_pid > 0 {
+                let mut v_actual_pid = actual_pid;
+                rt_push_root(&mut v_actual_pid);
+
+                let mut value = match fetch_result {
+                    Ok(bytes) => http_result_array("ok", &bytes),
+                    Err(err) => http_result_array("err", err.as_bytes()),
+                };
+                rt_push_root(&mut value);
+
+                let mut task_args = rt_Array_new_fixed(2, 8);
+                rt_push_root(&mut task_args);
+                rt_array_set_fast(task_args, 0, v_actual_pid);
+                rt_array_set_fast(task_args, 1, value);
+
+                crate::event_loop::tejx_enqueue_task(
+                    rt_promise_resolver_worker as *const () as i64,
+                    task_args,
+                );
+
+                rt_pop_roots(3);
+            }
+
+            crate::event_loop::tejx_drop_global_handle(handle);
+            crate::event_loop::tejx_dec_async_ops();
+        }
+    });
+
+    pid
 }
 
 #[no_mangle]

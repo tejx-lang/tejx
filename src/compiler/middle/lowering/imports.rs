@@ -19,69 +19,77 @@ impl Lowering {
 
         // Resolve standard paths
         let stdlib_path = self.stdlib_path.borrow();
+        let stdlib_root =
+            std::fs::canonicalize(stdlib_path.as_path()).unwrap_or_else(|_| stdlib_path.clone());
         let core_dir = std::fs::canonicalize(stdlib_path.join(CORE_DIR))
             .unwrap_or_else(|_| stdlib_path.join(CORE_DIR));
+        let base_path = core_dir.join("base.tx");
+        let base_path_str = base_path.to_string_lossy().to_string();
+        let canon_base = std::fs::canonicalize(&base_path).unwrap_or(base_path.clone());
+        let prelude_path = core_dir.join("prelude.tx");
+        let prelude_path_str = prelude_path.to_string_lossy().to_string();
+        let canon_prelude = std::fs::canonicalize(&prelude_path).unwrap_or(prelude_path.clone());
+        let current_path = current_file
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(&filename));
+        let canon_current =
+            std::fs::canonicalize(&current_path).unwrap_or_else(|_| current_path.clone());
+        let is_in_stdlib = canon_current.starts_with(&stdlib_root);
+        let is_in_lib_core = canon_current.starts_with(&core_dir);
+        let is_base = canon_current == canon_base;
+        let is_prelude = canon_current == canon_prelude;
 
-        // 1. Implicitly import prelude if this isn't the prelude itself
-        let is_prelude = filename.ends_with("prelude.tx") || filename.contains("prelude.tx");
-        if !is_prelude {
-            let prelude_path = core_dir.join("prelude.tx");
-            let prelude_path_str = prelude_path.to_string_lossy().to_string();
-
-            let mut already_imports_prelude = false;
-            for stmt in &statements {
-                if let Statement::ImportDecl { source, .. } = stmt {
-                    if source == &prelude_path_str {
-                        already_imports_prelude = true;
-                        break;
-                    }
-                }
-            }
-            if !already_imports_prelude {
-                statements.insert(
-                    0,
-                    Statement::ImportDecl {
-                        source: prelude_path_str,
-                        _names: Vec::new(),
-                        _is_default: false,
-                        _line: 0,
-                        _col: 0,
-                    },
-                );
-            }
-        }
-
-        // 2. Implicitly import other core functionality (array, string, object)
-        // ONLY for modules outside of the library's core directory to avoid cycles.
-        let is_in_lib_core = if let Ok(canon_file) = std::fs::canonicalize(&filename) {
-            if let Ok(canon_core) = std::fs::canonicalize(&core_dir) {
-                canon_file.starts_with(canon_core)
-            } else {
-                false
-            }
-        } else {
-            filename.contains(&format!("/{}", CORE_DIR))
-                || filename.contains(&format!("{}/", CORE_DIR))
+        let already_imports = |statements: &[Statement], target: &str| {
+            statements.iter().any(|stmt| {
+                matches!(
+                    stmt,
+                    Statement::ImportDecl { source, .. } if source == target
+                )
+            })
         };
 
+        let mut insert_at = 0;
+
+        // 1. Every file gets the core base layer except the base file itself and prelude,
+        // which imports it explicitly.
+        if !is_base && !is_prelude && !already_imports(&statements, &base_path_str) {
+            statements.insert(
+                insert_at,
+                Statement::ImportDecl {
+                    source: base_path_str.clone(),
+                    _names: Vec::new(),
+                    _is_default: false,
+                    _line: 0,
+                    _col: 0,
+                },
+            );
+            insert_at += 1;
+        }
+
+        // 2. User modules get the full prelude on top of the base layer.
+        if !is_in_stdlib && !is_prelude && !already_imports(&statements, &prelude_path_str) {
+            statements.insert(
+                insert_at,
+                Statement::ImportDecl {
+                    source: prelude_path_str.clone(),
+                    _names: Vec::new(),
+                    _is_default: false,
+                    _line: 0,
+                    _col: 0,
+                },
+            );
+            insert_at += 1;
+        }
+
+        // 3. Non-core files still get array/string helpers.
         if !is_in_lib_core {
             for core_file in ["array.tx", "string.tx"] {
                 let path = core_dir.join(core_file);
                 let path_str = path.to_string_lossy().to_string();
 
-                let mut already_imports = false;
-                for stmt in &statements {
-                    if let Statement::ImportDecl { source, .. } = stmt {
-                        if source == &path_str {
-                            already_imports = true;
-                            break;
-                        }
-                    }
-                }
-
-                if !already_imports {
+                if !already_imports(&statements, &path_str) {
                     statements.insert(
-                        0,
+                        insert_at,
                         Statement::ImportDecl {
                             source: path_str,
                             _names: Vec::new(),
@@ -90,6 +98,7 @@ impl Lowering {
                             _col: 0,
                         },
                     );
+                    insert_at += 1;
                 }
             }
         }

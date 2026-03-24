@@ -1,0 +1,264 @@
+import std:json;
+import "./client.tx";
+
+function requestOption(options: any, key: string): any {
+    if (options == None) {
+        return None;
+    }
+    return options[key];
+}
+
+function normalizedTimeout(timeoutValue: any): int {
+    if (timeoutValue == None) {
+        return 30000;
+    }
+
+    let timeoutMs: int = timeoutValue as int;
+    if (timeoutMs <= 0) {
+        return 30000;
+    }
+    return timeoutMs;
+}
+
+function requestBodyKind(body: any): int {
+    if (body == None) {
+        return 0;
+    }
+
+    let bodyType: string = typeof(body);
+    if (bodyType == "string") {
+        return 1;
+    }
+    if (bodyType == "object" || rt_is_array(body)) {
+        return 2;
+    }
+    return 1;
+}
+
+export class HttpRequest {
+    method: string;
+    body: any;
+    headers: Headers;
+    insecureTls: bool;
+    timeoutMs: int;
+    bodyKind: int;
+
+    constructor(method: string, body: any, headers: any, insecureTls: bool, timeoutMs: int) {
+        this.method = method.toUpperCase();
+        this.body = body;
+        this.headers = new Headers(headers);
+        this.insecureTls = insecureTls;
+        this.timeoutMs = normalizedTimeout(timeoutMs);
+        this.bodyKind = requestBodyKind(body);
+    }
+}
+
+function httpClientFor(url: string, insecureTls: bool): HttpClient {
+    if (url.startsWith("https://")) {
+        return new HttpClient("https", insecureTls);
+    }
+    return new HttpClient("http", false);
+}
+
+export class Request {
+    url: string;
+    method: string;
+    body: any;
+    headers: Headers;
+    insecureTls: bool;
+    timeoutMs: int;
+    bodyKind: int;
+
+    constructor(url: string, options: any) {
+        this.url = url;
+        this.method = "GET";
+        this.body = None;
+        this.headers = new Headers(None);
+        this.insecureTls = false;
+        this.timeoutMs = 30000;
+        this.bodyKind = 0;
+        this.applyInit(options);
+    }
+
+    setHeader(name: string, value: string): Request {
+        this.headers.set(name, value);
+        return this;
+    }
+
+    withOptions(options: any): Request {
+        let request: Request = new Request(this.url, None);
+        request.applyInit(this);
+        request.applyInit(options);
+        return request;
+    }
+
+    send(): HttpResponse {
+        let client: HttpClient = httpClientFor(this.url, this.insecureTls);
+        let headers = this.headers.copy();
+        let bodyText = this.bodyText(headers);
+        return new Response(client.request(this.method, this.url, bodyText, headers, this.timeoutMs));
+    }
+
+    sendAsync(): Promise<HttpResponse> {
+        let client: HttpClient = httpClientFor(this.url, this.insecureTls);
+        let headers = this.headers.copy();
+        let bodyText = this.bodyText(headers);
+        return rt_promise_then(client.requestAsync(this.method, this.url, bodyText, headers, this.timeoutMs),
+            (response) => {
+                return new Response(response);
+            },
+            0 as any as (e: Error) => HttpResponse
+        );
+    }
+
+    private setBody(body: any): void {
+        this.body = body;
+        this.bodyKind = requestBodyKind(body);
+    }
+
+    private applyInit(options: any): void {
+        if (options == None) {
+            return;
+        }
+
+        if (options instanceof Request) {
+            let request: Request = options as Request;
+            this.method = request.method.toUpperCase();
+            this.headers = request.headers.copy();
+            this.insecureTls = request.insecureTls;
+            this.timeoutMs = normalizedTimeout(request.timeoutMs);
+            this.setBody(request.body);
+            return;
+        }
+
+        if (options instanceof HttpRequest) {
+            let request: HttpRequest = options as HttpRequest;
+            this.method = request.method.toUpperCase();
+            this.headers = request.headers.copy();
+            this.insecureTls = request.insecureTls;
+            this.timeoutMs = normalizedTimeout(request.timeoutMs);
+            this.setBody(request.body);
+            return;
+        }
+
+        let method: any = requestOption(options, "method");
+        if (method != None) {
+            this.method = (method as string).toUpperCase();
+        }
+
+        let headers: any = requestOption(options, "headers");
+        if (headers != None) {
+            this.headers.merge(headers);
+        }
+
+        let insecureTls: any = requestOption(options, "insecureTls");
+        if (insecureTls == None) {
+            insecureTls = requestOption(options, "insecureTLS");
+        }
+        if (insecureTls != None) {
+            this.insecureTls = insecureTls as bool;
+        }
+
+        let timeout: any = requestOption(options, "timeout");
+        if (timeout == None) {
+            timeout = requestOption(options, "timeoutMs");
+        }
+        if (timeout != None) {
+            this.timeoutMs = normalizedTimeout(timeout);
+        }
+
+        let body: any = requestOption(options, "body");
+        if (body != None) {
+            this.setBody(body);
+        }
+    }
+
+    private bodyText(headers: Headers): string {
+        if (this.bodyKind == 0) {
+            return "";
+        }
+
+        if (this.bodyKind == 2) {
+            if (headers.get("content-type") == "") {
+                headers.set("content-type", "application/json");
+            }
+            return json.stringify(this.body);
+        }
+
+        if (this.body == None) {
+            return "";
+        }
+
+        if (typeof(this.body) == "string") {
+            return this.body as string;
+        }
+
+        return String(this.body);
+    }
+}
+
+export class HttpResponse {
+    httpVersion: string;
+    status: int;
+    statusText: string;
+    header: Headers;
+    headers: Headers;
+    body: string;
+
+    constructor(response: HttpClientResponse) {
+        this.httpVersion = response.httpVersion;
+        this.status = response.status;
+        this.statusText = response.statusText;
+        this.headers = response.headers.copy();
+        this.header = this.headers;
+        this.body = response.body;
+    }
+
+    getHeader(name: string): string {
+        return this.headers.get(name);
+    }
+
+    ok(): bool {
+        return this.status >= 200 && this.status < 300;
+    }
+
+    text(): string {
+        return this.body;
+    }
+
+    json<T>(): T {
+        if (this.body.trim() == "") {
+            return json.parse("{}") as T;
+        }
+        return json.parse(this.body) as T;
+    }
+}
+
+export class Response extends HttpResponse {
+    constructor(response: HttpClientResponse) {
+        super(response);
+    }
+}
+
+function requestFromInput(input: any, options: any): Request {
+    if (input instanceof Request) {
+        if (options == None) {
+            return input as Request;
+        }
+        return (input as Request).withOptions(options);
+    }
+
+    if (typeof(input) == "string") {
+        return new Request(input as string, options);
+    }
+
+    throw new Error("fetch expects a string URL or Request");
+}
+
+export function fetchSync(input: any, options: any = None): HttpResponse {
+    return requestFromInput(input, options).send();
+}
+
+export function fetch(input: any, options: any = None): Promise<HttpResponse> {
+    return requestFromInput(input, options).sendAsync();
+}

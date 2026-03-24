@@ -1,0 +1,11 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Calling a non-function property should fail during type checking.
+
+class Counter {
+    value: int = 1;
+}
+
+function main() {
+    let counter: Counter = new Counter();
+    print(counter.value());
+}
