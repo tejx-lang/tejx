@@ -2097,7 +2097,6 @@ struct ThreadData {
     handle: Option<std::thread::JoinHandle<()>>,
     started: bool,
     cb_slot: usize,
-    args_slot: usize,
 }
 
 // --- SharedQueue Operations ---

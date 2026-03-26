@@ -1,36 +1,27 @@
-import { SharedQueue, Mutex } from "std:thread";
-
-function producer(args: any[]): void {
-  let q = args[0] as SharedQueue<int>;
-  let mutex = args[1] as Mutex;
-  for (let i = 0; i < 100; i++) {
-    mutex.lock();
-    q.enqueue(i);
-    mutex.unlock();
-  }
-}
-
-function consumer(args: any[]): void {
-  let q = args[0] as SharedQueue<int>;
-  let mutex = args[1] as Mutex;
-  let count = 0;
-  while (count < 100) {
-    mutex.lock();
-    if (!q.isEmpty()) {
-      let val = q.dequeue();
-      print("Consumed:", val);
-      count++;
-    }
-    mutex.unlock();
-  }
-}
+import { Thread, SharedQueue, Mutex } from "std:thread";
 
 function main(): void {
   let q = new SharedQueue<int>();
   let mutex = new Mutex();
-  let args: any[] = [q, mutex];
-  let producerThread = new Thread(producer, args);
-  let consumerThread = new Thread(consumer, args);
+  let producerThread = new Thread(() => {
+    for (let i = 0; i < 100; i++) {
+      mutex.lock();
+      q.enqueue(i);
+      mutex.unlock();
+    }
+  });
+  let consumerThread = new Thread(() => {
+    let count = 0;
+    while (count < 100) {
+      mutex.lock();
+      if (!q.isEmpty()) {
+        let val = q.dequeue();
+        print("Consumed:", val);
+        count++;
+      }
+      mutex.unlock();
+    }
+  });
   producerThread.join();
   consumerThread.join();
   print("Producer and consumer finished.");

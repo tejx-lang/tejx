@@ -1,32 +1,31 @@
-extern function rt_Mutex_constructor(_this: any): void;
-extern function rt_Mutex_acquire(_this: any): void;
-extern function rt_Mutex_release(_this: any): void;
-extern function rt_SharedQueue_constructor(_this: any): void;
-extern function rt_SharedQueue_enqueue(_this: any, val: any): void;
-extern function rt_SharedQueue_dequeue(_this: any): any;
-extern function rt_SharedQueue_size(_this: any): int;
-extern function rt_Atomic_constructor(_this: any, val: int): void;
-extern function rt_Atomic_add(_this: any, val: int): int;
-extern function rt_Atomic_sub(_this: any, val: int): int;
-extern function rt_Atomic_load(_this: any): int;
-extern function rt_Atomic_store(_this: any, val: int): void;
-extern function rt_Atomic_exchange(_this: any, val: int): int;
-extern function rt_Atomic_compareExchange(_this: any, expected: int, desired: int): int;
-extern function rt_Condition_constructor(_this: any): void;
-extern function rt_Condition_wait(_this: any, mutex: any): void;
-extern function rt_Condition_notify(_this: any): void;
-extern function rt_Condition_notifyAll(_this: any): void;
-extern function rt_Thread_constructor(_this: any, cb: any, args: any[]): void;
-extern function rt_Thread_start(_this: any): void;
-extern function rt_Thread_join(_this: any): void;
+extern function rt_Mutex_constructor(_this: Mutex): void;
+extern function rt_Mutex_acquire(_this: Mutex): void;
+extern function rt_Mutex_release(_this: Mutex): void;
+extern function rt_SharedQueue_constructor<T>(_this: SharedQueue<T>): void;
+extern function rt_SharedQueue_enqueue<T>(_this: SharedQueue<T>, val: T): void;
+extern function rt_SharedQueue_dequeue<T>(_this: SharedQueue<T>): T;
+extern function rt_SharedQueue_size<T>(_this: SharedQueue<T>): int;
+extern function rt_Atomic_constructor(_this: Atomic, val: int): void;
+extern function rt_Atomic_add(_this: Atomic, val: int): int;
+extern function rt_Atomic_sub(_this: Atomic, val: int): int;
+extern function rt_Atomic_load(_this: Atomic): int;
+extern function rt_Atomic_store(_this: Atomic, val: int): void;
+extern function rt_Atomic_exchange(_this: Atomic, val: int): int;
+extern function rt_Atomic_compareExchange(_this: Atomic, expected: int, desired: int): int;
+extern function rt_Condition_constructor(_this: Condition): void;
+extern function rt_Condition_wait(_this: Condition, mutex: Mutex): void;
+extern function rt_Condition_notify(_this: Condition): void;
+extern function rt_Condition_notifyAll(_this: Condition): void;
+extern function rt_Thread_constructor(_this: Thread, task: () => void): void;
+extern function rt_Thread_start(_this: Thread): void;
+extern function rt_Thread_join(_this: Thread): void;
 
 export class Thread {
     private _data: int64;
-    private _cb: any;
-    private _args: any[];
+    private _task: () => void;
 
-    constructor(cb: any, args: any[]) {
-        rt_Thread_constructor(this, cb, args);
+    constructor(task: () => void) {
+        rt_Thread_constructor(this, task);
         rt_Thread_start(this);
     }
 
@@ -36,6 +35,10 @@ export class Thread {
 
     join(): void {
         rt_Thread_join(this);
+    }
+
+    static spawn(task: () => void): Thread {
+        return new Thread(task);
     }
 }
 
@@ -118,12 +121,16 @@ export class SharedQueue<T> {
     }
 }
 
-export function spawn(cb: any, args: any[] = []): Thread {
-    return new Thread(cb, args);
+export function spawn(task: () => void): Thread {
+    return Thread.spawn(task);
 }
 
 export function joinAll(threads: Thread[]): void {
     for (let i = 0; i < threads.length(); i++) {
         threads[i].join();
     }
+}
+
+export function parallel(threads: Thread[]): void {
+    joinAll(threads);
 }
