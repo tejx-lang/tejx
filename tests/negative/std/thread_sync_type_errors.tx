@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that synchronization helpers require the right concrete std:thread types.
+
+import { Condition, Mutex, Atomic, joinAll, parallel, spawn } from "std:thread";
+
+function main(): void {
+    let cond = new Condition();
+    let mutex = new Mutex();
+    let counter = new Atomic(0);
+
+    cond.wait(counter);
+    joinAll([mutex]);
+    parallel([spawn(() => {}), mutex]);
+}

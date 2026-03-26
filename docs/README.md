@@ -9,7 +9,7 @@ This folder is organized around a small set of canonical documents instead of mu
 - `MODULE_SYSTEM.md`: imports, exports, stdlib resolution, and implicit core imports
 - `CONCURRENCY.md`: async/await, event loop behavior, and native threads
 - `MEMORY_MODEL.md`: runtime value representation, GC, roots, and object layout
-- `INTERNALS.md`: compiler pipeline and code generation flow
+- `INTERNALS.md`: granular compiler walkthrough from lexing through LLVM and linking
 - `FILE_STRUCTURE.md`: repository layout, installed SDK layout, and path resolution
 
 ## Consolidated Docs

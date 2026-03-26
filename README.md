@@ -14,7 +14,7 @@ TejX is a high-performance, strictly typed programming language that compiles to
 | **[Module System](docs/MODULE_SYSTEM.md)**        | Imports, exports, and stdlib resolution.          |
 | **[Concurrency Guide](docs/CONCURRENCY.md)**      | Async/await, event loop behavior, and threads.    |
 | **[Memory Model](docs/MEMORY_MODEL.md)**          | Runtime value layout, roots, and GC behavior.     |
-| **[Internals & Architecture](docs/INTERNALS.md)** | Compiler pipeline and backend overview.           |
+| **[Internals & Architecture](docs/INTERNALS.md)** | Granular compiler walkthrough from source to LLVM. |
 | **[File Structure](docs/FILE_STRUCTURE.md)**      | Repository layout, SDK layout, and paths.         |
 
 ---

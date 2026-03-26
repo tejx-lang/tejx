@@ -1,57 +1,28 @@
-import { Thread, Mutex, Atomic, Condition, SharedQueue } from "std:thread";
-import { assert_eq_int, assert_true } from "../utils.tx";
+import { Thread, Mutex, Atomic, Condition, SharedQueue, spawn, joinAll, parallel } from "std:thread";
+import { assert_eq_int } from "../utils.tx";
 
-function test_basic_thread(args: any[]): void {
-    let result = args[0] as Atomic;
-    result.store(42);
-}
+class DispatchJob {
+    orderId: int;
+    amount: int;
+    priorityBoost: int;
 
-function test_mutex_contention(args: any[]): void {
-    let mutex = args[0] as Mutex;
-    let counter = args[1] as Atomic;
-    for (let i = 0; i < 1000; i++) {
-        mutex.lock();
-        let val = counter.load();
-        counter.store(val + 1);
-        mutex.unlock();
+    constructor(orderId: int, amount: int, priorityBoost: int) {
+        this.orderId = orderId;
+        this.amount = amount;
+        this.priorityBoost = priorityBoost;
+    }
+
+    score(): int {
+        return this.amount + this.priorityBoost;
     }
 }
 
-function test_atomic_add(args: any[]): void {
-    let counter = args[0] as Atomic;
-    for (let i = 0; i < 1000; i++) {
-        counter.add(1);
-    }
-}
-
-function producer(args: any[]): void {
-    let q = args[0] as SharedQueue<int>;
-    let mutex = args[1] as Mutex;
-    let cond = args[2] as Condition;
-    for (let i = 0; i < 50; i++) {
-        mutex.lock();
-        q.enqueue(i);
-        cond.notify();
-        mutex.unlock();
-    }
-}
-
-function consumer(args: any[]): void {
-    let q = args[0] as SharedQueue<int>;
-    let mutex = args[1] as Mutex;
-    let cond = args[2] as Condition;
-    let total = args[3] as Atomic;
-    let count = 0;
-    while (count < 50) {
-        mutex.lock();
-        while (q.isEmpty()) {
-            cond.wait(mutex);
+function spawnShardWorker(target: Atomic, shardWeight: int): Thread {
+    return spawn(() => {
+        for (let item = 0; item < 25; item++) {
+            target.add(shardWeight);
         }
-        let val = q.dequeue() as int;
-        total.add(val);
-        count++;
-        mutex.unlock();
-    }
+    });
 }
 
 function main(): void {
@@ -59,25 +30,38 @@ function main(): void {
 
     // 1. Basic Thread Join
     let resultAtom = new Atomic(0);
-    let t1 = new Thread(test_basic_thread, [resultAtom as any]);
+    let t1 = new Thread(() => {
+        resultAtom.store(42);
+    });
     t1.join();
     assert_eq_int(42, resultAtom.load(), "Thread join and atomic store");
 
     // 2. Mutex Protection
     let mutex = new Mutex();
     let counter = new Atomic(0);
-    let m_args: any[] = [mutex as any, counter as any];
-    let t2 = new Thread(test_mutex_contention, m_args);
-    let t3 = new Thread(test_mutex_contention, m_args);
+    let incrementCounter = () => {
+        for (let i = 0; i < 1000; i++) {
+            mutex.lock();
+            let val = counter.load();
+            counter.store(val + 1);
+            mutex.unlock();
+        }
+    };
+    let t2 = new Thread(incrementCounter);
+    let t3 = new Thread(incrementCounter);
     t2.join();
     t3.join();
     assert_eq_int(2000, counter.load(), "Mutex protected counter");
 
     // 3. Atomic Functions
     let atomicCounter = new Atomic(0);
-    let a_args: any[] = [atomicCounter as any];
-    let t4 = new Thread(test_atomic_add, a_args);
-    let t5 = new Thread(test_atomic_add, a_args);
+    let addToCounter = () => {
+        for (let i = 0; i < 1000; i++) {
+            atomicCounter.add(1);
+        }
+    };
+    let t4 = new Thread(addToCounter);
+    let t5 = new Thread(addToCounter);
     t4.join();
     t5.join();
     assert_eq_int(2000, atomicCounter.load(), "Atomic add across threads");
@@ -87,17 +71,252 @@ function main(): void {
     let cv_mutex = new Mutex();
     let cond = new Condition();
     let sum = new Atomic(0);
-    let producer_args: any[] = [q as any, cv_mutex as any, cond as any];
-    let consumer_args: any[] = [q as any, cv_mutex as any, cond as any, sum as any];
-    
-    let tp = new Thread(producer, producer_args);
-    let tc = new Thread(consumer, consumer_args);
-    
+
+    let producer = () => {
+        for (let i = 0; i < 50; i++) {
+            cv_mutex.lock();
+            q.enqueue(i);
+            cond.notify();
+            cv_mutex.unlock();
+        }
+    };
+
+    let consumer = () => {
+        let count = 0;
+        while (count < 50) {
+            cv_mutex.lock();
+            while (q.isEmpty()) {
+                cond.wait(cv_mutex);
+            }
+            let val = q.dequeue();
+            sum.add(val);
+            count++;
+            cv_mutex.unlock();
+        }
+    };
+
+    let tp = new Thread(producer);
+    let tc = new Thread(consumer);
+
     tp.join();
     tc.join();
-    
+
     // Sum of 0..49 is (49 * 50) / 2 = 1225
     assert_eq_int(1225, sum.load(), "Condition variable and SharedQueue synchronization");
+
+    // 5. Atomic exchange and compareExchange semantics
+    let state = new Atomic(5);
+    assert_eq_int(5, state.exchange(9), "Atomic exchange returns previous value");
+    assert_eq_int(9, state.load(), "Atomic exchange updates stored value");
+    assert_eq_int(9, state.compareExchange(9, 15), "Atomic compareExchange returns matched value");
+    assert_eq_int(15, state.load(), "Atomic compareExchange updates on match");
+    assert_eq_int(15, state.compareExchange(9, 20), "Atomic compareExchange returns current value on mismatch");
+    assert_eq_int(15, state.load(), "Atomic compareExchange keeps value on mismatch");
+
+    // 6. simplest high-level API: run a batch in parallel and wait
+    let batchCounter = new Atomic(0);
+    parallel([
+        spawn(() => { batchCounter.add(1); }),
+        spawn(() => { batchCounter.add(2); }),
+        spawn(() => { batchCounter.add(3); }),
+        spawn(() => { batchCounter.add(4); }),
+        spawn(() => { batchCounter.add(5); }),
+        spawn(() => { batchCounter.add(6); }),
+    ]);
+    assert_eq_int(21, batchCounter.load(), "parallel helper aggregates captured values");
+
+    // 7. notifyAll wakes a full waiting group
+    let waiterCount = 3;
+    let ready = new Atomic(0);
+    let awakened = new Atomic(0);
+    let broadcastMutex = new Mutex();
+    let broadcastCond = new Condition();
+    let broadcastQueue = new SharedQueue<int>();
+    let waiters: Thread[] = [];
+    for (let i = 0; i < waiterCount; i++) {
+        waiters.push(new Thread(() => {
+            broadcastMutex.lock();
+            ready.increment();
+            while (broadcastQueue.isEmpty()) {
+                broadcastCond.wait(broadcastMutex);
+            }
+            let token = broadcastQueue.dequeue();
+            awakened.add(token);
+            broadcastMutex.unlock();
+        }));
+    }
+    while (ready.load() < waiterCount) {}
+    broadcastMutex.lock();
+    for (let i = 0; i < waiterCount; i++) {
+        broadcastQueue.enqueue(1);
+    }
+    broadcastCond.notifyAll();
+    broadcastMutex.unlock();
+    joinAll(waiters);
+    assert_eq_int(waiterCount, awakened.load(), "notifyAll wakes every waiting thread");
+
+    // 8. start() remains idempotent after auto-start
+    let startedOnce = new Atomic(0);
+    let startGuard = new Thread(() => {
+        startedOnce.increment();
+    });
+    startGuard.start();
+    startGuard.start();
+    startGuard.join();
+    assert_eq_int(1, startedOnce.load(), "Repeated start does not rerun the same thread");
+
+    // 9. simple real-life style batch work with a single helper call
+    let thumbnailJobs = new Atomic(0);
+    let cacheWarmups = new Atomic(0);
+    let notifications = new Atomic(0);
+    parallel([
+        spawn(() => {
+            for (let i = 0; i < 4; i++) {
+                thumbnailJobs.increment();
+            }
+        }),
+        spawn(() => {
+            for (let i = 0; i < 3; i++) {
+                cacheWarmups.increment();
+            }
+        }),
+        spawn(() => {
+            for (let i = 0; i < 2; i++) {
+                notifications.increment();
+            }
+        }),
+    ]);
+    assert_eq_int(4, thumbnailJobs.load(), "parallel helper completed thumbnail jobs");
+    assert_eq_int(3, cacheWarmups.load(), "parallel helper completed cache warmups");
+    assert_eq_int(2, notifications.load(), "parallel helper completed notifications");
+
+    // 10. Real-world style dispatch pipeline with one producer and multiple workers
+    let workerCount = 3;
+    let processedOrders = new Atomic(0);
+    let priorityOrders = new Atomic(0);
+    let totalRevenue = new Atomic(0);
+    let totalScore = new Atomic(0);
+    let dispatchMutex = new Mutex();
+    let dispatchCond = new Condition();
+    let dispatchQueue = new SharedQueue<DispatchJob>();
+    let dispatchPlan: DispatchJob[] = [
+        new DispatchJob(101, 120, 0),
+        new DispatchJob(102, 75, 25),
+        new DispatchJob(103, 310, 50),
+        new DispatchJob(104, 40, 0),
+        new DispatchJob(105, 180, 25),
+        new DispatchJob(106, 90, 0),
+        new DispatchJob(107, 220, 50),
+        new DispatchJob(108, 60, 0),
+    ];
+
+    let producerThread = new Thread(() => {
+        for (let i = 0; i < dispatchPlan.length(); i++) {
+            dispatchMutex.lock();
+            dispatchQueue.enqueue(dispatchPlan[i]);
+            dispatchCond.notify();
+            dispatchMutex.unlock();
+        }
+
+        dispatchMutex.lock();
+        for (let i = 0; i < workerCount; i++) {
+            dispatchQueue.enqueue(new DispatchJob(-1, 0, 0));
+        }
+        dispatchCond.notifyAll();
+        dispatchMutex.unlock();
+    });
+
+    let workerTask = () => {
+        while (true) {
+            dispatchMutex.lock();
+            while (dispatchQueue.isEmpty()) {
+                dispatchCond.wait(dispatchMutex);
+            }
+            let job = dispatchQueue.dequeue();
+            dispatchMutex.unlock();
+
+            if (job.orderId < 0) {
+                break;
+            }
+
+            processedOrders.increment();
+            totalRevenue.add(job.amount);
+            totalScore.add(job.score());
+            if (job.priorityBoost > 0) {
+                priorityOrders.increment();
+            }
+        }
+    };
+
+    let dispatchThreads: Thread[] = [
+        new Thread(workerTask),
+        new Thread(workerTask),
+        new Thread(workerTask),
+        producerThread,
+    ];
+    joinAll(dispatchThreads);
+
+    assert_eq_int(8, processedOrders.load(), "Dispatch pipeline processed every order");
+    assert_eq_int(4, priorityOrders.load(), "Dispatch pipeline counted priority orders");
+    assert_eq_int(1095, totalRevenue.load(), "Dispatch pipeline summed revenue");
+    assert_eq_int(1245, totalScore.load(), "Dispatch pipeline combined scoring metrics");
+
+    // 11. Queue helpers preserve FIFO order for typed object payloads
+    let retryQueue = new SharedQueue<DispatchJob>();
+    assert_true(retryQueue.isEmpty(), "SharedQueue starts empty");
+    retryQueue.enqueue(new DispatchJob(201, 35, 0));
+    retryQueue.enqueue(new DispatchJob(202, 55, 10));
+    retryQueue.enqueue(new DispatchJob(203, 80, 20));
+    assert_eq_int(3, retryQueue.size(), "SharedQueue tracks size after enqueue");
+    let firstRetry = retryQueue.dequeue();
+    assert_eq_int(201, firstRetry.orderId, "SharedQueue dequeue keeps FIFO order");
+    let remainingRetries = retryQueue.drain();
+    assert_eq_int(2, remainingRetries.length(), "SharedQueue drain returns remaining items");
+    assert_eq_int(202, remainingRetries[0].orderId, "SharedQueue drain preserves second item order");
+    assert_eq_int(203, remainingRetries[1].orderId, "SharedQueue drain preserves third item order");
+    assert_true(retryQueue.isEmpty(), "SharedQueue drain empties the queue");
+
+    // 12. A thread can orchestrate child threads and wait for them internally
+    let nestedWork = new Atomic(0);
+    let supervisor = new Thread(() => {
+        parallel([
+            spawn(() => {
+                for (let i = 0; i < 5; i++) {
+                    nestedWork.add(2);
+                }
+            }),
+            spawn(() => {
+                for (let i = 0; i < 4; i++) {
+                    nestedWork.add(3);
+                }
+            }),
+        ]);
+        nestedWork.increment();
+    });
+    supervisor.join();
+    assert_eq_int(23, nestedWork.load(), "Thread can spawn and join child work");
+
+    // 13. Dynamic worker pools can be built from typed helper-created tasks
+    let shardTotals: Atomic[] = [
+        new Atomic(0),
+        new Atomic(0),
+        new Atomic(0),
+        new Atomic(0),
+    ];
+    let shardWorkers: Thread[] = [];
+    for (let shardId = 0; shardId < shardTotals.length(); shardId++) {
+        shardWorkers.push(spawnShardWorker(shardTotals[shardId], shardId + 1));
+    }
+    joinAll(shardWorkers);
+    assert_eq_int(25, shardTotals[0].load(), "Worker pool completed shard 1 work");
+    assert_eq_int(50, shardTotals[1].load(), "Worker pool completed shard 2 work");
+    assert_eq_int(75, shardTotals[2].load(), "Worker pool completed shard 3 work");
+    assert_eq_int(100, shardTotals[3].load(), "Worker pool completed shard 4 work");
+
+    // 14. Empty helper inputs are safe no-ops
+    joinAll([]);
+    parallel([]);
+    assert_eq_int(0, 0, "joinAll and parallel accept empty input");
 
     print("--- Threading Tests Complete ---");
 }
