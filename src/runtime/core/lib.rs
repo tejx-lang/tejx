@@ -1474,8 +1474,31 @@ static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
 
 static CANCELLED_TIMERS: LazyLock<Mutex<HashSet<i64>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static TIMEOUT_CANCELS: LazyLock<Mutex<HashMap<i64, oneshot::Sender<()>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static INTERVAL_CANCELS: LazyLock<Mutex<HashMap<i64, (usize, oneshot::Sender<()>)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn timeout_duration_from_ms(ms: i64) -> Duration {
+    Duration::from_millis(ms.max(0) as u64)
+}
+
+fn interval_duration_from_ms(ms: i64) -> Duration {
+    Duration::from_millis(ms.max(1) as u64)
+}
+
+fn mark_timer_cancelled(timer_id: i64) {
+    if let Ok(mut cancelled) = CANCELLED_TIMERS.lock() {
+        cancelled.insert(timer_id);
+    }
+}
+
+fn take_timer_cancelled(timer_id: i64) -> bool {
+    CANCELLED_TIMERS
+        .lock()
+        .map(|mut cancelled| cancelled.remove(&timer_id))
+        .unwrap_or(false)
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_timer_worker(closure_id: i64) {
@@ -1488,22 +1511,25 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
     unsafe { crate::event_loop::tejx_inc_async_ops() };
 
     let handle = unsafe { crate::event_loop::tejx_create_global_handle(callback) };
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    if let Ok(mut cancels) = TIMEOUT_CANCELS.lock() {
+        cancels.insert(timer_id, cancel_tx);
+    }
     crate::event_loop::TOKIO_RT.spawn(async move {
-        tokio::time::sleep(Duration::from_millis(ms as u64)).await;
+        let fired = tokio::select! {
+            _ = tokio::time::sleep(timeout_duration_from_ms(ms)) => true,
+            _ = &mut cancel_rx => false,
+        };
 
-        let cancelled = CANCELLED_TIMERS
-            .lock()
-            .map(|c| c.contains(&timer_id))
-            .unwrap_or(false);
-        if !cancelled {
+        let cancelled = take_timer_cancelled(timer_id);
+        if fired && !cancelled {
             unsafe {
                 let cb = crate::event_loop::tejx_get_global_handle(handle);
                 crate::event_loop::tejx_enqueue_task(rt_timer_worker as *const () as i64, cb);
             }
-        } else {
-            if let Ok(mut c) = CANCELLED_TIMERS.lock() {
-                c.remove(&timer_id);
-            }
+        }
+        if let Ok(mut cancels) = TIMEOUT_CANCELS.lock() {
+            cancels.remove(&timer_id);
         }
         unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
         unsafe { crate::event_loop::tejx_dec_async_ops() };
@@ -1523,7 +1549,7 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
         cancels.insert(timer_id, (handle, cancel_tx));
     }
     crate::event_loop::TOKIO_RT.spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(ms as u64));
+        let mut interval = tokio::time::interval(interval_duration_from_ms(ms));
         interval.tick().await; // first tick returns immediately
 
         loop {
@@ -1534,14 +1560,7 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
                 }
             }
 
-            let cancelled = CANCELLED_TIMERS
-                .lock()
-                .map(|c| c.contains(&timer_id))
-                .unwrap_or(false);
-            if cancelled {
-                if let Ok(mut c) = CANCELLED_TIMERS.lock() {
-                    c.remove(&timer_id);
-                }
+            if take_timer_cancelled(timer_id) {
                 break;
             }
 
@@ -1553,6 +1572,7 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
         if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
             cancels.remove(&timer_id);
         }
+        take_timer_cancelled(timer_id);
         unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
         unsafe { crate::event_loop::tejx_dec_async_ops() };
     });
@@ -1562,22 +1582,26 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
-    if let Ok(mut c) = CANCELLED_TIMERS.lock() {
-        c.insert(id);
+    let cancel_tx = TIMEOUT_CANCELS
+        .lock()
+        .ok()
+        .and_then(|mut cancels| cancels.remove(&id));
+    if let Some(cancel_tx) = cancel_tx {
+        mark_timer_cancelled(id);
+        let _ = cancel_tx.send(());
     }
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
-    if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
-        if let Some((_, cancel_tx)) = cancels.remove(&id) {
-            let _ = cancel_tx.send(());
-            return 0;
-        }
-    }
-    if let Ok(mut c) = CANCELLED_TIMERS.lock() {
-        c.insert(id);
+    let cancel_tx = INTERVAL_CANCELS
+        .lock()
+        .ok()
+        .and_then(|mut cancels| cancels.remove(&id).map(|(_, cancel_tx)| cancel_tx));
+    if let Some(cancel_tx) = cancel_tx {
+        mark_timer_cancelled(id);
+        let _ = cancel_tx.send(());
     }
     0
 }
@@ -1585,7 +1609,7 @@ pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-    let actual_ms = rt_to_number(ms) as u64;
+    let actual_ms = rt_to_number(ms).max(0.0) as u64;
     let pid = rt_promise_new();
 
     unsafe { crate::event_loop::tejx_inc_async_ops() };

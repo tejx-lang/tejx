@@ -1,0 +1,17 @@
+import { clearTimeout, delay, setTimeout } from "std:time";
+import { assert_true } from "../utils.tx";
+
+async function main() {
+    print("=== TIME CANCELLATION START ===");
+
+    let fired = false;
+    let id = setTimeout(() => {
+        fired = true;
+    }, 20000);
+
+    clearTimeout(id);
+    await delay(25);
+
+    assert_true(!fired, "cleared timeout does not fire");
+    print("=== TIME CANCELLATION COMPLETE ===");
+}

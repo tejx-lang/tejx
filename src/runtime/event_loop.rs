@@ -1,20 +1,21 @@
 use super::*;
 
 use super::gc::{ThreadContext, MY_CONTEXT};
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 // --- Async Task Queue ---
-// Since we are running on a single-threaded Tokio runtime, we can use
-// thread-local structures for our task queue, eliminating Mutexes.
+// TejX user callbacks still resume on a single event-loop thread, but async helpers
+// may complete from different worker threads. Keep the queue/handle table global so
+// wakeups and GC-visible handles stay correct across those boundaries.
+type TejxTask = (i64, i64);
 
-thread_local! {
-    static TASK_QUEUE: RefCell<VecDeque<(i64, i64)>> = RefCell::new(VecDeque::new());
-    static GLOBAL_HANDLES: RefCell<HashMap<usize, i64>> = RefCell::new(HashMap::new());
-}
+static TASK_QUEUE: LazyLock<Mutex<VecDeque<TejxTask>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+static GLOBAL_HANDLES: LazyLock<Mutex<HashMap<usize, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static GLOBAL_HANDLE_NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -33,11 +34,40 @@ pub static ASYNC_OPS: AtomicI64 = AtomicI64::new(0);
 pub static TASK_NOTIFY: LazyLock<tokio::sync::Notify> =
     LazyLock::new(|| tokio::sync::Notify::const_new());
 
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn task_queue_is_empty() -> bool {
+    lock_unpoisoned(&TASK_QUEUE).is_empty()
+}
+
+fn pop_ready_task() -> Option<TejxTask> {
+    lock_unpoisoned(&TASK_QUEUE).pop_front()
+}
+
+unsafe fn run_task((worker, args): TejxTask) {
+    if worker != 0 {
+        let worker_fn: unsafe extern "C" fn(i64) = std::mem::transmute(worker);
+        worker_fn(args);
+    }
+}
+
+unsafe fn run_ready_tasks() -> usize {
+    let mut ran = 0;
+    while let Some(task) = pop_ready_task() {
+        run_task(task);
+        ran += 1;
+    }
+    ran
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn tejx_enqueue_task(worker: i64, args: i64) {
-    TASK_QUEUE.with(|q| {
-        q.borrow_mut().push_back((worker, args));
-    });
+    lock_unpoisoned(&TASK_QUEUE).push_back((worker, args));
     TASK_NOTIFY.notify_one();
 }
 
@@ -48,18 +78,15 @@ pub unsafe extern "C" fn tejx_inc_async_ops() {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_dec_async_ops() {
-    ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
+    let prev = ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
+    if prev <= 1 {
+        TASK_NOTIFY.notify_one();
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_run_event_loop_step() -> bool {
-    let task = TASK_QUEUE.with(|q| q.borrow_mut().pop_front());
-
-    if let Some((worker, args)) = task {
-        if worker != 0 {
-            let worker_fn: unsafe extern "C" fn(i64) = std::mem::transmute(worker);
-            worker_fn(args);
-        }
+    if run_ready_tasks() > 0 {
         return true;
     }
 
@@ -67,31 +94,20 @@ pub unsafe extern "C" fn tejx_run_event_loop_step() -> bool {
         return false;
     }
 
-    // Process Tokio tasks to pull next events (I/O, timers, etc) into the Tejx queue
-    // Instead of busy-waiting with sleep, we block the thread until TASK_NOTIFY is
-    // triggered by a background task enqueueing a callback via `tejx_enqueue_task`.
+    // Process Tokio tasks to pull next events (I/O, timers, etc) into the Tejx queue.
+    // Instead of busy-waiting with sleep, we block until a callback is enqueued or the
+    // last outstanding async operation completes/cancels.
     TOKIO_RT.block_on(async {
         // Yield to the Tokio scheduler so any ready tasks execute immediately
         tokio::task::yield_now().await;
 
-        // If no microtasks were produced during the yield, wait for a signal
-        // from a background worker (e.g., I/O networking threads)
-        if TASK_QUEUE.with(|q| q.borrow().is_empty()) {
+        // Only park if we are still waiting on outstanding async work after the yield.
+        if task_queue_is_empty() && ASYNC_OPS.load(Ordering::SeqCst) > 0 {
             TASK_NOTIFY.notified().await;
         }
     });
 
-    // Check again after Tokio polled
-    let task = TASK_QUEUE.with(|q| q.borrow_mut().pop_front());
-    if let Some((worker, args)) = task {
-        if worker != 0 {
-            let worker_fn: unsafe extern "C" fn(i64) = std::mem::transmute(worker);
-            worker_fn(args);
-        }
-        return true;
-    }
-
-    true // Keep looping, as ASYNC_OPS > 0
+    run_ready_tasks() > 0 || ASYNC_OPS.load(Ordering::SeqCst) > 0
 }
 
 #[no_mangle]
@@ -102,61 +118,45 @@ pub unsafe extern "C" fn tejx_run_event_loop() {
 #[no_mangle]
 pub unsafe extern "C" fn tejx_create_global_handle(ptr: i64) -> usize {
     let id = GLOBAL_HANDLE_NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    GLOBAL_HANDLES.with(|handles| {
-        handles.borrow_mut().insert(id, ptr);
-    });
+    lock_unpoisoned(&GLOBAL_HANDLES).insert(id, ptr);
     id
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_get_global_handle(id: usize) -> i64 {
-    GLOBAL_HANDLES.with(|handles| *handles.borrow().get(&id).unwrap_or(&0))
+    *lock_unpoisoned(&GLOBAL_HANDLES).get(&id).unwrap_or(&0)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_drop_global_handle(id: usize) {
-    GLOBAL_HANDLES.with(|handles| {
-        handles.borrow_mut().remove(&id);
-    });
+    lock_unpoisoned(&GLOBAL_HANDLES).remove(&id);
 }
 
 pub unsafe fn rt_gc_scan_tasks() {
-    TASK_QUEUE.with(|q| {
-        for (_, ref mut args) in q.borrow_mut().iter_mut() {
-            crate::gc::copy_object(args as *mut i64);
-        }
-    });
-    GLOBAL_HANDLES.with(|handles| {
-        for val in handles.borrow_mut().values_mut() {
-            crate::gc::copy_object(val as *mut i64);
-        }
-    });
+    for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
+        crate::gc::copy_object(args as *mut i64);
+    }
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).values_mut() {
+        crate::gc::copy_object(val as *mut i64);
+    }
 }
 
 pub unsafe fn rt_gc_mark_tasks() {
-    TASK_QUEUE.with(|q| {
-        for (_, ref mut args) in q.borrow_mut().iter_mut() {
-            crate::gc::mark_object(args as *mut i64);
-        }
-    });
-    GLOBAL_HANDLES.with(|handles| {
-        for val in handles.borrow_mut().values_mut() {
-            crate::gc::mark_object(val as *mut i64);
-        }
-    });
+    for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
+        crate::gc::mark_object(args as *mut i64);
+    }
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).values_mut() {
+        crate::gc::mark_object(val as *mut i64);
+    }
 }
 
 pub unsafe fn rt_gc_update_tasks() {
-    TASK_QUEUE.with(|q| {
-        for (_, ref mut args) in q.borrow_mut().iter_mut() {
-            crate::gc::rt_update_ptr(args as *mut i64);
-        }
-    });
-    GLOBAL_HANDLES.with(|handles| {
-        for val in handles.borrow_mut().values_mut() {
-            crate::gc::rt_update_ptr(val as *mut i64);
-        }
-    });
+    for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
+        crate::gc::rt_update_ptr(args as *mut i64);
+    }
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).values_mut() {
+        crate::gc::rt_update_ptr(val as *mut i64);
+    }
 }
 
 // --- Exception Handling ---
