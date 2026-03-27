@@ -24,6 +24,7 @@ The async runtime is implemented in `src/runtime/event_loop.rs`.
 
 Important runtime pieces:
 
+- `MICROTASK_QUEUE`: promise continuations and `await` resumes
 - `TASK_QUEUE`: pending TejX callbacks waiting to run
 - `ASYNC_OPS`: count of in-flight async operations
 - `TASK_NOTIFY`: wakeup signal for the event loop
@@ -33,11 +34,11 @@ Important runtime pieces:
 
 Each event-loop step follows this pattern:
 
-1. pop a task from the TejX task queue
-2. run it immediately if one exists
-3. if no tasks remain and `ASYNC_OPS == 0`, stop
-4. otherwise let Tokio poll background async work
-5. wake again when a task is enqueued back into the TejX queue
+1. drain promise/`await` microtasks first
+2. run at most one queued timer/I/O callback
+3. drain any microtasks created by that callback
+4. if no tasks remain and `ASYNC_OPS == 0`, stop
+5. otherwise let Tokio poll background async work and wake when new work arrives
 
 This keeps TejX user code single-threaded from the async point of view while still allowing non-blocking integration with timers, sockets, and HTTP.
 

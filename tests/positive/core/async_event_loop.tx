@@ -1,0 +1,44 @@
+import { assert_eq_int, assert_true } from "../utils.tx";
+import { clearTimeout, delay, setTimeout } from "std:time";
+
+async function immediate(): Promise<int> {
+    return 1;
+}
+
+async function test_await_resumes_before_timeout() {
+    let order: int[] = [];
+    setTimeout(() => {
+        order.push(2);
+    }, 0);
+
+    let value = await immediate();
+    order.push(value);
+
+    await delay(25);
+
+    assert_eq_int(2, order.length(), "await order length");
+    assert_eq_int(1, order[0], "await resumes before timeout");
+    assert_eq_int(2, order[1], "timeout runs after await resume");
+}
+
+async function test_clear_timeout_before_macrotask() {
+    let fired = false;
+    let timeout_id = setTimeout(() => {
+        fired = true;
+    }, 0);
+
+    let result = await immediate();
+    clearTimeout(timeout_id);
+    await delay(25);
+
+    assert_eq_int(1, result, "await result before clear");
+    assert_true(!fired, "microtask clearTimeout runs before timeout macrotask");
+}
+
+async function main() {
+    print("=== ASYNC EVENT LOOP START ===");
+    await test_await_resumes_before_timeout();
+    await test_clear_timeout_before_macrotask();
+    assert_true(true, "async event loop ordering stable");
+    print("=== ASYNC EVENT LOOP COMPLETE ===");
+}
