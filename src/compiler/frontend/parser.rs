@@ -259,6 +259,8 @@ impl Parser {
             | TokenType::Enum
             | TokenType::Async
             | TokenType::Await
+            | TokenType::Catch
+            | TokenType::Finally
             | TokenType::Option
             | TokenType::Optional
             | TokenType::String

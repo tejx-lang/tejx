@@ -5,6 +5,25 @@ use crate::frontend::token::TokenType;
 use crate::middle::hir::*;
 
 impl Lowering {
+    fn is_promise_type(ty: &TejxType) -> bool {
+        matches!(ty, TejxType::Class(name, _) if name == "Promise")
+    }
+
+    fn flatten_nested_promise_type_once(ty: TejxType) -> TejxType {
+        match ty {
+            TejxType::Class(name, mut generics) if name == "Promise" && generics.len() == 1 => {
+                let inner = generics.pop().unwrap();
+                match inner {
+                    TejxType::Class(inner_name, inner_generics) if inner_name == "Promise" => {
+                        TejxType::Class(inner_name, inner_generics)
+                    }
+                    other => TejxType::Class(name, vec![other]),
+                }
+            }
+            other => other,
+        }
+    }
+
     fn variadic_pack_type(&self, callee: &str) -> TejxType {
         let mut candidates = vec![callee.to_string()];
         if callee.starts_with("f_") {
@@ -94,6 +113,12 @@ impl Lowering {
         let mut final_callee = String::new();
         let mut final_args = hir_args.clone();
         let mut ty = TejxType::Int64;
+        let promise_receiver = Self::is_promise_type(&self.non_none_type(&lowered_object.get_type()));
+        let should_flatten_promise_return =
+            ((member == "then" || member == "catchError")
+                && promise_receiver)
+                || matches!(object, Expression::Identifier { name, .. } if name == "Promise")
+                    && member == "resolve";
 
         if let Expression::SuperExpr { .. } = object {
             if let Some(parent) = &*self.parent_class.borrow() {
@@ -123,6 +148,33 @@ impl Lowering {
             if let Expression::Identifier { name: obj_name, .. } = object {
                 if obj_name == "Promise" && member == "all" {
                     final_callee = "f_Promise_all".to_string();
+                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
+                        ty = match ret_ty {
+                            TejxType::Function(_, ret) => (*ret).clone(),
+                            _ => ret_ty.clone(),
+                        };
+                    }
+                    resolved = true;
+                } else if obj_name == "Promise" && member == "race" {
+                    final_callee = "f_Promise_race".to_string();
+                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
+                        ty = match ret_ty {
+                            TejxType::Function(_, ret) => (*ret).clone(),
+                            _ => ret_ty.clone(),
+                        };
+                    }
+                    resolved = true;
+                } else if obj_name == "Promise" && member == "any" {
+                    final_callee = "f_Promise_any".to_string();
+                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
+                        ty = match ret_ty {
+                            TejxType::Function(_, ret) => (*ret).clone(),
+                            _ => ret_ty.clone(),
+                        };
+                    }
+                    resolved = true;
+                } else if obj_name == "Promise" && member == "allSettled" {
+                    final_callee = "f_Promise_allSettled".to_string();
                     if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
                         ty = match ret_ty {
                             TejxType::Function(_, ret) => (*ret).clone(),
@@ -307,6 +359,20 @@ impl Lowering {
             final_callee = monomorphized_callee;
         }
 
+        if matches!(object, Expression::Identifier { name, .. } if name == "Promise") {
+            match member {
+                "resolve" => final_callee = "rt_promise_resolved".to_string(),
+                "reject" => final_callee = "rt_promise_rejected".to_string(),
+                _ => {}
+            }
+        } else if promise_receiver {
+            match member {
+                "then" => final_callee = "rt_promise_then".to_string(),
+                "catchError" => final_callee = "rt_promise_catch".to_string(),
+                _ => {}
+            }
+        }
+
         let lookup_name = if final_callee.starts_with("f_") {
             &final_callee[2..]
         } else {
@@ -348,6 +414,10 @@ impl Lowering {
                     final_args.push(HIRExpression::NoneLiteral { line });
                 }
             }
+        }
+
+        if should_flatten_promise_return {
+            ty = Self::flatten_nested_promise_type_once(ty);
         }
 
         HIRExpression::Call {
@@ -1158,6 +1228,39 @@ impl Lowering {
                             if let Expression::Identifier { name: obj_name, .. } = object.as_ref() {
                                 if obj_name == "Promise" && member == "all" {
                                     final_callee = "f_Promise_all".to_string();
+                                    if let Some(ret_ty) =
+                                        self.user_functions.borrow().get(&final_callee).cloned()
+                                    {
+                                        ty = match ret_ty {
+                                            TejxType::Function(_, ret) => (*ret).clone(),
+                                            _ => ret_ty.clone(),
+                                        };
+                                    }
+                                    resolved = true;
+                                } else if obj_name == "Promise" && member == "race" {
+                                    final_callee = "f_Promise_race".to_string();
+                                    if let Some(ret_ty) =
+                                        self.user_functions.borrow().get(&final_callee).cloned()
+                                    {
+                                        ty = match ret_ty {
+                                            TejxType::Function(_, ret) => (*ret).clone(),
+                                            _ => ret_ty.clone(),
+                                        };
+                                    }
+                                    resolved = true;
+                                } else if obj_name == "Promise" && member == "any" {
+                                    final_callee = "f_Promise_any".to_string();
+                                    if let Some(ret_ty) =
+                                        self.user_functions.borrow().get(&final_callee).cloned()
+                                    {
+                                        ty = match ret_ty {
+                                            TejxType::Function(_, ret) => (*ret).clone(),
+                                            _ => ret_ty.clone(),
+                                        };
+                                    }
+                                    resolved = true;
+                                } else if obj_name == "Promise" && member == "allSettled" {
+                                    final_callee = "f_Promise_allSettled".to_string();
                                     if let Some(ret_ty) =
                                         self.user_functions.borrow().get(&final_callee).cloned()
                                     {

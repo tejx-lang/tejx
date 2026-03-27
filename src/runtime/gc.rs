@@ -9,7 +9,15 @@ pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB
 
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
-static STATIC_ROOTS: LazyLock<Mutex<Vec<i64>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[derive(Default)]
+struct StaticRoots {
+    slots: Vec<Option<i64>>,
+    free: Vec<usize>,
+}
+
+static STATIC_ROOTS: LazyLock<Mutex<StaticRoots>> =
+    LazyLock::new(|| Mutex::new(StaticRoots::default()));
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -81,10 +89,18 @@ pub static mut OLD_END: *mut u8 = 0 as *mut u8;
 
 // --- Large Object Space (LOS) ---
 pub const MAX_LOS_OBJECTS: usize = 4096;
+const MIN_LOS_GC_TRIGGER_BYTES: usize = 8 * 1024 * 1024;
+static LOS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 #[no_mangle]
 pub static mut LOS_OBJECTS: [*mut u8; MAX_LOS_OBJECTS] = [0 as *mut u8; MAX_LOS_OBJECTS];
 #[no_mangle]
+pub static mut LOS_SIZES: [usize; MAX_LOS_OBJECTS] = [0; MAX_LOS_OBJECTS];
+#[no_mangle]
 pub static mut LOS_COUNT: usize = 0;
+#[no_mangle]
+pub static mut LOS_BYTES: usize = 0;
+#[no_mangle]
+pub static mut LOS_NEXT_GC_THRESHOLD: usize = MIN_LOS_GC_TRIGGER_BYTES;
 
 // --- Type Metadata / Type Table ---
 pub const MAX_TYPES: usize = 1024;
@@ -148,40 +164,68 @@ pub unsafe extern "C" fn rt_register_type(
 
 pub unsafe fn rt_add_static_root(val: i64) -> usize {
     let mut roots = STATIC_ROOTS.lock().unwrap();
-    roots.push(val);
-    roots.len() - 1
+    if let Some(slot) = roots.free.pop() {
+        roots.slots[slot] = Some(val);
+        return slot;
+    }
+    roots.slots.push(Some(val));
+    roots.slots.len() - 1
 }
 
 pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
     let roots = STATIC_ROOTS.lock().unwrap();
-    roots.get(slot).copied().unwrap_or(0)
+    roots.slots.get(slot).and_then(|root| *root).unwrap_or(0)
+}
+
+pub unsafe fn rt_pin_static_root(slot: usize, out: *mut i64) {
+    if out.is_null() {
+        return;
+    }
+
+    let _gc_lock = GC_LOCK.lock().unwrap();
+    {
+        let roots = STATIC_ROOTS.lock().unwrap();
+        *out = roots.slots.get(slot).and_then(|root| *root).unwrap_or(0);
+    }
+    rt_push_root(out);
 }
 
 pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
     let mut roots = STATIC_ROOTS.lock().unwrap();
-    if let Some(root) = roots.get_mut(slot) {
-        *root = val;
+    if let Some(root) = roots.slots.get_mut(slot) {
+        if root.is_some() {
+            *root = Some(val);
+        }
+    }
+}
+
+pub unsafe fn rt_release_static_root(slot: usize) {
+    let mut roots = STATIC_ROOTS.lock().unwrap();
+    if let Some(root) = roots.slots.get_mut(slot) {
+        if root.take().is_some() {
+            roots.free.push(slot);
+        }
     }
 }
 
 unsafe fn mark_static_roots() {
     let roots = STATIC_ROOTS.lock().unwrap();
-    for &root in roots.iter() {
-        let mut tmp = root;
+    for root in roots.slots.iter().flatten() {
+        let mut tmp = *root;
         mark_object(&mut tmp);
     }
 }
 
 unsafe fn update_static_roots() {
     let mut roots = STATIC_ROOTS.lock().unwrap();
-    for root in roots.iter_mut() {
+    for root in roots.slots.iter_mut().flatten() {
         rt_update_ptr(root as *mut i64);
     }
 }
 
 unsafe fn copy_static_roots() {
     let mut roots = STATIC_ROOTS.lock().unwrap();
-    for root in roots.iter_mut() {
+    for root in roots.slots.iter_mut().flatten() {
         copy_object(root as *mut i64);
     }
 }
@@ -220,6 +264,7 @@ pub fn in_young_gen(ptr: *mut u8) -> bool {
 }
 
 pub unsafe fn rt_is_los_ptr(ptr: *mut u8) -> bool {
+    let _los_lock = LOS_LOCK.lock().unwrap();
     for i in 0..LOS_COUNT {
         if LOS_OBJECTS[i] == ptr {
             return true;
@@ -238,12 +283,16 @@ pub unsafe extern "C" fn rt_is_gc_ptr(ptr: *mut u8) -> bool {
     let old_end = unsafe { OLD_START.add(OLD_GEN_SIZE) as usize };
 
     let in_eden = p >= EDEN_START as usize && p < eden_end;
+    if in_eden {
+        return true;
+    }
+
     let in_old = p >= OLD_START as usize && p < old_end;
-    let in_l = in_los(ptr);
+    if in_old {
+        return true;
+    }
 
-    let res = in_eden || in_old || in_l;
-
-    res
+    in_los(ptr)
 }
 
 unsafe fn region_contains_exact_body(
@@ -276,10 +325,13 @@ pub unsafe extern "C" fn rt_is_gc_body_ptr_exact(ptr: *mut u8) -> bool {
         return false;
     }
 
-    for i in 0..LOS_COUNT {
-        let body = LOS_OBJECTS[i].add(std::mem::size_of::<ObjectHeader>());
-        if body == ptr {
-            return true;
+    {
+        let _los_lock = LOS_LOCK.lock().unwrap();
+        for i in 0..LOS_COUNT {
+            let body = LOS_OBJECTS[i].add(std::mem::size_of::<ObjectHeader>());
+            if body == ptr {
+                return true;
+            }
         }
     }
 
@@ -616,7 +668,32 @@ pub unsafe extern "C" fn rt_start_gc_scheduler() {
 }
 
 pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
-    let total_size = size + std::mem::size_of::<ObjectHeader>();
+    if EDEN_START.is_null() {
+        rt_init_gc();
+    }
+
+    let header_size = std::mem::size_of::<ObjectHeader>();
+    let total_size = (size + header_size + 7) & !7;
+    let _gc_lock = GC_LOCK.lock().unwrap();
+
+    let needs_major_gc = {
+        let _los_lock = LOS_LOCK.lock().unwrap();
+        LOS_COUNT >= MAX_LOS_OBJECTS
+            || LOS_BYTES.saturating_add(total_size) > LOS_NEXT_GC_THRESHOLD
+    };
+
+    if needs_major_gc {
+        major_gc_locked_internal(true, false);
+    }
+
+    {
+        let _los_lock = LOS_LOCK.lock().unwrap();
+        if LOS_COUNT >= MAX_LOS_OBJECTS {
+            eprintln!("FATAL: LOS Overflow");
+            exit(1);
+        }
+    }
+
     let ptr = mmap(
         std::ptr::null_mut(),
         total_size,
@@ -634,15 +711,15 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
         exit(1);
     }
 
-    if LOS_COUNT >= MAX_LOS_OBJECTS {
-        eprintln!("FATAL: LOS Overflow");
-        exit(1);
+    {
+        let _los_lock = LOS_LOCK.lock().unwrap();
+        LOS_OBJECTS[LOS_COUNT] = ptr;
+        LOS_SIZES[LOS_COUNT] = total_size;
+        LOS_COUNT += 1;
+        LOS_BYTES = LOS_BYTES.saturating_add(total_size);
     }
 
-    LOS_OBJECTS[LOS_COUNT] = ptr;
-    LOS_COUNT += 1;
-
-    ptr.add(std::mem::size_of::<ObjectHeader>())
+    ptr.add(header_size)
 }
 
 #[no_mangle]
@@ -758,10 +835,10 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
 }
 
 pub unsafe fn in_los(ptr: *mut u8) -> bool {
+    let _los_lock = LOS_LOCK.lock().unwrap();
     for i in 0..LOS_COUNT {
         let obj_ptr = LOS_OBJECTS[i];
-        let size =
-            get_object_size(obj_ptr as *mut ObjectHeader) + std::mem::size_of::<ObjectHeader>();
+        let size = LOS_SIZES[i];
         if ptr >= obj_ptr && ptr < obj_ptr.add(size) {
             return true;
         }
@@ -896,17 +973,21 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
 
     // 3. Sweep LOS
     let mut new_los_count = 0;
+    let mut new_los_bytes = 0usize;
     for i in 0..LOS_COUNT {
         let header = LOS_OBJECTS[i] as *mut ObjectHeader;
         if gc_is_marked((*header).gc_word) {
             LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
+            LOS_SIZES[new_los_count] = LOS_SIZES[i];
+            new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
             new_los_count += 1;
         } else {
-            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-            munmap(LOS_OBJECTS[i] as *mut _, size);
+            munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
         }
     }
     LOS_COUNT = new_los_count;
+    LOS_BYTES = new_los_bytes;
+    LOS_NEXT_GC_THRESHOLD = std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
 
     // 4. Mark-Compact for Old Gen (3 passes)
 
@@ -1054,7 +1135,7 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
     } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].size > 0 {
         TYPE_TABLE[type_id as usize].size
     } else if type_id == TAG_PROMISE as u16 {
-        24
+        PROMISE_BODY_SIZE
     } else {
         8
     };
@@ -1175,6 +1256,30 @@ unsafe fn scan_object_fields(header: *mut ObjectHeader) {
     }
 }
 
+#[inline]
+unsafe fn run_finalizer_for_header(header: *mut ObjectHeader) {
+    let type_id = (*header).type_id as usize;
+    if type_id >= MAX_TYPES {
+        return;
+    }
+    if let Some(finalizer) = TYPE_TABLE[type_id].finalizer {
+        let obj_val =
+            ((header as *mut u8).add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+        finalizer(obj_val);
+    }
+}
+
+unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
+    while scan < end {
+        let header = scan as *mut ObjectHeader;
+        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+        if !gc_is_forwarded((*header).gc_word) {
+            run_finalizer_for_header(header);
+        }
+        scan = scan.add(size);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn minor_gc() {
     let _lock = GC_LOCK.lock().unwrap();
@@ -1248,6 +1353,8 @@ unsafe fn clear_array_caches() {
 pub unsafe fn minor_gc_locked() {
     clear_array_caches();
     rt_clear_tlab();
+    let eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
+    let from_survivor_top = FROM_SURVIVOR_TOP;
     TO_SURVIVOR_TOP = TO_SURVIVOR;
     let mut scan_ptr = TO_SURVIVOR;
 
@@ -1293,6 +1400,9 @@ pub unsafe fn minor_gc_locked() {
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
         scan_ptr = scan_ptr.add(size);
     }
+
+    run_young_finalizers_in_region(EDEN_START, eden_top);
+    run_young_finalizers_in_region(FROM_SURVIVOR, from_survivor_top);
 
     // Swap survivors
     let temp = FROM_SURVIVOR;

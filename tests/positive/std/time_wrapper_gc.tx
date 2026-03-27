@@ -1,0 +1,29 @@
+import { collect } from "std:gc";
+import { after, every } from "std:time";
+
+function allocateUntrackedTimers(): void {
+    for (let i = 0; i < 128; i++) {
+        after(() => {}, 60000);
+        every(() => {}, 60000);
+    }
+}
+
+function createMemoryPressure(): void {
+    let junk: string[] = [];
+    for (let i = 0; i < 120000; i++) {
+        junk.push("timer-gc-" + i + "-pressure-" + (i * 2));
+        if (junk.length() > 2048) {
+            junk = [];
+        }
+    }
+}
+
+function main(): void {
+    print("=== TIME WRAPPER GC START ===");
+
+    allocateUntrackedTimers();
+    createMemoryPressure();
+
+    collect();
+    print("=== TIME WRAPPER GC COMPLETE ===");
+}

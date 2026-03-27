@@ -9,12 +9,14 @@ extern function rt_net_read_exact_bytes(stream: int64, expected_len: int): int[]
 extern function rt_net_set_timeout(stream: int64, timeout_ms: int): int;
 extern function rt_net_start_tls(stream: int64, host: string): int;
 extern function rt_net_start_tls_insecure(stream: int64, host: string): int;
+extern function rt_TcpStream_constructor(_this: TcpStream, id: int64): void;
+extern function rt_TcpListener_constructor(_this: TcpListener, id: int64): void;
 
 export class TcpStream {
     private id: int64;
 
     constructor(id: int64) {
-        this.id = id;
+        rt_TcpStream_constructor(this, id);
     }
 
     write(data: string): bool {
@@ -94,7 +96,7 @@ export class TcpListener {
     private id: int64;
 
     constructor(id: int64) {
-        this.id = id;
+        rt_TcpListener_constructor(this, id);
     }
 
     static bind(addr: string): TcpListener {

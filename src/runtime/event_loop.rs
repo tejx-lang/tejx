@@ -1,10 +1,10 @@
 use super::*;
 
 use super::gc::{ThreadContext, MY_CONTEXT};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Condvar, LazyLock, Mutex};
 
 // --- Async Task Queue ---
 // TejX user callbacks still resume on a single event-loop thread, but async helpers
@@ -16,14 +16,26 @@ static MICROTASK_QUEUE: LazyLock<Mutex<VecDeque<TejxTask>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 static TASK_QUEUE: LazyLock<Mutex<VecDeque<TejxTask>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
-static GLOBAL_HANDLES: LazyLock<Mutex<HashMap<usize, i64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static READY_MICROTASKS: AtomicUsize = AtomicUsize::new(0);
+static READY_TASKS: AtomicUsize = AtomicUsize::new(0);
 
-static GLOBAL_HANDLE_NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+#[derive(Default)]
+struct GlobalHandles {
+    slots: Vec<Option<i64>>,
+    free: Vec<usize>,
+}
+
+static GLOBAL_HANDLES: LazyLock<Mutex<GlobalHandles>> =
+    LazyLock::new(|| Mutex::new(GlobalHandles::default()));
 
 // Global Tokio Runtime for background I/O tasks and timers
 pub static TOKIO_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_current_thread()
+    let worker_threads = std::thread::available_parallelism()
+        .map(|count| count.get().clamp(2, 4))
+        .unwrap_or(2);
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .thread_name("tejx-async")
         .enable_all()
         .build()
         .unwrap()
@@ -32,9 +44,9 @@ pub static TOKIO_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 #[no_mangle]
 pub static ASYNC_OPS: AtomicI64 = AtomicI64::new(0);
 
-// Notify to wake up the blocked event loop when a task is enqueued
-pub static TASK_NOTIFY: LazyLock<tokio::sync::Notify> =
-    LazyLock::new(|| tokio::sync::Notify::const_new());
+// Wake the blocked TejX event loop when async state changes or a task is enqueued.
+static EVENT_LOOP_WAKE: LazyLock<(Mutex<u64>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(0), Condvar::new()));
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match mutex.lock() {
@@ -43,12 +55,43 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
-fn queue_is_empty(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> bool {
-    lock_unpoisoned(queue).is_empty()
+fn wait_unpoisoned<'a, T>(
+    cvar: &Condvar,
+    guard: std::sync::MutexGuard<'a, T>,
+) -> std::sync::MutexGuard<'a, T> {
+    match cvar.wait(guard) {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 fn pop_ready_task(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> Option<TejxTask> {
-    lock_unpoisoned(queue).pop_front()
+    let task = lock_unpoisoned(queue).pop_front();
+    if task.is_some() {
+        ready_count_for(queue).fetch_sub(1, Ordering::AcqRel);
+    }
+    task
+}
+
+fn drain_ready_tasks(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> VecDeque<TejxTask> {
+    let drained = std::mem::take(&mut *lock_unpoisoned(queue));
+    let drained_len = drained.len();
+    if drained_len != 0 {
+        ready_count_for(queue).fetch_sub(drained_len, Ordering::AcqRel);
+    }
+    drained
+}
+
+fn ready_count_for(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> &'static AtomicUsize {
+    if std::ptr::eq(queue, &MICROTASK_QUEUE) {
+        &READY_MICROTASKS
+    } else {
+        &READY_TASKS
+    }
+}
+
+fn any_ready_tasks() -> bool {
+    READY_MICROTASKS.load(Ordering::Acquire) != 0 || READY_TASKS.load(Ordering::Acquire) != 0
 }
 
 unsafe fn run_task((worker, args): TejxTask) {
@@ -60,7 +103,7 @@ unsafe fn run_task((worker, args): TejxTask) {
 
 unsafe fn run_ready_tasks(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> usize {
     let mut ran = 0;
-    while let Some(task) = pop_ready_task(queue) {
+    for task in drain_ready_tasks(queue) {
         run_task(task);
         ran += 1;
     }
@@ -76,18 +119,24 @@ unsafe fn run_one_task(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> bool {
     }
 }
 
-fn any_ready_tasks() -> bool {
-    !queue_is_empty(&MICROTASK_QUEUE) || !queue_is_empty(&TASK_QUEUE)
+fn notify_event_loop() {
+    let (lock, cvar) = &*EVENT_LOOP_WAKE;
+    let mut generation = lock_unpoisoned(lock);
+    *generation = generation.wrapping_add(1);
+    cvar.notify_one();
 }
 
-fn park_event_loop_if_idle() -> impl std::future::Future<Output = ()> {
-    async {
-        // Yield to the Tokio scheduler so any ready tasks execute immediately.
-        tokio::task::yield_now().await;
-
-        // Only park if we are still waiting on outstanding async work after the yield.
-        if !any_ready_tasks() && ASYNC_OPS.load(Ordering::SeqCst) > 0 {
-            TASK_NOTIFY.notified().await;
+fn park_event_loop_if_idle() {
+    let (lock, cvar) = &*EVENT_LOOP_WAKE;
+    let mut generation = lock_unpoisoned(lock);
+    loop {
+        if any_ready_tasks() || ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
+            return;
+        }
+        let seen = *generation;
+        generation = wait_unpoisoned(cvar, generation);
+        if *generation != seen {
+            continue;
         }
     }
 }
@@ -95,25 +144,28 @@ fn park_event_loop_if_idle() -> impl std::future::Future<Output = ()> {
 #[no_mangle]
 pub unsafe extern "C" fn tejx_enqueue_task(worker: i64, args: i64) {
     lock_unpoisoned(&TASK_QUEUE).push_back((worker, args));
-    TASK_NOTIFY.notify_one();
+    READY_TASKS.fetch_add(1, Ordering::Release);
+    notify_event_loop();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_enqueue_microtask(worker: i64, args: i64) {
     lock_unpoisoned(&MICROTASK_QUEUE).push_back((worker, args));
-    TASK_NOTIFY.notify_one();
+    READY_MICROTASKS.fetch_add(1, Ordering::Release);
+    notify_event_loop();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_inc_async_ops() {
     ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
+    notify_event_loop();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_dec_async_ops() {
     let prev = ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
     if prev <= 1 {
-        TASK_NOTIFY.notify_one();
+        notify_event_loop();
     }
 }
 
@@ -132,10 +184,9 @@ pub unsafe extern "C" fn tejx_run_event_loop_step() -> bool {
         return false;
     }
 
-    // Process Tokio tasks to pull next events (I/O, timers, etc) into the Tejx queue.
-    // Instead of busy-waiting with sleep, we block until a callback is enqueued or the
-    // last outstanding async operation completes/cancels.
-    TOKIO_RT.block_on(park_event_loop_if_idle());
+    // Background async work now progresses on Tokio worker threads, so the TejX loop can
+    // sleep on a lightweight condition variable until new work is enqueued or async drains.
+    park_event_loop_if_idle();
 
     if run_ready_tasks(&MICROTASK_QUEUE) > 0 {
         return true;
@@ -156,19 +207,32 @@ pub unsafe extern "C" fn tejx_run_event_loop() {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_create_global_handle(ptr: i64) -> usize {
-    let id = GLOBAL_HANDLE_NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    lock_unpoisoned(&GLOBAL_HANDLES).insert(id, ptr);
-    id
+    let mut handles = lock_unpoisoned(&GLOBAL_HANDLES);
+    if handles.slots.is_empty() {
+        handles.slots.push(None);
+    }
+    if let Some(id) = handles.free.pop() {
+        handles.slots[id] = Some(ptr);
+        return id;
+    }
+    handles.slots.push(Some(ptr));
+    handles.slots.len() - 1
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_get_global_handle(id: usize) -> i64 {
-    *lock_unpoisoned(&GLOBAL_HANDLES).get(&id).unwrap_or(&0)
+    let handles = lock_unpoisoned(&GLOBAL_HANDLES);
+    handles.slots.get(id).and_then(|slot| *slot).unwrap_or(0)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_drop_global_handle(id: usize) {
-    lock_unpoisoned(&GLOBAL_HANDLES).remove(&id);
+    let mut handles = lock_unpoisoned(&GLOBAL_HANDLES);
+    if let Some(slot) = handles.slots.get_mut(id) {
+        if slot.take().is_some() {
+            handles.free.push(id);
+        }
+    }
 }
 
 pub unsafe fn rt_gc_scan_tasks() {
@@ -178,7 +242,7 @@ pub unsafe fn rt_gc_scan_tasks() {
     for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
         crate::gc::copy_object(args as *mut i64);
     }
-    for val in lock_unpoisoned(&GLOBAL_HANDLES).values_mut() {
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
         crate::gc::copy_object(val as *mut i64);
     }
 }
@@ -190,7 +254,7 @@ pub unsafe fn rt_gc_mark_tasks() {
     for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
         crate::gc::mark_object(args as *mut i64);
     }
-    for val in lock_unpoisoned(&GLOBAL_HANDLES).values_mut() {
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
         crate::gc::mark_object(val as *mut i64);
     }
 }
@@ -202,7 +266,7 @@ pub unsafe fn rt_gc_update_tasks() {
     for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
         crate::gc::rt_update_ptr(args as *mut i64);
     }
-    for val in lock_unpoisoned(&GLOBAL_HANDLES).values_mut() {
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
         crate::gc::rt_update_ptr(val as *mut i64);
     }
 }
@@ -219,9 +283,42 @@ struct ExceptionHandler {
 static EXCEPTION_STACK: LazyLock<Mutex<Vec<ExceptionHandler>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn tokio_runtime_advances_background_tasks_without_block_on() {
+        let (tx, rx) = mpsc::channel();
+
+        TOKIO_RT.spawn(async move {
+            let _ = tx.send(());
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_ok(),
+            "background async work should progress without explicit block_on pumping"
+        );
+    }
+
+    #[test]
+    fn global_handle_ids_are_reused_after_drop() {
+        unsafe {
+            let first = tejx_create_global_handle(11);
+            tejx_drop_global_handle(first);
+            let second = tejx_create_global_handle(22);
+            assert_eq!(first, second);
+            assert_eq!(tejx_get_global_handle(second), 22);
+            tejx_drop_global_handle(second);
+        }
+    }
+}
+
 static mut CURRENT_EXCEPTION: i64 = 0;
 
-unsafe fn log_exception(prefix: &str, exception: i64) {
+pub(crate) unsafe fn log_exception(prefix: &str, exception: i64) {
     let mut v = exception;
     rt_push_root(&mut v);
 

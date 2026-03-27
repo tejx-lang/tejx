@@ -25,18 +25,27 @@ pub use thread::*;
 pub mod gc;
 pub use gc::{
     gc_allocate, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
-    rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pop_roots, rt_push_root, rt_register_thread,
-    rt_register_type, rt_set_static_root, rt_unregister_thread, rt_write_barrier, ObjectHeader,
-    MAX_TYPES,
+    rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pin_static_root, rt_pop_roots, rt_push_root,
+    rt_register_thread, rt_register_type, rt_release_static_root, rt_set_static_root,
+    rt_unregister_thread, rt_write_barrier, ObjectHeader, MAX_TYPES,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
-static CONST_STRING_SLOTS: LazyLock<Mutex<HashMap<usize, usize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Default)]
+struct ConstStringRoots {
+    slots_by_bytes: HashMap<Vec<u8>, usize>,
+}
+
+static CONST_STRING_ROOTS: LazyLock<Mutex<ConstStringRoots>> =
+    LazyLock::new(|| Mutex::new(ConstStringRoots::default()));
 static RNG_STATE: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
+static RAW_ATOMIC_OBJECTS: LazyLock<Mutex<HashMap<usize, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(test)]
+pub(crate) static RUNTIME_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 const FORMAT_MAX_DEPTH: usize = 6;
 const TYPE_INFO_MAX_FIELDS: usize = 64;
@@ -91,6 +100,26 @@ pub unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
     std::hint::unreachable_unchecked();
 }
 
+unsafe fn rt_ensure_type_finalizer(this: i64, finalizer: unsafe extern "C" fn(i64)) {
+    let ptr = rt_obj_ptr(this) as *mut u8;
+    if ptr.is_null() || !rt_is_gc_ptr(ptr) {
+        return;
+    }
+    let header = rt_get_header(ptr);
+    let type_id = (*header).type_id as usize;
+    if type_id >= MAX_TYPES {
+        return;
+    }
+    let entry = &mut gc::TYPE_TABLE[type_id];
+    if let Some(existing) = entry.finalizer {
+        if existing as usize != finalizer as usize {
+            return;
+        }
+    } else {
+        entry.finalizer = Some(finalizer);
+    }
+}
+
 #[no_mangle]
 pub static HEAP_OFFSET: i64 = 1i64 << 50;
 #[no_mangle]
@@ -125,6 +154,7 @@ pub static TAG_OBJECT: i64 = 7;
 pub static TAG_FUNCTION: i64 = 8;
 #[no_mangle]
 pub static TAG_PROMISE: i64 = 10;
+pub const PROMISE_BODY_SIZE: usize = 40;
 #[no_mangle]
 pub static TAG_RAW_DATA: i64 = 11;
 
@@ -372,6 +402,12 @@ pub unsafe extern "C" fn rt_free(val: i64) {
     let type_id = (*header).type_id as i64;
     let ptr = body as *mut i64;
 
+    if let Some(atom_ptr) = RAW_ATOMIC_OBJECTS.lock().unwrap().remove(&(body as usize)) {
+        let _ = Box::from_raw(atom_ptr as *mut AtomicI64);
+        rt_free_raw(ptr as *mut std::ffi::c_void);
+        return;
+    }
+
     if type_id == TAG_ARRAY {
         // Old layout support for arrays if any still exist using rt_malloc
         let len = *ptr.offset(1); // Old layout: tag, len, cap, ...
@@ -477,8 +513,16 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
         return 0;
     }
 
-    let key = s as usize;
-    if let Some(slot) = CONST_STRING_SLOTS.lock().unwrap().get(&key).copied() {
+    let len = strlen(s);
+    let bytes = std::slice::from_raw_parts(s as *const u8, len);
+
+    if let Some(slot) = CONST_STRING_ROOTS
+        .lock()
+        .unwrap()
+        .slots_by_bytes
+        .get(bytes)
+        .copied()
+    {
         return rt_get_static_root(slot);
     }
 
@@ -486,7 +530,6 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
         rt_init_gc();
     }
 
-    let len = strlen(s);
     let body_ptr = gc::gc_allocate_large(len + 1);
     let header = rt_get_header(body_ptr);
     (*header).type_id = TAG_STRING as u16;
@@ -500,12 +543,12 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
     let res = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(res, body_ptr, len as i64, 1);
 
-    let mut slots = CONST_STRING_SLOTS.lock().unwrap();
-    if let Some(slot) = slots.get(&key).copied() {
+    let mut roots = CONST_STRING_ROOTS.lock().unwrap();
+    if let Some(slot) = roots.slots_by_bytes.get(bytes).copied() {
         return rt_get_static_root(slot);
     }
     let slot = rt_add_static_root(res);
-    slots.insert(key, slot);
+    roots.slots_by_bytes.insert(bytes.to_vec(), slot);
     res
 }
 
@@ -1634,6 +1677,32 @@ pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_Timeout_constructor(this: i64, id: i64) {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
+        if id > 0 {
+            rt_clearTimeout(id);
+        }
+        return;
+    }
+    rt_ensure_type_finalizer(this, rt_timeout_object_finalizer);
+    *ptr.offset(0) = id;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Interval_constructor(this: i64, id: i64) {
+    let ptr = rt_obj_ptr(this);
+    if ptr.is_null() {
+        if id > 0 {
+            rt_clearInterval(id);
+        }
+        return;
+    }
+    rt_ensure_type_finalizer(this, rt_interval_object_finalizer);
+    *ptr.offset(0) = id;
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
     let actual_ms = rt_to_number(ms).max(0.0) as u64;
     let pid = rt_promise_new();
@@ -1643,22 +1712,26 @@ pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
     let handle = unsafe { crate::event_loop::tejx_create_global_handle(pid) };
     crate::event_loop::TOKIO_RT.spawn(async move {
         tokio::time::sleep(Duration::from_millis(actual_ms)).await;
-
         unsafe {
-            let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-            let task_args = rt_Array_new_fixed(2, 8);
-            rt_array_set_fast(task_args, 0, actual_pid);
-            rt_array_set_fast(task_args, 1, 0);
             crate::event_loop::tejx_enqueue_task(
-                rt_promise_resolver_worker as *const () as i64,
-                task_args,
+                rt_delay_resolver_worker as *const () as i64,
+                handle as i64,
             );
         }
-        unsafe { crate::event_loop::tejx_drop_global_handle(handle) };
-        unsafe { crate::event_loop::tejx_dec_async_ops() };
     });
 
     pid
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_delay_resolver_worker(handle_id: i64) {
+    let handle = handle_id as usize;
+    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+    crate::event_loop::tejx_drop_global_handle(handle);
+    if actual_pid > 0 {
+        rt_promise_resolve(actual_pid, 0);
+    }
+    crate::event_loop::tejx_dec_async_ops();
 }
 
 // --- Fast Path Helpers (for Codegen) ---
@@ -2105,10 +2178,12 @@ unsafe fn get_atomic(this: i64) -> Option<&'static AtomicI64> {
 pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
     let atom = Box::new(AtomicI64::new(val));
     let atom_ptr = Box::into_raw(atom);
-    // Create a simple object: [0, atom_ptr]
-    let obj = malloc(16) as *mut i64;
-    *obj = 0; // No tag needed
+    let obj = rt_malloc(8) as *mut i64;
     *obj.offset(0) = atom_ptr as i64;
+    RAW_ATOMIC_OBJECTS
+        .lock()
+        .unwrap()
+        .insert(obj as usize, atom_ptr as usize);
     let result = (obj as i64) + HEAP_OFFSET;
 
     result
@@ -2117,8 +2192,13 @@ pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
 // --- Mutex Operations ---
 // Mutex objects store a Box<std::sync::Mutex<()>> pointer at offset 0
 
+struct HeldMutexGuard {
+    guard: std::sync::MutexGuard<'static, ()>,
+    _mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+}
+
 thread_local! {
-    static HELD_MUTEX_GUARDS: std::cell::RefCell<std::collections::HashMap<usize, std::sync::MutexGuard<'static, ()>>> =
+    static HELD_MUTEX_GUARDS: std::cell::RefCell<std::collections::HashMap<usize, HeldMutexGuard>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
@@ -2137,6 +2217,27 @@ struct ThreadData {
     handle: Option<std::thread::JoinHandle<()>>,
     started: bool,
     cb_slot: usize,
+    slot_live: std::sync::Arc<AtomicBool>,
+}
+
+struct ThreadRunGuard {
+    cb_slot: usize,
+    slot_live: std::sync::Arc<AtomicBool>,
+}
+
+unsafe fn rt_release_thread_cb_slot(cb_slot: usize, slot_live: &AtomicBool) {
+    if slot_live.swap(false, Ordering::SeqCst) {
+        rt_release_static_root(cb_slot);
+    }
+}
+
+impl Drop for ThreadRunGuard {
+    fn drop(&mut self) {
+        unsafe {
+            rt_release_thread_cb_slot(self.cb_slot, &self.slot_live);
+            rt_unregister_thread();
+        }
+    }
 }
 
 // --- SharedQueue Operations ---
@@ -2149,6 +2250,125 @@ use std::sync::Condvar;
 
 struct ConditionData {
     condvar: Condvar,
+}
+
+unsafe extern "C" fn rt_atomic_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let atom_ptr = *ptr.offset(0) as *mut AtomicI64;
+    if atom_ptr.is_null() {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    let _ = Box::from_raw(atom_ptr);
+}
+
+unsafe extern "C" fn rt_mutex_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let mutex_ptr = *ptr.offset(0) as *mut std::sync::Arc<std::sync::Mutex<()>>;
+    if mutex_ptr.is_null() {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    let _ = Box::from_raw(mutex_ptr);
+}
+
+unsafe extern "C" fn rt_condition_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let data_ptr = *ptr.offset(0) as *mut std::sync::Arc<ConditionData>;
+    if data_ptr.is_null() {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    let _ = Box::from_raw(data_ptr);
+}
+
+unsafe extern "C" fn rt_thread_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let data_ptr = *ptr.offset(0) as *mut ThreadData;
+    if data_ptr.is_null() {
+        return;
+    }
+
+    *ptr.offset(0) = 0;
+    *ptr.offset(1) = 0;
+    let mut data = Box::from_raw(data_ptr);
+    if !data.started {
+        rt_release_thread_cb_slot(data.cb_slot, &data.slot_live);
+    } else {
+        let finished = data
+            .handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true);
+        if finished {
+            rt_release_thread_cb_slot(data.cb_slot, &data.slot_live);
+        }
+        let _ = data.handle.take();
+    }
+}
+
+unsafe extern "C" fn rt_timeout_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let id = *ptr.offset(0);
+    if id <= 0 {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    rt_clearTimeout(id);
+}
+
+unsafe extern "C" fn rt_interval_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let id = *ptr.offset(0);
+    if id <= 0 {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    rt_clearInterval(id);
+}
+
+unsafe extern "C" fn rt_tcp_stream_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let id = *ptr.offset(0);
+    if id <= 0 {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    let _ = rt_net_close(id);
+}
+
+unsafe extern "C" fn rt_tcp_listener_object_finalizer(obj: i64) {
+    let ptr = rt_obj_ptr(obj);
+    if ptr.is_null() {
+        return;
+    }
+    let id = *ptr.offset(0);
+    if id <= 0 {
+        return;
+    }
+    *ptr.offset(0) = 0;
+    let _ = rt_net_close_listener(id);
 }
 
 // --- Promises ---
@@ -2413,7 +2633,7 @@ pub unsafe extern "C" fn rt_sizeof(val: i64) -> i64 {
     } else if type_id == TAG_FUNCTION as u16 {
         body_size = 32; // rt_closure_new allocates 32
     } else if type_id == TAG_PROMISE as u16 {
-        body_size = 48; // from gc.rs get_object_size
+        body_size = PROMISE_BODY_SIZE as i64;
     }
 
     header_size + body_size
@@ -2836,6 +3056,7 @@ mod tests {
     #[test]
     fn prints_none_and_bools_correctly() {
         unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
 
             assert_eq!(to_rust_string(rt_to_string(0)), "None");
@@ -2858,6 +3079,7 @@ mod tests {
     #[test]
     fn stringifies_plain_objects_with_values() {
         unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
 
             let mut obj = rt_object_new();
@@ -2883,6 +3105,7 @@ mod tests {
     #[test]
     fn stringifies_registered_class_fields() {
         unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
 
             let offsets = [0usize];
@@ -2917,6 +3140,77 @@ mod tests {
             );
 
             rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn raw_atomic_helper_releases_native_state_on_free() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            let atom = rt_atomic_new(7);
+            let body = (atom - HEAP_OFFSET) as *mut u8;
+
+            assert!(RAW_ATOMIC_OBJECTS.lock().unwrap().contains_key(&(body as usize)));
+            rt_free(atom);
+            assert!(!RAW_ATOMIC_OBJECTS.lock().unwrap().contains_key(&(body as usize)));
+        }
+    }
+
+    #[test]
+    fn promise_size_matches_allocated_layout() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+            let promise = rt_promise_new();
+            assert_eq!(rt_sizeof(promise), 24 + PROMISE_BODY_SIZE as i64);
+        }
+    }
+
+    #[test]
+    fn const_string_interning_reuses_identical_bytes_across_addresses() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let one = std::ffi::CString::new("duplicate").unwrap();
+            let two = std::ffi::CString::new("duplicate").unwrap();
+
+            let a = rt_string_from_c_str_const(one.as_ptr());
+            let b = rt_string_from_c_str_const(two.as_ptr());
+
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn large_object_allocations_trigger_collection_before_overflow() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let initial_los_count = gc::LOS_COUNT;
+            let bytes = vec![b'x'; gc::LARGE_OBJECT_THRESHOLD + 1024];
+
+            let mut keeper = new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64);
+            rt_push_root(&mut keeper);
+
+            let baseline_count = gc::LOS_COUNT;
+            for _ in 0..80 {
+                let _ = new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64);
+            }
+
+            assert!(
+                gc::LOS_COUNT < baseline_count + 32,
+                "dead large objects should be reclaimed before LOS keeps growing"
+            );
+
+            rt_pop_roots(1);
+            gc::major_gc();
+
+            assert!(
+                gc::LOS_COUNT <= initial_los_count,
+                "explicit major GC should release unrooted large objects"
+            );
         }
     }
 }

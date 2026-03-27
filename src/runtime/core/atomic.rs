@@ -5,6 +5,7 @@ pub unsafe extern "C" fn rt_Atomic_constructor(this: i64, val: i64) {
     if ptr.is_null() {
         return;
     }
+    rt_ensure_type_finalizer(this, rt_atomic_object_finalizer);
     let atom = Box::new(AtomicI64::new(val));
     *ptr.offset(0) = Box::into_raw(atom) as i64;
 }

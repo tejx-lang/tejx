@@ -1,8 +1,11 @@
+extern function rt_Timeout_constructor(_this: Timeout, id: int): void;
+extern function rt_Interval_constructor(_this: Interval, id: int): void;
+
 export class Timeout {
     private id: int;
 
     constructor(callback: () => void, ms: int64) {
-        this.id = _time_set_timeout(callback, ms);
+        rt_Timeout_constructor(this, _time_set_timeout(callback, ms));
     }
 
     cancel(): void {
@@ -20,7 +23,7 @@ export class Interval {
     private id: int;
 
     constructor(callback: () => void, ms: int64) {
-        this.id = _time_set_interval(callback, ms);
+        rt_Interval_constructor(this, _time_set_interval(callback, ms));
     }
 
     cancel(): void {

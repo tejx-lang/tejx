@@ -885,6 +885,10 @@ impl Lowering {
             vec![TejxType::Int64, TejxType::Int64],
         );
         signatures.insert(
+            "rt_promise_from_executor".to_string(),
+            vec![TejxType::Int64],
+        );
+        signatures.insert(
             "Thread_new".to_string(),
             vec![TejxType::Int64, TejxType::Int64, TejxType::Int64],
         );
