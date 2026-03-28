@@ -1,0 +1,18 @@
+// EXPECTED: COMPILE_ERROR
+// Description: super() calls are only valid inside derived constructors.
+
+class Base {
+    constructor(id: int) {}
+}
+
+class Derived extends Base {
+    constructor(id: int) {
+        super(id);
+    }
+
+    reset(): void {
+        super(1);
+    }
+}
+
+function main() {}

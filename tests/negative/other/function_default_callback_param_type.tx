@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Default callback values must match the declared function type exactly.
+
+function badFormatter(value: string): int {
+    return value.length();
+}
+
+function run(callback: (value: int) => int = badFormatter): int {
+    return callback(1);
+}
+
+function main() {
+    print(run());
+}

@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Generic classes inferred from constructor arguments must still match the target type.
+
+class Box<T> {
+    value: T;
+
+    constructor(value: T) {
+        this.value = value;
+    }
+}
+
+function main() {
+    let box: Box<string> = new Box(123);
+}

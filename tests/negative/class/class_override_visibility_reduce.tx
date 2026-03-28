@@ -1,0 +1,16 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Overrides cannot reduce visibility relative to the parent method.
+
+class Base {
+    public greet(name: string): string {
+        return "hello " + name;
+    }
+}
+
+class Derived extends Base {
+    private greet(name: string): string {
+        return "hidden " + name;
+    }
+}
+
+function main() {}

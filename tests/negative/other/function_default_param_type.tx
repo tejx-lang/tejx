@@ -1,0 +1,8 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Default parameter values must match the declared parameter type.
+
+function greet(name: string = 1): string {
+    return name;
+}
+
+function main() {}

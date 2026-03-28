@@ -1,0 +1,13 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Protected methods cannot be called from outside the class hierarchy.
+
+class Base {
+    protected reveal(): int {
+        return 42;
+    }
+}
+
+function main() {
+    let base = new Base();
+    print(base.reveal());
+}

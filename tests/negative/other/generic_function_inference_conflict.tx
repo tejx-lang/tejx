@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Generic parameters inferred from multiple arguments must stay consistent.
+
+function same<T>(left: T, right: T): T {
+    return left;
+}
+
+function main() {
+    let value = same(1, "wrong");
+}

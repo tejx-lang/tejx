@@ -4,7 +4,174 @@ use crate::common::paths::{CORE_DIR, STD_DIR};
 use crate::frontend::ast::*;
 use std::collections::HashSet;
 
+fn collect_exported_names(stmt: &Statement, names: &mut HashSet<String>) {
+    match stmt {
+        Statement::FunctionDeclaration(function) => {
+            names.insert(function.name.clone());
+        }
+        Statement::ClassDeclaration(class) => {
+            names.insert(class.name.clone());
+        }
+        Statement::VarDeclaration {
+            pattern: crate::frontend::ast::BindingNode::Identifier(name),
+            ..
+        } => {
+            names.insert(name.clone());
+        }
+        Statement::BlockStmt { statements, .. } => {
+            for statement in statements {
+                collect_exported_names(statement, names);
+            }
+        }
+        Statement::ExportDecl { declaration, .. } => {
+            collect_exported_names(declaration, names);
+        }
+        _ => {}
+    }
+}
+
+fn collect_declared_names(stmt: &Statement, names: &mut HashSet<String>) {
+    match stmt {
+        Statement::FunctionDeclaration(function) => {
+            names.insert(function.name.clone());
+        }
+        Statement::ClassDeclaration(class) => {
+            names.insert(class.name.clone());
+        }
+        Statement::EnumDeclaration(enum_decl) => {
+            names.insert(enum_decl.name.clone());
+        }
+        Statement::InterfaceDeclaration { name, .. }
+        | Statement::TypeAliasDeclaration { name, .. } => {
+            names.insert(name.clone());
+        }
+        Statement::VarDeclaration {
+            pattern: crate::frontend::ast::BindingNode::Identifier(name),
+            ..
+        } => {
+            names.insert(name.clone());
+        }
+        Statement::BlockStmt { statements, .. } => {
+            for statement in statements {
+                collect_declared_names(statement, names);
+            }
+        }
+        Statement::ExportDecl { declaration, .. } => {
+            collect_declared_names(declaration, names);
+        }
+        _ => {}
+    }
+}
+
+fn collect_module_exports(statements: &[Statement]) -> (HashSet<String>, bool) {
+    let mut exported_names = HashSet::new();
+    let mut has_default_export = false;
+
+    for statement in statements {
+        if let Statement::ExportDecl {
+            declaration,
+            _is_default,
+            ..
+        } = statement
+        {
+            has_default_export |= *_is_default;
+            collect_exported_names(declaration, &mut exported_names);
+        }
+    }
+
+    (exported_names, has_default_export)
+}
+
+fn collect_module_scope_names(statements: &[Statement]) -> HashSet<String> {
+    let mut declared_names = HashSet::new();
+    for statement in statements {
+        collect_declared_names(statement, &mut declared_names);
+    }
+    declared_names
+}
+
 impl Lowering {
+    fn validate_import_request(
+        &self,
+        filename: &str,
+        source_str: &str,
+        import_items: &[ImportItem],
+        is_default: bool,
+        import_line: usize,
+        import_col: usize,
+        exported_names: &HashSet<String>,
+        has_default_export: bool,
+    ) {
+        if is_default && !has_default_export {
+            self.diagnostics.borrow_mut().push(
+                Diagnostic::new(
+                    format!("Module '{}' has no default export", source_str),
+                    import_line,
+                    import_col,
+                    filename.to_string(),
+                )
+                .with_code("E0203"),
+            );
+        } else if !is_default && !import_items.is_empty() {
+            for item in import_items {
+                if !exported_names.contains(&item.name) {
+                    self.diagnostics.borrow_mut().push(
+                        Diagnostic::new(
+                            format!("'{}' is not exported from '{}'", item.name, source_str),
+                            import_line,
+                            import_col,
+                            filename.to_string(),
+                        )
+                        .with_code("E0202"),
+                    );
+                }
+            }
+        }
+    }
+
+    fn grant_import_access(
+        &self,
+        importer_file: &str,
+        source_str: &str,
+        import_items: &[ImportItem],
+        is_default: bool,
+        import_line: usize,
+        _module_exports: &HashSet<String>,
+        module_scope_names: &HashSet<String>,
+    ) {
+        let mut import_access = self.import_access.borrow_mut();
+        let visible_names = import_access.entry(importer_file.to_string()).or_default();
+
+        if import_line == 0 {
+            visible_names.extend(module_scope_names.iter().cloned());
+            return;
+        }
+
+        if is_default {
+            for item in import_items {
+                visible_names.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
+            }
+            return;
+        }
+
+        if !import_items.is_empty() {
+            for item in import_items {
+                visible_names.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
+            }
+            return;
+        }
+
+        if let Some(module_name) = source_str
+            .strip_prefix("std:")
+            .and_then(|module| module.rsplit('/').next())
+        {
+            visible_names.insert(module_name.to_string());
+            return;
+        }
+
+        visible_names.extend(module_scope_names.iter().cloned());
+    }
+
     pub fn resolve_imports(
         &self,
         mut statements: Vec<Statement>,
@@ -16,6 +183,10 @@ impl Lowering {
         let filename = current_file
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| self.filename.borrow().clone());
+        self.import_access
+            .borrow_mut()
+            .entry(filename.clone())
+            .or_default();
 
         // Resolve standard paths
         let stdlib_path = self.stdlib_path.borrow();
@@ -176,6 +347,43 @@ impl Lowering {
                 }
 
                 if processed_files.contains(&canon_path) {
+                    let cached_exports = self
+                        .module_export_cache
+                        .borrow()
+                        .get(&canon_path)
+                        .cloned()
+                        .unwrap_or_default();
+                    let cached_default = self
+                        .module_default_export_cache
+                        .borrow()
+                        .get(&canon_path)
+                        .copied()
+                        .unwrap_or(false);
+                    let cached_scope_names = self
+                        .module_scope_cache
+                        .borrow()
+                        .get(&canon_path)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.validate_import_request(
+                        &filename,
+                        &source_str,
+                        &import_items,
+                        is_default,
+                        import_line,
+                        import_col,
+                        &cached_exports,
+                        cached_default,
+                    );
+                    self.grant_import_access(
+                        &filename,
+                        &source_str,
+                        &import_items,
+                        is_default,
+                        import_line,
+                        &cached_exports,
+                        &cached_scope_names,
+                    );
                     statements.remove(i);
                     source_files.remove(i);
                     continue;
@@ -228,6 +436,36 @@ impl Lowering {
                     Some(&path),
                 );
                 import_stack.pop();
+                let (exported_names, has_default_export) = collect_module_exports(&new_stmts);
+                let scope_names = collect_module_scope_names(&new_stmts);
+                self.module_export_cache
+                    .borrow_mut()
+                    .insert(canon_path.clone(), exported_names.clone());
+                self.module_default_export_cache
+                    .borrow_mut()
+                    .insert(canon_path.clone(), has_default_export);
+                self.module_scope_cache
+                    .borrow_mut()
+                    .insert(canon_path.clone(), scope_names.clone());
+                self.validate_import_request(
+                    &filename,
+                    &source_str,
+                    &import_items,
+                    is_default,
+                    import_line,
+                    import_col,
+                    &exported_names,
+                    has_default_export,
+                );
+                self.grant_import_access(
+                    &filename,
+                    &source_str,
+                    &import_items,
+                    is_default,
+                    import_line,
+                    &exported_names,
+                    &scope_names,
+                );
 
                 // Handle Aliasing
                 for item in &import_items {
@@ -276,80 +514,6 @@ impl Lowering {
                                     _ => {}
                                 }
                             }
-                        }
-                    }
-                }
-
-                // Validate exports
-                let mut exported_names: HashSet<String> = HashSet::new();
-                let mut has_default_export = false;
-
-                fn collect_names(stmt: &Statement, names: &mut HashSet<String>) {
-                    match stmt {
-                        Statement::FunctionDeclaration(f) => {
-                            names.insert(f.name.clone());
-                        }
-                        Statement::ClassDeclaration(c) => {
-                            names.insert(c.name.clone());
-                        }
-                        Statement::VarDeclaration {
-                            pattern: crate::frontend::ast::BindingNode::Identifier(n),
-                            ..
-                        } => {
-                            names.insert(n.clone());
-                        }
-                        Statement::BlockStmt { statements, .. } => {
-                            for s in statements {
-                                collect_names(s, names);
-                            }
-                        }
-                        Statement::ExportDecl { declaration, .. } => {
-                            collect_names(declaration, names);
-                        }
-                        _ => {}
-                    }
-                }
-
-                for stmt in &new_stmts {
-                    if let Statement::ExportDecl {
-                        declaration,
-                        _is_default: is_def,
-                        ..
-                    } = stmt
-                    {
-                        if *is_def {
-                            has_default_export = true;
-                        }
-                        collect_names(declaration, &mut exported_names);
-                    }
-                }
-
-                if is_default && !has_default_export {
-                    self.diagnostics.borrow_mut().push(
-                        Diagnostic::new(
-                            format!("Module '{}' has no default export", source_str),
-                            import_line,
-                            import_col,
-                            filename.clone(),
-                        )
-                        .with_code("E0203"),
-                    );
-                } else if !is_default && !import_items.is_empty() {
-                    for item in &import_items {
-                        let lookup_name = item.alias.as_ref().unwrap_or(&item.name);
-                        if !exported_names.contains(lookup_name) {
-                            self.diagnostics.borrow_mut().push(
-                                Diagnostic::new(
-                                    format!(
-                                        "'{}' is not exported from '{}'",
-                                        item.name, source_str
-                                    ),
-                                    import_line,
-                                    import_col,
-                                    filename.clone(),
-                                )
-                                .with_code("E0202"),
-                            );
                         }
                     }
                 }

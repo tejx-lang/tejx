@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Inferred function returns must still be checked when assigned to a typed variable.
+
+function answer() {
+    return 123;
+}
+
+function main() {
+    let text: string = answer();
+}

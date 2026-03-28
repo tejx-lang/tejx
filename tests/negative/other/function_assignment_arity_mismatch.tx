@@ -1,0 +1,8 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Function values must match the declared parameter count.
+
+function main() {
+    let fn: (int, int) => int = (value: int) => {
+        return value;
+    };
+}

@@ -17,6 +17,13 @@ impl TypeChecker {
         self.are_types_compatible(target, value)
     }
 
+    pub(crate) fn is_assignment_compatible(&self, target: &TejxType, value: &TejxType) -> bool {
+        if matches!(target, TejxType::Function(_, _)) && matches!(value, TejxType::Function(_, _)) {
+            return self.member_signature_matches_strict(target, value);
+        }
+        self.is_assignable(target, value)
+    }
+
     pub(crate) fn is_valid_type(&self, type_name: &TejxType) -> bool {
         match type_name {
             TejxType::Int16

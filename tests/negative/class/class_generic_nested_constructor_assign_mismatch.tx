@@ -1,0 +1,15 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Constructor inference must stay strict for nested generic assignments.
+
+class Box<T> {
+    value: T;
+
+    constructor(value: T) {
+        this.value = value;
+    }
+}
+
+function main() {
+    let labels: Box<string[]> = new Box([1, 2, 3]);
+    print(labels);
+}

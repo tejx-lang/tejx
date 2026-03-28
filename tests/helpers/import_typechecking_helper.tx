@@ -1,0 +1,22 @@
+export function parseCount(text: string): int {
+    return text.length();
+}
+
+export function identity<T>(value: T): T {
+    return value;
+}
+
+export class StringBox {
+    value: string;
+
+    constructor(value: string) {
+        this.value = value;
+    }
+}
+
+export default function describe(value: int): string {
+    if (value > 0) {
+        return "positive";
+    }
+    return "zero";
+}

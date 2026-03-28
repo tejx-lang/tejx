@@ -1,0 +1,11 @@
+export function visible(): int {
+    return 7;
+}
+
+function internal(): int {
+    return 7;
+}
+
+export function extra(): int {
+    return 9;
+}

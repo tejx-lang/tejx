@@ -4,6 +4,384 @@ use crate::frontend::ast::*;
 use std::collections::{HashMap, HashSet};
 
 impl TypeChecker {
+    pub(crate) fn member_signature_matches_strict(
+        &self,
+        expected: &TejxType,
+        actual: &TejxType,
+    ) -> bool {
+        let normalize_callable = |ty: &TejxType| -> TejxType {
+            match ty {
+                TejxType::Class(name, generics)
+                    if generics.is_empty()
+                        && (name.starts_with("function:") || name.contains("=>")) =>
+                {
+                    let (ret, params, _) = self.parse_signature(name.clone());
+                    let actual_ret = ret
+                        .split_once(':')
+                        .map(|(_, ret_ty)| ret_ty)
+                        .unwrap_or(ret.as_str());
+                    TejxType::Function(
+                        params.iter().map(|param| TejxType::from_name(param)).collect(),
+                        Box::new(TejxType::from_name(actual_ret)),
+                    )
+                }
+                other => other.clone(),
+            }
+        };
+
+        let expected = normalize_callable(expected);
+        let actual = normalize_callable(actual);
+
+        match (&expected, &actual) {
+            (
+                TejxType::Function(expected_params, expected_ret),
+                TejxType::Function(actual_params, actual_ret),
+            ) => {
+                expected_params.len() == actual_params.len()
+                    && expected_params.iter().zip(actual_params.iter()).all(
+                        |(expected_param, actual_param)| {
+                            self.are_types_compatible(expected_param, actual_param)
+                                && self.are_types_compatible(actual_param, expected_param)
+                        },
+                    )
+                    && self.are_types_compatible(expected_ret, actual_ret)
+                    && self.are_types_compatible(actual_ret, expected_ret)
+            }
+            _ => {
+                self.are_types_compatible(&expected, &actual)
+                    && self.are_types_compatible(&actual, &expected)
+            }
+        }
+    }
+
+    pub(crate) fn access_rank(&self, access: &AccessLevel) -> usize {
+        match access {
+            AccessLevel::Private => 0,
+            AccessLevel::Protected => 1,
+            AccessLevel::Public => 2,
+        }
+    }
+
+    pub(crate) fn function_signature_type(&self, func: &FunctionDeclaration) -> TejxType {
+        let ret_ty_str = func.return_type.to_string();
+        let mut ret_ty = if ret_ty_str.is_empty() {
+            "void".to_string()
+        } else {
+            ret_ty_str
+        };
+        if func._is_async && !ret_ty.starts_with("Promise<") && ret_ty != "Promise" {
+            ret_ty = format!("Promise<{}>", ret_ty);
+        }
+
+        let params = func
+            .params
+            .iter()
+            .map(|param| {
+                let mut param_ty = param.type_name.to_string();
+                if param_ty.is_empty() {
+                    param_ty = "<inferred>".to_string();
+                }
+                TejxType::from_name(&param_ty)
+            })
+            .collect();
+
+        TejxType::Function(params, Box::new(TejxType::from_name(&ret_ty)))
+    }
+
+    pub(crate) fn callable_return_type(&self, ty: &TejxType) -> Option<TejxType> {
+        match ty {
+            TejxType::Function(_, ret) => Some((**ret).clone()),
+            TejxType::Class(name, generics)
+                if generics.is_empty() && (name.starts_with("function:") || name.contains("=>")) =>
+            {
+                let (ret, _, _) = self.parse_signature(name.clone());
+                let actual_ret = ret
+                    .split_once(':')
+                    .map(|(_, ret_ty)| ret_ty)
+                    .unwrap_or(ret.as_str());
+                Some(TejxType::from_name(actual_ret))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn effective_async_return_type(&self, ty: TejxType, is_async: bool) -> TejxType {
+        if is_async
+            && !matches!(ty, TejxType::Class(ref name, _) if name == "Promise")
+        {
+            TejxType::Class("Promise".to_string(), vec![ty])
+        } else {
+            ty
+        }
+    }
+
+    pub(crate) fn remember_inferred_function_return(
+        &mut self,
+        func: &FunctionDeclaration,
+        return_ty: &TejxType,
+    ) {
+        if func.return_type.to_string().is_empty() && return_ty.to_name() != "<inferred>" {
+            self.inferred_function_returns.insert(
+                (
+                    self.current_file.clone(),
+                    func._line,
+                    func._col,
+                    func.name.clone(),
+                ),
+                return_ty.clone(),
+            );
+        }
+    }
+
+    pub(crate) fn remember_inferred_member_return(
+        &mut self,
+        owner_name: &str,
+        func: &FunctionDeclaration,
+        return_ty: &TejxType,
+    ) {
+        if func.return_type.to_string().is_empty() && return_ty.to_name() != "<inferred>" {
+            self.inferred_member_returns.insert(
+                (
+                    self.current_file.clone(),
+                    owner_name.to_string(),
+                    func._line,
+                    func._col,
+                    func.name.clone(),
+                ),
+                return_ty.clone(),
+            );
+        }
+    }
+
+    fn class_this_type(&self, class_decl: &ClassDeclaration) -> String {
+        if class_decl.generic_params.is_empty() {
+            class_decl.name.clone()
+        } else {
+            let gp_names: Vec<String> = class_decl
+                .generic_params
+                .iter()
+                .map(|gp| gp.name.clone())
+                .collect();
+            format!("{}<{}>", class_decl.name, gp_names.join(", "))
+        }
+    }
+
+    fn infer_return_type_from_body(
+        &mut self,
+        params: &[Parameter],
+        body: &Statement,
+        generic_params: &[GenericParam],
+        is_async: bool,
+    ) -> TejxType {
+        let diagnostics_len = self.diagnostics.len();
+        let prev_return = self.current_function_return.take();
+        let prev_async = self.current_function_is_async;
+
+        self.enter_scope();
+        for gp in generic_params {
+            self.define(gp.name.clone(), gp.name.clone());
+        }
+        for param in params {
+            let mut param_ty = param.type_name.to_string();
+            if param_ty.is_empty() {
+                param_ty = "<inferred>".to_string();
+            }
+            self.define(param.name.clone(), param_ty);
+        }
+
+        self.current_function_return = Some(TejxType::from_name("<inferred>"));
+        self.current_function_is_async = is_async;
+        let _ = self.check_statement(body);
+
+        let inferred = self
+            .current_function_return
+            .take()
+            .unwrap_or(TejxType::Void);
+
+        self.current_function_return = prev_return;
+        self.current_function_is_async = prev_async;
+        self.exit_scope();
+        self.diagnostics.truncate(diagnostics_len);
+
+        let inferred = if inferred == TejxType::from_name("<inferred>") {
+            TejxType::Void
+        } else {
+            inferred
+        };
+
+        self.effective_async_return_type(inferred, is_async)
+    }
+
+    pub(crate) fn update_function_symbol_return_type(
+        &mut self,
+        name: &str,
+        return_ty: TejxType,
+    ) -> bool {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(symbol) = scope.get_mut(name) {
+                if let TejxType::Function(params, existing_ret) = &symbol.ty {
+                    if existing_ret.as_ref() != &return_ty {
+                        symbol.ty = TejxType::Function(params.clone(), Box::new(return_ty));
+                        return true;
+                    }
+                }
+                break;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn update_class_member_return_type(
+        &mut self,
+        class_name: &str,
+        member_name: &str,
+        return_ty: TejxType,
+    ) -> bool {
+        let existing_ty = self
+            .class_members
+            .get(class_name)
+            .and_then(|members| members.get(member_name))
+            .map(|info| info.ty.clone());
+
+        let Some(existing_ty) = existing_ty else {
+            return false;
+        };
+
+        let params = match &existing_ty {
+            TejxType::Function(params, _) => params.clone(),
+            _ => {
+                let ty_name = existing_ty.to_name();
+                if ty_name.starts_with("function:") || ty_name.contains("=>") {
+                    let (_, param_names, _) = self.parse_signature(ty_name);
+                    param_names
+                        .iter()
+                        .map(|param| TejxType::from_name(param))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+
+        let new_ty = TejxType::Function(params, Box::new(return_ty));
+        if let Some(members) = self.class_members.get_mut(class_name) {
+            if let Some(info) = members.get_mut(member_name) {
+                if info.ty != new_ty {
+                    info.ty = new_ty;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn refine_inferred_return_types(&mut self, stmt: &Statement) -> bool {
+        match stmt {
+            Statement::FunctionDeclaration(func) => {
+                if !func.return_type.to_string().is_empty() {
+                    return false;
+                }
+                let inferred = self.infer_return_type_from_body(
+                    &func.params,
+                    &func.body,
+                    &func.generic_params,
+                    func._is_async,
+                );
+                self.remember_inferred_function_return(func, &inferred);
+                self.update_function_symbol_return_type(&func.name, inferred)
+            }
+            Statement::ClassDeclaration(class_decl) => {
+                let prev_class = self.current_class.clone();
+                let prev_member_static = self.current_member_is_static;
+                let prev_inside_constructor = self.current_inside_constructor;
+                self.current_class = Some(class_decl.name.clone());
+                self.current_member_is_static = false;
+                self.current_inside_constructor = false;
+
+                self.enter_scope();
+                self.define("this".to_string(), self.class_this_type(class_decl));
+                for gp in &class_decl.generic_params {
+                    self.define(gp.name.clone(), gp.name.clone());
+                }
+                if !class_decl._parent_name.is_empty() {
+                    self.define("super".to_string(), class_decl._parent_name.clone());
+                }
+
+                let mut changed = false;
+                for method in &class_decl.methods {
+                    if !method.func.return_type.to_string().is_empty() {
+                        continue;
+                    }
+                    self.current_member_is_static = method.is_static;
+                    let inferred = self.infer_return_type_from_body(
+                        &method.func.params,
+                        &method.func.body,
+                        &method.func.generic_params,
+                        method.func._is_async,
+                    );
+                    self.remember_inferred_member_return(
+                        &class_decl.name,
+                        &method.func,
+                        &inferred,
+                    );
+                    changed |= self.update_class_member_return_type(
+                        &class_decl.name,
+                        &method.func.name,
+                        inferred,
+                    );
+                }
+
+                self.exit_scope();
+                self.current_class = prev_class;
+                self.current_member_is_static = prev_member_static;
+                self.current_inside_constructor = prev_inside_constructor;
+                changed
+            }
+            Statement::ExtensionDeclaration(ext_decl) => {
+                let prev_class = self.current_class.clone();
+                let prev_member_static = self.current_member_is_static;
+                let prev_inside_constructor = self.current_inside_constructor;
+                self.current_class = Some(ext_decl._target_type.to_string());
+                self.current_member_is_static = false;
+                self.current_inside_constructor = false;
+
+                self.enter_scope();
+                self.define("this".to_string(), ext_decl._target_type.to_string());
+
+                let mut changed = false;
+                for method in &ext_decl._methods {
+                    if !method.return_type.to_string().is_empty() {
+                        continue;
+                    }
+                    let inferred = self.infer_return_type_from_body(
+                        &method.params,
+                        &method.body,
+                        &method.generic_params,
+                        method._is_async,
+                    );
+                    self.remember_inferred_member_return(
+                        &ext_decl._target_type.to_string(),
+                        method,
+                        &inferred,
+                    );
+                    changed |= self.update_class_member_return_type(
+                        &ext_decl._target_type.to_string(),
+                        &method.name,
+                        inferred,
+                    );
+                }
+
+                self.exit_scope();
+                self.current_class = prev_class;
+                self.current_member_is_static = prev_member_static;
+                self.current_inside_constructor = prev_inside_constructor;
+                changed
+            }
+            Statement::ExportDecl { declaration, .. } => self.refine_inferred_return_types(declaration),
+            _ => false,
+        }
+    }
+
     pub(crate) fn base_class_name<'a>(&self, class_name: &'a str) -> &'a str {
         class_name.split('<').next().unwrap_or(class_name)
     }
@@ -106,6 +484,7 @@ impl TypeChecker {
                             aliased_type: None,
                             generic_params: class_decl.generic_params.clone(),
                             literal_length: None,
+                            declared_in_file: self.current_file.clone(),
                         },
                     );
                 }
@@ -146,11 +525,12 @@ impl TypeChecker {
                 for method in &class_decl.methods {
                     let ret_ty_str = method.func.return_type.to_string();
                     let mut ret_ty = if ret_ty_str.is_empty() {
-                        "void".to_string()
+                        "<inferred>".to_string()
                     } else {
                         ret_ty_str
                     };
-                    if method.func._is_async
+                    if ret_ty != "<inferred>"
+                        && method.func._is_async
                         && !ret_ty.starts_with("Promise<")
                         && ret_ty != "Promise"
                     {
@@ -238,6 +618,7 @@ impl TypeChecker {
                         if p_ty.is_empty() {
                             p_ty = "<inferred>".to_string();
                         }
+                        p_ty = self.parameterize_generics(&p_ty, &class_decl.generic_params);
                         param_types.push(p_ty);
                     }
                     let mut params = Vec::new();
@@ -259,12 +640,16 @@ impl TypeChecker {
             }
             Statement::FunctionDeclaration(func) => {
                 let ret_ty_str = func.return_type.to_string();
-                let mut ret_ty = if ret_ty_str == "any" || ret_ty_str.is_empty() {
-                    "void".to_string()
+                let mut ret_ty = if ret_ty_str.is_empty() {
+                    "<inferred>".to_string()
                 } else {
                     ret_ty_str
                 };
-                if func._is_async && !ret_ty.starts_with("Promise<") && ret_ty != "Promise" {
+                if ret_ty != "<inferred>"
+                    && func._is_async
+                    && !ret_ty.starts_with("Promise<")
+                    && ret_ty != "Promise"
+                {
                     ret_ty = format!("Promise<{}>", ret_ty);
                 }
                 let mut is_variadic = false;
@@ -284,11 +669,9 @@ impl TypeChecker {
                         if p_ty.is_empty() {
                             p_ty = "<inferred>".to_string();
                         }
-                        let (t, _, _) = self.parse_signature(p_ty);
-                        TejxType::from_name(&t)
+                        TejxType::from_name(&p_ty)
                     })
                     .collect::<Vec<TejxType>>();
-                let (final_ret, _, _) = self.parse_signature(format!("function:{}", ret_ty));
                 let has_defaults = min_required < params.len();
                 if let Some(scope) = self.scopes.last_mut() {
                     scope.insert(
@@ -296,7 +679,7 @@ impl TypeChecker {
                         Symbol {
                             ty: TejxType::Function(
                                 params.clone(),
-                                Box::new(TejxType::from_name(&final_ret)),
+                                Box::new(TejxType::from_name(&ret_ty)),
                             ),
                             is_const: false,
                             is_narrowed: false,
@@ -310,6 +693,7 @@ impl TypeChecker {
                             aliased_type: None,
                             generic_params: func.generic_params.clone(),
                             literal_length: None,
+                            declared_in_file: self.current_file.clone(),
                         },
                     );
                 }
@@ -332,6 +716,7 @@ impl TypeChecker {
                             aliased_type: { Some(TejxType::from_node(_type_def)) },
                             generic_params: Vec::new(),
                             literal_length: None,
+                            declared_in_file: self.current_file.clone(),
                         },
                     );
                 }
@@ -480,16 +865,28 @@ impl TypeChecker {
         obj_type: &str,
         member: &str,
     ) -> Option<MemberInfo> {
+        self.resolve_instance_member_with_owner(obj_type, member)
+            .map(|(_, info)| info)
+    }
+
+    pub(crate) fn resolve_instance_member_with_owner(
+        &self,
+        obj_type: &str,
+        member: &str,
+    ) -> Option<(String, MemberInfo)> {
         let obj_ty = TejxType::from_name(obj_type);
         if let TejxType::Object(props) = obj_ty {
             if let Some((_, _, ty)) = props.into_iter().find(|(name, _, _)| name == member) {
-                return Some(MemberInfo {
-                    ty,
-                    is_static: false,
-                    access: AccessLevel::Public,
-                    is_readonly: false,
-                    generic_params: Vec::new(),
-                });
+                return Some((
+                    String::new(),
+                    MemberInfo {
+                        ty,
+                        is_static: false,
+                        access: AccessLevel::Public,
+                        is_readonly: false,
+                        generic_params: Vec::new(),
+                    },
+                ));
             }
         }
         let mut current_type = self.normalize_member_container(obj_type);
@@ -497,14 +894,14 @@ impl TypeChecker {
         while !current_type.is_empty() && current_type != "<inferred>" {
             if let Some(members) = self.class_members.get(&current_type) {
                 if let Some(info) = members.get(member).cloned() {
-                    return Some(info);
+                    return Some((current_type.clone(), info));
                 }
             }
 
             // Check if it's an interface
             if let Some(members) = self.interfaces.get(&current_type) {
                 if let Some(info) = members.get(member).cloned() {
-                    return Some(info);
+                    return Some((current_type.clone(), info));
                 }
             }
 
@@ -516,5 +913,31 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    pub(crate) fn is_member_accessible_from_current_class(
+        &self,
+        declaring_type: &str,
+        access: &AccessLevel,
+    ) -> bool {
+        match access {
+            AccessLevel::Public => true,
+            AccessLevel::Private => {
+                let declaring_base = declaring_type.split('<').next().unwrap_or(declaring_type);
+                self.current_class
+                    .as_ref()
+                    .map(|c| c.split('<').next().unwrap_or(c))
+                    == Some(declaring_base)
+            }
+            AccessLevel::Protected => {
+                let declaring_base = declaring_type.split('<').next().unwrap_or(declaring_type);
+                if let Some(current) = &self.current_class {
+                    let current_base = current.split('<').next().unwrap_or(current);
+                    self.is_same_or_subclass(current_base, declaring_base)
+                } else {
+                    false
+                }
+            }
+        }
     }
 }

@@ -1,0 +1,42 @@
+import { assert_eq_int, assert_eq_string } from "../utils.tx";
+
+function main() {
+    let laterValue: int = later(20);
+    let text: string = identity("tejx");
+    let box = new Box<int>(7);
+    let boxedValue: int = box.get();
+    let nestedValue: int = outer();
+
+    assert_eq_int(20, laterValue, "forward function return inference");
+    assert_eq_string("tejx", text, "generic function return inference");
+    assert_eq_int(7, boxedValue, "method return inference");
+    assert_eq_int(9, nestedValue, "nested function return inference");
+}
+
+function later(value: int) {
+    return value;
+}
+
+function identity<T>(value: T) {
+    return value;
+}
+
+function outer() {
+    function inner(value: int) {
+        return value;
+    }
+
+    return inner(9);
+}
+
+class Box<T> {
+    value: T;
+
+    constructor(value: T) {
+        this.value = value;
+    }
+
+    get() {
+        return this.value;
+    }
+}

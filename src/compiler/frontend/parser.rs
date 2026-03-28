@@ -686,7 +686,7 @@ impl Parser {
                     }
                 }
                 self.consume(TokenType::CloseParen, "Expected ')'");
-                let mut return_type = TypeNode::Named("void".to_string());
+                let mut return_type = TypeNode::Named("".to_string());
                 if self.match_token(TokenType::Colon) {
                     return_type = self.parse_type_annotation();
                 }

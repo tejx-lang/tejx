@@ -1005,6 +1005,7 @@ impl Lowering {
                 callee,
                 args,
                 type_args,
+                _col,
                 ..
             } => {
                 let hir_args: Vec<HIRExpression> =
@@ -1556,8 +1557,16 @@ impl Lowering {
                     }
                 }
 
-                if let Some((monomorphized_callee, bindings)) =
-                    self.resolve_function_monomorph(&final_callee, &final_args, type_args.as_ref())
+                if let Some((monomorphized_callee, bindings)) = self
+                    .resolve_function_monomorph(&final_callee, &final_args, type_args.as_ref())
+                    .or_else(|| {
+                        self.resolve_recorded_function_monomorph(
+                            &final_callee,
+                            &callee_str,
+                            line,
+                            *_col,
+                        )
+                    })
                 {
                     if let Some(base_ty) = self.user_functions.borrow().get(&final_callee).cloned()
                     {
