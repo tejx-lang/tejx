@@ -73,6 +73,26 @@ impl TypeChecker {
                 self.statement_guarantees_exit(then_branch)
                     && self.statement_guarantees_exit(else_branch)
             }
+            Statement::TryStmt {
+                _try_block,
+                _catch_var,
+                _catch_block,
+                _finally_block,
+                ..
+            } => {
+                if let Some(finally_block) = _finally_block {
+                    if self.statement_guarantees_exit(finally_block) {
+                        return true;
+                    }
+                }
+
+                let try_exits = self.statement_guarantees_exit(_try_block);
+                if _catch_var.is_empty() {
+                    try_exits
+                } else {
+                    try_exits && self.statement_guarantees_exit(_catch_block)
+                }
+            }
             _ => false,
         }
     }
@@ -122,6 +142,7 @@ impl TypeChecker {
             }
             Statement::TryStmt {
                 _try_block,
+                _catch_var,
                 _catch_block,
                 _finally_block,
                 ..
@@ -131,8 +152,13 @@ impl TypeChecker {
                         return true;
                     }
                 }
-                self.statement_guarantees_function_exit(_try_block)
-                    && self.statement_guarantees_function_exit(_catch_block)
+
+                let try_exits = self.statement_guarantees_function_exit(_try_block);
+                if _catch_var.is_empty() {
+                    try_exits
+                } else {
+                    try_exits && self.statement_guarantees_function_exit(_catch_block)
+                }
             }
             _ => false,
         }
@@ -1601,7 +1627,7 @@ impl TypeChecker {
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default()
                     };
-                    if !module_name.is_empty() {
+                    if !module_name.is_empty() && self.lookup(&module_name).is_none() {
                         self.define(module_name, "<inferred>".to_string());
                     }
                 } else {

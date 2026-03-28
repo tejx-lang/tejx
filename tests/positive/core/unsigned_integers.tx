@@ -1,0 +1,34 @@
+import { assert_eq_int, assert_true } from "../utils.tx";
+
+function main() {
+    let smallByte: uint8 = 255;
+    let smallWord: uint16 = 65535;
+    let count: uint = 4000000000;
+    let explicit32: uint32 = count;
+    let total64: uint64 = 9000000000;
+    let wide: uint128 = 1;
+
+    assert_eq_int(1, sizeof(smallByte), "uint8 size");
+    assert_eq_int(2, sizeof(smallWord), "uint16 size");
+    assert_eq_int(4, sizeof(count), "uint alias size");
+    assert_eq_int(4, sizeof(explicit32), "uint32 size");
+    assert_eq_int(8, sizeof(total64), "uint64 size");
+    assert_eq_int(16, sizeof(wide), "uint128 size");
+
+    let plusOne: uint = count + 1;
+    let grown64: uint64 = total64 + 5;
+    assert_true(plusOne == 4000000001, "uint arithmetic stays typed");
+    assert_true(grown64 == 9000000005, "uint64 arithmetic stays typed");
+
+    let ordered32: uint[] = [4000000000, 2, 3000000000];
+    ordered32.sort();
+    assert_true(ordered32[0] == 2, "uint sort low");
+    assert_true(ordered32[1] == 3000000000, "uint sort middle");
+    assert_true(ordered32[2] == 4000000000, "uint sort high");
+
+    let ordered64: uint64[] = [9000000000, 2, 4000000000];
+    ordered64.sort();
+    assert_true(ordered64[0] == 2, "uint64 sort low");
+    assert_true(ordered64[1] == 4000000000, "uint64 sort middle");
+    assert_true(ordered64[2] == 9000000000, "uint64 sort high");
+}

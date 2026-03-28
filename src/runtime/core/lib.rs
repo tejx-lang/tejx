@@ -53,12 +53,19 @@ const FORMAT_MAX_DEPTH: usize = 6;
 const TYPE_INFO_MAX_FIELDS: usize = 64;
 const FIELD_KIND_REF: u8 = 0;
 const FIELD_KIND_BOOL: u8 = 1;
-const FIELD_KIND_INT16: u8 = 2;
-const FIELD_KIND_INT32: u8 = 3;
-const FIELD_KIND_INT64: u8 = 4;
-const FIELD_KIND_FLOAT32: u8 = 5;
-const FIELD_KIND_FLOAT64: u8 = 6;
-const FIELD_KIND_CHAR: u8 = 7;
+const FIELD_KIND_INT8: u8 = 2;
+const FIELD_KIND_UINT8: u8 = 3;
+const FIELD_KIND_INT16: u8 = 4;
+const FIELD_KIND_UINT16: u8 = 5;
+const FIELD_KIND_INT32: u8 = 6;
+const FIELD_KIND_INT64: u8 = 7;
+const FIELD_KIND_FLOAT32: u8 = 8;
+const FIELD_KIND_FLOAT64: u8 = 9;
+const FIELD_KIND_CHAR: u8 = 10;
+const FIELD_KIND_UINT32: u8 = 11;
+const FIELD_KIND_UINT64: u8 = 12;
+const FIELD_KIND_INT128: u8 = 13;
+const FIELD_KIND_UINT128: u8 = 14;
 const FIELD_KIND_UNSUPPORTED: u8 = 255;
 
 #[derive(Clone, Debug, Default)]
@@ -521,9 +528,16 @@ unsafe fn runtime_class_field_string(val: i64, field_name: &str) -> Option<Strin
                 "false".to_string()
             }
         }
+        FIELD_KIND_INT8 => (*(body_ptr.add(offset) as *const i8)).to_string(),
+        FIELD_KIND_UINT8 => (*(body_ptr.add(offset) as *const u8)).to_string(),
         FIELD_KIND_INT16 => (*(body_ptr.add(offset) as *const i16)).to_string(),
+        FIELD_KIND_UINT16 => (*(body_ptr.add(offset) as *const u16)).to_string(),
         FIELD_KIND_INT32 => (*(body_ptr.add(offset) as *const i32)).to_string(),
         FIELD_KIND_INT64 => (*(body_ptr.add(offset) as *const i64)).to_string(),
+        FIELD_KIND_UINT32 => (*(body_ptr.add(offset) as *const u32)).to_string(),
+        FIELD_KIND_UINT64 => (*(body_ptr.add(offset) as *const u64)).to_string(),
+        FIELD_KIND_INT128 => (*(body_ptr.add(offset) as *const i128)).to_string(),
+        FIELD_KIND_UINT128 => (*(body_ptr.add(offset) as *const u128)).to_string(),
         FIELD_KIND_FLOAT32 => rt_float_to_rust_string(*(body_ptr.add(offset) as *const f32) as f64),
         FIELD_KIND_FLOAT64 => rt_float_to_rust_string(*(body_ptr.add(offset) as *const f64)),
         FIELD_KIND_CHAR => {
@@ -543,9 +557,13 @@ unsafe fn runtime_class_field_i32(val: i64, field_name: &str) -> Option<i32> {
     let kind = TYPE_FIELD_KINDS[type_id][field_index];
 
     match kind {
+        FIELD_KIND_INT8 => Some(*(body_ptr.add(offset) as *const i8) as i32),
+        FIELD_KIND_UINT8 => Some(*(body_ptr.add(offset) as *const u8) as i32),
         FIELD_KIND_INT16 => Some(*(body_ptr.add(offset) as *const i16) as i32),
+        FIELD_KIND_UINT16 => Some(*(body_ptr.add(offset) as *const u16) as i32),
         FIELD_KIND_INT32 => Some(*(body_ptr.add(offset) as *const i32)),
         FIELD_KIND_INT64 => Some(*(body_ptr.add(offset) as *const i64) as i32),
+        FIELD_KIND_UINT32 => Some(*(body_ptr.add(offset) as *const u32) as i32),
         _ => None,
     }
 }
@@ -583,12 +601,28 @@ unsafe fn runtime_set_class_i32_field(val: i64, field_name: &str, field_val: i32
     };
     let offset = TYPE_FIELD_OFFSETS[type_id][field_index];
     match TYPE_FIELD_KINDS[type_id][field_index] {
+        FIELD_KIND_INT8 => {
+            *(body_ptr.add(offset) as *mut i8) = field_val as i8;
+            true
+        }
+        FIELD_KIND_UINT8 => {
+            *(body_ptr.add(offset) as *mut u8) = field_val as u8;
+            true
+        }
         FIELD_KIND_INT16 => {
             *(body_ptr.add(offset) as *mut i16) = field_val as i16;
             true
         }
+        FIELD_KIND_UINT16 => {
+            *(body_ptr.add(offset) as *mut u16) = field_val as u16;
+            true
+        }
         FIELD_KIND_INT32 => {
             *(body_ptr.add(offset) as *mut i32) = field_val;
+            true
+        }
+        FIELD_KIND_UINT32 => {
+            *(body_ptr.add(offset) as *mut u32) = field_val as u32;
             true
         }
         FIELD_KIND_INT64 => {
@@ -650,9 +684,16 @@ unsafe fn runtime_exception_message_field(val: i64) -> Option<String> {
                     "false".to_string()
                 }
             }
+            FIELD_KIND_INT8 => (*(body_ptr.add(offset) as *const i8)).to_string(),
+            FIELD_KIND_UINT8 => (*(body_ptr.add(offset) as *const u8)).to_string(),
             FIELD_KIND_INT16 => (*(body_ptr.add(offset) as *const i16)).to_string(),
+            FIELD_KIND_UINT16 => (*(body_ptr.add(offset) as *const u16)).to_string(),
             FIELD_KIND_INT32 => (*(body_ptr.add(offset) as *const i32)).to_string(),
             FIELD_KIND_INT64 => (*(body_ptr.add(offset) as *const i64)).to_string(),
+            FIELD_KIND_UINT32 => (*(body_ptr.add(offset) as *const u32)).to_string(),
+            FIELD_KIND_UINT64 => (*(body_ptr.add(offset) as *const u64)).to_string(),
+            FIELD_KIND_INT128 => (*(body_ptr.add(offset) as *const i128)).to_string(),
+            FIELD_KIND_UINT128 => (*(body_ptr.add(offset) as *const u128)).to_string(),
             FIELD_KIND_FLOAT32 => {
                 rt_float_to_rust_string(*(body_ptr.add(offset) as *const f32) as f64)
             }
@@ -1083,6 +1124,12 @@ pub const OBJECT_VALUES_OFFSET: isize = 24;
 pub const ARRAY_FLAG_FIXED: i64 = 0x0100;
 pub const ARRAY_FLAG_CONSTANT: i64 = 0x0200;
 pub const ARRAY_FLAG_PTR: i64 = 0x0400;
+pub const ARRAY_FLAG_KIND_MASK: i64 = 0xF000;
+pub const ARRAY_FLAG_KIND_SIGNED: i64 = 0x0000;
+pub const ARRAY_FLAG_KIND_UNSIGNED: i64 = 0x1000;
+pub const ARRAY_FLAG_KIND_FLOAT: i64 = 0x2000;
+pub const ARRAY_FLAG_KIND_BOOL: i64 = 0x3000;
+pub const ARRAY_FLAG_KIND_CHAR: i64 = 0x4000;
 // Boolean sentinels (below HEAP_OFFSET, above normal number range)
 #[no_mangle]
 pub static BOOL_FALSE: i64 = 0;
@@ -1777,9 +1824,16 @@ unsafe fn rt_format_composite_value(val: i64, depth: usize, seen: &mut Vec<i64>)
                             "false".to_string()
                         }
                     }
+                    FIELD_KIND_INT8 => (*(body_ptr.add(offset) as *const i8)).to_string(),
+                    FIELD_KIND_UINT8 => (*(body_ptr.add(offset) as *const u8)).to_string(),
                     FIELD_KIND_INT16 => (*(body_ptr.add(offset) as *const i16)).to_string(),
+                    FIELD_KIND_UINT16 => (*(body_ptr.add(offset) as *const u16)).to_string(),
                     FIELD_KIND_INT32 => (*(body_ptr.add(offset) as *const i32)).to_string(),
                     FIELD_KIND_INT64 => (*(body_ptr.add(offset) as *const i64)).to_string(),
+                    FIELD_KIND_UINT32 => (*(body_ptr.add(offset) as *const u32)).to_string(),
+                    FIELD_KIND_UINT64 => (*(body_ptr.add(offset) as *const u64)).to_string(),
+                    FIELD_KIND_INT128 => (*(body_ptr.add(offset) as *const i128)).to_string(),
+                    FIELD_KIND_UINT128 => (*(body_ptr.add(offset) as *const u128)).to_string(),
                     FIELD_KIND_FLOAT32 => {
                         rt_float_to_rust_string(*(body_ptr.add(offset) as *const f32) as f64)
                     }

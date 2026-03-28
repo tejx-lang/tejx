@@ -4,10 +4,16 @@
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TejxType {
+    Int8,
+    UInt8,
     Int16,
+    UInt16,
+    UInt32,
     Int32, // Default "int"
+    UInt64,
     Int64,
     Int128,
+    UInt128,
     Float16,
     Float32,
     Float64,
@@ -201,10 +207,16 @@ pub(crate) fn find_top_level_arrow(input: &str) -> Option<usize> {
 impl TejxType {
     pub fn is_numeric(&self) -> bool {
         match self {
-            TejxType::Int16
+            TejxType::Int8
+            | TejxType::UInt8
+            | TejxType::Int16
+            | TejxType::UInt16
+            | TejxType::UInt32
             | TejxType::Int32
+            | TejxType::UInt64
             | TejxType::Int64
             | TejxType::Int128
+            | TejxType::UInt128
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64 => true,
@@ -219,6 +231,28 @@ impl TejxType {
             TejxType::Function(_, _) | TejxType::Optional(_) | TejxType::Object(_) => false,
             _ => false,
         }
+    }
+
+    pub fn is_unsigned_integer(&self) -> bool {
+        matches!(
+            self,
+            TejxType::UInt8
+                | TejxType::UInt16
+                | TejxType::UInt32
+                | TejxType::UInt64
+                | TejxType::UInt128
+        )
+    }
+
+    pub fn is_signed_integer(&self) -> bool {
+        matches!(
+            self,
+            TejxType::Int8
+                | TejxType::Int16
+                | TejxType::Int32
+                | TejxType::Int64
+                | TejxType::Int128
+        )
     }
 
     pub fn is_array(&self) -> bool {
@@ -255,11 +289,11 @@ impl TejxType {
 
     pub fn size(&self) -> usize {
         match self {
-            TejxType::Int16 | TejxType::Float16 => 2,
-            TejxType::Int32 | TejxType::Float32 => 4,
-            TejxType::Int64 | TejxType::Float64 => 8,
-            TejxType::Int128 => 16,
-            TejxType::Bool => 1,
+            TejxType::Int8 | TejxType::UInt8 | TejxType::Bool => 1,
+            TejxType::Int16 | TejxType::UInt16 | TejxType::Float16 => 2,
+            TejxType::Int32 | TejxType::UInt32 | TejxType::Float32 => 4,
+            TejxType::Int64 | TejxType::UInt64 | TejxType::Float64 => 8,
+            TejxType::Int128 | TejxType::UInt128 => 16,
             TejxType::Char => 4,
             TejxType::String
             | TejxType::Class(_, _)
@@ -316,10 +350,16 @@ impl TejxType {
 
     pub fn to_type_node(&self) -> crate::frontend::ast::TypeNode {
         match self {
+            TejxType::Int8 => crate::frontend::ast::TypeNode::Named("int8".to_string()),
+            TejxType::UInt8 => crate::frontend::ast::TypeNode::Named("uint8".to_string()),
             TejxType::Int16 => crate::frontend::ast::TypeNode::Named("int16".to_string()),
+            TejxType::UInt16 => crate::frontend::ast::TypeNode::Named("uint16".to_string()),
+            TejxType::UInt32 => crate::frontend::ast::TypeNode::Named("uint".to_string()),
             TejxType::Int32 => crate::frontend::ast::TypeNode::Named("int32".to_string()),
+            TejxType::UInt64 => crate::frontend::ast::TypeNode::Named("uint64".to_string()),
             TejxType::Int64 => crate::frontend::ast::TypeNode::Named("int64".to_string()),
             TejxType::Int128 => crate::frontend::ast::TypeNode::Named("int128".to_string()),
+            TejxType::UInt128 => crate::frontend::ast::TypeNode::Named("uint128".to_string()),
             TejxType::Float16 => crate::frontend::ast::TypeNode::Named("float16".to_string()),
             TejxType::Float32 => crate::frontend::ast::TypeNode::Named("float32".to_string()),
             TejxType::Float64 => crate::frontend::ast::TypeNode::Named("float64".to_string()),
@@ -529,10 +569,16 @@ impl TejxType {
         }
 
         match name {
+            "int8" => TejxType::Int8,
+            "uint8" => TejxType::UInt8,
             "int" | "int32" => TejxType::Int32,
             "int16" => TejxType::Int16,
+            "uint16" => TejxType::UInt16,
+            "uint" | "uint32" => TejxType::UInt32,
             "int64" => TejxType::Int64,
+            "uint64" => TejxType::UInt64,
             "int128" => TejxType::Int128,
+            "uint128" => TejxType::UInt128,
             "float" => TejxType::Float32,
             "float32" => TejxType::Float32,
             "float64" => TejxType::Float64,
@@ -565,10 +611,16 @@ impl TejxType {
 
     pub fn to_name(&self) -> String {
         match self {
+            TejxType::Int8 => "int8".to_string(),
+            TejxType::UInt8 => "uint8".to_string(),
             TejxType::Int16 => "int16".to_string(),
+            TejxType::UInt16 => "uint16".to_string(),
+            TejxType::UInt32 => "uint".to_string(),
             TejxType::Int32 => "int".to_string(),
+            TejxType::UInt64 => "uint64".to_string(),
             TejxType::Int64 => "int64".to_string(),
             TejxType::Int128 => "int128".to_string(),
+            TejxType::UInt128 => "uint128".to_string(),
             TejxType::Float16 => "float16".to_string(),
             TejxType::Float32 => "float32".to_string(),
             TejxType::Float64 => "float64".to_string(),

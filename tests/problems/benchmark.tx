@@ -336,7 +336,7 @@ function run(name: string, fn: () => float64): void {
     print(name , " -> [" , res , "] : " , (e - s) , " ms");
 }
 
-function main(): float {
+function main() {
         print("--- Unified Performance Suite (24 Tests) ---");
         run("1. Sieve of Eratosthenes", bench_sieve);
         run("2. Pointer Chasing", bench_pointers);

@@ -1,5 +1,5 @@
 import { Thread, Mutex, Atomic, Condition, SharedQueue, spawn, joinAll, parallel } from "std:thread";
-import { assert_eq_int } from "../utils.tx";
+import { assert_eq_int ,assert_true} from "../utils.tx";
 
 class DispatchJob {
     orderId: int;

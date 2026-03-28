@@ -467,10 +467,9 @@ impl TypeChecker {
                 match op {
                     TokenType::Bang => Ok(TejxType::Bool),
                     TokenType::Tilde => {
-                        if matches!(
-                            right_type,
-                            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
-                        ) || right_type == TejxType::from_name("<inferred>")
+                        if ((right_type.is_numeric() && !right_type.is_float())
+                            || right_type == TejxType::from_name("<inferred>"))
+                            && !matches!(right_type, TejxType::Bool | TejxType::Char)
                         {
                             Ok(right_type)
                         } else {
@@ -754,6 +753,15 @@ impl TypeChecker {
                         }
                         if left_type.is_float() || right_type.is_float() {
                             return Ok(TejxType::Float64);
+                        }
+                        if left_type == TejxType::UInt128 && right_type == TejxType::UInt128 {
+                            return Ok(TejxType::UInt128);
+                        }
+                        if left_type == TejxType::UInt64 && right_type == TejxType::UInt64 {
+                            return Ok(TejxType::UInt64);
+                        }
+                        if left_type == TejxType::UInt32 && right_type == TejxType::UInt32 {
+                            return Ok(TejxType::UInt32);
                         }
                         if left_type == TejxType::Int64 || right_type == TejxType::Int64 {
                             return Ok(TejxType::Int64);

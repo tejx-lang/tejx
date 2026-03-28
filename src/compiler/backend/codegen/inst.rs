@@ -36,6 +36,20 @@ impl CodeGen {
         }
     }
 
+    fn array_kind_flags_for_element_type(elem_ty: &TejxType) -> i64 {
+        match elem_ty {
+            TejxType::UInt8
+            | TejxType::UInt16
+            | TejxType::UInt32
+            | TejxType::UInt64
+            | TejxType::UInt128 => 0x1000,
+            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => 0x2000,
+            TejxType::Bool => 0x3000,
+            TejxType::Char => 0x4000,
+            _ => 0,
+        }
+    }
+
     pub(crate) fn gen_instruction_v2(
         &mut self,
         inst: &MIRInstruction,
@@ -577,24 +591,27 @@ impl CodeGen {
                 let op_llvm = Self::get_llvm_type(op_ty);
                 let l_cast = self.emit_abi_cast(&l, l_ty, op_ty);
                 let r_cast = self.emit_abi_cast(&r, r_ty, op_ty);
+                let is_unsigned = op_ty.is_unsigned_integer();
 
                 let (is_cmp, llvm_op, pred) = match op {
                     TokenType::Plus => (false, "add", ""),
                     TokenType::Minus => (false, "sub", ""),
                     TokenType::Star => (false, "mul", ""),
-                    TokenType::Slash => (false, "sdiv", ""),
-                    TokenType::Less => (true, "", "slt"),
-                    TokenType::Greater => (true, "", "sgt"),
+                    TokenType::Slash => (false, if is_unsigned { "udiv" } else { "sdiv" }, ""),
+                    TokenType::Less => (true, "", if is_unsigned { "ult" } else { "slt" }),
+                    TokenType::Greater => (true, "", if is_unsigned { "ugt" } else { "sgt" }),
                     TokenType::EqualEqual => (true, "", "eq"),
                     TokenType::BangEqual => (true, "", "ne"),
-                    TokenType::LessEqual => (true, "", "sle"),
-                    TokenType::GreaterEqual => (true, "", "sge"),
-                    TokenType::Modulo => (false, "srem", ""),
+                    TokenType::LessEqual => (true, "", if is_unsigned { "ule" } else { "sle" }),
+                    TokenType::GreaterEqual => (true, "", if is_unsigned { "uge" } else { "sge" }),
+                    TokenType::Modulo => (false, if is_unsigned { "urem" } else { "srem" }, ""),
                     TokenType::Ampersand => (false, "and", ""),
                     TokenType::Pipe => (false, "or", ""),
                     TokenType::Caret => (false, "xor", ""),
                     TokenType::LessLess => (false, "shl", ""),
-                    TokenType::GreaterGreater => (false, "ashr", ""),
+                    TokenType::GreaterGreater => {
+                        (false, if is_unsigned { "lshr" } else { "ashr" }, "")
+                    }
                     _ => (false, "add", ""),
                 };
                 if is_cmp {
@@ -610,7 +627,7 @@ impl CodeGen {
                     let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
                     self.emit_store_variable(dst, &final_res, dst_ty);
                 } else {
-                    if llvm_op == "sdiv" || llvm_op == "srem" {
+                    if matches!(llvm_op, "sdiv" | "udiv" | "srem" | "urem") {
                         self.declare_runtime_fn(
                             "rt_div_zero_error_at",
                             "void @rt_div_zero_error_at(i64, i64, i64, i64) nounwind",
@@ -1345,7 +1362,10 @@ impl CodeGen {
                     } else {
                         0
                     };
-                    let flags = 0x0100 | ptr_flag | (elem_size as i64 & 0xFF);
+                    let flags = 0x0100
+                        | ptr_flag
+                        | Self::array_kind_flags_for_element_type(inner)
+                        | (elem_size as i64 & 0xFF);
 
                     self.temp_counter += 1;
                     let flags_ptr = format!("%arr_flags_ptr_{}", self.temp_counter);
@@ -1559,9 +1579,11 @@ impl CodeGen {
                         if let Some(ptr_name) = self.value_map.get(dst) {
                             if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
                                 dst_ty = match ptr_llvm.as_str() {
-                                    "i1" | "i8" => TejxType::Bool,
+                                    "i1" => TejxType::Bool,
+                                    "i8" => TejxType::Int8,
                                     "i16" => TejxType::Int16,
                                     "i32" => TejxType::Int32,
+                                    "i128" => TejxType::Int128,
                                     "float" => TejxType::Float32,
                                     "double" => TejxType::Float64,
                                     _ => TejxType::Int64,
@@ -1631,9 +1653,11 @@ impl CodeGen {
                         if let Some(ptr_name) = self.value_map.get(dst) {
                             if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
                                 dst_ty = match ptr_llvm.as_str() {
-                                    "i1" | "i8" => TejxType::Bool,
+                                    "i1" => TejxType::Bool,
+                                    "i8" => TejxType::Int8,
                                     "i16" => TejxType::Int16,
                                     "i32" => TejxType::Int32,
+                                    "i128" => TejxType::Int128,
                                     "float" => TejxType::Float32,
                                     "double" => TejxType::Float64,
                                     _ => TejxType::Int64,
@@ -1714,9 +1738,11 @@ impl CodeGen {
                         if let Some(ptr_name) = self.value_map.get(dst) {
                             if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
                                 store_ty = match ptr_llvm.as_str() {
-                                    "i1" | "i8" => TejxType::Bool,
+                                    "i1" => TejxType::Bool,
+                                    "i8" => TejxType::Int8,
                                     "i16" => TejxType::Int16,
                                     "i32" => TejxType::Int32,
+                                    "i128" => TejxType::Int128,
                                     "float" => TejxType::Float32,
                                     "double" => TejxType::Float64,
                                     _ => TejxType::Int64,
@@ -2105,9 +2131,11 @@ impl CodeGen {
                 if let Some(ptr_name) = self.value_map.get(dst) {
                     if let Some(ptr_llvm) = self.ptr_types.get(ptr_name) {
                         store_ty = match ptr_llvm.as_str() {
-                            "i1" | "i8" => TejxType::Bool,
+                            "i1" => TejxType::Bool,
+                            "i8" => TejxType::Int8,
                             "i16" => TejxType::Int16,
                             "i32" => TejxType::Int32,
+                            "i128" => TejxType::Int128,
                             "float" => TejxType::Float32,
                             "double" => TejxType::Float64,
                             _ => TejxType::Int64,

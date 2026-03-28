@@ -233,7 +233,16 @@ impl CodeGen {
         if dst_is_any
             && matches!(
                 src_ty,
-                TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
+                TejxType::Int8
+                    | TejxType::UInt8
+                    | TejxType::Int16
+                    | TejxType::UInt16
+                    | TejxType::UInt32
+                    | TejxType::Int32
+                    | TejxType::UInt64
+                    | TejxType::Int64
+                    | TejxType::Int128
+                    | TejxType::UInt128
             )
         {
             self.declare_runtime_fn("rt_box_int", "i64 @rt_box_int(i64)");
@@ -370,6 +379,10 @@ impl CodeGen {
             ("i64", "i32")
             | ("i64", "i16")
             | ("i64", "i8")
+            | ("i128", "i64")
+            | ("i128", "i32")
+            | ("i128", "i16")
+            | ("i128", "i8")
             | ("i32", "i16")
             | ("i32", "i8")
             | ("i16", "i8") => {
@@ -378,33 +391,61 @@ impl CodeGen {
                     cast_reg, src_llvm, val_name, dst_llvm
                 ));
             }
-            ("i8", "i16") | ("i8", "i32") | ("i8", "i64") | ("i1", "i8") => {
+            ("i8", "i16") | ("i8", "i32") | ("i8", "i64") | ("i8", "i128") => {
+                let ext_op = if src_ty.is_unsigned_integer() || matches!(src_ty, TejxType::Bool) {
+                    "zext"
+                } else {
+                    "sext"
+                };
+                self.emit_line(&format!(
+                    "{} = {} {} {} to {}",
+                    cast_reg, ext_op, src_llvm, val_name, dst_llvm
+                ));
+            }
+            ("i1", "i8") => {
                 self.emit_line(&format!(
                     "{} = zext {} {} to {}",
                     cast_reg, src_llvm, val_name, dst_llvm
                 ));
             }
-            ("i16", "i32") | ("i16", "i64") | ("i32", "i64") => {
+            ("i16", "i32")
+            | ("i16", "i64")
+            | ("i16", "i128")
+            | ("i32", "i64")
+            | ("i32", "i128")
+            | ("i64", "i128") => {
+                let ext_op = if src_ty.is_unsigned_integer() { "zext" } else { "sext" };
                 if dst_llvm == "i64" && matches!(dst_ty, TejxType::Any) {
                     // Primitive -> Any: Use raw bit pattern (unboxed).
                     // Small integers are kept as-is; heuristic in runtime handles this.
                     self.emit_line(&format!(
-                        "{} = sext {} {} to i64",
-                        cast_reg, src_llvm, val_name
+                        "{} = {} {} {} to i64",
+                        cast_reg, ext_op, src_llvm, val_name
                     ));
                 } else if dst_llvm == "i64"
                     && matches!(dst_ty, TejxType::Class(_, _))
-                    && matches!(src_ty, TejxType::Int32 | TejxType::Int64 | TejxType::Bool)
+                    && matches!(
+                        src_ty,
+                        TejxType::Int8
+                            | TejxType::UInt8
+                            | TejxType::Int16
+                            | TejxType::UInt16
+                            | TejxType::UInt32
+                            | TejxType::Int32
+                            | TejxType::UInt64
+                            | TejxType::Int64
+                            | TejxType::Bool
+                    )
                 {
                     // Same for other object types if they are unboxed
                     self.emit_line(&format!(
-                        "{} = sext {} {} to i64",
-                        cast_reg, src_llvm, val_name
+                        "{} = {} {} {} to i64",
+                        cast_reg, ext_op, src_llvm, val_name
                     ));
                 } else {
                     self.emit_line(&format!(
-                        "{} = sext {} {} to {}",
-                        cast_reg, src_llvm, val_name, dst_llvm
+                        "{} = {} {} {} to {}",
+                        cast_reg, ext_op, src_llvm, val_name, dst_llvm
                     ));
                 }
             }
@@ -415,8 +456,21 @@ impl CodeGen {
                         cast_reg, val_name
                     ));
                 } else {
-                    self.emit_line(&format!("{} = fptosi double {} to i64", cast_reg, val_name));
+                    let op = if dst_ty.is_unsigned_integer() {
+                        "fptoui"
+                    } else {
+                        "fptosi"
+                    };
+                    self.emit_line(&format!("{} = {} double {} to i64", cast_reg, op, val_name));
                 }
+            }
+            ("double", "i128") => {
+                let op = if dst_ty.is_unsigned_integer() {
+                    "fptoui"
+                } else {
+                    "fptosi"
+                };
+                self.emit_line(&format!("{} = {} double {} to i128", cast_reg, op, val_name));
             }
             ("i64", "double") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
@@ -425,8 +479,21 @@ impl CodeGen {
                         cast_reg, val_name
                     ));
                 } else {
-                    self.emit_line(&format!("{} = sitofp i64 {} to double", cast_reg, val_name));
+                    let op = if src_ty.is_unsigned_integer() {
+                        "uitofp"
+                    } else {
+                        "sitofp"
+                    };
+                    self.emit_line(&format!("{} = {} i64 {} to double", cast_reg, op, val_name));
                 }
+            }
+            ("i128", "double") => {
+                let op = if src_ty.is_unsigned_integer() {
+                    "uitofp"
+                } else {
+                    "sitofp"
+                };
+                self.emit_line(&format!("{} = {} i128 {} to double", cast_reg, op, val_name));
             }
             ("i64", "float") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
@@ -435,8 +502,21 @@ impl CodeGen {
                     self.emit_line(&format!("{} = bitcast i64 {} to double", d_tmp, val_name));
                     self.emit_line(&format!("{} = fptrunc double {} to float", cast_reg, d_tmp));
                 } else {
-                    self.emit_line(&format!("{} = sitofp i64 {} to float", cast_reg, val_name));
+                    let op = if src_ty.is_unsigned_integer() {
+                        "uitofp"
+                    } else {
+                        "sitofp"
+                    };
+                    self.emit_line(&format!("{} = {} i64 {} to float", cast_reg, op, val_name));
                 }
+            }
+            ("i128", "float") => {
+                let op = if src_ty.is_unsigned_integer() {
+                    "uitofp"
+                } else {
+                    "sitofp"
+                };
+                self.emit_line(&format!("{} = {} i128 {} to float", cast_reg, op, val_name));
             }
             ("float", "i64") => {
                 if dst_ty.is_float() || matches!(dst_ty, TejxType::Any) {
@@ -445,8 +525,21 @@ impl CodeGen {
                     self.emit_line(&format!("{} = fpext float {} to double", d_tmp, val_name));
                     self.emit_line(&format!("{} = bitcast double {} to i64", cast_reg, d_tmp));
                 } else {
-                    self.emit_line(&format!("{} = fptosi float {} to i64", cast_reg, val_name));
+                    let op = if dst_ty.is_unsigned_integer() {
+                        "fptoui"
+                    } else {
+                        "fptosi"
+                    };
+                    self.emit_line(&format!("{} = {} float {} to i64", cast_reg, op, val_name));
                 }
+            }
+            ("float", "i128") => {
+                let op = if dst_ty.is_unsigned_integer() {
+                    "fptoui"
+                } else {
+                    "fptosi"
+                };
+                self.emit_line(&format!("{} = {} float {} to i128", cast_reg, op, val_name));
             }
             ("float", "double") => {
                 self.emit_line(&format!(
@@ -466,9 +559,14 @@ impl CodeGen {
             | ("i32", "float")
             | ("i16", "float")
             | ("i8", "float") => {
+                let op = if src_ty.is_unsigned_integer() {
+                    "uitofp"
+                } else {
+                    "sitofp"
+                };
                 self.emit_line(&format!(
-                    "{} = sitofp {} {} to {}",
-                    cast_reg, src_llvm, val_name, dst_llvm
+                    "{} = {} {} {} to {}",
+                    cast_reg, op, src_llvm, val_name, dst_llvm
                 ));
             }
             ("double", "i32")
@@ -477,9 +575,14 @@ impl CodeGen {
             | ("float", "i32")
             | ("float", "i16")
             | ("float", "i8") => {
+                let op = if dst_ty.is_unsigned_integer() {
+                    "fptoui"
+                } else {
+                    "fptosi"
+                };
                 self.emit_line(&format!(
-                    "{} = fptosi {} {} to {}",
-                    cast_reg, src_llvm, val_name, dst_llvm
+                    "{} = {} {} {} to {}",
+                    cast_reg, op, src_llvm, val_name, dst_llvm
                 ));
             }
             _ => {
@@ -543,9 +646,17 @@ impl CodeGen {
             }
             _ => {
                 // Integer -> double via sitofp
+                let op = if ty.is_unsigned_integer() {
+                    "uitofp"
+                } else {
+                    "sitofp"
+                };
                 self.emit_line(&format!(
-                    "{} = sitofp i64 {} to double",
-                    float_val, normal_val
+                    "{} = {} {} {} to double",
+                    float_val,
+                    op,
+                    Self::get_llvm_type(ty),
+                    normal_val
                 ));
                 float_val
             }
@@ -766,15 +877,34 @@ impl CodeGen {
                             val_reg = self.emit_storage_to_value(&val_reg, ty);
                         }
                         let from_ty = match ptr_llvm.as_str() {
-                            "i1" | "i8" => Some(TejxType::Bool),
-                            "i16" => Some(TejxType::Int16),
-                            "i32" => Some(TejxType::Int32),
+                            "i1" => Some(TejxType::Bool),
+                            "i8" => Some(match ty {
+                                TejxType::Bool => TejxType::Bool,
+                                TejxType::UInt8 => TejxType::UInt8,
+                                TejxType::Int8 => TejxType::Int8,
+                                _ => TejxType::Int8,
+                            }),
+                            "i16" => Some(match ty {
+                                TejxType::UInt16 => TejxType::UInt16,
+                                _ => TejxType::Int16,
+                            }),
+                            "i32" => Some(match ty {
+                                TejxType::UInt32 => TejxType::UInt32,
+                                _ => TejxType::Int32,
+                            }),
                             "i64" => Some(match ty {
                                 TejxType::Int16
+                                | TejxType::UInt16
                                 | TejxType::Int32
+                                | TejxType::UInt32
                                 | TejxType::Bool
                                 | TejxType::Char => TejxType::Int64,
+                                TejxType::UInt64 => TejxType::UInt64,
                                 _ => ty.clone(),
+                            }),
+                            "i128" => Some(match ty {
+                                TejxType::UInt128 => TejxType::UInt128,
+                                _ => TejxType::Int128,
                             }),
                             "float" => Some(TejxType::Float32),
                             "double" => Some(TejxType::Float64),
@@ -987,9 +1117,11 @@ impl CodeGen {
             let mut store_ty = ty.clone();
             if matches!(store_ty, TejxType::Void) {
                 store_ty = match ptr_llvm_ty.as_str() {
-                    "i1" | "i8" => TejxType::Bool,
+                    "i1" => TejxType::Bool,
+                    "i8" => TejxType::Int8,
                     "i16" => TejxType::Int16,
                     "i32" => TejxType::Int32,
+                    "i128" => TejxType::Int128,
                     "float" => TejxType::Float32,
                     "double" => TejxType::Float64,
                     _ => TejxType::Int64,
@@ -1002,12 +1134,30 @@ impl CodeGen {
                 } else {
                     // Need to cast from the value's type to the alloca's type
                     let ptr_ty_enum = match ptr_llvm_ty.as_str() {
-                        "i1" | "i8" => TejxType::Bool,
-                        "i16" => TejxType::Int16,
-                        "i32" => TejxType::Int32,
+                        "i1" => TejxType::Bool,
+                        "i8" => match &store_ty {
+                            TejxType::Bool => TejxType::Bool,
+                            TejxType::UInt8 => TejxType::UInt8,
+                            _ => TejxType::Int8,
+                        },
+                        "i16" => match &store_ty {
+                            TejxType::UInt16 => TejxType::UInt16,
+                            _ => TejxType::Int16,
+                        },
+                        "i32" => match &store_ty {
+                            TejxType::UInt32 => TejxType::UInt32,
+                            _ => TejxType::Int32,
+                        },
+                        "i128" => match &store_ty {
+                            TejxType::UInt128 => TejxType::UInt128,
+                            _ => TejxType::Int128,
+                        },
                         "float" => TejxType::Float32,
                         "double" => TejxType::Float64,
-                        _ => TejxType::Int64,
+                        _ => match &store_ty {
+                            TejxType::UInt64 => TejxType::UInt64,
+                            _ => TejxType::Int64,
+                        },
                     };
                     self.emit_abi_cast(&val, &store_ty, &ptr_ty_enum)
                 }

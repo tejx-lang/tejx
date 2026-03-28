@@ -9,10 +9,16 @@ impl Lowering {
         match ty {
             TejxType::Any => true,
             TejxType::Void
+            | TejxType::Int8
+            | TejxType::UInt8
             | TejxType::Int16
+            | TejxType::UInt16
+            | TejxType::UInt32
             | TejxType::Int32
+            | TejxType::UInt64
             | TejxType::Int64
             | TejxType::Int128
+            | TejxType::UInt128
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64

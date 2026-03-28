@@ -161,6 +161,8 @@ impl Lowering {
             return;
         }
 
+        visible_names.extend(_module_exports.iter().cloned());
+
         if let Some(module_name) = source_str
             .strip_prefix("std:")
             .and_then(|module| module.rsplit('/').next())

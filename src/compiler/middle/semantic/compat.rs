@@ -26,10 +26,16 @@ impl TypeChecker {
 
     pub(crate) fn is_valid_type(&self, type_name: &TejxType) -> bool {
         match type_name {
-            TejxType::Int16
+            TejxType::Int8
+            | TejxType::UInt8
+            | TejxType::Int16
+            | TejxType::UInt16
+            | TejxType::UInt32
             | TejxType::Int32
+            | TejxType::UInt64
             | TejxType::Int64
             | TejxType::Int128
+            | TejxType::UInt128
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64
@@ -597,6 +603,14 @@ impl TypeChecker {
                 "uint16" => {
                     min = Some(0.0);
                     max = Some(65535.0);
+                }
+                "uint" | "uint32" => {
+                    min = Some(0.0);
+                    max = Some(u32::MAX as f64);
+                }
+                "uint64" => {
+                    min = Some(0.0);
+                    max = Some(u64::MAX as f64);
                 }
                 _ => {}
             }

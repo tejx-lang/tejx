@@ -36,9 +36,16 @@ impl Lexer {
         keywords.insert("bool".to_string(), TokenType::TypeBoolean);
         keywords.insert("void".to_string(), TokenType::TypeVoid);
         keywords.insert("int".to_string(), TokenType::TypeInt);
+        keywords.insert("int8".to_string(), TokenType::TypeInt8);
+        keywords.insert("uint8".to_string(), TokenType::TypeUInt8);
         keywords.insert("int16".to_string(), TokenType::TypeInt16);
+        keywords.insert("uint16".to_string(), TokenType::TypeUInt16);
+        keywords.insert("uint".to_string(), TokenType::TypeUInt);
+        keywords.insert("uint32".to_string(), TokenType::TypeUInt);
         keywords.insert("int64".to_string(), TokenType::TypeInt64);
+        keywords.insert("uint64".to_string(), TokenType::TypeUInt64);
         keywords.insert("int128".to_string(), TokenType::TypeInt128);
+        keywords.insert("uint128".to_string(), TokenType::TypeUInt128);
         keywords.insert("float".to_string(), TokenType::TypeFloat);
         keywords.insert("float32".to_string(), TokenType::TypeFloat);
         keywords.insert("float64".to_string(), TokenType::TypeFloat64);
