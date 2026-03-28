@@ -284,8 +284,7 @@ pub unsafe extern "C" fn rt_String_padStart(s: i64, len: i64, pad: i64) -> i64 {
         for i in 0..s_len {
             new_str.push(*s_data.offset(i as isize));
         }
-        new_str.push(0);
-        rt_string_from_c_str(new_str.as_ptr() as *const _)
+        new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
     } else {
         s
     }
@@ -308,8 +307,7 @@ pub unsafe extern "C" fn rt_String_padEnd(s: i64, len: i64, pad: i64) -> i64 {
             new_str.push(*pad_data.offset(p_idx as isize));
             p_idx = (p_idx + 1) % (pad_len as usize);
         }
-        new_str.push(0);
-        rt_string_from_c_str(new_str.as_ptr() as *const _)
+        new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
     } else {
         s
     }
@@ -330,8 +328,7 @@ pub unsafe extern "C" fn rt_String_repeat(s: i64, count: i64) -> i64 {
                 new_str.push(*s_data.offset(i as isize));
             }
         }
-        new_str.push(0);
-        rt_string_from_c_str(new_str.as_ptr() as *const _)
+        new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
     } else {
         s
     }
@@ -353,8 +350,7 @@ pub unsafe extern "C" fn rt_String_replace(s: i64, search: i64, replace: i64) ->
             new_str.extend_from_slice(&s_slice[..pos]);
             new_str.extend_from_slice(std::slice::from_raw_parts(r_data, r_len as usize));
             new_str.extend_from_slice(&s_slice[pos + sh_len as usize..]);
-            new_str.push(0);
-            rt_string_from_c_str(new_str.as_ptr() as *const _)
+            new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
         } else {
             s
         }
@@ -378,10 +374,7 @@ pub unsafe extern "C" fn rt_str_at(id: i64, index: i64) -> i64 {
         return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
     let c = *body.offset(index as isize);
-    let mut buf = [0u8; 2];
-    buf[0] = c;
-    buf[1] = 0;
-    rt_string_from_c_str(buf.as_ptr() as *const _)
+    new_string_from_bytes(std::ptr::addr_of!(c), 1)
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_compare(a: i64, b: i64) -> i32 {

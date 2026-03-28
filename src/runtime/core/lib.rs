@@ -92,10 +92,7 @@ fn splitmix64_next(state: &mut u64) -> u64 {
 }
 
 pub unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
-    let cstr = std::ffi::CString::new(msg).unwrap_or_else(|_| {
-        std::ffi::CString::new("RuntimeError").expect("CString for RuntimeError")
-    });
-    let msg_id = rt_string_from_c_str(cstr.as_ptr());
+    let msg_id = new_string_from_rust_str(msg);
     crate::event_loop::tejx_throw(msg_id);
     std::hint::unreachable_unchecked();
 }
@@ -615,9 +612,7 @@ pub unsafe extern "C" fn rt_to_string_int(v: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_string_float(v: f64) -> i64 {
     let s = rt_float_to_rust_string(v);
-    let cstr = std::ffi::CString::new(s)
-        .unwrap_or_else(|_| std::ffi::CString::new("0").expect("CString for float"));
-    rt_string_from_c_str(cstr.as_ptr() as *const _)
+    new_string_from_rust_str(&s)
 }
 
 #[no_mangle]
@@ -897,10 +892,7 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     rt_push_root(&mut v);
     rt_push_root(&mut res_id);
     let rendered = rt_format_composite_value(v, FORMAT_MAX_DEPTH, &mut Vec::new());
-    let cstr = std::ffi::CString::new(rendered).unwrap_or_else(|_| {
-        std::ffi::CString::new("<stringify error>").expect("CString for stringify fallback")
-    });
-    res_id = rt_string_from_c_str(cstr.as_ptr() as *const _);
+    res_id = new_string_from_rust_str(&rendered);
 
     rt_pop_roots(2);
     res_id
@@ -1111,8 +1103,7 @@ unsafe fn i64_to_rust_str(val: i64) -> Option<String> {
 pub unsafe extern "C" fn rt_fs_read_sync(path: i64) -> i64 {
     if let Some(p) = i64_to_rust_str(path) {
         if let Ok(content) = std::fs::read_to_string(&p) {
-            let c_str = std::ffi::CString::new(content).unwrap_or_default();
-            return rt_string_from_c_str(c_str.as_ptr());
+            return new_string_from_rust_str(&content);
         }
     }
     0
@@ -1292,8 +1283,7 @@ pub unsafe extern "C" fn rt_exit(code: i64) {
 pub unsafe extern "C" fn rt_getenv(key: i64) -> i64 {
     if let Some(k) = i64_to_rust_str(key) {
         if let Ok(val) = std::env::var(&k) {
-            let c_str = std::ffi::CString::new(val).unwrap_or_default();
-            return rt_string_from_c_str(c_str.as_ptr());
+            return new_string_from_rust_str(&val);
         }
     }
     0
@@ -1305,12 +1295,9 @@ pub unsafe extern "C" fn rt_get_all_env() -> i64 {
     rt_push_root(&mut obj);
 
     for (key, value) in std::env::vars() {
-        let key_c = std::ffi::CString::new(key).unwrap_or_default();
-        let value_c = std::ffi::CString::new(value).unwrap_or_default();
-
-        let mut key_id = rt_string_from_c_str(key_c.as_ptr());
+        let mut key_id = new_string_from_rust_str(&key);
         rt_push_root(&mut key_id);
-        let mut value_id = rt_string_from_c_str(value_c.as_ptr());
+        let mut value_id = new_string_from_rust_str(&value);
         rt_push_root(&mut value_id);
 
         rt_set_property(obj, key_id, value_id);
@@ -1323,8 +1310,7 @@ pub unsafe extern "C" fn rt_get_all_env() -> i64 {
 }
 
 unsafe fn rt_string_from_owned_string(value: String) -> i64 {
-    let c_str = std::ffi::CString::new(value).unwrap_or_default();
-    rt_string_from_c_str(c_str.as_ptr())
+    new_string_from_rust_str(&value)
 }
 
 unsafe fn rt_string_from_optional_string(value: Option<String>) -> i64 {
@@ -1479,8 +1465,7 @@ pub unsafe extern "C" fn rt_time_to_iso_string(timestamp_ms: i64) -> i64 {
         tm.tm_sec,
         millis
     );
-    let cstr = std::ffi::CString::new(formatted).unwrap_or_default();
-    rt_string_from_c_str(cstr.as_ptr())
+    new_string_from_rust_str(&formatted)
 }
 
 #[no_mangle]
@@ -3233,6 +3218,48 @@ mod tests {
     }
 
     #[test]
+    fn string_helpers_preserve_embedded_null_bytes() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let bytes = [b'a', 0, b'b'];
+            let mut source = new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64);
+            rt_push_root(&mut source);
+
+            let repeated = crate::string::rt_String_repeat(source, 2);
+            assert_eq!(rt_len(repeated), 6);
+            assert_eq!(crate::string::rt_String_charCodeAt(repeated, 0), b'a' as i32);
+            assert_eq!(crate::string::rt_String_charCodeAt(repeated, 1), 0);
+            assert_eq!(crate::string::rt_String_charCodeAt(repeated, 2), b'b' as i32);
+            assert_eq!(crate::string::rt_String_charCodeAt(repeated, 3), b'a' as i32);
+            assert_eq!(crate::string::rt_String_charCodeAt(repeated, 4), 0);
+            assert_eq!(crate::string::rt_String_charCodeAt(repeated, 5), b'b' as i32);
+
+            let nul_char = crate::string::rt_str_at(source, 1);
+            assert_eq!(rt_len(nul_char), 1);
+            assert_eq!(crate::string::rt_String_charCodeAt(nul_char, 0), 0);
+
+            let mut single = new_string_from_bytes(b"a".as_ptr(), 1);
+            let mut search = new_string_from_bytes(b"a".as_ptr(), 1);
+            let replacement_bytes = [b'z', 0, b'y'];
+            let mut replacement =
+                new_string_from_bytes(replacement_bytes.as_ptr(), replacement_bytes.len() as i64);
+            rt_push_root(&mut single);
+            rt_push_root(&mut search);
+            rt_push_root(&mut replacement);
+
+            let replaced = crate::string::rt_String_replace(single, search, replacement);
+            assert_eq!(rt_len(replaced), 3);
+            assert_eq!(crate::string::rt_String_charCodeAt(replaced, 0), b'z' as i32);
+            assert_eq!(crate::string::rt_String_charCodeAt(replaced, 1), 0);
+            assert_eq!(crate::string::rt_String_charCodeAt(replaced, 2), b'y' as i32);
+
+            rt_pop_roots(4);
+        }
+    }
+
+    #[test]
     fn readdir_sync_preserves_exact_entry_names() {
         unsafe {
             let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
@@ -3258,6 +3285,37 @@ mod tests {
 
             rt_pop_roots(1);
             let _ = std::fs::remove_file(dir.join(file_name));
+            let _ = std::fs::remove_dir(&dir);
+        }
+    }
+
+    #[test]
+    fn fs_read_sync_preserves_embedded_null_bytes() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("tejx_fs_read_exact_{}", stamp));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("payload.txt");
+            std::fs::write(&file, b"a\0b").unwrap();
+
+            let path_string = file.to_string_lossy().into_owned();
+            let mut path_id = new_string_from_rust_str(&path_string);
+            rt_push_root(&mut path_id);
+
+            let content = rt_fs_read_sync(path_id);
+            assert_eq!(rt_len(content), 3);
+            assert_eq!(crate::string::rt_String_charCodeAt(content, 0), b'a' as i32);
+            assert_eq!(crate::string::rt_String_charCodeAt(content, 1), 0);
+            assert_eq!(crate::string::rt_String_charCodeAt(content, 2), b'b' as i32);
+
+            rt_pop_roots(1);
+            let _ = std::fs::remove_file(&file);
             let _ = std::fs::remove_dir(&dir);
         }
     }
