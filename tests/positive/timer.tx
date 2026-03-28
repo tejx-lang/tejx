@@ -1,27 +1,35 @@
 // tests/timer_test.tx
 import { setTimeout, setInterval, clearInterval, clearTimeout, delay } from "std:time";
+import { assert_eq_int, assert_true } from "./utils.tx";
 
-function timeoutCallback() {
-    print("Timeout executed!");
-}
-
-function intervalCallback() {
-    print("Interval executed!");
-}
-
-async function main() {
+async function main(): Promise<void> {
     print("Starting timers...");
-    
-    setTimeout(timeoutCallback, 500);
-    
-    let intervalId = setInterval(intervalCallback, 200);
-    
-    await delay(1000); // delay is already implemented and works with the event loop
-    
+
+    let counts = {
+        timeoutCount: 0,
+        intervalCount: 0
+    };
+
+    let timeoutId = setTimeout(() => {
+        counts.timeoutCount = counts.timeoutCount + 1;
+        print("Timeout executed!");
+    }, 80);
+
+    let intervalId = setInterval(() => {
+        counts.intervalCount = counts.intervalCount + 1;
+        print("Interval executed!");
+    }, 30);
+
+    await delay(170);
     clearInterval(intervalId);
+    clearTimeout(timeoutId);
+
+    let intervalCountAfterClear = counts.intervalCount;
+    await delay(90);
+
+    assert_eq_int(1, counts.timeoutCount, "setTimeout fires exactly once");
+    assert_true(intervalCountAfterClear >= 2, "setInterval fires before clearInterval");
+    assert_eq_int(intervalCountAfterClear, counts.intervalCount, "clearInterval stops future ticks");
     print("Interval cleared.");
-    
     print("Timers test complete.");
 }
-
-

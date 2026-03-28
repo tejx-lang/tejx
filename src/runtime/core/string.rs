@@ -4,23 +4,27 @@ pub unsafe extern "C" fn rt_String_toUpperCase(arg_s: i64) -> i64 {
     let mut s = arg_s;
     rt_push_root(&mut s);
 
-    let res = if let Some((data, len)) = get_str_parts(s) {
+    let res = if let Some((_, len)) = get_str_parts(s) {
         let body_ptr = gc_allocate(len as usize + 1);
         let header = rt_get_header(body_ptr);
         (*header).type_id = TAG_STRING as u16;
         (*header).length = len as u32;
 
         let dst = body_ptr as *mut u8;
-        for i in 0..len {
-            let ch = *data.offset(i as isize);
-            *dst.offset(i as isize) = if ch >= b'a' && ch <= b'z' {
-                ch - 32
-            } else {
-                ch
+        if let Some((data, _)) = get_str_parts(s) {
+            for i in 0..len {
+                let ch = *data.offset(i as isize);
+                *dst.offset(i as isize) = if ch >= b'a' && ch <= b'z' {
+                    ch - 32
+                } else {
+                    ch
+                };
             };
+            *dst.offset(len as isize) = 0;
+            (body_ptr as i64) + HEAP_OFFSET
+        } else {
+            s
         }
-        *dst.offset(len as isize) = 0;
-        (body_ptr as i64) + HEAP_OFFSET
     } else {
         s
     };
@@ -33,23 +37,27 @@ pub unsafe extern "C" fn rt_String_toLowerCase(arg_s: i64) -> i64 {
     let mut s = arg_s;
     rt_push_root(&mut s);
 
-    let res = if let Some((data, len)) = get_str_parts(s) {
+    let res = if let Some((_, len)) = get_str_parts(s) {
         let body_ptr = gc_allocate(len as usize + 1);
         let header = rt_get_header(body_ptr);
         (*header).type_id = TAG_STRING as u16;
         (*header).length = len as u32;
 
         let dst = body_ptr as *mut u8;
-        for i in 0..len {
-            let ch = *data.offset(i as isize);
-            *dst.offset(i as isize) = if ch >= b'A' && ch <= b'Z' {
-                ch + 32
-            } else {
-                ch
+        if let Some((data, _)) = get_str_parts(s) {
+            for i in 0..len {
+                let ch = *data.offset(i as isize);
+                *dst.offset(i as isize) = if ch >= b'A' && ch <= b'Z' {
+                    ch + 32
+                } else {
+                    ch
+                };
             };
+            *dst.offset(len as isize) = 0;
+            (body_ptr as i64) + HEAP_OFFSET
+        } else {
+            s
         }
-        *dst.offset(len as isize) = 0;
-        (body_ptr as i64) + HEAP_OFFSET
     } else {
         s
     };
@@ -276,8 +284,7 @@ pub unsafe extern "C" fn rt_String_padStart(s: i64, len: i64, pad: i64) -> i64 {
         for i in 0..s_len {
             new_str.push(*s_data.offset(i as isize));
         }
-        new_str.push(0);
-        rt_string_from_c_str(new_str.as_ptr() as *const _)
+        new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
     } else {
         s
     }
@@ -300,8 +307,7 @@ pub unsafe extern "C" fn rt_String_padEnd(s: i64, len: i64, pad: i64) -> i64 {
             new_str.push(*pad_data.offset(p_idx as isize));
             p_idx = (p_idx + 1) % (pad_len as usize);
         }
-        new_str.push(0);
-        rt_string_from_c_str(new_str.as_ptr() as *const _)
+        new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
     } else {
         s
     }
@@ -322,8 +328,7 @@ pub unsafe extern "C" fn rt_String_repeat(s: i64, count: i64) -> i64 {
                 new_str.push(*s_data.offset(i as isize));
             }
         }
-        new_str.push(0);
-        rt_string_from_c_str(new_str.as_ptr() as *const _)
+        new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
     } else {
         s
     }
@@ -345,8 +350,7 @@ pub unsafe extern "C" fn rt_String_replace(s: i64, search: i64, replace: i64) ->
             new_str.extend_from_slice(&s_slice[..pos]);
             new_str.extend_from_slice(std::slice::from_raw_parts(r_data, r_len as usize));
             new_str.extend_from_slice(&s_slice[pos + sh_len as usize..]);
-            new_str.push(0);
-            rt_string_from_c_str(new_str.as_ptr() as *const _)
+            new_string_from_bytes(new_str.as_ptr(), new_str.len() as i64)
         } else {
             s
         }
@@ -370,10 +374,7 @@ pub unsafe extern "C" fn rt_str_at(id: i64, index: i64) -> i64 {
         return rt_string_from_c_str("\0".as_ptr() as *const _);
     }
     let c = *body.offset(index as isize);
-    let mut buf = [0u8; 2];
-    buf[0] = c;
-    buf[1] = 0;
-    rt_string_from_c_str(buf.as_ptr() as *const _)
+    new_string_from_bytes(std::ptr::addr_of!(c), 1)
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_compare(a: i64, b: i64) -> i32 {
@@ -509,16 +510,40 @@ pub unsafe extern "C" fn rt_str_clear_local(lhs_id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
-    let res =
-        if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) = (
-            get_string_body_and_len(lhs_id),
-            get_string_body_and_len(rhs_id),
-        ) {
+    if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) =
+        (get_string_body_and_len(lhs_id), get_string_body_and_len(rhs_id))
+    {
+        let required = lhs_len + rhs_len;
+        let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
+            && ((*lhs_header).capacity as i64) >= required;
+
+        if can_mutate {
+            memcpy(
+                lhs_body.add(lhs_len as usize) as *mut _,
+                rhs_body as *const _,
+                rhs_len as usize,
+            );
+            *lhs_body.add(required as usize) = 0;
+            (*lhs_header).length = required as u32;
+            rt_update_array_cache(lhs_id, lhs_body, required, 1);
+            return lhs_id;
+        }
+    }
+
+    let mut lhs = lhs_id;
+    let mut rhs = rhs_id;
+    rt_push_root(&mut lhs);
+    rt_push_root(&mut rhs);
+
+    let res = if let (Some((lhs_body, lhs_header, lhs_len)), Some((_rhs_body, _rhs_header, rhs_len))) =
+        (get_string_body_and_len(lhs), get_string_body_and_len(rhs))
+    {
             let required = lhs_len + rhs_len;
             let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
                 && ((*lhs_header).capacity as i64) >= required;
 
             if can_mutate {
+                let rhs_body = (rhs - HEAP_OFFSET) as *mut u8;
                 memcpy(
                     lhs_body.add(lhs_len as usize) as *mut _,
                     rhs_body as *const _,
@@ -526,28 +551,35 @@ pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
                 );
                 *lhs_body.add(required as usize) = 0;
                 (*lhs_header).length = required as u32;
-                rt_update_array_cache(lhs_id, lhs_body, required, 1);
-                lhs_id
+                rt_update_array_cache(lhs, lhs_body, required, 1);
+                lhs
             } else {
                 let capacity = next_string_capacity(required);
                 let body_ptr = alloc_string_body(capacity, required);
-                memcpy(body_ptr as *mut _, lhs_body as *const _, lhs_len as usize);
-                memcpy(
-                    body_ptr.add(lhs_len as usize) as *mut _,
-                    rhs_body as *const _,
-                    rhs_len as usize,
-                );
-                *body_ptr.add(required as usize) = 0;
-                let res_id = (body_ptr as i64) + HEAP_OFFSET;
-                rt_update_array_cache(res_id, body_ptr, required, 1);
-                res_id
+                if let (Some((lhs_body_new, _lhs_header_new, _)), Some((rhs_body_new, _rhs_header_new, _))) =
+                    (get_string_body_and_len(lhs), get_string_body_and_len(rhs))
+                {
+                    memcpy(body_ptr as *mut _, lhs_body_new as *const _, lhs_len as usize);
+                    memcpy(
+                        body_ptr.add(lhs_len as usize) as *mut _,
+                        rhs_body_new as *const _,
+                        rhs_len as usize,
+                    );
+                    *body_ptr.add(required as usize) = 0;
+                    let res_id = (body_ptr as i64) + HEAP_OFFSET;
+                    rt_update_array_cache(res_id, body_ptr, required, 1);
+                    res_id
+                } else {
+                    lhs
+                }
             }
-        } else if get_string_body_and_len(lhs_id).is_some() {
-            rt_clone(lhs_id)
-        } else if get_string_body_and_len(rhs_id).is_some() {
-            rt_clone(rhs_id)
+        } else if get_string_body_and_len(lhs).is_some() {
+            rt_clone(lhs)
+        } else if get_string_body_and_len(rhs).is_some() {
+            rt_clone(rhs)
         } else {
             rt_string_from_c_str("\0".as_ptr() as *const _)
         };
+    rt_pop_roots(2);
     res
 }

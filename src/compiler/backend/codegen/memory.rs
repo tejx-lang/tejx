@@ -45,6 +45,7 @@ impl CodeGen {
         dst: &String,
         obj: &MIRValue,
         member: &String,
+        line: usize,
     ) {
         let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
         let obj_val = self.resolve_value(obj);
@@ -139,10 +140,16 @@ impl CodeGen {
                     self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
                     temp_root_count += 1;
                 }
-                self.declare_runtime_fn("rt_get_property", "i64 @rt_get_property(i64, i64)");
+                self.declare_runtime_fn(
+                    "rt_get_property_traced",
+                    "i64 @rt_get_property_traced(i64, i64, i64, i64)",
+                );
+                let (file_ptr, line) = self
+                    .runtime_location_args(line)
+                    .unwrap_or_else(|| ("0".to_string(), 0));
                 self.emit_line(&format!(
-                    "{} = call i64 @rt_get_property(i64 {}, i64 {})",
-                    res_tmp, obj_val, k_val
+                    "{} = call i64 @rt_get_property_traced(i64 {}, i64 {}, i64 {}, i64 {})",
+                    res_tmp, obj_val, k_val, file_ptr, line
                 ));
 
                 if temp_root_count > 0 {
@@ -199,6 +206,7 @@ impl CodeGen {
         obj: &MIRValue,
         member: &String,
         src: &MIRValue,
+        line: usize,
     ) {
         let obj_val = self.resolve_value(obj);
         let mut v_val = self.resolve_value(src);
@@ -305,10 +313,16 @@ impl CodeGen {
             self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
             temp_root_count += 1;
 
-            self.declare_runtime_fn("rt_set_property", "void @rt_set_property(i64, i64, i64)");
+            self.declare_runtime_fn(
+                "rt_set_property_traced",
+                "void @rt_set_property_traced(i64, i64, i64, i64, i64)",
+            );
+            let (file_ptr, line) = self
+                .runtime_location_args(line)
+                .unwrap_or_else(|| ("0".to_string(), 0));
             self.emit_line(&format!(
-                "call void @rt_set_property(i64 {}, i64 {}, i64 {})",
-                obj_val, k_val, boxed_v
+                "call void @rt_set_property_traced(i64 {}, i64 {}, i64 {}, i64 {}, i64 {})",
+                obj_val, k_val, boxed_v, file_ptr, line
             ));
 
             if temp_root_count > 0 {
@@ -324,6 +338,7 @@ impl CodeGen {
         obj: &MIRValue,
         index: &MIRValue,
         element_ty: &TejxType,
+        line: usize,
     ) {
         let obj_val = self.resolve_value(obj);
         let idx_ty = index.get_type();
@@ -391,12 +406,18 @@ impl CodeGen {
                 temp_root_count += 1;
             }
 
-            self.declare_runtime_fn("rt_get_property", "i64 @rt_get_property(i64, i64)");
+            self.declare_runtime_fn(
+                "rt_get_property_traced",
+                "i64 @rt_get_property_traced(i64, i64, i64, i64)",
+            );
+            let (file_ptr, line) = self
+                .runtime_location_args(line)
+                .unwrap_or_else(|| ("0".to_string(), 0));
             self.temp_counter += 1;
             let res_tmp = format!("%val{}", self.temp_counter);
             self.emit_line(&format!(
-                "{} = call i64 @rt_get_property(i64 {}, i64 {})",
-                res_tmp, obj_val, idx_val
+                "{} = call i64 @rt_get_property_traced(i64 {}, i64 {}, i64 {}, i64 {})",
+                res_tmp, obj_val, idx_val, file_ptr, line
             ));
 
             if temp_root_count > 0 {
@@ -484,12 +505,15 @@ impl CodeGen {
         }
 
         self.declare_runtime_fn(
-            "rt_array_get_fast",
-            "i64 @rt_array_get_fast(i64, i64) nounwind",
+            "rt_array_get_traced",
+            "i64 @rt_array_get_traced(i64, i64, i64, i64) nounwind",
         );
+        let (file_ptr, line) = self
+            .runtime_location_args(line)
+            .unwrap_or_else(|| ("0".to_string(), 0));
         self.emit_line(&format!(
-            "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
-            res_tmp, obj_val, idx_val
+            "{} = call i64 @rt_array_get_traced(i64 {}, i64 {}, i64 {}, i64 {})",
+            res_tmp, obj_val, idx_val, file_ptr, line
         ));
         let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
         if element_ty.is_float() {
@@ -529,6 +553,7 @@ impl CodeGen {
         index: &MIRValue,
         src: &MIRValue,
         element_ty: &TejxType,
+        line: usize,
     ) {
         let obj_val = self.resolve_value(obj);
         let idx_ty = index.get_type();
@@ -611,10 +636,16 @@ impl CodeGen {
             self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
             temp_root_count += 1;
 
-            self.declare_runtime_fn("rt_set_property", "void @rt_set_property(i64, i64, i64)");
+            self.declare_runtime_fn(
+                "rt_set_property_traced",
+                "void @rt_set_property_traced(i64, i64, i64, i64, i64)",
+            );
+            let (file_ptr, line) = self
+                .runtime_location_args(line)
+                .unwrap_or_else(|| ("0".to_string(), 0));
             self.emit_line(&format!(
-                "call void @rt_set_property(i64 {}, i64 {}, i64 {})",
-                obj_val, idx_val, boxed_v
+                "call void @rt_set_property_traced(i64 {}, i64 {}, i64 {}, i64 {}, i64 {})",
+                obj_val, idx_val, boxed_v, file_ptr, line
             ));
 
             if temp_root_count > 0 {
@@ -648,14 +679,17 @@ impl CodeGen {
         }
 
         self.declare_runtime_fn(
-            "rt_array_set_fast",
-            "i64 @rt_array_set_fast(i64, i64, i64) nounwind",
+            "rt_array_set_traced",
+            "i64 @rt_array_set_traced(i64, i64, i64, i64, i64) nounwind",
         );
+        let (file_ptr, line) = self
+            .runtime_location_args(line)
+            .unwrap_or_else(|| ("0".to_string(), 0));
         self.temp_counter += 1;
         let updated_arr = format!("%arr_set_{}", self.temp_counter);
         self.emit_line(&format!(
-            "{} = call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
-            updated_arr, obj_val, idx_val, v_val
+            "{} = call i64 @rt_array_set_traced(i64 {}, i64 {}, i64 {}, i64 {}, i64 {})",
+            updated_arr, obj_val, idx_val, v_val, file_ptr, line
         ));
         if let MIRValue::Variable { name, ty } = obj {
             self.emit_store_variable(name, &updated_arr, ty);

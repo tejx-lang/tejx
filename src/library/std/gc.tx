@@ -1,0 +1,15 @@
+extern function minor_gc(): void;
+extern function major_gc(): void;
+
+export function collectMinor(): void {
+    minor_gc();
+}
+
+export function collectFull(): void {
+    major_gc();
+}
+
+export function collect(): void {
+    minor_gc();
+    major_gc();
+}

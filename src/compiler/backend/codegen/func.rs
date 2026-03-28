@@ -6,6 +6,117 @@ use crate::middle::mir::*;
 use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
+    fn function_tracks_runtime_location(function_name: &str) -> bool {
+        function_name != "tejx_main"
+            && function_name != "rt_main_async_worker"
+            && function_name != "f_async_add"
+    }
+
+    pub(crate) fn known_non_throwing_call_target(callee: &str) -> bool {
+        callee.starts_with("llvm.")
+            || callee.starts_with("std_math_")
+            || matches!(
+                callee,
+                "rt_time_now_ms"
+                    | "rt_random"
+                    | "rt_random_int"
+                    | "rt_random_seed"
+                    | "rt_len"
+                    | "rt_strlen"
+                    | "rt_is_array"
+                    | "rt_string_from_c_str"
+                    | "rt_string_from_c_str_const"
+                    | "rt_str_concat_v2"
+                    | "rt_str_append_local"
+                    | "rt_str_clear_local"
+            )
+    }
+
+    fn function_has_direct_runtime_exception_edge(
+        func: &MIRFunction,
+        known_functions: &HashSet<String>,
+        extern_functions: &HashSet<String>,
+    ) -> bool {
+        func.blocks.iter().flat_map(|bb| bb.instructions.iter()).any(|inst| {
+            match inst {
+                MIRInstruction::Throw { .. }
+                | MIRInstruction::IndirectCall { .. }
+                | MIRInstruction::LoadMember { .. }
+                | MIRInstruction::StoreMember { .. }
+                | MIRInstruction::LoadIndex { .. }
+                | MIRInstruction::StoreIndex { .. } => true,
+                MIRInstruction::BinaryOp { op, .. } => {
+                    matches!(op, TokenType::Slash | TokenType::Modulo)
+                }
+                MIRInstruction::Call { callee, .. } => {
+                    !Self::known_non_throwing_call_target(callee)
+                        && (extern_functions.contains(callee) || !known_functions.contains(callee))
+                }
+                MIRInstruction::Move { .. }
+                | MIRInstruction::Branch { .. }
+                | MIRInstruction::Jump { .. }
+                | MIRInstruction::Return { .. }
+                | MIRInstruction::Cast { .. }
+                | MIRInstruction::TrySetup { .. }
+                | MIRInstruction::PopHandler { .. } => false,
+            }
+        })
+    }
+
+    fn compute_tracked_runtime_functions(
+        functions: &[&MIRFunction],
+    ) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
+        let known_functions: HashSet<String> =
+            functions.iter().map(|func| func.name.clone()).collect();
+        let extern_functions: HashSet<String> = functions
+            .iter()
+            .filter(|func| func.is_extern)
+            .map(|func| func.name.clone())
+            .collect();
+
+        let mut tracked_functions = HashSet::new();
+        for func in functions {
+            if Self::function_has_direct_runtime_exception_edge(
+                func,
+                &known_functions,
+                &extern_functions,
+            ) {
+                tracked_functions.insert(func.name.clone());
+            }
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for func in functions {
+                if func.is_extern || tracked_functions.contains(&func.name) {
+                    continue;
+                }
+
+                let propagates_tracked_exception =
+                    func.blocks.iter().flat_map(|bb| bb.instructions.iter()).any(|inst| {
+                        match inst {
+                            MIRInstruction::Call { callee, .. } => {
+                                !Self::known_non_throwing_call_target(callee)
+                                    && (tracked_functions.contains(callee)
+                                    || extern_functions.contains(callee)
+                                    || !known_functions.contains(callee))
+                            }
+                            MIRInstruction::IndirectCall { .. } => true,
+                            _ => false,
+                        }
+                    });
+
+                if propagates_tracked_exception {
+                    tracked_functions.insert(func.name.clone());
+                    changed = true;
+                }
+            }
+        }
+
+        (tracked_functions, known_functions, extern_functions)
+    }
+
     fn stringify_field_kind(ty: &TejxType) -> u8 {
         match ty {
             TejxType::String
@@ -1015,6 +1126,10 @@ update:\n\
         self.declare_runtime_fn("rt_strlen", "i64 @rt_strlen(i64)");
         self.declare_runtime_fn("rt_typeof", "i64 @rt_typeof(i64)");
         self.declare_runtime_fn("rt_to_string", "i64 @rt_to_string(i64)");
+        self.declare_runtime_fn(
+            "rt_exception_report_for_print",
+            "i64 @rt_exception_report_for_print(i64)",
+        );
         self.declare_runtime_fn("rt_str_concat_v2", "i64 @rt_str_concat_v2(i64, i64)");
         self.declare_runtime_fn("rt_str_append_local", "i64 @rt_str_append_local(i64, i64)");
         self.declare_runtime_fn("rt_str_clear_local", "i64 @rt_str_clear_local(i64)");
@@ -1039,6 +1154,9 @@ update:\n\
         self.declare_runtime_fn("rt_Arena_create", "i64 @rt_Arena_create()");
         self.declare_runtime_fn("rt_Arena_destroy", "void @rt_Arena_destroy(i64)");
         self.declare_runtime_fn("rt_closure_from_ptr", "i64 @rt_closure_from_ptr(i64)");
+        self.declare_runtime_fn("rt_enter_frame", "void @rt_enter_frame(i64, i64, i64) nounwind");
+        self.declare_runtime_fn("rt_leave_frame", "void @rt_leave_frame() nounwind");
+        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
 
         // Filter functions to remove duplicates, prioritizing non-empty tejx_main
         let mut unique_functions = Vec::new();
@@ -1060,6 +1178,12 @@ update:\n\
         if let Some(idx) = tejx_main_to_keep {
             unique_functions.push(&functions[idx]);
         }
+
+        let (tracked_runtime_functions, known_mir_functions, extern_mir_functions) =
+            Self::compute_tracked_runtime_functions(&unique_functions);
+        self.tracked_runtime_functions = tracked_runtime_functions;
+        self.known_mir_functions = known_mir_functions;
+        self.extern_mir_functions = extern_mir_functions;
 
         for func in unique_functions {
             self.captured_vars = self
@@ -1119,8 +1243,15 @@ update:\n\
         self.local_vars.clear();
         self.current_env = None;
         self.current_arena = None;
+        self.entry_init_buffer.clear();
         self.num_roots = 0;
+        self.current_debug_line = None;
         self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
+        self.current_function_has_runtime_frame =
+            !self.source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
+        self.current_function_tracks_location =
+            self.current_function_has_runtime_frame
+                && Self::function_tracks_runtime_location(&func.name);
 
         let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
 
@@ -1256,7 +1387,7 @@ update:\n\
         // scan uninitialized stack garbage as live heap pointers.
         for name in &sorted_alloca_vars {
             let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
-            if Self::is_gc_managed(ty) {
+            if Self::needs_gc_root(name, ty) {
                 if let Some(reg_name) = self.value_map.get(name) {
                     self.emit_line(&format!("store i64 0, i64* {}", reg_name));
                 }
@@ -1317,7 +1448,7 @@ update:\n\
             .iter()
             .filter(|name| {
                 if let Some(ty) = func.variables.get(*name) {
-                    Self::is_gc_managed(ty)
+                    Self::needs_gc_root(name, ty)
                 } else {
                     false
                 }
@@ -1367,11 +1498,48 @@ update:\n\
             }
         }
 
+        let entry_line = func
+            .blocks
+            .iter()
+            .flat_map(|bb| bb.instructions.iter())
+            .map(|inst| inst.get_line())
+            .find(|line| *line > 0)
+            .unwrap_or(0);
+
+        if self.current_function_has_runtime_frame {
+            let source_file = self.source_file.clone();
+            let display_name = self
+                .function_display_names
+                .get(&func.name)
+                .cloned()
+                .unwrap_or_else(|| func.name.clone());
+            let function_ptr = self.emit_string_constant(&display_name);
+            let file_ptr = if self.current_function_tracks_location {
+                self.emit_string_constant(&source_file)
+            } else {
+                "0".to_string()
+            };
+            let entry_line = if self.current_function_tracks_location {
+                entry_line
+            } else {
+                0
+            };
+            self.emit_line(&format!(
+                "call void @rt_enter_frame(i64 {}, i64 {}, i64 {})",
+                function_ptr, file_ptr, entry_line
+            ));
+        }
+
+        let entry_init_marker = self.buffer.len();
+
         // Branch to first block
         if !func.blocks.is_empty() {
             self.emit_line("call void @rt_safepoint_poll()");
             self.emit_line(&format!("br label %{}", func.blocks[0].name));
         } else {
+            if self.current_function_has_runtime_frame {
+                self.emit_line("call void @rt_leave_frame()");
+            }
             self.emit_line("ret i64 0");
         }
 
@@ -1453,6 +1621,12 @@ update:\n\
         }
 
         self.emit("}\n\n");
+
+        if !self.entry_init_buffer.is_empty() {
+            self.buffer
+                .insert_str(entry_init_marker, &self.entry_init_buffer);
+            self.entry_init_buffer.clear();
+        }
 
         if !self.alloca_buffer.is_empty() {
             self.buffer.insert_str(entry_marker, &self.alloca_buffer);

@@ -1,0 +1,43 @@
+import std:fs;
+import { assert_true } from "../utils.tx";
+
+function test_missing_file_sync_throws() {
+    print("--- FS Missing File Sync ---");
+    let threw = false;
+    try {
+        fs.readFileSync("__tejx_missing_file__.txt");
+    } catch (e) {
+        threw = true;
+    }
+    assert_true(threw, "readFileSync throws for missing file");
+}
+
+async function test_missing_file_async_rejects() {
+    print("--- FS Missing File Async ---");
+    let rejected = false;
+    try {
+        await fs.readFile("__tejx_missing_file__.txt");
+    } catch (e) {
+        rejected = true;
+    }
+    assert_true(rejected, "readFile rejects for missing file");
+}
+
+function test_missing_directory_readdir_throws() {
+    print("--- FS Missing Dir ---");
+    let threw = false;
+    try {
+        fs.readdirSync("__tejx_missing_dir__");
+    } catch (e) {
+        threw = true;
+    }
+    assert_true(threw, "readdirSync throws for missing directory");
+}
+
+async function main() {
+    print("=== FS ERROR TESTS START ===");
+    test_missing_file_sync_throws();
+    await test_missing_file_async_rejects();
+    test_missing_directory_readdir_throws();
+    print("=== FS ERROR TESTS COMPLETE ===");
+}

@@ -1060,24 +1060,86 @@ impl CodeGen {
         format!("ptrtoint ([{} x i8]* {} to i64)", byte_len, str_lbl)
     }
 
+    pub(crate) fn emit_runtime_location_marker(&mut self, line: usize) {
+        if !self.current_function_tracks_location
+            || line == 0
+            || self.current_debug_line == Some(line)
+            || self.source_file.is_empty()
+        {
+            return;
+        }
+
+        self.current_debug_line = Some(line);
+        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
+
+        let source_file = self.source_file.clone();
+        let file_ptr = self.emit_string_constant(&source_file);
+        self.emit_line(&format!(
+            "call void @rt_set_location(i64 {}, i64 {})",
+            file_ptr, line
+        ));
+    }
+
+    pub(crate) fn runtime_location_args(&mut self, line: usize) -> Option<(String, usize)> {
+        if !self.current_function_tracks_location || line == 0 || self.source_file.is_empty() {
+            return None;
+        }
+
+        let source_file = self.source_file.clone();
+        let file_ptr = self.emit_string_constant(&source_file);
+        Some((file_ptr, line))
+    }
+
     pub(crate) fn emit_box_string(&mut self, raw_ptr: &str) -> String {
-        if let Some(boxed) = self.boxed_string_cache.get(raw_ptr) {
-            return boxed.clone();
+        if raw_ptr.starts_with("ptrtoint") {
+            if let Some(existing) = self.boxed_string_cache.get(raw_ptr) {
+                self.temp_counter += 1;
+                let loaded = format!("%boxed_str_load{}", self.temp_counter);
+                self.emit_line(&format!("{} = load i64, i64* {}", loaded, existing));
+                return loaded;
+            }
         }
 
         self.declare_runtime_fn(
             "rt_string_from_c_str_const",
             "i64 @rt_string_from_c_str_const(i64)",
         );
-        self.temp_counter += 1;
-        let boxed = format!("%boxed_str{}", self.temp_counter);
-        self.alloca_buffer.push_str(&format!(
-            "  {} = call i64 @rt_string_from_c_str_const(i64 {})\n",
-            boxed, raw_ptr
-        ));
-        self.boxed_string_cache
-            .insert(raw_ptr.to_string(), boxed.clone());
-        boxed
+        if raw_ptr.starts_with("ptrtoint") {
+            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+
+            self.temp_counter += 1;
+            let slot = format!("%boxed_str_slot{}", self.temp_counter);
+            self.alloca_buffer
+                .push_str(&format!("  {} = alloca i64\n", slot));
+            self.entry_init_buffer
+                .push_str(&format!("  store i64 0, i64* {}\n", slot));
+            self.entry_init_buffer
+                .push_str(&format!("  call void @rt_push_root(i64* {})\n", slot));
+            self.temp_counter += 1;
+            let boxed = format!("%boxed_str_init{}", self.temp_counter);
+            self.entry_init_buffer.push_str(&format!(
+                "  {} = call i64 @rt_string_from_c_str_const(i64 {})\n",
+                boxed, raw_ptr
+            ));
+            self.entry_init_buffer
+                .push_str(&format!("  store i64 {}, i64* {}\n", boxed, slot));
+            self.num_roots += 1;
+            self.boxed_string_cache
+                .insert(raw_ptr.to_string(), slot.clone());
+
+            self.temp_counter += 1;
+            let loaded = format!("%boxed_str_load{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i64, i64* {}", loaded, slot));
+            loaded
+        } else {
+            self.temp_counter += 1;
+            let boxed = format!("%boxed_str{}", self.temp_counter);
+            self.buffer.push_str(&format!(
+                "  {} = call i64 @rt_string_from_c_str_const(i64 {})\n",
+                boxed, raw_ptr
+            ));
+            boxed
+        }
     }
     pub(crate) fn emit_auto_box(&mut self, val: &str, ty: &TejxType) -> String {
         self.emit_abi_cast(val, ty, &TejxType::Class("Any".to_string(), vec![]))

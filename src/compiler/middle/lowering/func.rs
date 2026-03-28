@@ -510,6 +510,9 @@ impl Lowering {
 
         self._exit_scope();
         self.pop_env_owner();
+        self.function_display_names
+            .borrow_mut()
+            .insert(name.clone(), func.name.clone());
 
         functions.push(HIRStatement::Function {
             async_params: None,

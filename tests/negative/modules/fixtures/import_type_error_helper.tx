@@ -1,0 +1,4 @@
+export function brokenType(): int {
+    let value: string = 42;
+    return 0;
+}

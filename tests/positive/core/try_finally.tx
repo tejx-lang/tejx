@@ -19,7 +19,7 @@ function return_from_try_finally(marker: IntBox): int {
 
 function return_from_catch_finally(marker: IntBox): int {
     try {
-        throw "boom";
+        throw new Error("boom");
     } catch (e) {
         return 20;
     } finally {
@@ -40,7 +40,7 @@ function return_interrupted_by_finally_throw(): int {
     try {
         return 7;
     } finally {
-        throw "finally boom";
+        throw new Error("finally boom");
     }
 }
 
@@ -72,7 +72,7 @@ function test_finally_throw_overrides_return() {
         assert_eq_int(-1, value, "unreachable after finally throw");
     } catch (e) {
         caught = 1;
-        assert_eq_string("finally boom", e, "finally throw caught");
+        assert_eq_string("finally boom", e.getMessage(), "finally throw caught");
     }
     assert_eq_int(1, caught, "finally throw overrides return");
 }

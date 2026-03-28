@@ -4,6 +4,25 @@ use crate::frontend::token::TokenType;
 use std::collections::HashMap;
 
 impl TypeChecker {
+    fn is_promise_type(ty: &TejxType) -> bool {
+        matches!(ty, TejxType::Class(name, _) if name == "Promise")
+    }
+
+    fn flatten_nested_promise_type_once(ty: TejxType) -> TejxType {
+        match ty {
+            TejxType::Class(name, mut generics) if name == "Promise" && generics.len() == 1 => {
+                let inner = generics.pop().unwrap();
+                match inner {
+                    TejxType::Class(inner_name, inner_generics) if inner_name == "Promise" => {
+                        TejxType::Class(inner_name, inner_generics)
+                    }
+                    other => TejxType::Class(name, vec![other]),
+                }
+            }
+            other => other,
+        }
+    }
+
     fn is_callable_type_name(ty_name: &str) -> bool {
         ty_name.starts_with("function:") || ty_name.contains("=>")
     }
@@ -711,6 +730,54 @@ impl TypeChecker {
                             )),
                         ));
                     }
+                    if name == "Promise" && member == "race" {
+                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
+                        return Ok(TejxType::Function(
+                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
+                                "Promise".to_string(),
+                                vec![missing.clone()],
+                            )))],
+                            Box::new(TejxType::Class("Promise".to_string(), vec![missing])),
+                        ));
+                    }
+                    if name == "Promise" && member == "any" {
+                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
+                        return Ok(TejxType::Function(
+                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
+                                "Promise".to_string(),
+                                vec![missing.clone()],
+                            )))],
+                            Box::new(TejxType::Class("Promise".to_string(), vec![missing])),
+                        ));
+                    }
+                    if name == "Promise" && member == "allSettled" {
+                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
+                        return Ok(TejxType::Function(
+                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
+                                "Promise".to_string(),
+                                vec![missing.clone()],
+                            )))],
+                            Box::new(TejxType::Class(
+                                "Promise".to_string(),
+                                vec![TejxType::DynamicArray(Box::new(TejxType::Object(vec![
+                                    ("status".to_string(), false, TejxType::String),
+                                    (
+                                        "value".to_string(),
+                                        false,
+                                        TejxType::Optional(Box::new(missing)),
+                                    ),
+                                    (
+                                        "reason".to_string(),
+                                        false,
+                                        TejxType::Optional(Box::new(TejxType::Class(
+                                            "Error".to_string(),
+                                            vec![],
+                                        ))),
+                                    ),
+                                ])))],
+                            )),
+                        ));
+                    }
                     if let Some(s) = self.lookup(name) {
                         if s.ty.to_name() == "class" || s.ty.to_name() == "enum" {
                             if let Some(members) = self.class_members.get(name) {
@@ -731,22 +798,7 @@ impl TypeChecker {
                                             if let Some(current) = &self.current_class {
                                                 let current_base =
                                                     current.split('<').next().unwrap_or(current);
-                                                let mut is_subclass = current_base == name;
-                                                let mut curr = current_base.to_string();
-                                                while !is_subclass {
-                                                    if let Some(parent) =
-                                                        self.class_hierarchy.get(&curr)
-                                                    {
-                                                        if parent == name {
-                                                            is_subclass = true;
-                                                            break;
-                                                        }
-                                                        curr = parent.clone();
-                                                    } else {
-                                                        break;
-                                                    }
-                                                }
-                                                is_subclass
+                                                self.is_same_or_subclass(current_base, name)
                                             } else {
                                                 false
                                             }
@@ -821,20 +873,7 @@ impl TypeChecker {
                                     if let Some(current) = &self.current_class {
                                         let current_base =
                                             current.split('<').next().unwrap_or(current);
-                                        let mut is_subclass = current_base == obj_base;
-                                        let mut curr = current_base.to_string();
-                                        while !is_subclass {
-                                            if let Some(parent) = self.class_hierarchy.get(&curr) {
-                                                if parent == obj_base {
-                                                    is_subclass = true;
-                                                    break;
-                                                }
-                                                curr = parent.clone();
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                        is_subclass
+                                        self.is_same_or_subclass(current_base, obj_base)
                                     } else {
                                         false
                                     }
@@ -1281,6 +1320,12 @@ impl TypeChecker {
                     if let Expression::Identifier { name, .. } = object {
                         if name == "Promise" && member == "all" {
                             callee_str = "Promise_all".to_string();
+                        } else if name == "Promise" && member == "race" {
+                            callee_str = "Promise_race".to_string();
+                        } else if name == "Promise" && member == "any" {
+                            callee_str = "Promise_any".to_string();
+                        } else if name == "Promise" && member == "allSettled" {
+                            callee_str = "Promise_allSettled".to_string();
                         }
                     }
                 }
@@ -2133,7 +2178,31 @@ impl TypeChecker {
                     bindings.insert(k.clone(), parse_type_string(self, v));
                 }
                 let final_ret_ty = apply_bindings_to_type_str(self, &return_type, &bindings);
-                let parsed_ret_ty = parse_type_string(self, &final_ret_ty);
+                let mut parsed_ret_ty = parse_type_string(self, &final_ret_ty);
+                if let Some((object, member)) = member_callee {
+                    let is_static_promise_resolve =
+                        matches!(object, Expression::Identifier { name, .. } if name == "Promise")
+                            && member == "resolve";
+                    let is_instance_promise_chain = self
+                        .check_expression(object)
+                        .ok()
+                        .map(|mut receiver_ty| {
+                            if let TejxType::Optional(inner) = receiver_ty.clone() {
+                                receiver_ty = *inner;
+                            }
+                            if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                if let Some(aliased) = &sym.aliased_type {
+                                    receiver_ty = aliased.clone();
+                                }
+                            }
+                            Self::is_promise_type(&receiver_ty)
+                                && (member == "then" || member == "catchError")
+                        })
+                        .unwrap_or(false);
+                    if is_static_promise_resolve || is_instance_promise_chain {
+                        parsed_ret_ty = Self::flatten_nested_promise_type_once(parsed_ret_ty);
+                    }
+                }
                 Ok(if optional_member_return {
                     TejxType::Optional(Box::new(parsed_ret_ty))
                 } else {

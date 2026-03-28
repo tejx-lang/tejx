@@ -35,10 +35,24 @@ pub unsafe fn bytes_from_int_array(arr: i64) -> Option<Vec<u8>> {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_bytes_from_string(s: i64) -> i64 {
-    if let Some((data, len)) = get_str_parts(s) {
-        let bytes = std::slice::from_raw_parts(data, len as usize);
-        return int_array_from_bytes(bytes);
+    let mut source = s;
+    rt_push_root(&mut source);
+    if let Some((_, len)) = get_str_parts(source) {
+        let arr = rt_Array_new(len, 4);
+        if len > 0 {
+            if let Some((data, _)) = get_str_parts(source) {
+                let body = (arr - HEAP_OFFSET) as *mut u8;
+                let out = body as *mut i32;
+                for i in 0..len {
+                    *out.add(i as usize) = *data.add(i as usize) as i32;
+                }
+                rt_update_array_cache(arr, body, len, 4);
+            }
+        }
+        rt_pop_roots(1);
+        return arr;
     }
+    rt_pop_roots(1);
     rt_Array_new(0, 4)
 }
 

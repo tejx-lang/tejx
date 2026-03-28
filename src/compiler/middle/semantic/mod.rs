@@ -100,17 +100,28 @@ impl TypeChecker {
         }
     }
 
-    pub fn check(&mut self, program: &Program, filename: &str) -> Result<(), ()> {
+    pub fn check(
+        &mut self,
+        program: &Program,
+        filename: &str,
+        statement_files: Option<&[String]>,
+    ) -> Result<(), ()> {
         self.current_file = filename.to_string();
 
         // Pass 1: Collect declarations for hoisting
-        for stmt in &program.statements {
+        for (index, stmt) in program.statements.iter().enumerate() {
+            if let Some(file) = statement_files.and_then(|files| files.get(index)) {
+                self.current_file = file.clone();
+            }
             self.collect_declarations(stmt);
         }
 
         // Pass 2: Basic pass
         // Pass 2: Basic pass
-        for stmt in &program.statements {
+        for (index, stmt) in program.statements.iter().enumerate() {
+            if let Some(file) = statement_files.and_then(|files| files.get(index)) {
+                self.current_file = file.clone();
+            }
             match stmt {
                 Statement::ImportDecl { .. }
                 | Statement::FunctionDeclaration(_)

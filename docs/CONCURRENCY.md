@@ -24,27 +24,28 @@ The async runtime is implemented in `src/runtime/event_loop.rs`.
 
 Important runtime pieces:
 
+- `MICROTASK_QUEUE`: promise continuations and `await` resumes
 - `TASK_QUEUE`: pending TejX callbacks waiting to run
 - `ASYNC_OPS`: count of in-flight async operations
 - `TASK_NOTIFY`: wakeup signal for the event loop
-- `TOKIO_RT`: current-thread Tokio runtime used to poll async work
+- `TOKIO_RT`: multithreaded Tokio runtime for timers, sockets, and other background async work
 
 ### Event Loop Behavior
 
 Each event-loop step follows this pattern:
 
-1. pop a task from the TejX task queue
-2. run it immediately if one exists
-3. if no tasks remain and `ASYNC_OPS == 0`, stop
-4. otherwise let Tokio poll background async work
-5. wake again when a task is enqueued back into the TejX queue
+1. drain promise/`await` microtasks first
+2. run at most one queued timer/I/O callback
+3. drain any microtasks created by that callback
+4. if no tasks remain and `ASYNC_OPS == 0`, stop
+5. otherwise park until background async work or a queued callback wakes the loop
 
-This keeps TejX user code single-threaded from the async point of view while still allowing non-blocking integration with timers, sockets, and HTTP.
+This keeps TejX user callbacks single-threaded while allowing timers and I/O futures to keep progressing on Tokio worker threads even when the main loop is not actively inside `block_on`.
 
 ### Important Properties
 
 - async user callbacks resume on the TejX event loop
-- background I/O may involve Tokio or worker-side activity, but completion is funneled back through the task queue
+- background I/O and timers may advance on Tokio worker threads, but completion is funneled back through the task queue
 - GC-visible values that outlive the current turn are protected through global handles so moving GC can update them safely
 
 ## Native Threads

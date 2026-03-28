@@ -1,4 +1,22 @@
 use super::*; // Extracted \n
+
+#[inline]
+unsafe fn rt_array_store_ptr(owner: i64, slot: *mut i64, value: i64) {
+    *slot = value;
+    if owner >= HEAP_OFFSET {
+        rt_write_barrier(owner, value);
+    }
+}
+
+#[inline]
+unsafe fn rt_throw_array_null_error(action: &str, index: i64) -> ! {
+    let msg = format!(
+        "RuntimeError: Null pointer dereference while {} array element at index {}",
+        action, index
+    );
+    rt_throw_runtime_error(&msg);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_get_data_ptr(id: i64) -> i64 {
     let resolved = rt_resolve_array_id(id);
@@ -26,7 +44,7 @@ pub unsafe extern "C" fn rt_array_join(arr: i64, sep: i64) -> i64 {
         return res;
     }
     // Get separator string
-    let (sep_data, sep_len) = get_str_parts(s_id).unwrap_or(("\0".as_ptr(), 0));
+    let sep_len = get_str_parts(s_id).map(|(_, len)| len).unwrap_or(0);
     // First pass: calculate total length
     let mut total_len: i64 = 0;
     for i in 0..arr_len {
@@ -57,12 +75,14 @@ pub unsafe extern "C" fn rt_array_join(arr: i64, sep: i64) -> i64 {
             pos += len;
         }
         if i < arr_len - 1 && sep_len > 0 {
-            memcpy(
-                out.offset(pos as isize) as *mut _,
-                sep_data as *const _,
-                sep_len as usize,
-            );
-            pos += sep_len;
+            if let Some((sep_data, _)) = get_str_parts(s_id) {
+                memcpy(
+                    out.offset(pos as isize) as *mut _,
+                    sep_data as *const _,
+                    sep_len as usize,
+                );
+                pos += sep_len;
+            }
         }
     }
     *out.offset(total_len as isize) = 0;
@@ -238,7 +258,7 @@ pub unsafe extern "C" fn rt_array_fill(arr: i64, val: i64) -> i64 {
             1 => *(p as *mut i8) = val as i8,
             2 => *(p as *mut i16) = val as i16,
             4 => *(p as *mut i32) = val as i32,
-            _ => *(p as *mut i64) = val,
+            _ => rt_array_store_ptr(arr, p as *mut i64, val),
         }
     }
     arr
@@ -375,10 +395,7 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64 {
     if id < STACK_OFFSET {
-        let msg = rt_string_from_c_str(
-            "RuntimeError: Null pointer dereference in array assignment\0".as_ptr() as *const _,
-        );
-        crate::event_loop::tejx_throw(msg);
+        rt_throw_array_null_error("writing", index);
     }
     let mut id = id;
     let mut body: *mut u8;
@@ -392,10 +409,7 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
     } else {
         id = rt_resolve_array_id(id);
         if id < STACK_OFFSET {
-            let msg = rt_string_from_c_str(
-                "RuntimeError: Null pointer dereference in array assignment\0".as_ptr() as *const _,
-            );
-            crate::event_loop::tejx_throw(msg);
+            rt_throw_array_null_error("writing", index);
         }
         body = if id >= HEAP_OFFSET {
             (id - HEAP_OFFSET) as *mut u8
@@ -409,27 +423,45 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
 
-    let mut len = (*header).length as i64;
+    let len = (*header).length as i64;
+    let elem_size = (flags & 0xFF) as i64;
+    if index >= 0 && index < len {
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = val as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, val),
+        }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, len, elem_size);
+        }
+        return id;
+    }
+
     if index < 0 || index >= len {
         if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 {
             let msg_str = format!(
-                "RuntimeError: Array index {} out of bounds (length {}) in assignment\0",
+                "RuntimeError: Array index {} out of bounds (length {}) in assignment",
                 index, len
             );
-            let msg = rt_string_from_c_str(msg_str.as_ptr() as *const _);
-            crate::event_loop::tejx_throw(msg);
+            rt_throw_runtime_error(&msg_str);
         }
         if id < HEAP_OFFSET {
             let msg_str = format!(
-                "RuntimeError: Array index {} out of bounds (length {}) in assignment\0",
+                "RuntimeError: Array index {} out of bounds (length {}) in assignment",
                 index, len
             );
-            let msg = rt_string_from_c_str(msg_str.as_ptr() as *const _);
-            crate::event_loop::tejx_throw(msg);
+            rt_throw_runtime_error(&msg_str);
         }
+
+        let mut value = val;
+        rt_push_root(&mut id);
+        rt_push_root(&mut value);
         let new_len = index + 1;
         id = rt_array_ensure_capacity(id, new_len);
         if (id as u64) < (HEAP_OFFSET as u64) {
+            rt_pop_roots(2);
             return id;
         }
         body = (id - HEAP_OFFSET) as *mut u8;
@@ -443,25 +475,120 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
             std::ptr::write_bytes(data.offset(byte_start), 0, byte_len);
         }
         (*header).length = new_len as u32;
-        len = new_len;
-        rt_update_array_cache(id, body, len, elem_size);
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = value as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, value),
+        }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, new_len, elem_size);
+        }
+        rt_pop_roots(2);
+    }
+    id
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_array_set_traced(
+    id: i64,
+    index: i64,
+    val: i64,
+    file_ptr: i64,
+    line: i64,
+) -> i64 {
+    if id < STACK_OFFSET {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_array_null_error("writing", index);
     }
 
-    let data = body as *mut i8; // Data starts directly at body_ptr
-    let elem_size = (flags & 0xFF) as i64;
-    match elem_size {
-        1 => *(data.offset(index as isize) as *mut i8) = val as i8,
-        2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
-        4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
-        _ => {
-            *(data.offset((index * 8) as isize) as *mut i64) = val;
-            if id >= HEAP_OFFSET {
-                rt_write_barrier(id, val);
-            }
+    let mut id = id;
+    let mut body: *mut u8;
+    let mut header: *mut ObjectHeader;
+    let mut flags: u16;
+
+    if id == LAST_ID && !LAST_PTR.is_null() {
+        body = LAST_PTR;
+        header = rt_get_header(body);
+        flags = (*header).flags;
+    } else {
+        id = rt_resolve_array_id(id);
+        if id < STACK_OFFSET {
+            runtime_set_current_location(file_ptr, line);
+            rt_throw_array_null_error("writing", index);
         }
+        body = if id >= HEAP_OFFSET {
+            (id - HEAP_OFFSET) as *mut u8
+        } else {
+            (id - STACK_OFFSET) as *mut u8
+        };
+        header = rt_get_header(body);
+        flags = (*header).flags;
     }
-    if id >= HEAP_OFFSET {
-        rt_update_array_cache(id, body, len, elem_size);
+
+    if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
+    }
+
+    let len = (*header).length as i64;
+    let elem_size = (flags & 0xFF) as i64;
+    if index >= 0 && index < len {
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = val as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, val),
+        }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, len, elem_size);
+        }
+        return id;
+    }
+
+    if index < 0 || index >= len {
+        if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 || id < HEAP_OFFSET {
+            runtime_set_current_location(file_ptr, line);
+            let msg_str = format!(
+                "RuntimeError: Array index {} out of bounds (length {}) in assignment",
+                index, len
+            );
+            rt_throw_runtime_error(&msg_str);
+        }
+
+        let mut value = val;
+        rt_push_root(&mut id);
+        rt_push_root(&mut value);
+        let new_len = index + 1;
+        id = rt_array_ensure_capacity(id, new_len);
+        if (id as u64) < (HEAP_OFFSET as u64) {
+            rt_pop_roots(2);
+            return id;
+        }
+        body = (id - HEAP_OFFSET) as *mut u8;
+        header = rt_get_header(body);
+        flags = (*header).flags;
+        let elem_size = (flags & 0xFF) as i64;
+        if new_len > len {
+            let data = body as *mut u8;
+            let byte_start = (len * elem_size) as isize;
+            let byte_len = ((new_len - len) * elem_size) as usize;
+            std::ptr::write_bytes(data.offset(byte_start), 0, byte_len);
+        }
+        (*header).length = new_len as u32;
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = value as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, value),
+        }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, new_len, elem_size);
+        }
+        rt_pop_roots(2);
     }
     id
 }
@@ -507,8 +634,14 @@ pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
-    let mut current_id = rt_resolve_array_id(id);
+    let mut current_id = id;
+    let mut current_val = val;
+    rt_push_root(&mut current_id);
+    rt_push_root(&mut current_val);
+
+    current_id = rt_resolve_array_id(current_id);
     if (current_id as u64) < (HEAP_OFFSET as u64) {
+        rt_pop_roots(2);
         return 0;
     }
     let body = (current_id - HEAP_OFFSET) as *mut u8;
@@ -535,14 +668,15 @@ pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
     }
 
     match elem_size {
-        1 => *(data as *mut i8) = val as i8,
-        2 => *(data as *mut i16) = val as i16,
-        4 => *(data as *mut i32) = val as i32,
-        _ => *(data as *mut i64) = val,
+        1 => *(data as *mut i8) = current_val as i8,
+        2 => *(data as *mut i16) = current_val as i16,
+        4 => *(data as *mut i32) = current_val as i32,
+        _ => rt_array_store_ptr(current_id, data as *mut i64, current_val),
     }
 
     (*new_header).length = (len + 1) as u32;
     rt_update_array_cache(current_id, new_body, len + 1, elem_size);
+    rt_pop_roots(2);
     current_id
 }
 #[no_mangle]
@@ -553,7 +687,11 @@ pub unsafe extern "C" fn rt_array_splice(
     items_arr: i64,
 ) -> i64 {
     let mut current_arr = arr;
+    let mut current_items = items_arr;
+    rt_push_root(&mut current_arr);
+    rt_push_root(&mut current_items);
     if (current_arr as u64) < (HEAP_OFFSET as u64) {
+        rt_pop_roots(2);
         return 0;
     }
     let body = (current_arr - HEAP_OFFSET) as *mut u8;
@@ -577,8 +715,8 @@ pub unsafe extern "C" fn rt_array_splice(
         delete_count.min(len - actual_start)
     };
 
-    let items_len = if (items_arr as u64) >= (HEAP_OFFSET as u64) {
-        rt_len(items_arr)
+    let items_len = if current_items >= STACK_OFFSET {
+        rt_len(current_items)
     } else {
         0
     };
@@ -603,19 +741,30 @@ pub unsafe extern "C" fn rt_array_splice(
     }
 
     if items_len > 0 {
-        let items_data = (items_arr - HEAP_OFFSET) as *mut u8 as *const i8; // Data starts directly at body_ptr
+        let items_data = if current_items >= HEAP_OFFSET {
+            (current_items - HEAP_OFFSET) as *mut u8 as *const i8
+        } else {
+            (current_items - STACK_OFFSET) as *mut u8 as *const i8
+        };
         let dst = data.offset((actual_start * elem_size) as isize);
         memcpy(
             dst as *mut _,
             items_data as *const _,
             (items_len * elem_size) as usize,
         );
+        if elem_size == 8 {
+            let dst_vals = dst as *mut i64;
+            for i in 0..items_len {
+                rt_write_barrier(current_arr, *dst_vals.add(i as usize));
+            }
+        }
     }
 
     let header = rt_get_header(new_body);
     (*header).length = (len + delta) as u32;
     rt_update_array_cache(current_arr, new_body, len + delta, elem_size);
 
+    rt_pop_roots(2);
     current_arr
 }
 #[no_mangle]
@@ -646,12 +795,22 @@ pub unsafe extern "C" fn rt_array_indexOf(id: i64, val: i64) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_concat(id1: i64, id2: i64) -> i64 {
-    let len1 = rt_len(id1);
-    let len2 = rt_len(id2);
+    let mut left = id1;
+    let mut right = id2;
+    rt_push_root(&mut left);
+    rt_push_root(&mut right);
+
+    let len1 = rt_len(left);
+    let len2 = rt_len(right);
     let new_len = len1 + len2;
 
-    let elem_size = if (id1 as u64) >= (HEAP_OFFSET as u64) {
-        let header = rt_get_header((id1 - HEAP_OFFSET) as *mut u8);
+    let elem_size = if left >= STACK_OFFSET {
+        let body = if left >= HEAP_OFFSET {
+            (left - HEAP_OFFSET) as *mut u8
+        } else {
+            (left - STACK_OFFSET) as *mut u8
+        };
+        let header = rt_get_header(body);
         ((*header).flags & 0xFF) as i64
     } else {
         8
@@ -661,26 +820,32 @@ pub unsafe extern "C" fn rt_array_concat(id1: i64, id2: i64) -> i64 {
     let data = ((obj - HEAP_OFFSET) as *mut u8) as *mut i8; // Data starts directly at body_ptr
 
     if len1 > 0 {
-        let d1 = ((id1 - HEAP_OFFSET) as *mut u8) as *const i8; // Data starts directly at body_ptr
+        let d1 = if left >= HEAP_OFFSET {
+            (left - HEAP_OFFSET) as *mut u8 as *const i8
+        } else {
+            (left - STACK_OFFSET) as *mut u8 as *const i8
+        };
         memcpy(data as *mut _, d1 as *const _, (len1 * elem_size) as usize);
     }
     if len2 > 0 {
-        let d2 = ((id2 - HEAP_OFFSET) as *mut u8) as *const i8; // Data starts directly at body_ptr
+        let d2 = if right >= HEAP_OFFSET {
+            (right - HEAP_OFFSET) as *mut u8 as *const i8
+        } else {
+            (right - STACK_OFFSET) as *mut u8 as *const i8
+        };
         memcpy(
             data.offset((len1 * elem_size) as isize) as *mut _,
             d2 as *const _,
             (len2 * elem_size) as usize,
         );
     }
+    rt_pop_roots(2);
     return obj;
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     if id < STACK_OFFSET {
-        let msg = rt_string_from_c_str(
-            "RuntimeError: Null pointer dereference in array access\0".as_ptr() as *const _,
-        );
-        crate::event_loop::tejx_throw(msg);
+        rt_throw_array_null_error("reading", index);
     }
     if id == LAST_ID && !LAST_PTR.is_null() {
         if index < 0 || index >= LAST_LEN {
@@ -701,10 +866,7 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
 
     let id = rt_resolve_array_id(id);
     if id < STACK_OFFSET {
-        let msg = rt_string_from_c_str(
-            "RuntimeError: Null pointer dereference in array access\0".as_ptr() as *const _,
-        );
-        crate::event_loop::tejx_throw(msg);
+        rt_throw_array_null_error("reading", index);
     }
     let body = if id >= HEAP_OFFSET {
         (id - HEAP_OFFSET) as *mut u8
@@ -735,6 +897,66 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     }
     res
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64, line: i64) -> i64 {
+    if id < STACK_OFFSET {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_array_null_error("reading", index);
+    }
+
+    if id == LAST_ID && !LAST_PTR.is_null() {
+        if index < 0 || index >= LAST_LEN {
+            return 0;
+        }
+        let body = LAST_PTR;
+        let elem_size = LAST_ELEM_SIZE;
+        return if elem_size == 1 {
+            *(body.offset(index as isize) as *mut i8) as i64
+        } else if elem_size == 2 {
+            *(body.offset((index * 2) as isize) as *mut i16) as i64
+        } else if elem_size == 4 {
+            *(body.offset((index * 4) as isize) as *mut i32) as i64
+        } else {
+            *(body.offset((index * 8) as isize) as *const i64)
+        };
+    }
+
+    let resolved = rt_resolve_array_id(id);
+    if resolved < STACK_OFFSET {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_array_null_error("reading", index);
+    }
+
+    let body = if resolved >= HEAP_OFFSET {
+        (resolved - HEAP_OFFSET) as *mut u8
+    } else {
+        (resolved - STACK_OFFSET) as *mut u8
+    };
+    let header = rt_get_header(body);
+    let len = (*header).length as i64;
+    let flags = (*header).flags;
+
+    if index < 0 || index >= len {
+        return 0;
+    }
+
+    let elem_size = (flags & 0xFF) as i64;
+    let res = if elem_size == 1 {
+        *(body.offset(index as isize) as *mut i8) as i64
+    } else if elem_size == 2 {
+        *(body.offset((index * 2) as isize) as *mut i16) as i64
+    } else if elem_size == 4 {
+        *(body.offset((index * 4) as isize) as *mut i32) as i64
+    } else {
+        *(body.offset((index * 8) as isize) as *const i64)
+    };
+
+    if resolved >= HEAP_OFFSET {
+        rt_update_array_cache(resolved, body, len, elem_size);
+    }
+    res
+}
 #[no_mangle]
 pub unsafe extern "C" fn rt_Array_constructor(_this: i64, size: i64, elem_size: i64) -> i64 {
     rt_Array_constructor_v2(_this, size, elem_size, 0)
@@ -746,10 +968,13 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     elem_size: i64,
     flags: i64,
 ) -> i64 {
-    let size = if (size_or_arr as u64) >= (HEAP_OFFSET as u64) {
-        rt_len(size_or_arr)
+    let mut source = size_or_arr;
+    rt_push_root(&mut source);
+
+    let size = if source >= STACK_OFFSET {
+        rt_len(source)
     } else {
-        size_or_arr
+        source
     };
 
     let cap = if size == 0 { 4 } else { size };
@@ -768,8 +993,12 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     // Store elem_size in lower 8 bits of flags
     (*header).flags = (flags as u16 & 0xFF00) | (actual_elem_size as u16 & 0x00FF);
 
-    if (size_or_arr as u64) >= (HEAP_OFFSET as u64) {
-        let src_body = (size_or_arr - HEAP_OFFSET) as *mut u8;
+    if source >= STACK_OFFSET {
+        let src_body = if source >= HEAP_OFFSET {
+            (source - HEAP_OFFSET) as *mut u8
+        } else {
+            (source - STACK_OFFSET) as *mut u8
+        };
         let src_header = rt_get_header(src_body);
         let src_elem_size = ((*src_header).flags & 0xFF) as i64;
 
@@ -786,6 +1015,7 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
 
     let id = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(id, body_ptr, size, actual_elem_size);
+    rt_pop_roots(1);
     id
 }
 #[no_mangle]

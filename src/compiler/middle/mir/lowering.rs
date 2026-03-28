@@ -1496,6 +1496,27 @@ impl MIRLowering {
                 ty,
                 ..
             } => {
+                if matches!(&ty, TejxType::Class(name, _) if name == "Promise") {
+                    let temp = self.new_temp(ty.clone());
+                    let executor = _args
+                        .get(0)
+                        .map(|arg| self.lower_expression(arg))
+                        .unwrap_or(MIRValue::Constant {
+                            value: "0".to_string(),
+                            ty: TejxType::Int64,
+                        });
+                    self.emit(MIRInstruction::Call {
+                        line: 0,
+                        callee: "rt_promise_from_executor".to_string(),
+                        args: vec![executor],
+                        dst: temp.clone(),
+                    });
+                    return MIRValue::Variable {
+                        name: temp,
+                        ty: ty.clone(),
+                    };
+                }
+
                 let is_raw_array = class_name.ends_with("[]") || class_name.contains("[");
                 let is_any_array = is_raw_array;
 

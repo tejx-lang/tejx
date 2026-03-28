@@ -2,7 +2,7 @@ extern function rt_net_connect(addr: string): int64;
 extern function rt_net_connect_host(host: string, port: int): int64;
 extern function rt_net_connect_tls(host: string, port: int): int64;
 extern function rt_net_connect_tls_insecure(host: string, port: int): int64;
-extern function rt_net_lookup(host: string): string;
+extern function rt_net_lookup(host: string): Optional<string>;
 extern function rt_net_lookup_all(host: string): string[];
 extern function rt_net_listen(addr: string): int64;
 extern function rt_net_close(stream: int64): int;
@@ -29,9 +29,7 @@ function _net_connect_tls_stream(host: string, port: int, insecure: bool = false
 }
 
 function _net_lookup_host(host: string): Optional<string> {
-    let ip = rt_net_lookup(host);
-    if (ip == "") return None;
-    return ip;
+    return rt_net_lookup(host);
 }
 
 function _net_lookup_all_hosts(host: string): string[] {

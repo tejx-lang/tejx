@@ -22,7 +22,7 @@ function main() {
     // a throw statement that isn't caught.
     
     function fail() {
-        throw "Runtime Crash detected";
+        throw new Error("Runtime Crash detected");
     }
     
     fail();

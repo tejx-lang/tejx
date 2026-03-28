@@ -1,6 +1,6 @@
 // Async Tests (Consolidated)
 // =========================
-import { assert_eq_int, assert_eq_string } from "../utils.tx";
+import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
 // --- From features_async.tx ---
 
@@ -113,6 +113,15 @@ async function delayAndReturn(ms: int, val: int): Promise<int> {
     return val;
 }
 
+function laterRejected(msg: string): Promise<int> {
+    return Promise.resolve(0).then((_: int) => {
+        throw new Error(msg);
+        return 0;
+    }, (e: Error) => {
+        return 0;
+    });
+}
+
 async function testLoopSequence() {
     print("--- Loop Sequence ---");
     let sum = 0;
@@ -173,6 +182,228 @@ async function test_demo() {
     assert_eq_string("Processed_Data_101", result, "Demo result");
 }
 
+async function returnResolvedPromise(): Promise<int> {
+    return Promise.resolve(77);
+}
+
+async function returnRejectedPromise(): Promise<int> {
+    return Promise.reject(new Error("nested boom"));
+}
+
+async function test_promise_adoption() {
+    print("--- Promise Adoption ---");
+
+    let ctorPromise: Promise<int> = new Promise((resolve, reject) => {
+        resolve(7);
+    });
+    let ctorValue = await ctorPromise;
+    assert_eq_int(7, ctorValue, "new Promise executor resolves runtime promise");
+
+    let adopted: Promise<int> = Promise.resolve(Promise.resolve(12));
+    let adoptedValue = await adopted;
+    assert_eq_int(12, adoptedValue, "Promise.resolve adopts nested promise");
+
+    let chained: Promise<int> = Promise.resolve(10).then((v: int) => {
+        return Promise.resolve(v + 5);
+    }, (e: Error) => {
+        return Promise.resolve(0);
+    });
+    let chainedValue = await chained;
+    assert_eq_int(15, chainedValue, "then unwraps returned promise");
+
+    let recovered: Promise<int> = Promise.reject(new Error("boom")).catchError((e: Error) => {
+        return Promise.resolve(41);
+    });
+    let recoveredValue = await recovered;
+    assert_eq_int(41, recoveredValue, "catchError unwraps returned promise");
+
+    let caughtAliasValue: Promise<int> = Promise.reject(new Error("alias boom")).catch((e: Error) => {
+        assert_eq_string("alias boom", e.message, "catch alias exposes rejection message field");
+        assert_eq_string("alias boom", e.getMessage(), "catch alias receives rejection");
+        assert_true(e.stack.length() > 0, "catch alias exposes rejection stack");
+        return 52;
+    });
+    let caughtAliasResolved = await caughtAliasValue;
+    assert_eq_int(52, caughtAliasResolved, "catch alias recovers rejection");
+
+    let thrownInThen: Promise<int> = Promise.resolve(1)
+        .then((v: int) => {
+            throw new Error("then boom");
+            return v;
+        }, (e: Error) => {
+            return 0;
+        })
+        .catchError((e: Error) => {
+            assert_eq_string("then boom", e.getMessage(), "then throw becomes rejection");
+            return 99;
+        });
+    let thrownThenValue = await thrownInThen;
+    assert_eq_int(99, thrownThenValue, "catchError recovers thrown then callback");
+
+    let thrownInCatch: Promise<int> = Promise.reject(new Error("first boom"))
+        .catchError((e: Error) => {
+            throw new Error("second boom");
+            return 0;
+        })
+        .catchError((e: Error) => {
+            assert_eq_string("second boom", e.getMessage(), "catchError throw re-rejects chain");
+            return 123;
+        });
+    let thrownCatchValue = await thrownInCatch;
+    assert_eq_int(123, thrownCatchValue, "second catchError recovers thrown rejection handler");
+
+    let returnedValue = await returnResolvedPromise();
+    assert_eq_int(77, returnedValue, "async return adopts promise value");
+
+    let caught = false;
+    try {
+        let _ = await returnRejectedPromise();
+    } catch (e) {
+        caught = true;
+        assert_eq_string("nested boom", e.message, "async return exposes rejection message field");
+        assert_eq_string("nested boom", e.getMessage(), "async return adopts promise rejection");
+        assert_true(e.stack.length() > 0, "async return exposes rejection stack");
+    }
+    assert_true(caught, "async adopted rejection is catchable");
+
+    let executorThrowRecovered: Promise<int> = new Promise((resolve, reject) => {
+        throw new Error("executor boom");
+    }).catchError((e: Error) => {
+        assert_eq_string("executor boom", e.message, "executor throw exposes rejection message field");
+        assert_eq_string("executor boom", e.getMessage(), "executor throw becomes rejection");
+        assert_true(e.stack.length() > 0, "executor throw exposes rejection stack");
+        return 55;
+    });
+    let executorThrowValue = await executorThrowRecovered;
+    assert_eq_int(55, executorThrowValue, "catchError recovers thrown executor");
+
+    let finallyResolvedTrace: int[] = [];
+    let finallyResolvedValue = await Promise.resolve(33).finally(() => {
+        finallyResolvedTrace.push(1);
+    });
+    assert_eq_int(1, finallyResolvedTrace.length(), "finally runs on resolved promise");
+    assert_eq_int(33, finallyResolvedValue, "finally preserves resolved value");
+
+    let finallyRejectedTrace: int[] = [];
+    let finallyRejectedValue = await Promise.reject(new Error("finally reject"))
+        .finally(() => {
+            finallyRejectedTrace.push(1);
+        })
+        .catchError((e: Error) => {
+            assert_eq_string("finally reject", e.getMessage(), "finally preserves rejection reason");
+            return 88;
+        });
+    assert_eq_int(1, finallyRejectedTrace.length(), "finally runs on rejected promise");
+    assert_eq_int(88, finallyRejectedValue, "finally keeps rejection catchable");
+
+    let finallyThrowRecovered = await Promise.resolve(5)
+        .finally(() => {
+            throw new Error("cleanup boom");
+        })
+        .catchError((e: Error) => {
+            assert_eq_string("cleanup boom", e.getMessage(), "finally throw becomes rejection");
+            return 66;
+        });
+    assert_eq_int(66, finallyThrowRecovered, "catchError recovers thrown finally callback");
+
+    let finallyAsyncTrace: int[] = [];
+    let finallyAsyncValue = await Promise.resolve(90).finally(() => {
+        finallyAsyncTrace.push(1);
+        return Promise.resolve(0).then((_: int) => {
+            finallyAsyncTrace.push(2);
+            return 0;
+        }, (e: Error) => {
+            return 0;
+        });
+    });
+    assert_eq_int(2, finallyAsyncTrace.length(), "finally waits for returned promise");
+    assert_eq_int(2, finallyAsyncTrace[1], "finally async cleanup completes before resolution");
+    assert_eq_int(90, finallyAsyncValue, "finally keeps value after async cleanup");
+
+    let finallyRejectAsyncValue = await Promise.reject(new Error("late boom"))
+        .finally(() => {
+            return Promise.resolve(0).then((_: int) => {
+                return 0;
+            }, (e: Error) => {
+                return 0;
+            });
+        })
+        .catch((e: Error) => {
+            assert_eq_string("late boom", e.getMessage(), "finally keeps rejection after async cleanup");
+            return 91;
+        });
+    assert_eq_int(91, finallyRejectAsyncValue, "catch alias handles rejection after async finally");
+
+    let racedValue = await Promise.race([
+        delayAndReturn(25, 77),
+        Promise.resolve(19),
+    ]);
+    assert_eq_int(19, racedValue, "Promise.race resolves first settled value");
+
+    let rejectedRace: Promise<int> = Promise.reject(new Error("race boom"));
+    let racedError = await Promise.race([
+        rejectedRace,
+        delayAndReturn(25, 5),
+    ]).catch((e: Error) => {
+        assert_eq_string("race boom", e.getMessage(), "Promise.race propagates first rejection");
+        return 144;
+    });
+    assert_eq_int(144, racedError, "Promise.race rejection stays catchable");
+
+    let ignoredAnyReject: Promise<int> = Promise.reject(new Error("any ignored"));
+    let anyValue = await Promise.any([
+        ignoredAnyReject,
+        delayAndReturn(25, 222),
+    ]);
+    assert_eq_int(222, anyValue, "Promise.any resolves first fulfillment");
+
+    let anyRejectedInputs: Promise<int>[] = [
+        Promise.reject(new Error("first any boom")),
+        Promise.reject(new Error("second any boom")),
+    ];
+    let anyRejected = await Promise.any(anyRejectedInputs).catch((e: Error) => {
+        let aggregate = e as AggregateError;
+        assert_eq_string("All promises were rejected", aggregate.getMessage(), "Promise.any rejects after all rejections");
+        assert_eq_int(2, aggregate.errors.length(), "Promise.any aggregate includes all reasons");
+        assert_eq_string("first any boom", aggregate.errors[0].getMessage(), "Promise.any aggregate preserves first reason");
+        assert_eq_string("second any boom", aggregate.errors[1].getMessage(), "Promise.any aggregate preserves second reason");
+        return 333;
+    });
+    assert_eq_int(333, anyRejected, "Promise.any all-rejected case stays catchable");
+
+    let slowFirstAnyReject: Promise<int> = laterRejected("slow first any boom");
+    let fastSecondAnyReject: Promise<int> = Promise.reject(new Error("fast second any boom"));
+    let anyRejectedOutOfOrderInputs: Promise<int>[] = [
+        slowFirstAnyReject,
+        fastSecondAnyReject,
+    ];
+    let anyRejectedOrdered = await Promise.any(anyRejectedOutOfOrderInputs).catch((e: Error) => {
+        let aggregate = e as AggregateError;
+        assert_eq_string("slow first any boom", aggregate.errors[0].getMessage(), "Promise.any aggregate keeps first input order");
+        assert_eq_string("fast second any boom", aggregate.errors[1].getMessage(), "Promise.any aggregate keeps second input order");
+        return 334;
+    });
+    assert_eq_int(334, anyRejectedOrdered, "Promise.any preserves rejection order across timing");
+
+    let rejectedSettled: Promise<int> = Promise.reject(new Error("settled boom"));
+    let settledInputs = [
+        Promise.resolve(3),
+        rejectedSettled,
+    ];
+    assert_eq_int(2, settledInputs.length(), "Promise.allSettled input length");
+    let settled = await Promise.allSettled(settledInputs);
+    assert_eq_int(2, settled.length(), "Promise.allSettled length");
+    assert_eq_string("fulfilled", settled[0].status, "Promise.allSettled fulfilled status");
+    assert_eq_int(3, settled[0].value as int, "Promise.allSettled fulfilled value");
+    assert_true(settled[0].reason == None, "Promise.allSettled fulfilled reason empty");
+    assert_eq_string("rejected", settled[1].status, "Promise.allSettled rejected status");
+    assert_true(settled[1].value == None, "Promise.allSettled rejected value empty");
+    let settledReason = settled[1].reason;
+    assert_true(settledReason != None, "Promise.allSettled rejected reason present");
+    let settledErrorMessage = (settledReason as Error).getMessage();
+    assert_eq_string("settled boom", settledErrorMessage, "Promise.allSettled rejected reason");
+}
+
 // --- Async OOP (from features_oop_async.tx) ---
 
 class AsyncCalc {
@@ -222,6 +453,7 @@ async function main() {
     await test_features();
     await test_scenarios();
     await test_demo();
+    await test_promise_adoption();
     await test_async_oop();
     print("=== ASYNC TESTS COMPLETE ===");
 }

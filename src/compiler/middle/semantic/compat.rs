@@ -3,6 +3,13 @@ use crate::frontend::ast::*;
 use crate::frontend::token::TokenType;
 
 impl TypeChecker {
+    pub(crate) fn is_throwable_error_type(&self, ty: &TejxType) -> bool {
+        if matches!(ty, TejxType::Any) {
+            return false;
+        }
+        self.are_types_compatible(&TejxType::Class("Error".to_string(), vec![]), ty)
+    }
+
     pub(crate) fn is_assignable(&self, target: &TejxType, value: &TejxType) -> bool {
         if target == &TejxType::Any || value == &TejxType::Any {
             return true; // prevent cascading errors
@@ -124,22 +131,20 @@ impl TypeChecker {
         }
 
         let mut t1_ancestors = std::collections::HashSet::new();
-        let mut curr = t1_name.clone();
-        t1_ancestors.insert(curr.clone());
-        while let Some(parent) = self.class_hierarchy.get(&curr) {
-            t1_ancestors.insert(parent.clone());
-            curr = parent.clone();
+        let t1_base = self.base_class_name(&t1_name).to_string();
+        t1_ancestors.insert(t1_base.clone());
+        for parent in self.parent_chain(&t1_name) {
+            t1_ancestors.insert(parent);
         }
 
-        curr = t2_name.clone();
-        if t1_ancestors.contains(&curr) {
-            return TejxType::from_name(&curr);
+        let t2_base = self.base_class_name(&t2_name).to_string();
+        if t1_ancestors.contains(&t2_base) {
+            return TejxType::from_name(&t2_base);
         }
-        while let Some(parent) = self.class_hierarchy.get(&curr) {
-            if t1_ancestors.contains(parent) {
-                return TejxType::from_name(parent);
+        for parent in self.parent_chain(&t2_name) {
+            if t1_ancestors.contains(&parent) {
+                return TejxType::from_name(&parent);
             }
-            curr = parent.clone();
         }
         TejxType::from_name("<inferred>")
     }
@@ -324,8 +329,13 @@ impl TypeChecker {
         }
 
         // Inheritance check
-        if let Some(parent) = self.class_hierarchy.get(&a_str) {
-            if self.are_types_compatible(expected, &TejxType::from_name(parent)) {
+        if let (TejxType::Class(expected_name, _), TejxType::Class(actual_name, _)) =
+            (expected, actual)
+        {
+            let expected_base = self.base_class_name(expected_name);
+            let actual_base = self.base_class_name(actual_name);
+            if expected_base != actual_base && self.is_same_or_subclass(actual_base, expected_base)
+            {
                 return true;
             }
         }

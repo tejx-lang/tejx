@@ -30,6 +30,7 @@ pub struct CodeGen {
     captured_vars_by_function: HashMap<String, Vec<String>>,
     current_env: Option<String>,
     alloca_buffer: String,
+    entry_init_buffer: String,
     stack_arrays: HashSet<String>,
     heap_array_ptrs: HashMap<String, (String, i64)>, // var_name -> (data_ptr_alloca, elem_size)
     pub unsafe_arrays: bool,
@@ -42,7 +43,15 @@ pub struct CodeGen {
     pub type_id_map: HashMap<String, u32>,
     closure_adapters: HashMap<String, String>,
     pub object_shape_names: HashMap<String, String>,
+    pub function_display_names: HashMap<String, String>,
     current_arena: Option<String>,
+    pub source_file: String,
+    current_debug_line: Option<usize>,
+    tracked_runtime_functions: HashSet<String>,
+    known_mir_functions: HashSet<String>,
+    extern_mir_functions: HashSet<String>,
+    current_function_has_runtime_frame: bool,
+    current_function_tracks_location: bool,
 }
 
 impl Default for CodeGen {
@@ -107,6 +116,12 @@ impl CodeGen {
         }
     }
 
+    pub(crate) fn needs_gc_root(name: &str, ty: &TejxType) -> bool {
+        Self::is_gc_managed(ty)
+            || name.starts_with("promise_id_local")
+            || name.starts_with("__p_")
+    }
+
     pub(crate) fn canonical_global_name(name: &str) -> String {
         if name.starts_with("g_") {
             return name.to_string();
@@ -152,6 +167,7 @@ impl CodeGen {
             captured_vars_by_function: HashMap::new(),
             current_env: None,
             alloca_buffer: String::new(),
+            entry_init_buffer: String::new(),
             stack_arrays: HashSet::new(),
             heap_array_ptrs: HashMap::new(),
             unsafe_arrays: false,
@@ -164,7 +180,15 @@ impl CodeGen {
             type_id_map: HashMap::new(),
             closure_adapters: HashMap::new(),
             object_shape_names: HashMap::new(),
+            function_display_names: HashMap::new(),
             current_arena: None,
+            source_file: String::new(),
+            current_debug_line: None,
+            tracked_runtime_functions: HashSet::new(),
+            known_mir_functions: HashSet::new(),
+            extern_mir_functions: HashSet::new(),
+            current_function_has_runtime_frame: false,
+            current_function_tracks_location: false,
         }
     }
 

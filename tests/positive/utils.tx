@@ -5,7 +5,9 @@ function fail_assert(msg: string, expected: string, actual: string) {
     print("❌ FAIL: " + msg);
     print("   Expected: " + expected);
     print("   Actual:   " + actual);
-    throw "AssertionFailed: " + msg + " | Expected: " + expected + " | Actual: " + actual;
+    throw new Error(
+        "AssertionFailed: " + msg + " | Expected: " + expected + " | Actual: " + actual
+    );
 }
 
 export function assert_eq_int(expected: int, actual: int, msg: string) {

@@ -5,13 +5,16 @@ pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
     if ptr.is_null() {
         return;
     }
+    rt_ensure_type_finalizer(this, rt_thread_object_finalizer);
     // field 0 = runtime data pointer (non-GC)
     // field 1 = callback closure (GC-managed)
-    *ptr.offset(1) = cb;
+    rt_store_ref_slot(this, ptr.offset(1), cb);
+    let slot_live = std::sync::Arc::new(AtomicBool::new(true));
     let data = Box::new(ThreadData {
         handle: None,
         started: false,
         cb_slot: rt_add_static_root(cb),
+        slot_live,
     });
     *ptr.offset(0) = Box::into_raw(data) as i64;
 }
@@ -30,14 +33,14 @@ pub unsafe extern "C" fn rt_Thread_start(this: i64) {
     }
     (*data_ptr).started = true;
     let cb_slot = (*data_ptr).cb_slot;
+    let slot_live = (*data_ptr).slot_live.clone();
     let handle = std::thread::spawn(move || {
         rt_register_thread();
-        let mut cb_root = rt_get_static_root(cb_slot);
-        rt_push_root(&mut cb_root);
+        let _guard = ThreadRunGuard { cb_slot, slot_live };
+        let mut cb_root = 0;
+        rt_pin_static_root(cb_slot, &mut cb_root);
         rt_call_closure_no_args(cb_root);
         rt_pop_roots(1);
-        rt_set_static_root(cb_slot, 0);
-        rt_unregister_thread();
     });
     (*data_ptr).handle = Some(handle);
 }
@@ -57,8 +60,7 @@ pub unsafe extern "C" fn rt_Thread_join(this: i64) {
     if let Some(handle) = (*data_ptr).handle.take() {
         let _ = handle.join();
     }
-    let cb_slot = (*data_ptr).cb_slot;
-    rt_set_static_root(cb_slot, 0);
+    rt_release_thread_cb_slot((*data_ptr).cb_slot, &(*data_ptr).slot_live);
     *ptr.offset(1) = 0;
     let _ = Box::from_raw(data_ptr);
     *ptr.offset(0) = 0;

@@ -1,0 +1,6 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that user throw statements require Error or a subclass.
+
+function main() {
+    throw "boom";
+}

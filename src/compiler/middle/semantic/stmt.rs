@@ -501,6 +501,48 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            Statement::TryStmt {
+                _try_block,
+                _catch_var,
+                _catch_block,
+                _finally_block,
+                ..
+            } => {
+                self.check_statement(_try_block)?;
+
+                if !_catch_var.is_empty() {
+                    if let Statement::BlockStmt { statements, .. } = &**_catch_block {
+                        self.enter_scope();
+                        self.define(
+                            _catch_var.clone(),
+                            TejxType::Class("Error".to_string(), vec![]).to_name(),
+                        );
+                        for stmt in statements {
+                            self.collect_declarations(stmt);
+                        }
+                        for (i, stmt) in statements.iter().enumerate() {
+                            self.remaining_stmts = statements[i + 1..].to_vec();
+                            let _ = self.check_statement(stmt);
+                        }
+                        self.remaining_stmts.clear();
+                        self.exit_scope();
+                    } else {
+                        self.enter_scope();
+                        self.define(
+                            _catch_var.clone(),
+                            TejxType::Class("Error".to_string(), vec![]).to_name(),
+                        );
+                        self.check_statement(_catch_block)?;
+                        self.exit_scope();
+                    }
+                }
+
+                if let Some(finally_block) = _finally_block {
+                    self.check_statement(finally_block)?;
+                }
+
+                Ok(())
+            }
             Statement::FunctionDeclaration(func) => {
                 let mut ret_ty = if func.return_type.to_string().is_empty() {
                     "void".to_string()
@@ -583,6 +625,11 @@ impl TypeChecker {
             }
             Statement::ClassDeclaration(class_decl) => {
                 self.current_class = Some(class_decl.name.clone());
+                let has_inheritance_cycle = self.report_inheritance_cycle_if_needed(
+                    &class_decl.name,
+                    class_decl._line,
+                    class_decl._col,
+                );
                 // Removed self.define(...) because collect_declarations already inserted the symbol WITH correctly parsed generic parameters.
 
                 // Verify parent exists
@@ -618,9 +665,8 @@ impl TypeChecker {
                     }
                 }
 
-                if !class_decl._parent_name.is_empty() {
-                    let mut current_parent = class_decl._parent_name.clone();
-                    while !current_parent.is_empty() && current_parent != "<inferred>" {
+                if !has_inheritance_cycle && !class_decl._parent_name.is_empty() {
+                    for current_parent in self.parent_chain(&class_decl.name) {
                         if let Some(parent_members) =
                             self.class_members.get(&current_parent).cloned()
                         {
@@ -662,11 +708,6 @@ impl TypeChecker {
                                     }
                                 }
                             }
-                        }
-                        if let Some(next_parent) = self.class_hierarchy.get(&current_parent) {
-                            current_parent = next_parent.clone();
-                        } else {
-                            break;
                         }
                     }
                 }
@@ -888,20 +929,14 @@ impl TypeChecker {
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some(TejxType::Void);
 
-                    if !class_decl._parent_name.is_empty() {
+                    if !has_inheritance_cycle && !class_decl._parent_name.is_empty() {
                         let mut needs_super = false;
-                        let mut current_parent = class_decl._parent_name.clone();
-                        while !current_parent.is_empty() && current_parent != "<inferred>" {
+                        for current_parent in self.parent_chain(&class_decl.name) {
                             if let Some(parent_members) = self.class_members.get(&current_parent) {
                                 if parent_members.contains_key("constructor") {
                                     needs_super = true;
                                     break;
                                 }
-                            }
-                            if let Some(next_parent) = self.class_hierarchy.get(&current_parent) {
-                                current_parent = next_parent.clone();
-                            } else {
-                                break;
                             }
                         }
                         let is_implicit = constructor._line == class_decl._line
@@ -1067,6 +1102,28 @@ impl TypeChecker {
                             self.report_error_detailed(format!("Return type mismatch: expected '{}', got '{}'", expected_original, got), *line, *col, "E0107", Some(&format!("The function signature declares return type '{}'; ensure the returned value matches", expected_original)));
                         }
                     }
+                }
+                Ok(())
+            }
+            Statement::ThrowStmt {
+                _expression,
+                _line,
+                _col,
+            } => {
+                let throw_type = self.check_expression(_expression)?;
+                if !self.is_throwable_error_type(&throw_type) {
+                    self.report_error_detailed(
+                        format!(
+                            "Thrown value must be 'Error' or a subclass, got '{}'",
+                            throw_type.to_name()
+                        ),
+                        *_line,
+                        *_col,
+                        "E0115",
+                        Some(
+                            "Throw an Error instance such as 'throw new Error(\"message\")' or a subclass value",
+                        ),
+                    );
                 }
                 Ok(())
             }

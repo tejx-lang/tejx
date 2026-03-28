@@ -40,7 +40,7 @@ class LRUCache {
 function assert(condition: bool, message: string): void {
   if (!condition) {
     print("❌ ASSERT FAILED: ", message);
-    throw "AssertionFailed: " + message;
+    throw new Error("AssertionFailed: " + message);
   } else {
     print("✅ PASS: ", message);
   }

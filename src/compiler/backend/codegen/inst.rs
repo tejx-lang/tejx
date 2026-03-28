@@ -6,6 +6,36 @@ use crate::frontend::token::TokenType;
 use crate::middle::mir::*;
 
 impl CodeGen {
+    fn call_can_raise_runtime_exception(&self, callee: &str) -> bool {
+        !Self::known_non_throwing_call_target(callee)
+            && (self.tracked_runtime_functions.contains(callee)
+            || self.extern_mir_functions.contains(callee)
+            || !self.known_mir_functions.contains(callee))
+    }
+
+    fn instruction_needs_runtime_location(&self, inst: &MIRInstruction) -> bool {
+        if !self.current_function_tracks_location {
+            return false;
+        }
+
+        match inst {
+            MIRInstruction::Call { callee, .. } => self.call_can_raise_runtime_exception(callee),
+            MIRInstruction::IndirectCall { .. } | MIRInstruction::Throw { .. } => true,
+            MIRInstruction::BinaryOp { .. }
+            | MIRInstruction::LoadMember { .. }
+            | MIRInstruction::StoreMember { .. }
+            | MIRInstruction::LoadIndex { .. }
+            | MIRInstruction::StoreIndex { .. }
+            | MIRInstruction::Move { .. }
+            | MIRInstruction::Branch { .. }
+            | MIRInstruction::Jump { .. }
+            | MIRInstruction::Return { .. }
+            | MIRInstruction::Cast { .. }
+            | MIRInstruction::TrySetup { .. }
+            | MIRInstruction::PopHandler { .. } => false,
+        }
+    }
+
     pub(crate) fn gen_instruction_v2(
         &mut self,
         inst: &MIRInstruction,
@@ -13,6 +43,10 @@ impl CodeGen {
         _bb_name: &str,
         _current_bb: usize,
     ) {
+        if self.instruction_needs_runtime_location(inst) {
+            self.emit_runtime_location_marker(inst.get_line());
+        }
+
         match inst {
             MIRInstruction::Move { dst, src, .. } => {
                 let val = self.resolve_value(src);
@@ -35,9 +69,10 @@ impl CodeGen {
                 op,
                 right,
                 op_width,
+                line,
                 ..
             } => {
-                self.emit_binary_op(func, dst, left, op, right, op_width);
+                self.emit_binary_op(func, dst, left, op, right, op_width, *line);
             }
 
             MIRInstruction::Jump { target, .. } => {
@@ -115,6 +150,10 @@ impl CodeGen {
                     self.emit_line(&format!("call void @{}(i64 {})", RT_ARENA_DESTROY, arena));
                 }
 
+                if self.current_function_has_runtime_frame {
+                    self.emit_line("call void @rt_leave_frame()");
+                }
+
                 let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
                 if let Some(v) = value {
                     let val_str = self.resolve_value(v);
@@ -141,32 +180,42 @@ impl CodeGen {
                 self.emit_indirect_call(func, dst, callee, args);
             }
             MIRInstruction::LoadMember {
-                dst, obj, member, ..
+                dst,
+                obj,
+                member,
+                line,
+                ..
             } => {
-                self.emit_load_member(func, dst, obj, member);
+                self.emit_load_member(func, dst, obj, member, *line);
             }
             MIRInstruction::StoreMember {
-                obj, member, src, ..
+                obj,
+                member,
+                src,
+                line,
+                ..
             } => {
-                self.emit_store_member(func, obj, member, src);
+                self.emit_store_member(func, obj, member, src, *line);
             }
             MIRInstruction::LoadIndex {
                 dst,
                 obj,
                 index,
                 element_ty,
+                line,
                 ..
             } => {
-                self.emit_load_index(func, dst, obj, index, element_ty);
+                self.emit_load_index(func, dst, obj, index, element_ty, *line);
             }
             MIRInstruction::StoreIndex {
                 obj,
                 index,
                 src,
                 element_ty,
+                line,
                 ..
             } => {
-                self.emit_store_index(func, obj, index, src, element_ty);
+                self.emit_store_index(func, obj, index, src, element_ty, *line);
             }
             MIRInstruction::Throw { value, .. } => {
                 self.emit_throw(value);
@@ -185,6 +234,7 @@ impl CodeGen {
         op: &TokenType,
         right: &MIRValue,
         op_width: &TejxType,
+        line: usize,
     ) {
         let l_ty = match left {
             MIRValue::Constant { ty, .. } => ty,
@@ -562,9 +612,14 @@ impl CodeGen {
                 } else {
                     if llvm_op == "sdiv" || llvm_op == "srem" {
                         self.declare_runtime_fn(
-                            "rt_div_zero_error",
-                            "void @rt_div_zero_error() nounwind",
+                            "rt_div_zero_error_at",
+                            "void @rt_div_zero_error_at(i64, i64, i64, i64) nounwind",
                         );
+                        let left_err = self.emit_abi_cast(&l_cast, op_ty, &TejxType::Int64);
+                        let right_err = self.emit_abi_cast(&r_cast, op_ty, &TejxType::Int64);
+                        let (file_ptr, line) = self
+                            .runtime_location_args(line)
+                            .unwrap_or_else(|| ("0".to_string(), 0));
                         let label_id = self.temp_counter;
                         self.temp_counter += 1;
                         let is_zero = format!("%is_zero{}", self.temp_counter);
@@ -576,7 +631,10 @@ impl CodeGen {
                             is_zero, div_error, div_norm
                         ));
                         self.emit_line(&format!("{}:", div_error));
-                        self.emit_line("call void @rt_div_zero_error()");
+                        self.emit_line(&format!(
+                            "call void @rt_div_zero_error_at(i64 {}, i64 {}, i64 {}, i64 {})",
+                            left_err, right_err, file_ptr, line
+                        ));
                         self.emit_line("unreachable");
                         self.emit_line(&format!("{}:", div_norm));
                     }
@@ -2007,7 +2065,13 @@ impl CodeGen {
                     self.emit_abi_cast(&final_reg, arg_ty, &effective_arg_ty)
                 };
 
+                let skip_callsite_root = is_runtime_fn
+                    && matches!(
+                        final_callee.as_str(),
+                        "rt_str_append_local" | "rt_str_clear_local"
+                    );
                 if Self::is_gc_managed(&effective_arg_ty)
+                    && !skip_callsite_root
                     && !(final_callee == "rt_string_from_c_str"
                         && matches!(arg_ty, TejxType::String)
                         && final_reg.starts_with("ptrtoint"))

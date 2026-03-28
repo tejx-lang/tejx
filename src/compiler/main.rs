@@ -48,6 +48,29 @@ where
     unique
 }
 
+fn report_diagnostics(stage: &str, diagnostics: &[Diagnostic], primary_file: &str, primary_source: &str) {
+    let count = diagnostics.len();
+    let suffix = if count == 1 { "" } else { "s" };
+    eprintln!("{} failed with {} error{}:", stage, count, suffix);
+    for diag in diagnostics {
+        let loaded_source = if diag.file.is_empty() || diag.file == "<inferred>" {
+            None
+        } else if diag.file == primary_file {
+            None
+        } else {
+            fs::read_to_string(&diag.file).ok()
+        };
+        let source = if let Some(source) = loaded_source.as_deref() {
+            Some(source)
+        } else if diag.file == primary_file || diag.file.is_empty() || diag.file == "<inferred>" {
+            Some(primary_source)
+        } else {
+            None
+        };
+        diag.report_with_source(source);
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut input_files = Vec::new();
@@ -147,10 +170,7 @@ fn main() {
     let tokens = lexer.tokenize();
 
     if !lexer.errors.is_empty() {
-        eprintln!("Lexing failed with errors:");
-        for diag in &lexer.errors {
-            diag.report(&contents);
-        }
+        report_diagnostics("Lexing", &lexer.errors, &filename, &contents);
         process::exit(1);
     }
 
@@ -159,10 +179,7 @@ fn main() {
     let program = parser.parse_program();
 
     if parser.has_errors() {
-        eprintln!("Parsing failed with errors:");
-        for diag in parser.get_errors() {
-            diag.report(&contents);
-        }
+        report_diagnostics("Parsing", parser.get_errors(), &filename, &contents);
         process::exit(1);
     }
 
@@ -185,7 +202,7 @@ fn main() {
         import_stack.push(p.clone());
         initial_file_path = Some(p);
     }
-    let resolved_statements = lowering.resolve_imports(
+    let (resolved_statements, resolved_statement_files) = lowering.resolve_imports(
         program.statements,
         base_path,
         &mut processed_files,
@@ -202,21 +219,19 @@ fn main() {
         let diagnostics = lowering.diagnostics.borrow();
         let unique = unique_diagnostics(diagnostics.iter());
         if !unique.is_empty() {
-            for diag in &unique {
-                diag.report(&contents);
-            }
+            report_diagnostics("Import resolution", &unique, &filename, &contents);
             process::exit(1);
         }
     }
 
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
-    if type_checker.check(&merged_program, &filename).is_err() {
+    if type_checker
+        .check(&merged_program, &filename, Some(&resolved_statement_files))
+        .is_err()
+    {
         let unique = unique_diagnostics(type_checker.diagnostics.iter());
-        eprintln!("Type Checking Failed:");
-        for diag in &unique {
-            diag.report(&contents);
-        }
+        report_diagnostics("Type checking", &unique, &filename, &contents);
         process::exit(1);
     }
 
@@ -232,9 +247,7 @@ fn main() {
         let diagnostics = lowering.diagnostics.borrow();
         let unique = unique_diagnostics(diagnostics.iter());
         if !unique.is_empty() {
-            for diag in &unique {
-                diag.report(&contents);
-            }
+            report_diagnostics("Lowering", &unique, &filename, &contents);
             process::exit(1);
         }
     }
@@ -272,9 +285,11 @@ fn main() {
 
     let mut codegen = CodeGen::new();
     codegen.unsafe_arrays = unsafe_arrays;
+    codegen.source_file = filename.clone();
     codegen.class_fields = lowering_result.class_fields;
     codegen.class_methods = lowering_result.class_methods;
     codegen.class_parents = lowering_result.class_parents;
+    codegen.function_display_names = lowering_result.function_display_names;
     let llvm_code =
         codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars_by_function);
 
@@ -321,10 +336,7 @@ fn main() {
 
     match linker.link() {
         Ok(_) => {
-            // Success - cleanup temp files if not compile_only or if otherwise needed
-            if !compile_only {
-                // let _ = fs::remove_file(&temp_ll_file);
-            }
+            let _ = fs::remove_file(&temp_ll_file);
         }
         Err(e) => {
             eprintln!("Error: {}", e);
