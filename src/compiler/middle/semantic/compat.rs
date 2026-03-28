@@ -3,6 +3,13 @@ use crate::frontend::ast::*;
 use crate::frontend::token::TokenType;
 
 impl TypeChecker {
+    pub(crate) fn is_throwable_error_type(&self, ty: &TejxType) -> bool {
+        if matches!(ty, TejxType::Any) {
+            return false;
+        }
+        self.are_types_compatible(&TejxType::Class("Error".to_string(), vec![]), ty)
+    }
+
     pub(crate) fn is_assignable(&self, target: &TejxType, value: &TejxType) -> bool {
         if target == &TejxType::Any || value == &TejxType::Any {
             return true; // prevent cascading errors

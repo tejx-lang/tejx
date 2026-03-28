@@ -12,7 +12,7 @@ impl Lowering {
         processed_files: &mut HashSet<std::path::PathBuf>,
         import_stack: &mut Vec<std::path::PathBuf>,
         current_file: Option<&std::path::Path>,
-    ) -> Vec<Statement> {
+    ) -> (Vec<Statement>, Vec<String>) {
         let filename = current_file
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| self.filename.borrow().clone());
@@ -103,6 +103,8 @@ impl Lowering {
             }
         }
 
+        let mut source_files = vec![filename.clone(); statements.len()];
+
         let mut i = 0;
         while i < statements.len() {
             if let Statement::ImportDecl {
@@ -169,11 +171,13 @@ impl Lowering {
                         .with_label("circularly imported here"),
                     );
                     statements.remove(i);
+                    source_files.remove(i);
                     continue;
                 }
 
                 if processed_files.contains(&canon_path) {
                     statements.remove(i);
+                    source_files.remove(i);
                     continue;
                 }
 
@@ -216,7 +220,7 @@ impl Lowering {
                     continue;
                 }
 
-                let mut new_stmts = self.resolve_imports(
+                let (mut new_stmts, new_source_files) = self.resolve_imports(
                     imported_program.statements,
                     path.parent().unwrap_or(std::path::Path::new(".")),
                     processed_files,
@@ -351,10 +355,11 @@ impl Lowering {
                 }
 
                 statements.splice(i..i + 1, new_stmts);
+                source_files.splice(i..i + 1, new_source_files);
                 continue;
             }
             i += 1;
         }
-        statements
+        (statements, source_files)
     }
 }

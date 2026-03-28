@@ -42,7 +42,15 @@ pub struct CodeGen {
     pub type_id_map: HashMap<String, u32>,
     closure_adapters: HashMap<String, String>,
     pub object_shape_names: HashMap<String, String>,
+    pub function_display_names: HashMap<String, String>,
     current_arena: Option<String>,
+    pub source_file: String,
+    current_debug_line: Option<usize>,
+    tracked_runtime_functions: HashSet<String>,
+    known_mir_functions: HashSet<String>,
+    extern_mir_functions: HashSet<String>,
+    current_function_has_runtime_frame: bool,
+    current_function_tracks_location: bool,
 }
 
 impl Default for CodeGen {
@@ -170,7 +178,15 @@ impl CodeGen {
             type_id_map: HashMap::new(),
             closure_adapters: HashMap::new(),
             object_shape_names: HashMap::new(),
+            function_display_names: HashMap::new(),
             current_arena: None,
+            source_file: String::new(),
+            current_debug_line: None,
+            tracked_runtime_functions: HashSet::new(),
+            known_mir_functions: HashSet::new(),
+            extern_mir_functions: HashSet::new(),
+            current_function_has_runtime_frame: false,
+            current_function_tracks_location: false,
         }
     }
 

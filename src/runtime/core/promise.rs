@@ -340,6 +340,11 @@ pub unsafe extern "C" fn rt_promise_reject(p: i64, v_err: i64) {
     rt_push_root(&mut v_p);
     rt_push_root(&mut v_e);
 
+    if crate::runtime_call_stack_depth() > 0 && !crate::exception_trace_exists(v_e) {
+        v_e = crate::runtime_prepare_thrown_exception_value(v_e);
+        crate::remember_exception_trace(v_e);
+    }
+
     let body = (v_p - HEAP_OFFSET) as *mut i64;
     let header = rt_get_header(body as *mut u8);
     if (*header).type_id != TAG_PROMISE as u16 {

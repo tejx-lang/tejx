@@ -546,6 +546,27 @@ unsafe fn ensure_thread_registered() {
     });
 }
 
+#[inline(always)]
+unsafe fn current_thread_context() -> *mut ThreadContext {
+    let mut ctx_ptr = std::ptr::null_mut();
+    MY_CONTEXT.with(|ctx| {
+        ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+        THREAD_REGISTRATION.with(|registration| {
+            let mut registration = registration.borrow_mut();
+            if registration.is_some() {
+                return;
+            }
+
+            let mut registry = THREAD_REGISTRY.lock().unwrap();
+            if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
+                registry.push(ThreadContextPtr(ctx_ptr));
+            }
+            *registration = Some(ThreadRegistrationGuard { ctx_ptr });
+        });
+    });
+    ctx_ptr
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_register_thread() {
     ensure_thread_registered();
@@ -561,31 +582,37 @@ pub unsafe extern "C" fn rt_unregister_thread() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_safepoint_poll() {
-    if SAFEPOINT_REQUEST.load(Ordering::Acquire) {
-        MY_CONTEXT.with(|ctx| {
-            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-            (*ctx_ptr).in_safepoint.store(true, Ordering::Release);
-
-            // Notify GC that we have parked
-            {
-                let (lock, cvar) = &**SAFEPOINT_ACK;
-                let mut count = lock.lock().unwrap();
-                *count += 1;
-                cvar.notify_one();
-            }
-
-            // Wait for GC to finish
-            {
-                let (lock, cvar) = &**SAFEPOINT_RESUME;
-                let mut resume = lock.lock().unwrap();
-                while !*resume {
-                    resume = cvar.wait(resume).unwrap();
-                }
-            }
-
-            (*ctx_ptr).in_safepoint.store(false, Ordering::Release);
-        });
+    if !SAFEPOINT_REQUEST.load(Ordering::Relaxed) {
+        return;
     }
+    rt_safepoint_poll_slow();
+}
+
+#[cold]
+unsafe fn rt_safepoint_poll_slow() {
+    if !SAFEPOINT_REQUEST.load(Ordering::Acquire) {
+        return;
+    }
+
+    let ctx_ptr = current_thread_context();
+    (*ctx_ptr).in_safepoint.store(true, Ordering::Release);
+
+    {
+        let (lock, cvar) = &**SAFEPOINT_ACK;
+        let mut count = lock.lock().unwrap();
+        *count += 1;
+        cvar.notify_one();
+    }
+
+    {
+        let (lock, cvar) = &**SAFEPOINT_RESUME;
+        let mut resume = lock.lock().unwrap();
+        while !*resume {
+            resume = cvar.wait(resume).unwrap();
+        }
+    }
+
+    (*ctx_ptr).in_safepoint.store(false, Ordering::Release);
 }
 
 const PROT_READ: i32 = 0x01;
@@ -595,20 +622,17 @@ const MAP_ANON: i32 = 0x1000;
 
 #[no_mangle]
 pub unsafe fn rt_push_root(ptr: *mut i64) {
-    ensure_thread_registered();
-    MY_CONTEXT.with(|ctx| {
-        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-        if (*ctx_ptr).roots_top >= GC_STACK_SIZE {
-            eprintln!(
-                "FATAL: GC root stack overflow (top={}, limit={})",
-                (*ctx_ptr).roots_top,
-                GC_STACK_SIZE
-            );
-            exit(1);
-        }
-        (*ctx_ptr).roots[(*ctx_ptr).roots_top] = ptr;
-        (*ctx_ptr).roots_top += 1;
-    });
+    let ctx_ptr = current_thread_context();
+    if (*ctx_ptr).roots_top >= GC_STACK_SIZE {
+        eprintln!(
+            "FATAL: GC root stack overflow (top={}, limit={})",
+            (*ctx_ptr).roots_top,
+            GC_STACK_SIZE
+        );
+        exit(1);
+    }
+    (*ctx_ptr).roots[(*ctx_ptr).roots_top] = ptr;
+    (*ctx_ptr).roots_top += 1;
 }
 
 #[no_mangle]
@@ -616,10 +640,7 @@ pub unsafe fn rt_pop_roots(count: usize) {
     MY_CONTEXT.with(|ctx| {
         let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
         if (*ctx_ptr).roots_top >= count {
-            for _ in 0..count {
-                (*ctx_ptr).roots_top -= 1;
-                (*ctx_ptr).roots[(*ctx_ptr).roots_top] = std::ptr::null_mut();
-            }
+            (*ctx_ptr).roots_top -= count;
         } else {
             eprintln!(
                 "FATAL: GC root stack underflow (top={}, pop={})",

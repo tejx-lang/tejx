@@ -322,6 +322,7 @@ pub unsafe fn rt_gc_update_tasks() {
 struct ExceptionHandler {
     jmpbuf: i64,
     roots_top: usize,
+    frame_depth: usize,
 }
 
 static EXCEPTION_STACK: LazyLock<Mutex<Vec<ExceptionHandler>>> =
@@ -470,34 +471,8 @@ mod tests {
 static mut CURRENT_EXCEPTION: i64 = 0;
 
 pub(crate) unsafe fn log_exception(prefix: &str, exception: i64) {
-    let mut v = exception;
-    rt_push_root(&mut v);
-
-    let mut s_id = rt_to_string(v);
-    rt_push_root(&mut s_id);
-
-    let mut t_id = rt_typeof(v);
-    rt_push_root(&mut t_id);
-
-    let _ = std::io::stderr().write_all(prefix.as_bytes());
-    let _ = std::io::stderr().write_all(b" (");
-    if let Some((data, len)) = get_str_parts(t_id) {
-        let slice = std::slice::from_raw_parts(data, len as usize);
-        let _ = std::io::stderr().write_all(slice);
-    } else {
-        let _ = std::io::stderr().write_all(b"unknown");
-    }
-    let _ = std::io::stderr().write_all(b"): ");
-
-    if let Some((data, len)) = get_str_parts(s_id) {
-        let slice = std::slice::from_raw_parts(data, len as usize);
-        let _ = std::io::stderr().write_all(slice);
-    } else {
-        let _ = std::io::stderr().write_all(b"<unprintable>");
-    }
-    let _ = std::io::stderr().write_all(b"\n");
-
-    rt_pop_roots(3);
+    let report = crate::render_runtime_exception_report(prefix, exception);
+    let _ = std::io::stderr().write_all(report.as_bytes());
 }
 
 #[no_mangle]
@@ -515,6 +490,7 @@ pub unsafe extern "C" fn tejx_push_handler(jmpbuf: *mut u8) {
         stack.push(ExceptionHandler {
             jmpbuf: jmpbuf as i64,
             roots_top: top,
+            frame_depth: crate::runtime_call_stack_depth(),
         });
     }
 }
@@ -532,6 +508,8 @@ pub unsafe extern "C" fn tejx_pop_handler() {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_throw(exception: i64) {
+    let exception = crate::runtime_prepare_thrown_exception_value(exception);
+    crate::remember_exception_trace(exception);
     CURRENT_EXCEPTION = exception;
     let handler = if let Ok(mut stack) = EXCEPTION_STACK.lock() {
         stack.pop()
@@ -544,6 +522,7 @@ pub unsafe extern "C" fn tejx_throw(exception: i64) {
             let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
             (*ctx_ptr).roots_top = h.roots_top;
         });
+        crate::runtime_restore_call_stack(h.frame_depth);
         longjmp(h.jmpbuf as *mut i8, 1);
     } else {
         log_exception("UnhandledException", exception);

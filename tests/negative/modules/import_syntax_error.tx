@@ -1,0 +1,7 @@
+// EXPECT: COMPILE_ERROR
+// Test: importing a module with a syntax error should report the imported file and source line.
+import { broken } from "./fixtures/import_syntax_error_helper.tx";
+
+function main(): void {
+    print("should not reach here");
+}

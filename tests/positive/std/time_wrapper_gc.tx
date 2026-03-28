@@ -5,10 +5,10 @@ import { assert_true } from "../utils.tx";
 function allocateUntrackedTimers(): void {
     for (let i = 0; i < 32; i++) {
         after(() => {
-            throw "Timeout wrapper fired after GC";
+            throw new Error("Timeout wrapper fired after GC");
         }, 25);
         every(() => {
-            throw "Interval wrapper fired after GC";
+            throw new Error("Interval wrapper fired after GC");
         }, 25);
     }
 }

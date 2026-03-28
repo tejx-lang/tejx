@@ -47,6 +47,51 @@ impl Parser {
         Program { statements }
     }
 
+    fn push_parse_error(&mut self, message: impl Into<String>, line: usize, col: usize) {
+        self.push_parse_error_with_hint(
+            message,
+            line,
+            col,
+            "Check for a missing, extra, or misplaced token near this location.",
+        );
+    }
+
+    fn push_parse_error_with_hint(
+        &mut self,
+        message: impl Into<String>,
+        line: usize,
+        col: usize,
+        hint: &str,
+    ) {
+        let message = message.into();
+        self.errors.push(
+            crate::common::diagnostics::Diagnostic::new(
+                message.clone(),
+                line,
+                col,
+                self.filename.clone(),
+            )
+            .with_code("E0002")
+            .with_hint(hint)
+            .with_label(&message),
+        );
+    }
+
+    fn push_feature_error(&mut self, message: impl Into<String>, line: usize, col: usize, hint: &str) {
+        let message = message.into();
+        self.errors.push(
+            crate::common::diagnostics::Diagnostic::new(
+                message.clone(),
+                line,
+                col,
+                self.filename.clone(),
+            )
+            .with_code("E0003")
+            .with_hint(hint)
+            .with_label(&message),
+        );
+    }
+
     // --- Declarations ---
 
     fn parse_declaration(&mut self) -> Option<Statement> {
@@ -68,13 +113,12 @@ impl Parser {
             TokenType::Async => {
                 if !self.async_enabled {
                     let t = self.peek();
-                    self.errors
-                        .push(crate::common::diagnostics::Diagnostic::new(
-                            "async/await is disabled".to_string(),
-                            t.line,
-                            t.column,
-                            self.filename.clone(),
-                        ));
+                    self.push_feature_error(
+                        "async/await is disabled",
+                        t.line,
+                        t.column,
+                        "Remove 'async'/'await' here or compile without disabling async support.",
+                    );
                 }
                 if self.check_next(TokenType::Function) {
                     self.advance(); // consume async
@@ -163,13 +207,12 @@ impl Parser {
         }
 
         if initializer.is_none() && matches!(type_annotation, TypeNode::Object(_)) {
-            self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    "Object-typed variables must be initialized at declaration".to_string(),
-                    start_token.line,
-                    start_token.column,
-                    self.filename.clone(),
-                ));
+            self.push_parse_error_with_hint(
+                "Object-typed variables must be initialized at declaration",
+                start_token.line,
+                start_token.column,
+                "Provide an initializer when declaring an object-typed variable.",
+            );
         }
 
         let mut declarations = vec![Statement::VarDeclaration {
@@ -193,13 +236,12 @@ impl Parser {
                 init = Some(Box::new(self.parse_assignment()));
             }
             if init.is_none() && matches!(ta, TypeNode::Object(_)) {
-                self.errors
-                    .push(crate::common::diagnostics::Diagnostic::new(
-                        "Object-typed variables must be initialized at declaration".to_string(),
-                        start_token.line,
-                        start_token.column,
-                        self.filename.clone(),
-                    ));
+                self.push_parse_error_with_hint(
+                    "Object-typed variables must be initialized at declaration",
+                    start_token.line,
+                    start_token.column,
+                    "Provide an initializer when declaring an object-typed variable.",
+                );
             }
             declarations.push(Statement::VarDeclaration {
                 pattern: p,
@@ -240,13 +282,7 @@ impl Parser {
             t
         } else {
             let t = self.peek().clone();
-            self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    error_msg.to_string(),
-                    t.line,
-                    t.column,
-                    self.filename.clone(),
-                ));
+            self.push_parse_error(error_msg.to_string(), t.line, t.column);
             // Advance to avoid infinite loops
             self.advance();
             t
@@ -343,13 +379,7 @@ impl Parser {
             BindingNode::Identifier(name)
         } else {
             let t = self.peek().clone();
-            self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    "Expected binding pattern".to_string(),
-                    t.line,
-                    t.column,
-                    self.filename.clone(),
-                ));
+            self.push_parse_error("Expected binding pattern", t.line, t.column);
             // Advance to prevent infinite loops if we get stuck on an invalid pattern
             self.advance();
             BindingNode::Identifier("__error__".to_string())
@@ -710,16 +740,15 @@ impl Parser {
             }
         }
         if self.is_at_end() && !self.check(TokenType::CloseBrace) {
-            self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    format!(
-                        "Unclosed class body for '{}' starting at line {}:{}",
-                        name, start.line, start.column
-                    ),
-                    self.previous().line,
-                    self.previous().column + self.previous().value.len(),
-                    self.filename.clone(),
-                ));
+            self.push_parse_error_with_hint(
+                format!(
+                    "Unclosed class body for '{}' starting at line {}:{}",
+                    name, start.line, start.column
+                ),
+                self.previous().line,
+                self.previous().column + self.previous().value.len(),
+                "Add the missing '}' to close the class body.",
+            );
         } else {
             self.consume(TokenType::CloseBrace, "Expected '}' after class body.");
         }
@@ -1031,25 +1060,23 @@ impl Parser {
                         union_types[0].clone()
                     };
                     let token = self.previous().clone();
-                    self.errors
-                        .push(crate::common::diagnostics::Diagnostic::new(
-                            "Use `Optional<T>` instead of `T | None`.".to_string(),
-                            token.line,
-                            token.column,
-                            self.filename.clone(),
-                        ));
+                    self.push_parse_error_with_hint(
+                        "Use `Optional<T>` instead of `T | None`.",
+                        token.line,
+                        token.column,
+                        "Rewrite this type as Optional<T>.",
+                    );
                     return TypeNode::Optional(Box::new(inner));
                 }
             }
 
             let token = self.previous().clone();
-            self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    "Union types are not supported. Only `Optional<T>` is allowed.".to_string(),
-                    token.line,
-                    token.column,
-                    self.filename.clone(),
-                ));
+            self.push_parse_error_with_hint(
+                "Union types are not supported. Only `Optional<T>` is allowed.",
+                token.line,
+                token.column,
+                "Use Optional<T> for nullable values, or refactor the type into a class/interface.",
+            );
             base_type = TypeNode::Any;
         }
 
@@ -1188,13 +1215,12 @@ impl Parser {
                     "Optional" => {
                         if generic_args.len() != 1 {
                             let tok = self.previous().clone();
-                            self.errors
-                                .push(crate::common::diagnostics::Diagnostic::new(
-                                    "`Optional<T>` expects exactly one type argument.".to_string(),
-                                    tok.line,
-                                    tok.column,
-                                    self.filename.clone(),
-                                ));
+                            self.push_parse_error_with_hint(
+                                "`Optional<T>` expects exactly one type argument.",
+                                tok.line,
+                                tok.column,
+                                "Pass exactly one inner type, for example Optional<string>.",
+                            );
                             TypeNode::Any
                         } else {
                             TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
@@ -1202,13 +1228,12 @@ impl Parser {
                     }
                     "Option" => {
                         let tok = self.previous().clone();
-                        self.errors
-                            .push(crate::common::diagnostics::Diagnostic::new(
-                                "Use `Optional<T>` instead of `Option<T>`.".to_string(),
-                                tok.line,
-                                tok.column,
-                                self.filename.clone(),
-                            ));
+                        self.push_parse_error_with_hint(
+                            "Use `Optional<T>` instead of `Option<T>`.",
+                            tok.line,
+                            tok.column,
+                            "Rename this type to Optional<T>.",
+                        );
                         if generic_args.len() == 1 {
                             TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
                         } else {
@@ -1245,13 +1270,12 @@ impl Parser {
                 base_type_name = "bool".to_string();
             } else {
                 let t = self.peek().clone();
-                self.errors
-                    .push(crate::common::diagnostics::Diagnostic::new(
-                        "Expected type".to_string(),
-                        t.line,
-                        t.column,
-                        self.filename.clone(),
-                    ));
+                self.push_parse_error_with_hint(
+                    "Expected type",
+                    t.line,
+                    t.column,
+                    "Insert a valid type name such as int, string, bool, Optional<T>, or a class name.",
+                );
                 self.advance();
                 return TypeNode::Named("{unknown}".to_string());
             }
@@ -1361,16 +1385,12 @@ impl Parser {
         }
 
         if self.is_at_end() && !self.check(TokenType::CloseBrace) {
-            self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    format!(
-                        "Unclosed block starting at line {}:{}",
-                        start.line, start.column
-                    ),
-                    self.previous().line,
-                    self.previous().column + self.previous().value.len(),
-                    self.filename.clone(),
-                ));
+            self.push_parse_error_with_hint(
+                format!("Unclosed block starting at line {}:{}", start.line, start.column),
+                self.previous().line,
+                self.previous().column + self.previous().value.len(),
+                "Add the missing '}' to close this block.",
+            );
         } else {
             self.consume(TokenType::CloseBrace, "Expected '}' after block.");
         }
@@ -1913,13 +1933,12 @@ impl Parser {
         if self.match_token(TokenType::Await) {
             let op_token = self.previous().clone();
             if !self.async_enabled {
-                self.errors
-                    .push(crate::common::diagnostics::Diagnostic::new(
-                        "async/await is disabled".to_string(),
-                        op_token.line,
-                        op_token.column,
-                        self.filename.clone(),
-                    ));
+                self.push_feature_error(
+                    "async/await is disabled",
+                    op_token.line,
+                    op_token.column,
+                    "Remove 'await' here or compile without disabling async support.",
+                );
             }
             let right = self.parse_unary();
             return Expression::AwaitExpr {
@@ -2049,13 +2068,12 @@ impl Parser {
                     };
                 } else if self.match_token(TokenType::OpenBracket) {
                     if type_args.is_some() {
-                        self.errors
-                            .push(crate::common::diagnostics::Diagnostic::new(
-                                "Type arguments not allowed before array access".to_string(),
-                                start_token.line,
-                                start_token.column,
-                                self.filename.clone(),
-                            ));
+                        self.push_parse_error_with_hint(
+                            "Type arguments not allowed before array access",
+                            start_token.line,
+                            start_token.column,
+                            "Remove the type arguments here or move them to a real generic function call.",
+                        );
                     }
                     let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
                                                                               // match_token(QuestionDot) advanced. current is at next token.
@@ -2071,13 +2089,12 @@ impl Parser {
                     };
                 } else {
                     if type_args.is_some() {
-                        self.errors
-                            .push(crate::common::diagnostics::Diagnostic::new(
-                                "Type arguments not allowed before member access".to_string(),
-                                start_token.line,
-                                start_token.column,
-                                self.filename.clone(),
-                            ));
+                        self.push_parse_error_with_hint(
+                            "Type arguments not allowed before member access",
+                            start_token.line,
+                            start_token.column,
+                            "Remove the type arguments here or apply them on a generic call instead.",
+                        );
                     }
                     let member = self
                         .consume_identifier("Expected property name after '?.'")
@@ -2092,13 +2109,12 @@ impl Parser {
                 }
             } else if self.match_token(TokenType::Dot) || self.match_token(TokenType::DoubleColon) {
                 if type_args.is_some() {
-                    self.errors
-                        .push(crate::common::diagnostics::Diagnostic::new(
-                            "Type arguments not allowed before static/member access".to_string(),
-                            start_token.line,
-                            start_token.column,
-                            self.filename.clone(),
-                        ));
+                    self.push_parse_error_with_hint(
+                        "Type arguments not allowed before static/member access",
+                        start_token.line,
+                        start_token.column,
+                        "Remove the type arguments here or apply them on a generic call instead.",
+                    );
                 }
                 let is_double_colon =
                     self.tokens[self.current - 1].token_type == TokenType::DoubleColon;
@@ -2117,13 +2133,12 @@ impl Parser {
                 };
             } else if self.match_token(TokenType::OpenBracket) {
                 if type_args.is_some() {
-                    self.errors
-                        .push(crate::common::diagnostics::Diagnostic::new(
-                            "Type arguments not allowed before array access".to_string(),
-                            start_token.line,
-                            start_token.column,
-                            self.filename.clone(),
-                        ));
+                    self.push_parse_error_with_hint(
+                        "Type arguments not allowed before array access",
+                        start_token.line,
+                        start_token.column,
+                        "Remove the type arguments here or move them to a real generic function call.",
+                    );
                 }
                 let index = self.parse_assignment();
                 self.consume(TokenType::CloseBracket, "Expected ']'");
@@ -2143,13 +2158,12 @@ impl Parser {
                 };
             } else {
                 if type_args.is_some() {
-                    self.errors
-                        .push(crate::common::diagnostics::Diagnostic::new(
-                            "Unused type arguments".to_string(),
-                            start_token.line,
-                            start_token.column,
-                            self.filename.clone(),
-                        ));
+                    self.push_parse_error_with_hint(
+                        "Unused type arguments",
+                        start_token.line,
+                        start_token.column,
+                        "Type arguments must be followed by a generic call like foo<T>(...).",
+                    );
                 }
                 break;
             }
@@ -2345,13 +2359,11 @@ impl Parser {
             TokenType::OpenBrace => self.parse_object_literal(),
             _ => {
                 let err_token = token.clone();
-                self.errors
-                    .push(crate::common::diagnostics::Diagnostic::new(
-                        format!("Unexpected token '{}'", err_token.value),
-                        err_token.line,
-                        err_token.column,
-                        self.filename.clone(),
-                    ));
+                self.push_parse_error(
+                    format!("Unexpected token '{}'", err_token.value),
+                    err_token.line,
+                    err_token.column,
+                );
                 self.advance();
                 Expression::Identifier {
                     name: "__error__".to_string(),
@@ -2631,12 +2643,17 @@ impl Parser {
             };
 
             self.errors
-                .push(crate::common::diagnostics::Diagnostic::new(
-                    message.to_string(),
-                    line,
-                    col,
-                    self.filename.clone(),
-                ));
+                .push(
+                    crate::common::diagnostics::Diagnostic::new(
+                        message.to_string(),
+                        line,
+                        col,
+                        self.filename.clone(),
+                    )
+                    .with_code("E0002")
+                    .with_hint("Check for a missing, extra, or misplaced token near this location.")
+                    .with_label(message),
+                );
 
             // Advance to avoid infinite loops
             self.advance()

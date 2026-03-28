@@ -218,7 +218,9 @@ async function test_promise_adoption() {
     assert_eq_int(41, recoveredValue, "catchError unwraps returned promise");
 
     let caughtAliasValue: Promise<int> = Promise.reject(new Error("alias boom")).catch((e: Error) => {
+        assert_eq_string("alias boom", e.message, "catch alias exposes rejection message field");
         assert_eq_string("alias boom", e.getMessage(), "catch alias receives rejection");
+        assert_true(e.stack.length() > 0, "catch alias exposes rejection stack");
         return 52;
     });
     let caughtAliasResolved = await caughtAliasValue;
@@ -258,14 +260,18 @@ async function test_promise_adoption() {
         let _ = await returnRejectedPromise();
     } catch (e) {
         caught = true;
-        assert_eq_string("nested boom", e.message, "async return adopts promise rejection");
+        assert_eq_string("nested boom", e.message, "async return exposes rejection message field");
+        assert_eq_string("nested boom", e.getMessage(), "async return adopts promise rejection");
+        assert_true(e.stack.length() > 0, "async return exposes rejection stack");
     }
     assert_true(caught, "async adopted rejection is catchable");
 
     let executorThrowRecovered: Promise<int> = new Promise((resolve, reject) => {
         throw new Error("executor boom");
     }).catchError((e: Error) => {
+        assert_eq_string("executor boom", e.message, "executor throw exposes rejection message field");
         assert_eq_string("executor boom", e.getMessage(), "executor throw becomes rejection");
+        assert_true(e.stack.length() > 0, "executor throw exposes rejection stack");
         return 55;
     });
     let executorThrowValue = await executorThrowRecovered;

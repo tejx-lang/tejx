@@ -18,6 +18,7 @@ extern function rt_array_fill<T>(arr: T[], val: T): T[];
 extern function rt_array_sort<T>(arr: T[]): void;
 extern function rt_is_array<T>(val: T): bool;
 extern function rt_to_string<T>(val: T): string;
+extern function rt_exception_report_for_print<T>(val: T): Optional<string>;
 extern function rt_promise_new<T>(): Promise<T>;
 extern function rt_promise_resolve<T>(p: Promise<T>, val: T): void;
 extern function rt_promise_reject<T>(p: Promise<T>, err: Error): void;
@@ -62,13 +63,47 @@ export function parseFloat(s: string): float { return rt_to_number(s); }
 export let undefined: any = None;
 
 export class Error {
-    private message: string;
+    message: string;
+    stack: string;
     code: int32;
     constructor(msg: string, code: Optional<int>) {
         this.message = msg;
+        this.stack = "";
         this.code = code ?? 0;
     }
     getMessage(): string { return this.message; }
+    getStack(): string { return this.stack; }
+    getStackFrames(): string[] {
+        if (this.stack.length() == 0) {
+            return [];
+        }
+        return this.stack.split("\n");
+    }
+    getName(): string {
+        let rendered = rt_to_string(this);
+        let braceIndex: int = rendered.indexOf(" {");
+        if (braceIndex > 0) {
+            return rendered.substring(0, braceIndex);
+        }
+        let colonIndex: int = rendered.indexOf(":");
+        if (colonIndex > 0) {
+            return rendered.substring(0, colonIndex);
+        }
+        return "Error";
+    }
+    toString(): string { return rt_to_string(this); }
+}
+
+export class RuntimeError extends Error {
+    constructor(msg: string) {
+        super(msg, None);
+    }
+}
+
+export class PanicError extends Error {
+    constructor(msg: string) {
+        super(msg, None);
+    }
 }
 
 export class AggregateError extends Error {
@@ -314,6 +349,37 @@ function String(v: any): string {
     return rt_to_string(v);
 }
 
+function _error_name_for_print(v: any): string {
+    let rendered: string = rt_to_string(v);
+    let braceIndex: int = rendered.indexOf(" {");
+    if (braceIndex > 0) {
+        return rendered.substring(0, braceIndex);
+    }
+    let colonIndex: int = rendered.indexOf(":");
+    if (colonIndex > 0) {
+        return rendered.substring(0, colonIndex);
+    }
+    return "Error";
+}
+
+function _stringify_error_for_print(err: Error, seen: any[]): string {
+    let label: string = _error_name_for_print(err);
+    let out: string = label + ": " + err.getMessage();
+    if (err.code != 0) {
+        out = out + " (code: " + rt_to_string(err.code) + ")";
+    }
+
+    if (err instanceof AggregateError) {
+        let aggregate = err as AggregateError;
+        if (aggregate.errors.length() == 0) {
+            return out;
+        }
+        out = out + " " + _stringify_for_print(aggregate.errors, seen, false);
+    }
+
+    return out;
+}
+
 function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
     let ty: string = typeof(v);
     if (rt_str_equals(ty, "None")) return "None";
@@ -327,6 +393,10 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
     }
     if (rt_str_equals(ty, "function")) {
         return "[Function]";
+    }
+
+    if (v instanceof Error) {
+        return _stringify_error_for_print(v as Error, seen);
     }
 
     if (rt_is_array(v)) {
@@ -379,11 +449,23 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
 export function print(...args: any[]): void {
     let count: int = args.length();
     let seen: any[] = [];
-    let parts: string[] = [];
+    let out: string = "";
+    let prevWasReport: bool = false;
     for (let i: int = 0; i < count; i++) {
-        parts.push(_stringify_for_print(args[i], seen, false));
+        let maybeReport: Optional<string> = rt_exception_report_for_print(args[i]);
+        let isReport: bool = maybeReport != None;
+        let part: string = isReport
+            ? (maybeReport as string)
+            : _stringify_for_print(args[i], seen, false);
+
+        if (i > 0) {
+            out = out + ((prevWasReport || isReport) ? "\n" : " ");
+        }
+
+        out = out + part;
+        prevWasReport = isReport;
     }
-    tejx_libc_puts(parts.join(" "));
+    tejx_libc_puts(out);
 }
 
 export function panic(msg: string): void {

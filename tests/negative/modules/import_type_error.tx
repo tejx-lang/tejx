@@ -1,0 +1,7 @@
+// EXPECT: COMPILE_ERROR
+// Test: importing a module with a type error should report the imported file and source line.
+import { brokenType } from "./fixtures/import_type_error_helper.tx";
+
+function main(): void {
+    print("should not reach here");
+}

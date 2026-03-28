@@ -47,6 +47,10 @@ impl Diagnostic {
     }
 
     pub fn report(&self, source: &str) {
+        self.report_with_source(Some(source));
+    }
+
+    pub fn report_with_source(&self, source: Option<&str>) {
         let (sev_color, sev_name) = match self.severity {
             Severity::Error => ("\x1b[31;1m", "error"),
         };
@@ -69,6 +73,16 @@ impl Diagnostic {
             "  \x1b[34m-->\x1b[0m {}:{}:{}",
             self.file, self.line, self.col
         );
+
+        let Some(source) = source else {
+            eprintln!("  \x1b[34m |\x1b[0m");
+            eprintln!("  \x1b[34m =\x1b[0m source unavailable for diagnostic rendering");
+            if let Some(hint) = &self.hint {
+                eprintln!("  \x1b[34m =\x1b[0m \x1b[32;1mhint:\x1b[0m {}", hint);
+            }
+            eprintln!();
+            return;
+        };
 
         let lines: Vec<&str> = source.lines().collect();
         if self.line > 0 && self.line <= lines.len() {
@@ -129,11 +143,15 @@ impl Diagnostic {
                 eprintln!("  \x1b[34m{} =\x1b[0m \x1b[32;1mhint:\x1b[0m {}", pad, hint);
             }
         } else {
+            eprintln!("  \x1b[34m |\x1b[0m");
             eprintln!(
-                "  (Unexpected line {} with total lines: {})",
+                "  \x1b[34m =\x1b[0m could not render source context (line {} in file with {} lines)",
                 self.line,
                 lines.len()
             );
+            if let Some(hint) = &self.hint {
+                eprintln!("  \x1b[34m =\x1b[0m \x1b[32;1mhint:\x1b[0m {}", hint);
+            }
         }
         eprintln!();
     }

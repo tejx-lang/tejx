@@ -1060,6 +1060,36 @@ impl CodeGen {
         format!("ptrtoint ([{} x i8]* {} to i64)", byte_len, str_lbl)
     }
 
+    pub(crate) fn emit_runtime_location_marker(&mut self, line: usize) {
+        if !self.current_function_tracks_location
+            || line == 0
+            || self.current_debug_line == Some(line)
+            || self.source_file.is_empty()
+        {
+            return;
+        }
+
+        self.current_debug_line = Some(line);
+        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
+
+        let source_file = self.source_file.clone();
+        let file_ptr = self.emit_string_constant(&source_file);
+        self.emit_line(&format!(
+            "call void @rt_set_location(i64 {}, i64 {})",
+            file_ptr, line
+        ));
+    }
+
+    pub(crate) fn runtime_location_args(&mut self, line: usize) -> Option<(String, usize)> {
+        if !self.current_function_tracks_location || line == 0 || self.source_file.is_empty() {
+            return None;
+        }
+
+        let source_file = self.source_file.clone();
+        let file_ptr = self.emit_string_constant(&source_file);
+        Some((file_ptr, line))
+    }
+
     pub(crate) fn emit_box_string(&mut self, raw_ptr: &str) -> String {
         self.declare_runtime_fn(
             "rt_string_from_c_str_const",

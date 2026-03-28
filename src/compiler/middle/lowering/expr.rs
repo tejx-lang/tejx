@@ -1769,6 +1769,14 @@ impl Lowering {
                 };
                 let lambda_name = format!("lambda_{}", id);
                 self.register_lambda_env_owner(&lambda_name);
+                let display_name = self
+                    .pending_lambda_display_name
+                    .borrow_mut()
+                    .take()
+                    .unwrap_or_else(|| "<lambda>".to_string());
+                self.function_display_names
+                    .borrow_mut()
+                    .insert(lambda_name.clone(), display_name);
 
                 // Use inferred types from TypeChecker if available
                 let inferred = self.lambda_inferred_types.get(&(*_line, *_col));

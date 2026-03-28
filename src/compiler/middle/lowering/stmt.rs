@@ -750,9 +750,14 @@ impl Lowering {
                     _col: func._col,
                 };
                 let prev_expected = self.current_expected_type.borrow_mut().take();
+                let prev_display_name = self
+                    .pending_lambda_display_name
+                    .borrow_mut()
+                    .replace(func.name.clone());
                 *self.current_expected_type.borrow_mut() = Some(fn_ty.clone());
                 let hir_lambda = self.lower_expression(&lambda_expr);
                 *self.current_expected_type.borrow_mut() = prev_expected;
+                *self.pending_lambda_display_name.borrow_mut() = prev_display_name;
 
                 Some(HIRStatement::VarDecl {
                     name: mangled_name,

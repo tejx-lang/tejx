@@ -1,0 +1,4 @@
+export function broken(): int {
+    let value = ;
+    return value;
+}

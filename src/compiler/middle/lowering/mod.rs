@@ -55,6 +55,8 @@ pub struct Lowering {
     env_owner_stack: RefCell<Vec<String>>,
     captured_vars_by_owner: RefCell<HashMap<String, HashSet<String>>>,
     lambda_env_owner: RefCell<HashMap<String, String>>,
+    function_display_names: RefCell<HashMap<String, String>>,
+    pending_lambda_display_name: RefCell<Option<String>>,
 }
 
 /// Result of lowering: a list of top-level HIR functions.
@@ -66,6 +68,7 @@ pub struct LoweringResult {
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
     pub class_parents: HashMap<String, String>,
+    pub function_display_names: HashMap<String, String>,
 }
 
 impl Default for Lowering {
@@ -114,6 +117,8 @@ impl Lowering {
             env_owner_stack: RefCell::new(Vec::new()),
             captured_vars_by_owner: RefCell::new(HashMap::new()),
             lambda_env_owner: RefCell::new(HashMap::new()),
+            function_display_names: RefCell::new(HashMap::new()),
+            pending_lambda_display_name: RefCell::new(None),
         }
     }
 
@@ -877,6 +882,10 @@ impl Lowering {
         signatures.insert("rt_to_string_float".to_string(), vec![TejxType::Float64]);
         signatures.insert("rt_to_string_boolean".to_string(), vec![TejxType::Bool]);
         signatures.insert(
+            "rt_exception_report_for_print".to_string(),
+            vec![TejxType::Int64],
+        );
+        signatures.insert(
             "rt_promise_resolve".to_string(),
             vec![TejxType::Int64, TejxType::Int64],
         );
@@ -916,6 +925,10 @@ impl Lowering {
         signatures.insert("rt_len".to_string(), vec![TejxType::Int64]);
         signatures.insert("rt_strlen".to_string(), vec![TejxType::String]);
         signatures.insert("rt_typeof".to_string(), vec![TejxType::Int64]);
+        signatures.insert(
+            "rt_exception_report_for_print".to_string(),
+            vec![TejxType::Int64],
+        );
 
         for func in &functions {
             if let HIRStatement::Function { name, params, .. } = func {
@@ -974,6 +987,7 @@ impl Lowering {
             class_fields,
             class_methods: self.class_methods.borrow().clone(),
             class_parents: self.class_parents.borrow().clone(),
+            function_display_names: self.function_display_names.borrow().clone(),
         }
     }
 }

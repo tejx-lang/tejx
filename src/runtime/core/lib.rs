@@ -29,9 +29,11 @@ pub use gc::{
     rt_register_thread, rt_register_type, rt_release_static_root, rt_set_static_root,
     rt_unregister_thread, rt_write_barrier, ObjectHeader, MAX_TYPES,
 };
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::panic::{self, PanicHookInfo};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, Once};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
 #[derive(Default)]
@@ -58,6 +60,29 @@ const FIELD_KIND_FLOAT32: u8 = 5;
 const FIELD_KIND_FLOAT64: u8 = 6;
 const FIELD_KIND_CHAR: u8 = 7;
 const FIELD_KIND_UNSUPPORTED: u8 = 255;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RuntimeFrame {
+    function_ptr: i64,
+    file_ptr: i64,
+    line: usize,
+    track_location: bool,
+}
+
+#[derive(Clone, Debug)]
+struct StoredExceptionTrace {
+    handle_id: usize,
+    stack: Vec<RuntimeFrame>,
+}
+
+thread_local! {
+    static RUNTIME_CALL_STACK: RefCell<Vec<RuntimeFrame>> = const { RefCell::new(Vec::new()) };
+}
+
+static RUNTIME_PANIC_HOOK: Once = Once::new();
+const STORED_EXCEPTION_TRACE_LIMIT: usize = 256;
+static STORED_EXCEPTION_TRACES: LazyLock<Mutex<VecDeque<StoredExceptionTrace>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
 
 static mut TYPE_NAME_PTRS: [*const std::ffi::c_char; MAX_TYPES] = [std::ptr::null(); MAX_TYPES];
 static mut TYPE_FIELD_COUNTS: [usize; MAX_TYPES] = [0; MAX_TYPES];
@@ -95,6 +120,900 @@ pub unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
     let msg_id = new_string_from_rust_str(msg);
     crate::event_loop::tejx_throw(msg_id);
     std::hint::unreachable_unchecked();
+}
+
+fn runtime_symbol_name(symbol: &str) -> String {
+    if symbol == "tejx_main" {
+        return "<entry>".to_string();
+    }
+    if let Some(name) = symbol.strip_prefix("f_") {
+        return name.to_string();
+    }
+    if symbol.starts_with("lambda_") {
+        return "<lambda>".to_string();
+    }
+    if symbol == "rt_main_async_worker" {
+        return "<async worker>".to_string();
+    }
+    symbol.to_string()
+}
+
+unsafe fn runtime_symbol_name_from_ptr(ptr_value: i64) -> String {
+    runtime_debug_string(ptr_value)
+        .map(|symbol| runtime_symbol_name(&symbol))
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+unsafe fn runtime_frame_file(frame: &RuntimeFrame) -> String {
+    if frame.file_ptr == 0 {
+        String::new()
+    } else {
+        runtime_debug_string(frame.file_ptr).unwrap_or_default()
+    }
+}
+
+unsafe fn runtime_debug_string(ptr_value: i64) -> Option<String> {
+    if ptr_value == 0 {
+        return None;
+    }
+    let ptr = ptr_value as usize as *const std::ffi::c_char;
+    if ptr.is_null() {
+        return None;
+    }
+    Some(
+        std::ffi::CStr::from_ptr(ptr)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+pub(crate) fn runtime_call_stack_depth() -> usize {
+    RUNTIME_CALL_STACK.with(|stack| stack.borrow().len())
+}
+
+pub(crate) fn runtime_restore_call_stack(depth: usize) {
+    RUNTIME_CALL_STACK.with(|stack| stack.borrow_mut().truncate(depth));
+}
+
+pub(crate) fn runtime_call_stack_snapshot() -> Vec<RuntimeFrame> {
+    RUNTIME_CALL_STACK.with(|stack| stack.borrow().clone())
+}
+
+unsafe fn runtime_exception_trace_position(
+    traces: &VecDeque<StoredExceptionTrace>,
+    exception: i64,
+) -> Option<usize> {
+    traces.iter().position(|entry| {
+        crate::event_loop::tejx_get_global_handle(entry.handle_id) == exception
+    })
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn clear_stored_exception_traces() {
+    let mut traces = match STORED_EXCEPTION_TRACES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    while let Some(entry) = traces.pop_front() {
+        crate::event_loop::tejx_drop_global_handle(entry.handle_id);
+    }
+}
+
+unsafe fn remember_exception_trace_with_stack(exception: i64, stack: &[RuntimeFrame]) {
+    if stack.is_empty() {
+        return;
+    }
+
+    let mut traces = match STORED_EXCEPTION_TRACES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if let Some(pos) = runtime_exception_trace_position(&traces, exception) {
+        if let Some(entry) = traces.get_mut(pos) {
+            if entry.stack.is_empty() && !stack.is_empty() {
+                entry.stack = stack.to_vec();
+            }
+        }
+        return;
+    }
+
+    let handle_id = crate::event_loop::tejx_create_global_handle(exception);
+    traces.push_back(StoredExceptionTrace {
+        handle_id,
+        stack: stack.to_vec(),
+    });
+
+    while traces.len() > STORED_EXCEPTION_TRACE_LIMIT {
+        if let Some(entry) = traces.pop_front() {
+            crate::event_loop::tejx_drop_global_handle(entry.handle_id);
+        }
+    }
+}
+
+pub(crate) unsafe fn remember_exception_trace(exception: i64) {
+    let stack = runtime_call_stack_snapshot();
+    remember_exception_trace_with_stack(exception, &stack);
+}
+
+unsafe fn runtime_exception_trace_snapshot(exception: i64) -> Option<Vec<RuntimeFrame>> {
+    let traces = match STORED_EXCEPTION_TRACES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let pos = runtime_exception_trace_position(&traces, exception)?;
+    traces.get(pos).map(|entry| entry.stack.clone())
+}
+
+pub(crate) unsafe fn exception_trace_exists(exception: i64) -> bool {
+    runtime_exception_trace_snapshot(exception).is_some()
+}
+
+pub(crate) unsafe fn runtime_prepare_thrown_exception_value(exception: i64) -> i64 {
+    let mut exception = exception;
+    if let Some((_body, tag)) = rt_value_body_and_tag(exception) {
+        if tag == TAG_STRING {
+            exception = new_string_from_parts(exception, 0, rt_len(exception));
+        }
+    }
+
+    let stack = runtime_call_stack_snapshot();
+
+    if runtime_error_like_type_id(exception).is_some() {
+        runtime_attach_stack_to_error_value(exception, &stack);
+        return exception;
+    }
+
+    if let Some(wrapped) = runtime_build_error_wrapper(
+        runtime_exception_wrapper_type_name(exception),
+        &runtime_exception_message_text(exception),
+        &stack,
+    ) {
+        return wrapped;
+    }
+
+    exception
+}
+
+unsafe fn runtime_error_like_summary(val: i64) -> Option<String> {
+    let type_id = runtime_error_like_type_id(val)?;
+    let type_name = rt_type_name_string(type_id);
+    let message = runtime_class_field_string(val, "message").unwrap_or_default();
+    let mut rendered = if message.is_empty() {
+        type_name
+    } else {
+        format!("{}: {}", type_name, message)
+    };
+    if let Some(code) = runtime_class_field_i32(val, "code") {
+        if code != 0 {
+            rendered.push_str(&format!(" (code: {})", code));
+        }
+    }
+    Some(rendered)
+}
+
+fn runtime_format_location(frame: &RuntimeFrame) -> String {
+    let function = unsafe { runtime_symbol_name_from_ptr(frame.function_ptr) };
+    let file = unsafe { runtime_frame_file(frame) };
+    if !file.is_empty() && frame.line > 0 {
+        format!("{}:{} in {}", file, frame.line, function)
+    } else if frame.line > 0 {
+        format!("line {} in {}", frame.line, function)
+    } else {
+        function
+    }
+}
+
+fn runtime_format_stack_frame(frame: &RuntimeFrame) -> String {
+    let function = unsafe { runtime_symbol_name_from_ptr(frame.function_ptr) };
+    let file = unsafe { runtime_frame_file(frame) };
+    if !file.is_empty() && frame.line > 0 {
+        format!("  at {} ({}:{})", function, file, frame.line)
+    } else if frame.line > 0 {
+        format!("  at {} (line {})", function, frame.line)
+    } else {
+        format!("  at {}", function)
+    }
+}
+
+fn runtime_read_source_line(file: &str, line: usize) -> Option<String> {
+    if file.is_empty() || line == 0 {
+        return None;
+    }
+    let contents = std::fs::read_to_string(file).ok()?;
+    let source_line = contents.lines().nth(line.saturating_sub(1))?;
+    Some(source_line.trim_end().to_string())
+}
+
+fn runtime_render_source_frame(file: &str, line: usize, label: &str) -> Option<String> {
+    if file.is_empty() || line == 0 {
+        return None;
+    }
+
+    let contents = std::fs::read_to_string(file).ok()?;
+    let lines: Vec<&str> = contents.lines().collect();
+    if line > lines.len() {
+        return None;
+    }
+
+    let current = lines[line - 1].trim_end();
+    let prev = if line > 1 {
+        Some(lines[line - 2].trim_end())
+    } else {
+        None
+    };
+    let next = if line < lines.len() {
+        Some(lines[line].trim_end())
+    } else {
+        None
+    };
+
+    let max_line = if next.is_some() { line + 1 } else { line };
+    let width = max_line.to_string().len().max(1);
+    let caret_col = current.chars().take_while(|ch| ch.is_whitespace()).count();
+
+    let mut frame = String::new();
+    frame.push_str("  --> ");
+    frame.push_str(file);
+    frame.push(':');
+    frame.push_str(&line.to_string());
+    frame.push('\n');
+    frame.push_str("  ");
+    frame.push_str(&" ".repeat(width));
+    frame.push_str(" |\n");
+
+    if let Some(prev_line) = prev {
+        frame.push_str("  ");
+        frame.push_str(&format!("{:>width$}", line - 1, width = width));
+        frame.push_str(" | ");
+        frame.push_str(prev_line);
+        frame.push('\n');
+    }
+
+    frame.push_str("  ");
+    frame.push_str(&format!("{:>width$}", line, width = width));
+    frame.push_str(" | ");
+    frame.push_str(current);
+    frame.push('\n');
+    frame.push_str("  ");
+    frame.push_str(&" ".repeat(width));
+    frame.push_str(" | ");
+    frame.push_str(&" ".repeat(caret_col));
+    frame.push_str("^ ");
+    frame.push_str(label);
+    frame.push('\n');
+
+    if let Some(next_line) = next {
+        frame.push_str("  ");
+        frame.push_str(&format!("{:>width$}", line + 1, width = width));
+        frame.push_str(" | ");
+        frame.push_str(next_line);
+        frame.push('\n');
+    }
+
+    Some(frame)
+}
+
+fn runtime_error_hint(message: &str) -> Option<&'static str> {
+    if message.contains("Division by zero") {
+        Some("Ensure the right-hand side of '/' or '%' is not zero before evaluating the expression.")
+    } else if message.contains("Null pointer dereference") {
+        Some("Check for None/nullish values before reading from or writing to this value.")
+    } else if message.contains("out of bounds") {
+        Some("Validate the index against the collection length before accessing or assigning.")
+    } else if message.contains("constant array") {
+        Some("Create a mutable copy before modifying a constant array.")
+    } else if message.contains("fixed-size array") {
+        Some("Resize or structural mutations are not allowed on fixed-size arrays.")
+    } else if message.contains("Deadlock detected") {
+        Some("A pending await has no remaining producer. Resolve, reject, or schedule the Promise before awaiting it.")
+    } else if message.contains("Invalid byte array") {
+        Some("Pass a valid byte array or binary buffer to this API.")
+    } else {
+        None
+    }
+}
+
+unsafe fn runtime_value_to_string(val: i64) -> String {
+    let mut rooted_val = val;
+    rt_push_root(&mut rooted_val);
+
+    let mut string_id = rt_to_string(rooted_val);
+    rt_push_root(&mut string_id);
+
+    let rendered = if let Some((data, len)) = get_str_parts(string_id) {
+        String::from_utf8_lossy(std::slice::from_raw_parts(data, len as usize)).into_owned()
+    } else {
+        "<unprintable>".to_string()
+    };
+
+    rt_pop_roots(2);
+    rendered
+}
+
+unsafe fn runtime_inline_value_to_string(val: i64) -> String {
+    if val < STACK_OFFSET {
+        if looks_like_unboxed_float_bits(val) {
+            return rt_float_to_rust_string(f64::from_bits(val as u64));
+        }
+        return val.to_string();
+    }
+    runtime_value_to_string(val)
+}
+
+unsafe fn runtime_type_to_string(val: i64) -> String {
+    let mut rooted_val = val;
+    rt_push_root(&mut rooted_val);
+
+    let mut type_id = rt_typeof(rooted_val);
+    rt_push_root(&mut type_id);
+
+    let rendered = if let Some((data, len)) = get_str_parts(type_id) {
+        String::from_utf8_lossy(std::slice::from_raw_parts(data, len as usize)).into_owned()
+    } else {
+        "unknown".to_string()
+    };
+
+    rt_pop_roots(2);
+    rendered
+}
+
+unsafe fn runtime_exception_type_name(val: i64) -> String {
+    if val < STACK_OFFSET {
+        if val == 0 {
+            return "none".to_string();
+        }
+        if looks_like_unboxed_float_bits(val) {
+            return "float".to_string();
+        }
+        return "int".to_string();
+    }
+
+    let Some((_body, tag)) = rt_value_body_and_tag(val) else {
+        return runtime_type_to_string(val);
+    };
+
+    match tag {
+        tag if tag == TAG_STRING => "string".to_string(),
+        tag if tag == TAG_FUNCTION => "function".to_string(),
+        tag if tag == TAG_ARRAY => "array".to_string(),
+        tag if tag == TAG_OBJECT => "object".to_string(),
+        tag if tag == TAG_BOOLEAN => "bool".to_string(),
+        tag if tag == TAG_FLOAT => "float".to_string(),
+        tag if tag == TAG_INT => "int".to_string(),
+        tag if tag == TAG_CHAR => "char".to_string(),
+        tag if tag == TAG_PROMISE => "promise".to_string(),
+        other => rt_type_name_string(other as usize),
+    }
+}
+
+unsafe fn runtime_class_body_and_type_id(val: i64) -> Option<(*mut u8, usize)> {
+    let (body_ptr, tag) = rt_value_body_and_tag(val)?;
+    if tag < 0 {
+        return None;
+    }
+
+    let type_id = tag as usize;
+    if type_id >= MAX_TYPES || TYPE_NAME_PTRS[type_id].is_null() {
+        return None;
+    }
+
+    Some((body_ptr, type_id))
+}
+
+unsafe fn runtime_type_field_index(type_id: usize, field_name: &str) -> Option<usize> {
+    let field_count = TYPE_FIELD_COUNTS[type_id].min(TYPE_INFO_MAX_FIELDS);
+    (0..field_count).find(|&i| rt_field_name_string(type_id, i) == field_name)
+}
+
+unsafe fn runtime_class_field_string(val: i64, field_name: &str) -> Option<String> {
+    let (body_ptr, type_id) = runtime_class_body_and_type_id(val)?;
+    let field_index = runtime_type_field_index(type_id, field_name)?;
+    let offset = TYPE_FIELD_OFFSETS[type_id][field_index];
+    let kind = TYPE_FIELD_KINDS[type_id][field_index];
+
+    let rendered = match kind {
+        FIELD_KIND_REF => runtime_value_to_string(*(body_ptr.add(offset) as *const i64)),
+        FIELD_KIND_BOOL => {
+            if *(body_ptr.add(offset) as *const i8) != 0 {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        FIELD_KIND_INT16 => (*(body_ptr.add(offset) as *const i16)).to_string(),
+        FIELD_KIND_INT32 => (*(body_ptr.add(offset) as *const i32)).to_string(),
+        FIELD_KIND_INT64 => (*(body_ptr.add(offset) as *const i64)).to_string(),
+        FIELD_KIND_FLOAT32 => rt_float_to_rust_string(*(body_ptr.add(offset) as *const f32) as f64),
+        FIELD_KIND_FLOAT64 => rt_float_to_rust_string(*(body_ptr.add(offset) as *const f64)),
+        FIELD_KIND_CHAR => {
+            let ch = *(body_ptr.add(offset) as *const i32) as u32;
+            char::from_u32(ch).unwrap_or('?').to_string()
+        }
+        _ => return None,
+    };
+
+    Some(rendered)
+}
+
+unsafe fn runtime_class_field_i32(val: i64, field_name: &str) -> Option<i32> {
+    let (body_ptr, type_id) = runtime_class_body_and_type_id(val)?;
+    let field_index = runtime_type_field_index(type_id, field_name)?;
+    let offset = TYPE_FIELD_OFFSETS[type_id][field_index];
+    let kind = TYPE_FIELD_KINDS[type_id][field_index];
+
+    match kind {
+        FIELD_KIND_INT16 => Some(*(body_ptr.add(offset) as *const i16) as i32),
+        FIELD_KIND_INT32 => Some(*(body_ptr.add(offset) as *const i32)),
+        FIELD_KIND_INT64 => Some(*(body_ptr.add(offset) as *const i64) as i32),
+        _ => None,
+    }
+}
+
+unsafe fn runtime_set_class_ref_field(val: i64, field_name: &str, field_val: i64) -> bool {
+    let (body_ptr, type_id) = match runtime_class_body_and_type_id(val) {
+        Some(info) => info,
+        None => return false,
+    };
+    let field_index = match runtime_type_field_index(type_id, field_name) {
+        Some(index) => index,
+        None => return false,
+    };
+    if TYPE_FIELD_KINDS[type_id][field_index] != FIELD_KIND_REF {
+        return false;
+    }
+
+    let slot = body_ptr.add(TYPE_FIELD_OFFSETS[type_id][field_index]) as *mut i64;
+    if val >= HEAP_OFFSET {
+        rt_store_ref_slot(val, slot, field_val);
+    } else {
+        *slot = field_val;
+    }
+    true
+}
+
+unsafe fn runtime_set_class_i32_field(val: i64, field_name: &str, field_val: i32) -> bool {
+    let (body_ptr, type_id) = match runtime_class_body_and_type_id(val) {
+        Some(info) => info,
+        None => return false,
+    };
+    let field_index = match runtime_type_field_index(type_id, field_name) {
+        Some(index) => index,
+        None => return false,
+    };
+    let offset = TYPE_FIELD_OFFSETS[type_id][field_index];
+    match TYPE_FIELD_KINDS[type_id][field_index] {
+        FIELD_KIND_INT16 => {
+            *(body_ptr.add(offset) as *mut i16) = field_val as i16;
+            true
+        }
+        FIELD_KIND_INT32 => {
+            *(body_ptr.add(offset) as *mut i32) = field_val;
+            true
+        }
+        FIELD_KIND_INT64 => {
+            *(body_ptr.add(offset) as *mut i64) = field_val as i64;
+            true
+        }
+        _ => false,
+    }
+}
+
+unsafe fn runtime_error_like_type_id(val: i64) -> Option<usize> {
+    let (_body_ptr, type_id) = runtime_class_body_and_type_id(val)?;
+    if runtime_type_field_index(type_id, "message").is_some()
+        && runtime_type_field_index(type_id, "stack").is_some()
+    {
+        return Some(type_id);
+    }
+    None
+}
+
+unsafe fn runtime_exception_message_field(val: i64) -> Option<String> {
+    let (body_ptr, tag) = rt_value_body_and_tag(val)?;
+
+    if tag == TAG_OBJECT {
+        let key = rt_string_from_c_str_const("message\0".as_ptr() as *const _);
+        let idx = rt_object_find_key_index(val, key);
+        if idx >= 0 {
+            return Some(runtime_value_to_string(rt_array_get_fast(
+                rt_object_values_array(val),
+                idx,
+            )));
+        }
+        return None;
+    }
+
+    if tag < 0 {
+        return None;
+    }
+
+    let type_id = tag as usize;
+    if type_id >= MAX_TYPES {
+        return None;
+    }
+
+    let field_count = TYPE_FIELD_COUNTS[type_id].min(TYPE_INFO_MAX_FIELDS);
+    for i in 0..field_count {
+        if rt_field_name_string(type_id, i) != "message" {
+            continue;
+        }
+
+        let offset = TYPE_FIELD_OFFSETS[type_id][i];
+        let kind = TYPE_FIELD_KINDS[type_id][i];
+        let message = match kind {
+            FIELD_KIND_REF => runtime_value_to_string(*(body_ptr.add(offset) as *const i64)),
+            FIELD_KIND_BOOL => {
+                if *(body_ptr.add(offset) as *const i8) != 0 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
+            }
+            FIELD_KIND_INT16 => (*(body_ptr.add(offset) as *const i16)).to_string(),
+            FIELD_KIND_INT32 => (*(body_ptr.add(offset) as *const i32)).to_string(),
+            FIELD_KIND_INT64 => (*(body_ptr.add(offset) as *const i64)).to_string(),
+            FIELD_KIND_FLOAT32 => {
+                rt_float_to_rust_string(*(body_ptr.add(offset) as *const f32) as f64)
+            }
+            FIELD_KIND_FLOAT64 => rt_float_to_rust_string(*(body_ptr.add(offset) as *const f64)),
+            FIELD_KIND_CHAR => {
+                let ch = *(body_ptr.add(offset) as *const i32) as u32;
+                char::from_u32(ch).unwrap_or('?').to_string()
+            }
+            _ => continue,
+        };
+        return Some(message);
+    }
+
+    None
+}
+
+fn runtime_render_stack_trace_text(stack: &[RuntimeFrame]) -> String {
+    let mut rendered = String::new();
+    for (index, frame) in stack.iter().rev().enumerate() {
+        if index > 0 {
+            rendered.push('\n');
+        }
+        rendered.push_str(&runtime_format_stack_frame(frame));
+    }
+    rendered
+}
+
+unsafe fn runtime_exception_message_text(exception: i64) -> String {
+    let thrown_value = runtime_value_to_string(exception);
+    if let Some(message) = runtime_exception_message_field(exception) {
+        return message;
+    }
+    if let Some(stripped) = thrown_value.strip_prefix("RuntimeError:") {
+        return stripped.trim().to_string();
+    }
+    if let Some(stripped) = thrown_value.strip_prefix("PANIC:") {
+        return stripped.trim().to_string();
+    }
+    thrown_value
+}
+
+unsafe fn runtime_exception_wrapper_type_name(exception: i64) -> &'static str {
+    let thrown_value = runtime_value_to_string(exception);
+    if thrown_value.starts_with("RuntimeError:") {
+        "RuntimeError"
+    } else if thrown_value.starts_with("PANIC:") {
+        "PanicError"
+    } else {
+        "Error"
+    }
+}
+
+unsafe fn runtime_find_registered_type_id(type_name: &str) -> Option<usize> {
+    (0..MAX_TYPES).find(|&type_id| {
+        !TYPE_NAME_PTRS[type_id].is_null() && rt_type_name_string(type_id) == type_name
+    })
+}
+
+unsafe fn runtime_attach_stack_to_error_value(exception: i64, stack: &[RuntimeFrame]) {
+    if stack.is_empty() {
+        return;
+    }
+
+    if runtime_error_like_type_id(exception).is_none() {
+        return;
+    }
+
+    let current_stack = runtime_class_field_string(exception, "stack").unwrap_or_default();
+    if !current_stack.trim().is_empty() {
+        return;
+    }
+
+    let mut stack_value = new_string_from_rust_str(&runtime_render_stack_trace_text(stack));
+    rt_push_root(&mut stack_value);
+    let _ = runtime_set_class_ref_field(exception, "stack", stack_value);
+    rt_pop_roots(1);
+}
+
+unsafe fn runtime_build_error_wrapper(
+    preferred_type_name: &str,
+    message: &str,
+    stack: &[RuntimeFrame],
+) -> Option<i64> {
+    let type_id = runtime_find_registered_type_id(preferred_type_name)
+        .or_else(|| runtime_find_registered_type_id("Error"))?;
+    let body_size = gc::TYPE_TABLE[type_id].size;
+    if body_size == 0 {
+        return None;
+    }
+
+    let mut message_value = new_string_from_rust_str(message);
+    let mut stack_value = new_string_from_rust_str(&runtime_render_stack_trace_text(stack));
+    rt_push_root(&mut message_value);
+    rt_push_root(&mut stack_value);
+
+    let mut error_value = rt_class_new(type_id as i32, body_size as i64, 0, std::ptr::null(), 0);
+    rt_push_root(&mut error_value);
+
+    let _ = runtime_set_class_ref_field(error_value, "message", message_value);
+    let _ = runtime_set_class_ref_field(error_value, "stack", stack_value);
+    let _ = runtime_set_class_i32_field(error_value, "code", 0);
+
+    rt_pop_roots(3);
+    Some(error_value)
+}
+
+unsafe fn runtime_exception_headline(
+    prefix: &str,
+    exception: i64,
+    thrown_value: &str,
+) -> (String, String) {
+    if let Some(stripped) = thrown_value.strip_prefix("RuntimeError:") {
+        return ("RuntimeError".to_string(), stripped.trim().to_string());
+    }
+
+    if let Some(stripped) = thrown_value.strip_prefix("PANIC:") {
+        return ("Panic".to_string(), stripped.trim().to_string());
+    }
+
+    if prefix == "UnhandledPromiseRejection" {
+        if let Some(message) = runtime_exception_message_field(exception) {
+            return ("UnhandledPromiseRejection".to_string(), message);
+        }
+        return ("UnhandledPromiseRejection".to_string(), thrown_value.to_string());
+    }
+
+    let type_name = runtime_exception_type_name(exception);
+    if let Some(message) = runtime_exception_message_field(exception) {
+        return (type_name, message);
+    }
+
+    if prefix == "CapturedException" {
+        return ("Exception".to_string(), thrown_value.to_string());
+    }
+
+    ("UnhandledException".to_string(), thrown_value.to_string())
+}
+
+unsafe fn render_runtime_exception_report_with_stack(
+    prefix: &str,
+    exception: i64,
+    stack: &[RuntimeFrame],
+) -> String {
+    let thrown_value = runtime_value_to_string(exception);
+    let exception_type = runtime_exception_type_name(exception);
+    let (headline_kind, headline_message) =
+        runtime_exception_headline(prefix, exception, &thrown_value);
+    let is_runtime_fault =
+        thrown_value.starts_with("RuntimeError:") || thrown_value.starts_with("PANIC:");
+    let mut report = String::new();
+    report.push_str(&headline_kind);
+    report.push_str(": ");
+    report.push_str(&headline_message);
+    report.push('\n');
+
+    if !stack.is_empty() {
+        report.push_str("Stack trace:\n");
+        for frame in stack.iter().rev() {
+            report.push_str(&runtime_format_stack_frame(frame));
+            report.push('\n');
+        }
+    }
+
+    let primitive_exception = matches!(
+        exception_type.as_str(),
+        "string" | "int" | "float" | "bool" | "char" | "none"
+    );
+    let error_like_exception = runtime_error_like_type_id(exception).is_some();
+    let full_headline = format!("{}: {}", headline_kind, headline_message);
+    let show_thrown_value = if primitive_exception {
+        thrown_value != headline_message && thrown_value != full_headline
+    } else if error_like_exception {
+        false
+    } else {
+        true
+    };
+
+    let mut detail_lines = Vec::new();
+    detail_lines.push(format!("Exception type: {}", exception_type));
+    if show_thrown_value {
+        detail_lines.push(format!("Thrown value: {}", thrown_value));
+    }
+
+    if let Some(hint) = runtime_error_hint(&thrown_value) {
+        detail_lines.push(format!("Hint: {}", hint));
+    }
+
+    if let Some(frame) = stack.last() {
+        let file = unsafe { runtime_frame_file(frame) };
+        let location_label = if !is_runtime_fault {
+            "exception thrown here"
+        } else if headline_kind == "Panic" {
+            "panic triggered here"
+        } else {
+            "runtime error occurred here"
+        };
+        report.push_str("Code frame:\n");
+        if let Some(source_frame) = runtime_render_source_frame(&file, frame.line, location_label) {
+            report.push_str(&source_frame);
+        } else if let Some(source_line) = runtime_read_source_line(&file, frame.line) {
+            report.push_str("  ");
+            report.push_str(&runtime_format_location(frame));
+            report.push('\n');
+            report.push_str("  ");
+            report.push_str(&source_line);
+            report.push('\n');
+        }
+    }
+
+    if !detail_lines.is_empty() {
+        report.push_str("Details:\n");
+        for line in detail_lines {
+            report.push_str("  ");
+            report.push_str(&line);
+            report.push('\n');
+        }
+    }
+
+    report
+}
+
+pub(crate) unsafe fn render_runtime_exception_report(prefix: &str, exception: i64) -> String {
+    if prefix == "UnhandledPromiseRejection" {
+        if let Some(stored_stack) = runtime_exception_trace_snapshot(exception) {
+            return render_runtime_exception_report_with_stack(prefix, exception, &stored_stack);
+        }
+    }
+
+    let live_stack = runtime_call_stack_snapshot();
+    if !live_stack.is_empty() {
+        return render_runtime_exception_report_with_stack(prefix, exception, &live_stack);
+    }
+
+    if let Some(stored_stack) = runtime_exception_trace_snapshot(exception) {
+        return render_runtime_exception_report_with_stack(prefix, exception, &stored_stack);
+    }
+
+    render_runtime_exception_report_with_stack(prefix, exception, &[])
+}
+
+fn panic_payload_message(info: &PanicHookInfo<'_>) -> String {
+    if let Some(msg) = info.payload().downcast_ref::<&str>() {
+        (*msg).to_string()
+    } else if let Some(msg) = info.payload().downcast_ref::<String>() {
+        msg.clone()
+    } else {
+        "panic without a string payload".to_string()
+    }
+}
+
+fn render_runtime_panic_report(info: &PanicHookInfo<'_>) -> String {
+    let mut report = String::new();
+    report.push_str("Internal Runtime Panic\n");
+    report.push_str("  Message: ");
+    report.push_str(&panic_payload_message(info));
+    report.push('\n');
+
+    if let Some(location) = info.location() {
+        report.push_str("  Rust Location: ");
+        report.push_str(location.file());
+        report.push(':');
+        report.push_str(&location.line().to_string());
+        report.push(':');
+        report.push_str(&location.column().to_string());
+        report.push('\n');
+    }
+
+    let stack = runtime_call_stack_snapshot();
+    if let Some(frame) = stack.last() {
+        report.push_str("  TejX Location: ");
+        report.push_str(&runtime_format_location(frame));
+        report.push('\n');
+        let file = unsafe { runtime_frame_file(frame) };
+        if let Some(source_frame) =
+            runtime_render_source_frame(&file, frame.line, "panic observed here")
+        {
+            report.push_str(&source_frame);
+        } else if let Some(source_line) = runtime_read_source_line(&file, frame.line) {
+            report.push_str("  Source: ");
+            report.push_str(&source_line);
+            report.push('\n');
+        }
+    }
+
+    if !stack.is_empty() {
+        report.push_str("  Call Stack:\n");
+        for frame in stack.iter().rev() {
+            report.push_str("    at ");
+            report.push_str(&runtime_format_location(frame));
+            report.push('\n');
+        }
+    }
+
+    report.push_str(
+        "  Hint: This is likely a TejX runtime bug rather than a recoverable program exception.\n",
+    );
+    report
+}
+
+fn install_runtime_panic_hook() {
+    RUNTIME_PANIC_HOOK.call_once(|| {
+        panic::set_hook(Box::new(|info| {
+            use std::io::Write;
+            let report = render_runtime_panic_report(info);
+            let _ = std::io::stderr().write_all(report.as_bytes());
+        }));
+    });
+}
+
+#[inline]
+unsafe fn runtime_set_current_location(file_ptr: i64, line: i64) {
+    let line = line.max(0) as usize;
+    if file_ptr == 0 && line == 0 {
+        return;
+    }
+
+    RUNTIME_CALL_STACK.with(|stack| {
+        if let Some(frame) = stack.borrow_mut().last_mut() {
+            if !frame.track_location {
+                return;
+            }
+            if line > 0 {
+                frame.line = line;
+            }
+            if file_ptr != 0 {
+                frame.file_ptr = file_ptr;
+            }
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_enter_frame(function_ptr: i64, file_ptr: i64, line: i64) {
+    let track_location = file_ptr != 0 || line > 0;
+    let line = if track_location {
+        line.max(0) as usize
+    } else {
+        0
+    };
+    let file_ptr = if track_location { file_ptr } else { 0 };
+
+    RUNTIME_CALL_STACK.with(|stack| {
+        stack.borrow_mut().push(RuntimeFrame {
+            function_ptr,
+            file_ptr,
+            line,
+            track_location,
+        });
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_leave_frame() {
+    RUNTIME_CALL_STACK.with(|stack| {
+        stack.borrow_mut().pop();
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_location(file_ptr: i64, line: i64) {
+    runtime_set_current_location(file_ptr, line);
 }
 
 unsafe fn rt_ensure_type_finalizer(this: i64, finalizer: unsafe extern "C" fn(i64)) {
@@ -830,6 +1749,10 @@ unsafe fn rt_format_composite_value(val: i64, depth: usize, seen: &mut Vec<i64>)
 
         let type_id = tag as usize;
         if type_id < MAX_TYPES && !TYPE_NAME_PTRS[type_id].is_null() {
+            if let Some(summary) = runtime_error_like_summary(val) {
+                return summary;
+            }
+
             seen.push(val);
             let type_name = rt_type_name_string(type_id);
             let field_count = TYPE_FIELD_COUNTS[type_id];
@@ -898,6 +1821,30 @@ pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     res_id
 }
 
+unsafe fn render_captured_exception_report(exception: i64) -> Option<String> {
+    let stack = runtime_exception_trace_snapshot(exception)?;
+    Some(render_runtime_exception_report_with_stack(
+        "CapturedException",
+        exception,
+        &stack,
+    ))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_exception_report_for_print(val: i64) -> i64 {
+    let mut v = val;
+    let mut report_id = 0i64;
+    rt_push_root(&mut v);
+    rt_push_root(&mut report_id);
+
+    if let Some(report) = render_captured_exception_report(v) {
+        report_id = new_string_from_rust_str(&report);
+    }
+
+    rt_pop_roots(2);
+    report_id
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_panic(msg_id: i64) {
     let msg = if let Some(s) = i64_to_rust_str(msg_id) {
@@ -909,8 +1856,25 @@ pub unsafe extern "C" fn rt_panic(msg_id: i64) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_div_zero_error() {
-    rt_throw_runtime_error("RuntimeError: Division by zero");
+pub unsafe extern "C" fn rt_div_zero_error(dividend: i64, divisor: i64) {
+    let left = runtime_inline_value_to_string(dividend);
+    let right = runtime_inline_value_to_string(divisor);
+    let msg = format!(
+        "RuntimeError: Division by zero while evaluating {} / {}",
+        left, right
+    );
+    rt_throw_runtime_error(&msg);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_div_zero_error_at(
+    dividend: i64,
+    divisor: i64,
+    file_ptr: i64,
+    line: i64,
+) {
+    runtime_set_current_location(file_ptr, line);
+    rt_div_zero_error(dividend, divisor);
 }
 
 // --- Metadata ---
@@ -1843,11 +2807,20 @@ extern "C" {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *mut *mut u8) -> i32 {
-    rt_init_gc();
-    rt_register_thread();
-    rt_init_types();
-    tejx_main();
-    tejx_run_event_loop();
+    install_runtime_panic_hook();
+
+    let run_result = panic::catch_unwind(|| unsafe {
+        rt_init_gc();
+        rt_register_thread();
+        rt_init_types();
+        tejx_main();
+        tejx_run_event_loop();
+    });
+
+    if run_result.is_err() {
+        return 1;
+    }
+
     0
 }
 
@@ -2801,7 +3774,7 @@ pub unsafe extern "C" fn rt_mul(a: i64, b: i64) -> i64 {
 pub unsafe extern "C" fn rt_div(a: i64, b: i64) -> i64 {
     let fb = rt_to_number(b);
     if fb == 0.0 {
-        return 0; // Or panic
+        rt_div_zero_error(a, b);
     }
     let res = rt_to_number(a) / fb;
     res.to_bits() as i64
@@ -2954,13 +3927,27 @@ pub unsafe fn rt_object_find_key_index(obj: i64, key: i64) -> i64 {
     -1
 }
 
+unsafe fn rt_property_key_for_error(key: i64) -> String {
+    if let Some(name) = i64_to_rust_str(key) {
+        format!("'{}'", name)
+    } else {
+        format!("[{}]", runtime_inline_value_to_string(key))
+    }
+}
+
+unsafe fn rt_throw_property_null_error(action: &str, key: i64) -> ! {
+    let msg = format!(
+        "RuntimeError: Null pointer dereference while {} property {}",
+        action,
+        rt_property_key_for_error(key)
+    );
+    rt_throw_runtime_error(&msg);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_property(obj: i64, key: i64) -> i64 {
     if (obj as u64) < (STACK_OFFSET as u64) {
-        let msg = rt_string_from_c_str(
-            "RuntimeError: Null pointer dereference in property access\0".as_ptr() as *const _,
-        );
-        crate::event_loop::tejx_throw(msg);
+        rt_throw_property_null_error("reading", key);
     }
     if !rt_is_object(obj) {
         return 0;
@@ -2973,12 +3960,18 @@ pub unsafe extern "C" fn rt_get_property(obj: i64, key: i64) -> i64 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_get_property_traced(obj: i64, key: i64, file_ptr: i64, line: i64) -> i64 {
+    if (obj as u64) < (STACK_OFFSET as u64) {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_property_null_error("reading", key);
+    }
+    rt_get_property(obj, key)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
     if (obj as u64) < (STACK_OFFSET as u64) {
-        let msg = rt_string_from_c_str(
-            "RuntimeError: Null pointer dereference in property assignment\0".as_ptr() as *const _,
-        );
-        crate::event_loop::tejx_throw(msg);
+        rt_throw_property_null_error("writing", key);
     }
     if !rt_is_object(obj) {
         return;
@@ -3007,6 +4000,21 @@ pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
     }
 
     rt_pop_roots(5);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_property_traced(
+    obj: i64,
+    key: i64,
+    val: i64,
+    file_ptr: i64,
+    line: i64,
+) {
+    if (obj as u64) < (STACK_OFFSET as u64) {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_property_null_error("writing", key);
+    }
+    rt_set_property(obj, key, val);
 }
 
 #[no_mangle]
@@ -3069,6 +4077,84 @@ mod tests {
 
     fn to_rust_string(val: i64) -> String {
         unsafe { i64_to_rust_str(val).expect("runtime string") }
+    }
+
+    #[test]
+    fn runtime_exception_report_includes_location_stack_and_hint() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+            runtime_restore_call_stack(0);
+            clear_stored_exception_traces();
+
+            let temp_dir = std::env::temp_dir();
+            let file = temp_dir.join("tejx_runtime_report_fixture.tx");
+            std::fs::write(
+                &file,
+                "function div(a: int, b: int): int {\n    return a / b;\n}\n",
+            )
+            .unwrap();
+
+            let function = std::ffi::CString::new("f_div").unwrap();
+            let file_c = std::ffi::CString::new(file.to_string_lossy().into_owned()).unwrap();
+            rt_enter_frame(
+                function.as_ptr() as usize as i64,
+                file_c.as_ptr() as usize as i64,
+                1,
+            );
+            rt_set_location(file_c.as_ptr() as usize as i64, 2);
+
+            let exception = new_string_from_rust_str("RuntimeError: Division by zero");
+            let report = render_runtime_exception_report("UnhandledException", exception);
+
+            assert!(report.contains("RuntimeError: Division by zero"));
+            assert!(report.contains("Division by zero"));
+            assert!(report.contains("Hint: Ensure the right-hand side"));
+            assert!(report.contains("return a / b;"));
+            assert!(report.contains("Stack trace:"));
+            assert!(report.contains("at div"));
+            assert!(report.contains("div"));
+
+            runtime_restore_call_stack(0);
+            clear_stored_exception_traces();
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    #[test]
+    fn stored_exception_report_for_print_keeps_throw_stack() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+            runtime_restore_call_stack(0);
+            clear_stored_exception_traces();
+
+            let temp_dir = std::env::temp_dir();
+            let file = temp_dir.join("tejx_print_exception_fixture.tx");
+            std::fs::write(&file, "function fail() {\n    throw \"boom\";\n}\n").unwrap();
+
+            let function = std::ffi::CString::new("f_fail").unwrap();
+            let file_c = std::ffi::CString::new(file.to_string_lossy().into_owned()).unwrap();
+            rt_enter_frame(
+                function.as_ptr() as usize as i64,
+                file_c.as_ptr() as usize as i64,
+                1,
+            );
+            rt_set_location(file_c.as_ptr() as usize as i64, 2);
+
+            let exception = new_string_from_rust_str("boom");
+            remember_exception_trace(exception);
+            runtime_restore_call_stack(0);
+
+            let report = to_rust_string(rt_exception_report_for_print(exception));
+            assert!(report.contains("Exception: boom"));
+            assert!(report.contains("Stack trace:"));
+            assert!(report.contains("at fail"));
+            assert!(report.contains("throw \"boom\";"));
+
+            clear_stored_exception_traces();
+            let _ = std::fs::remove_file(file);
+        }
     }
 
     #[test]

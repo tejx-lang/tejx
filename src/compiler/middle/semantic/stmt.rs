@@ -501,6 +501,48 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            Statement::TryStmt {
+                _try_block,
+                _catch_var,
+                _catch_block,
+                _finally_block,
+                ..
+            } => {
+                self.check_statement(_try_block)?;
+
+                if !_catch_var.is_empty() {
+                    if let Statement::BlockStmt { statements, .. } = &**_catch_block {
+                        self.enter_scope();
+                        self.define(
+                            _catch_var.clone(),
+                            TejxType::Class("Error".to_string(), vec![]).to_name(),
+                        );
+                        for stmt in statements {
+                            self.collect_declarations(stmt);
+                        }
+                        for (i, stmt) in statements.iter().enumerate() {
+                            self.remaining_stmts = statements[i + 1..].to_vec();
+                            let _ = self.check_statement(stmt);
+                        }
+                        self.remaining_stmts.clear();
+                        self.exit_scope();
+                    } else {
+                        self.enter_scope();
+                        self.define(
+                            _catch_var.clone(),
+                            TejxType::Class("Error".to_string(), vec![]).to_name(),
+                        );
+                        self.check_statement(_catch_block)?;
+                        self.exit_scope();
+                    }
+                }
+
+                if let Some(finally_block) = _finally_block {
+                    self.check_statement(finally_block)?;
+                }
+
+                Ok(())
+            }
             Statement::FunctionDeclaration(func) => {
                 let mut ret_ty = if func.return_type.to_string().is_empty() {
                     "void".to_string()
@@ -1067,6 +1109,28 @@ impl TypeChecker {
                             self.report_error_detailed(format!("Return type mismatch: expected '{}', got '{}'", expected_original, got), *line, *col, "E0107", Some(&format!("The function signature declares return type '{}'; ensure the returned value matches", expected_original)));
                         }
                     }
+                }
+                Ok(())
+            }
+            Statement::ThrowStmt {
+                _expression,
+                _line,
+                _col,
+            } => {
+                let throw_type = self.check_expression(_expression)?;
+                if !self.is_throwable_error_type(&throw_type) {
+                    self.report_error_detailed(
+                        format!(
+                            "Thrown value must be 'Error' or a subclass, got '{}'",
+                            throw_type.to_name()
+                        ),
+                        *_line,
+                        *_col,
+                        "E0115",
+                        Some(
+                            "Throw an Error instance such as 'throw new Error(\"message\")' or a subclass value",
+                        ),
+                    );
                 }
                 Ok(())
             }
