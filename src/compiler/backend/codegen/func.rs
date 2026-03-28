@@ -1256,7 +1256,7 @@ update:\n\
         // scan uninitialized stack garbage as live heap pointers.
         for name in &sorted_alloca_vars {
             let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
-            if Self::is_gc_managed(ty) {
+            if Self::needs_gc_root(name, ty) {
                 if let Some(reg_name) = self.value_map.get(name) {
                     self.emit_line(&format!("store i64 0, i64* {}", reg_name));
                 }
@@ -1317,7 +1317,7 @@ update:\n\
             .iter()
             .filter(|name| {
                 if let Some(ty) = func.variables.get(*name) {
-                    Self::is_gc_managed(ty)
+                    Self::needs_gc_root(name, ty)
                 } else {
                     false
                 }

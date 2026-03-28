@@ -8,7 +8,7 @@ pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
     rt_ensure_type_finalizer(this, rt_thread_object_finalizer);
     // field 0 = runtime data pointer (non-GC)
     // field 1 = callback closure (GC-managed)
-    *ptr.offset(1) = cb;
+    rt_store_ref_slot(this, ptr.offset(1), cb);
     let slot_live = std::sync::Arc::new(AtomicBool::new(true));
     let data = Box::new(ThreadData {
         handle: None,

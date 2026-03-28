@@ -1,10 +1,15 @@
 import { collect } from "std:gc";
-import { after, every } from "std:time";
+import { after, every, delay } from "std:time";
+import { assert_true } from "../utils.tx";
 
 function allocateUntrackedTimers(): void {
-    for (let i = 0; i < 128; i++) {
-        after(() => {}, 60000);
-        every(() => {}, 60000);
+    for (let i = 0; i < 32; i++) {
+        after(() => {
+            throw "Timeout wrapper fired after GC";
+        }, 25);
+        every(() => {
+            throw "Interval wrapper fired after GC";
+        }, 25);
     }
 }
 
@@ -18,12 +23,14 @@ function createMemoryPressure(): void {
     }
 }
 
-function main(): void {
+async function main(): Promise<void> {
     print("=== TIME WRAPPER GC START ===");
 
     allocateUntrackedTimers();
     createMemoryPressure();
 
     collect();
+    await delay(120);
+    assert_true(true, "GC'd timer wrappers stay cancelled");
     print("=== TIME WRAPPER GC COMPLETE ===");
 }

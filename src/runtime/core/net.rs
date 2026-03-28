@@ -117,7 +117,8 @@ unsafe fn http_result_array(status: &str, payload: &[u8]) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_http_fetch_resolver_worker(handle_id: i64) {
     let handle = handle_id as usize;
-    let actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+    let mut actual_pid = crate::event_loop::tejx_get_global_handle(handle);
+    rt_push_root(&mut actual_pid);
     let fetch_result = HTTP_FETCH_RESULTS
         .lock()
         .ok()
@@ -134,6 +135,7 @@ pub unsafe extern "C" fn rt_http_fetch_resolver_worker(handle_id: i64) {
         rt_promise_resolve(actual_pid, value);
     }
 
+    rt_pop_roots(1);
     crate::event_loop::tejx_dec_async_ops();
 }
 
@@ -293,7 +295,7 @@ pub unsafe extern "C" fn rt_net_lookup(host_ptr: i64) -> i64 {
             return string_from_bytes(first.as_bytes());
         }
     }
-    empty_string()
+    0
 }
 
 #[no_mangle]
@@ -586,6 +588,55 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
         }
     } else {
         -1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn http_fetch_resolver_roots_promise_during_response_allocation() {
+        unsafe {
+            let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            if let Ok(mut results) = HTTP_FETCH_RESULTS.lock() {
+                results.clear();
+            }
+
+            let mut pid = rt_promise_new();
+            rt_push_root(&mut pid);
+            let handle = crate::event_loop::tejx_create_global_handle(pid);
+
+            if let Ok(mut results) = HTTP_FETCH_RESULTS.lock() {
+                results.insert(handle, HttpFetchResultData::Ok(vec![b'x'; 64 * 1024]));
+            }
+
+            gc::rt_clear_tlab();
+            while (gc::EDEN_END as usize)
+                .saturating_sub(gc::EDEN_TOP.load(Ordering::SeqCst) as usize)
+                > 96 * 1024
+            {
+                let _ = rt_Array_new(256, 8);
+            }
+            gc::rt_clear_tlab();
+
+            crate::event_loop::tejx_inc_async_ops();
+            rt_http_fetch_resolver_worker(handle as i64);
+
+            let body = (pid - HEAP_OFFSET) as *mut i64;
+            let header = rt_get_header(body as *mut u8);
+            assert_eq!((*header).type_id, TAG_PROMISE as u16);
+            assert_eq!(*body.offset(0), 1);
+
+            let result = *body.offset(1);
+            assert_eq!(i64_to_rust_str(rt_array_get_fast(result, 0)).as_deref(), Some("ok"));
+            assert_eq!(rt_len(rt_array_get_fast(result, 1)), 64 * 1024);
+
+            rt_pop_roots(1);
+        }
     }
 }
 

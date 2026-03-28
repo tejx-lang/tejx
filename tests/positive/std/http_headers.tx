@@ -1,0 +1,32 @@
+import std:http;
+import { assert_eq_string, assert_true } from "../utils.tx";
+
+function test_headers_optional_get() {
+    print("--- HTTP Headers Optional Get ---");
+    let headers = new Headers({
+        "Content-Type": "application/json",
+        "X-Trace-Id": "abc123"
+    });
+
+    let contentType = headers.get("content-type");
+    let traceId = headers.get("x-trace-id");
+    let missing = headers.get("x-missing");
+
+    assert_true(contentType != None, "present content-type header returns value");
+    assert_true(traceId != None, "present custom header returns value");
+    assert_true(missing == None, "missing header returns None");
+
+    if (contentType != None) {
+        assert_eq_string("application/json", contentType as string, "headers normalize standard key");
+    }
+    if (traceId != None) {
+        assert_eq_string("abc123", traceId as string, "headers normalize custom key");
+    }
+    assert_true(headers.has("Content-Type"), "headers has is case-insensitive");
+}
+
+function main() {
+    print("=== HTTP HEADER TESTS START ===");
+    test_headers_optional_get();
+    print("=== HTTP HEADER TESTS COMPLETE ===");
+}

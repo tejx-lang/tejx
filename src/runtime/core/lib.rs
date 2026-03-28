@@ -313,6 +313,14 @@ pub unsafe fn rt_get_ptr(val: i64) -> *mut i64 {
     (val - HEAP_OFFSET) as *mut i64
 }
 
+#[inline]
+pub unsafe fn rt_store_ref_slot(owner: i64, slot: *mut i64, value: i64) {
+    *slot = value;
+    if owner >= HEAP_OFFSET {
+        rt_write_barrier(owner, value);
+    }
+}
+
 // --- Conversions ---
 
 #[no_mangle]
@@ -450,45 +458,51 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
     if val < HEAP_OFFSET {
         return val;
     }
-    let body = (val - HEAP_OFFSET) as *mut u8;
+    let mut source = val;
+    rt_push_root(&mut source);
+
+    let body = (source - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
     let tag = (*header).type_id as i64;
 
-    if tag == TAG_STRING {
-        let (data, len) = get_str_parts(val).expect("val must be string in rt_clone");
-        return new_string_from_bytes(data, len);
+    let res = if tag == TAG_STRING {
+        let len = rt_len(source);
+        new_string_from_parts(source, 0, len)
     } else if tag == TAG_ARRAY {
         let len = (*header).length as i64;
         let elem_size = ((*header).flags & 0xFF) as i64;
-        let data = body as *const i8;
 
         // Create new array with same elem_size
-        let new_arr_val = rt_Array_new(len, elem_size);
+        let mut new_arr_val = rt_Array_new(len, elem_size);
+        rt_push_root(&mut new_arr_val);
         let new_body = (new_arr_val - HEAP_OFFSET) as *mut u8;
         let new_data = new_body as *mut i8;
 
         if len > 0 {
             if elem_size == 8 {
-                let d_src = data as *const i64;
-                let d_dst = new_data as *mut i64;
                 for i in 0..len {
-                    *d_dst.offset(i as isize) = rt_clone(*d_src.offset(i as isize));
+                    *(new_data as *mut i64).offset(i as isize) = rt_clone(rt_array_get_fast(source, i));
                 }
             } else {
+                let src_body = (source - HEAP_OFFSET) as *mut u8;
                 memcpy(
                     new_data as *mut _,
-                    data as *const _,
+                    src_body as *const _,
                     (len * elem_size) as usize,
                 );
             }
         }
+        rt_pop_roots(1);
         new_arr_val
     } else {
         // For other types (Objects, Char, Int, Float, Boolean, etc.), we can do a shallow copy for now,
         // but for Map/Object we might want to eventually do a deeper clone if they have nested objects.
         // However, for anagram.tx, this should be enough.
-        val
-    }
+        source
+    };
+
+    rt_pop_roots(1);
+    res
 }
 
 #[no_mangle]
@@ -530,7 +544,7 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
         rt_init_gc();
     }
 
-    let body_ptr = gc::gc_allocate_large(len + 1);
+    let body_ptr = gc_allocate(len + 1);
     let header = rt_get_header(body_ptr);
     (*header).type_id = TAG_STRING as u16;
     (*header).length = len as u32;
@@ -983,12 +997,17 @@ pub unsafe extern "C" fn rt_is_array(val: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_mem_set_i64(val_ptr: i64, offset: i64, val: i64) {
-    let ptr = if (val_ptr as u64) >= (HEAP_OFFSET as u64) {
+    let is_heap_owner = (val_ptr as u64) >= (HEAP_OFFSET as u64);
+    let ptr = if is_heap_owner {
         (val_ptr - HEAP_OFFSET) as *mut u8
     } else {
         val_ptr as *mut u8
     };
-    *(ptr.offset(offset as isize) as *mut i64) = val;
+    rt_store_ref_slot(
+        if is_heap_owner { val_ptr } else { 0 },
+        ptr.offset(offset as isize) as *mut i64,
+        val,
+    );
 }
 
 #[no_mangle]
@@ -1096,7 +1115,7 @@ pub unsafe extern "C" fn rt_fs_read_sync(path: i64) -> i64 {
             return rt_string_from_c_str(c_str.as_ptr());
         }
     }
-    rt_string_from_c_str("\0".as_ptr() as *const _)
+    0
 }
 
 #[no_mangle]
@@ -1174,13 +1193,19 @@ pub unsafe extern "C" fn rt_fs_readdir_sync(path: i64) -> i64 {
         if let Ok(entries) = std::fs::read_dir(p) {
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
-                    let mut name_id = rt_string_from_c_str(name.as_ptr() as *const _);
+                    let mut name_id = new_string_from_rust_str(&name);
                     rt_push_root(&mut name_id);
                     result = rt_array_push(result, name_id);
                     rt_pop_roots(1);
                 }
             }
+        } else {
+            rt_pop_roots(2);
+            return 0;
         }
+    } else {
+        rt_pop_roots(2);
+        return 0;
     }
     rt_pop_roots(2);
     result
@@ -1192,7 +1217,7 @@ pub unsafe extern "C" fn rt_args() -> i64 {
     rt_push_root(&mut result);
     let args: Vec<String> = std::env::args().collect();
     for arg in args {
-        let mut arg_id = rt_string_from_c_str(arg.as_ptr() as *const _);
+        let mut arg_id = new_string_from_rust_str(&arg);
         rt_push_root(&mut arg_id);
         result = rt_array_push(result, arg_id);
         rt_pop_roots(1);
@@ -1225,6 +1250,10 @@ unsafe fn new_string_from_bytes(data: *const u8, len: i64) -> i64 {
     *(body_ptr.add(len as usize)) = 0;
 
     (body_ptr as i64) + HEAP_OFFSET
+}
+
+unsafe fn new_string_from_rust_str(s: &str) -> i64 {
+    new_string_from_bytes(s.as_ptr(), s.len() as i64)
 }
 
 // --- String Operations ---
@@ -1267,7 +1296,7 @@ pub unsafe extern "C" fn rt_getenv(key: i64) -> i64 {
             return rt_string_from_c_str(c_str.as_ptr());
         }
     }
-    rt_string_from_c_str("\0".as_ptr() as *const _)
+    0
 }
 
 #[no_mangle]
@@ -1302,7 +1331,7 @@ unsafe fn rt_string_from_optional_string(value: Option<String>) -> i64 {
     if let Some(inner) = value {
         return rt_string_from_owned_string(inner);
     }
-    rt_string_from_c_str("\0".as_ptr() as *const _)
+    0
 }
 
 fn runtime_home_dir() -> Option<String> {
@@ -2856,8 +2885,12 @@ pub unsafe extern "C" fn rt_object_new() -> i64 {
 
     *(body_ptr.offset(OBJECT_SIZE_OFFSET) as *mut i64) = 0;
     *(body_ptr.offset(OBJECT_CAP_OFFSET) as *mut i64) = 0;
-    *(body_ptr.offset(OBJECT_KEYS_OFFSET) as *mut i64) = keys;
-    *(body_ptr.offset(OBJECT_VALUES_OFFSET) as *mut i64) = values;
+    rt_store_ref_slot(obj_id, body_ptr.offset(OBJECT_KEYS_OFFSET) as *mut i64, keys);
+    rt_store_ref_slot(
+        obj_id,
+        body_ptr.offset(OBJECT_VALUES_OFFSET) as *mut i64,
+        values,
+    );
 
     rt_pop_roots(3);
     obj_id
@@ -2907,8 +2940,8 @@ pub unsafe fn rt_object_set_arrays(obj: i64, keys: i64, values: i64) {
     if body.is_null() {
         return;
     }
-    *(body.offset(OBJECT_KEYS_OFFSET) as *mut i64) = keys;
-    *(body.offset(OBJECT_VALUES_OFFSET) as *mut i64) = values;
+    rt_store_ref_slot(obj, body.offset(OBJECT_KEYS_OFFSET) as *mut i64, keys);
+    rt_store_ref_slot(obj, body.offset(OBJECT_VALUES_OFFSET) as *mut i64, values);
 }
 
 pub unsafe fn rt_object_refresh_meta(obj: i64) {
@@ -3144,6 +3177,201 @@ mod tests {
     }
 
     #[test]
+    fn string_case_helpers_reload_source_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut source = new_string_from_bytes(b"MiXeD".as_ptr(), 5);
+            rt_push_root(&mut source);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let upper = crate::string::rt_String_toUpperCase(source);
+            assert_eq!(to_rust_string(upper), "MIXED");
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let lower = crate::string::rt_String_toLowerCase(source);
+            assert_eq!(to_rust_string(lower), "mixed");
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn string_append_local_reloads_sources_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut lhs = new_string_from_bytes(b"left".as_ptr(), 4);
+            let mut rhs = new_string_from_bytes(b"-right".as_ptr(), 6);
+            rt_push_root(&mut lhs);
+            rt_push_root(&mut rhs);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let appended = crate::string::rt_str_append_local(lhs, rhs);
+            assert_eq!(to_rust_string(appended), "left-right");
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn rust_string_helper_preserves_exact_length() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let source = String::from("alpha-beta-gamma");
+            let value = new_string_from_rust_str(&source);
+            assert_eq!(to_rust_string(value), source);
+            assert_eq!(rt_len(value), source.len() as i64);
+        }
+    }
+
+    #[test]
+    fn readdir_sync_preserves_exact_entry_names() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("tejx_readdir_exact_{}", stamp));
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let file_name = "entry-name-without-c-terminator";
+            std::fs::write(dir.join(file_name), b"x").unwrap();
+
+            let path_string = dir.to_string_lossy().into_owned();
+            let mut path_id = new_string_from_rust_str(&path_string);
+            rt_push_root(&mut path_id);
+
+            let entries = rt_fs_readdir_sync(path_id);
+            assert_eq!(rt_len(entries), 1);
+            assert_eq!(to_rust_string(rt_array_get_fast(entries, 0)), file_name);
+
+            rt_pop_roots(1);
+            let _ = std::fs::remove_file(dir.join(file_name));
+            let _ = std::fs::remove_dir(&dir);
+        }
+    }
+
+    #[test]
+    fn clone_reloads_string_source_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut source = new_string_from_bytes(b"clone-source".as_ptr(), 12);
+            rt_push_root(&mut source);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let cloned = rt_clone(source);
+            assert_eq!(to_rust_string(cloned), "clone-source");
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn clone_reloads_array_source_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut source = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut source);
+            let mut item = new_string_from_bytes(b"array-clone".as_ptr(), 11);
+            rt_push_root(&mut item);
+            source = rt_array_set_fast(source, 0, item);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let cloned = rt_clone(source);
+            assert_eq!(to_rust_string(rt_array_get_fast(cloned, 0)), "array-clone");
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn object_entries_reloads_sources_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut obj = rt_object_new();
+            rt_push_root(&mut obj);
+            let mut key = new_string_from_bytes(b"name".as_ptr(), 4);
+            let mut value = new_string_from_bytes(b"tejx".as_ptr(), 4);
+            rt_push_root(&mut key);
+            rt_push_root(&mut value);
+            rt_set_property(obj, key, value);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let entries = crate::object::rt_Object_entries(obj);
+            let first = rt_array_get_fast(entries, 0);
+            assert_eq!(to_rust_string(rt_array_get_fast(first, 0)), "name");
+            assert_eq!(to_rust_string(rt_array_get_fast(first, 1)), "tejx");
+
+            rt_pop_roots(3);
+        }
+    }
+
+    #[test]
+    fn object_assign_reloads_sources_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut source = rt_object_new();
+            let mut target = rt_object_new();
+            rt_push_root(&mut source);
+            rt_push_root(&mut target);
+            let mut key = new_string_from_bytes(b"city".as_ptr(), 4);
+            let mut value = new_string_from_bytes(b"pune".as_ptr(), 4);
+            rt_push_root(&mut key);
+            rt_push_root(&mut value);
+            rt_set_property(source, key, value);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            crate::object::rt_Object_assign(target, source);
+            assert_eq!(to_rust_string(rt_get_property(target, key)), "pune");
+
+            rt_pop_roots(4);
+        }
+    }
+
+    #[test]
+    fn bytes_from_string_reloads_source_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut source = new_string_from_bytes(b"ABC".as_ptr(), 3);
+            rt_push_root(&mut source);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+            let bytes = crate::binary::rt_bytes_from_string(source);
+            assert_eq!(rt_array_get_fast(bytes, 0), 65);
+            assert_eq!(rt_array_get_fast(bytes, 1), 66);
+            assert_eq!(rt_array_get_fast(bytes, 2), 67);
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
     fn raw_atomic_helper_releases_native_state_on_free() {
         unsafe {
             let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
@@ -3179,6 +3407,7 @@ mod tests {
             let b = rt_string_from_c_str_const(two.as_ptr());
 
             assert_eq!(a, b);
+            assert!(!gc::rt_is_los_ptr(rt_get_header((a - HEAP_OFFSET) as *mut u8) as *mut u8));
         }
     }
 
@@ -3211,6 +3440,523 @@ mod tests {
                 gc::LOS_COUNT <= initial_los_count,
                 "explicit major GC should release unrooted large objects"
             );
+        }
+    }
+
+    #[test]
+    fn old_objects_dirty_cards_when_property_growth_relinks_arrays() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut obj = rt_object_new();
+            rt_push_root(&mut obj);
+            let mut pad = rt_Array_new(256, 8);
+            rt_push_root(&mut pad);
+
+            gc::minor_gc();
+            gc::minor_gc();
+
+            let obj_body = (obj - HEAP_OFFSET) as *mut u8;
+            assert!(obj_body >= gc::OLD_START && obj_body < gc::OLD_TOP);
+
+            let card_idx = (obj_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+
+            let key0 = rt_string_from_c_str_const(b"k0\0".as_ptr() as *const _);
+            let key1 = rt_string_from_c_str_const(b"k1\0".as_ptr() as *const _);
+            let key2 = rt_string_from_c_str_const(b"k2\0".as_ptr() as *const _);
+            let key3 = rt_string_from_c_str_const(b"k3\0".as_ptr() as *const _);
+            let key4 = rt_string_from_c_str_const(b"k4\0".as_ptr() as *const _);
+
+            rt_set_property(obj, key0, rt_box_int(0));
+            rt_set_property(obj, key1, rt_box_int(1));
+            rt_set_property(obj, key2, rt_box_int(2));
+            rt_set_property(obj, key3, rt_box_int(3));
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                0,
+                "filling old key/value arrays in place should not dirty the owning object card"
+            );
+
+            rt_set_property(obj, key4, rt_box_int(4));
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old objects must dirty their card when property growth swaps in young arrays"
+            );
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn old_shared_queues_dirty_cards_when_backing_arrays_change() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let offsets = [0usize];
+            rt_register_type(203, 8, 1, offsets.as_ptr(), None);
+
+            let mut queue = rt_class_new(203, 8, 1, std::ptr::null(), 0);
+            rt_push_root(&mut queue);
+            let mut pad = rt_Array_new(256, 8);
+            rt_push_root(&mut pad);
+            crate::queue::rt_SharedQueue_constructor(queue);
+
+            gc::minor_gc();
+            gc::minor_gc();
+
+            let queue_body = (queue - HEAP_OFFSET) as *mut u8;
+            assert!(queue_body >= gc::OLD_START && queue_body < gc::OLD_TOP);
+
+            let card_idx = (queue_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+            *gc::CARD_TABLE.add(card_idx) = 0;
+
+            crate::queue::rt_SharedQueue_enqueue(queue, rt_box_int(7));
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old shared queues must dirty their card when enqueue swaps in a young backing array"
+            );
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn shared_queue_constructor_reloads_owner_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let offsets = [0usize];
+            rt_register_type(204, 8, 1, offsets.as_ptr(), None);
+
+            let mut queue = rt_class_new(204, 8, 1, std::ptr::null(), 0);
+            rt_push_root(&mut queue);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            crate::queue::rt_SharedQueue_constructor(queue);
+
+            let queue_body = (queue - HEAP_OFFSET) as *mut i64;
+            assert_ne!(
+                *queue_body, 0,
+                "SharedQueue constructor must reload the owner body after a GC-triggering allocation"
+            );
+            assert_eq!(crate::queue::rt_SharedQueue_size(queue), 0);
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn shared_queue_enqueue_roots_owner_and_value_across_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let offsets = [0usize];
+            rt_register_type(205, 8, 1, offsets.as_ptr(), None);
+
+            let mut queue = rt_class_new(205, 8, 1, std::ptr::null(), 0);
+            rt_push_root(&mut queue);
+            crate::queue::rt_SharedQueue_constructor(queue);
+
+            let payload = b"queued-through-gc";
+            let value = new_string_from_bytes(payload.as_ptr(), payload.len() as i64);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            crate::queue::rt_SharedQueue_enqueue(queue, value);
+
+            assert_eq!(crate::queue::rt_SharedQueue_size(queue), 1);
+            let dequeued = crate::queue::rt_SharedQueue_dequeue(queue);
+            assert_eq!(
+                to_rust_string(dequeued),
+                "queued-through-gc",
+                "SharedQueue enqueue must root heap values and update the moved backing array"
+            );
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn array_constructor_v2_reloads_source_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut source = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut source);
+            let mut value = new_string_from_bytes(b"clone-me".as_ptr(), 8);
+            rt_push_root(&mut value);
+            rt_array_set_fast(source, 0, value);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            let cloned = rt_Array_constructor_v2(0, source, 8, ARRAY_FLAG_PTR);
+            assert_eq!(to_rust_string(rt_array_get_fast(cloned, 0)), "clone-me");
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn array_set_fast_roots_value_across_gc_growth() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut arr);
+            let mut value = new_string_from_bytes(b"set-after-gc".as_ptr(), 12);
+            rt_push_root(&mut value);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            arr = rt_array_set_fast(arr, 3, value);
+            assert_eq!(to_rust_string(rt_array_get_fast(arr, 3)), "set-after-gc");
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn array_splice_roots_items_array_across_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut arr);
+            let mut first = new_string_from_bytes(b"first".as_ptr(), 5);
+            rt_push_root(&mut first);
+            arr = rt_array_set_fast(arr, 0, first);
+
+            let mut items = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut items);
+            let mut inserted = new_string_from_bytes(b"splice-gc".as_ptr(), 9);
+            rt_push_root(&mut inserted);
+            items = rt_array_set_fast(items, 0, inserted);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            arr = rt_array_splice(arr, 1, 0, items);
+            assert_eq!(to_rust_string(rt_array_get_fast(arr, 1)), "splice-gc");
+
+            rt_pop_roots(4);
+        }
+    }
+
+    #[test]
+    fn array_concat_reloads_sources_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut left = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut left);
+            let mut left_value = new_string_from_bytes(b"left".as_ptr(), 4);
+            rt_push_root(&mut left_value);
+            left = rt_array_set_fast(left, 0, left_value);
+
+            let mut right = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut right);
+            let mut right_value = new_string_from_bytes(b"right".as_ptr(), 5);
+            rt_push_root(&mut right_value);
+            right = rt_array_set_fast(right, 0, right_value);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            let combined = crate::array::rt_array_concat(left, right);
+            assert_eq!(to_rust_string(rt_array_get_fast(combined, 0)), "left");
+            assert_eq!(to_rust_string(rt_array_get_fast(combined, 1)), "right");
+
+            rt_pop_roots(4);
+        }
+    }
+
+    #[test]
+    fn array_join_reloads_separator_after_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut arr);
+            arr = rt_array_set_fast(arr, 0, 10);
+            arr = rt_array_set_fast(arr, 1, 20);
+            arr = rt_array_set_fast(arr, 2, 30);
+
+            let mut sep = new_string_from_bytes(b"::".as_ptr(), 2);
+            rt_push_root(&mut sep);
+
+            gc::rt_clear_tlab();
+            gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
+
+            let joined = crate::array::rt_array_join(arr, sep);
+            assert_eq!(to_rust_string(joined), "10::20::30");
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn old_arrays_keep_dirty_cards_while_they_still_point_to_young_survivors() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut arr);
+
+            gc::minor_gc();
+            gc::minor_gc();
+
+            let arr_body = (arr - HEAP_OFFSET) as *mut u8;
+            assert!(arr_body >= gc::OLD_START && arr_body < gc::OLD_TOP);
+
+            let card_idx = (arr_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+            *gc::CARD_TABLE.add(card_idx) = 0;
+
+            let mut child = rt_box_int(7);
+            rt_push_root(&mut child);
+            assert!(gc::in_young_gen((child - HEAP_OFFSET) as *mut u8));
+            rt_array_set_fast(arr, 0, child);
+            assert_eq!(*gc::CARD_TABLE.add(card_idx), 1);
+
+            rt_pop_roots(1);
+
+            gc::minor_gc();
+            let moved_child = rt_array_get_fast(arr, 0);
+            assert!(gc::in_young_gen((moved_child - HEAP_OFFSET) as *mut u8));
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old arrays must stay dirty across minor GC while they still reference a young survivor"
+            );
+
+            gc::minor_gc();
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                0,
+                "card should clear once the survivor ages out of young generation"
+            );
+
+            rt_pop_roots(1);
+        }
+    }
+
+    #[test]
+    fn old_arrays_dirty_cards_when_fill_writes_young_values() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut arr = rt_Array_new(2, 8);
+            rt_push_root(&mut arr);
+
+            gc::minor_gc();
+            gc::minor_gc();
+
+            let arr_body = (arr - HEAP_OFFSET) as *mut u8;
+            assert!(arr_body >= gc::OLD_START && arr_body < gc::OLD_TOP);
+
+            let card_idx = (arr_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+            *gc::CARD_TABLE.add(card_idx) = 0;
+
+            let mut value = rt_box_int(9);
+            rt_push_root(&mut value);
+            rt_array_fill(arr, value);
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old arrays must dirty their card when fill() writes a young heap value"
+            );
+
+            rt_pop_roots(2);
+        }
+    }
+
+    #[test]
+    fn old_arrays_dirty_cards_when_unshift_and_splice_write_young_values() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
+            rt_push_root(&mut arr);
+
+            gc::minor_gc();
+            gc::minor_gc();
+
+            let arr_body = (arr - HEAP_OFFSET) as *mut u8;
+            assert!(arr_body >= gc::OLD_START && arr_body < gc::OLD_TOP);
+
+            let card_idx = (arr_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+
+            *gc::CARD_TABLE.add(card_idx) = 0;
+            let mut unshift_value = rt_box_int(11);
+            rt_push_root(&mut unshift_value);
+            arr = rt_array_unshift(arr, unshift_value);
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old arrays must dirty their card when unshift() writes a young heap value"
+            );
+
+            *gc::CARD_TABLE.add(card_idx) = 0;
+            let mut items = rt_Array_new(1, 8);
+            rt_push_root(&mut items);
+            let mut splice_value = rt_box_int(22);
+            rt_push_root(&mut splice_value);
+            rt_array_set_fast(items, 0, splice_value);
+            arr = rt_array_splice(arr, 1, 0, items);
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old arrays must dirty their card when splice() copies young heap values into place"
+            );
+            assert_eq!(rt_array_get_fast(arr, 1), splice_value);
+
+            rt_pop_roots(4);
+        }
+    }
+
+    #[test]
+    fn gc_thread_registration_is_idempotent() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+            rt_register_thread();
+            rt_register_thread();
+
+            let ctx_ptr =
+                gc::MY_CONTEXT.with(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
+            let registry = gc::THREAD_REGISTRY.lock().unwrap();
+            let matches = registry.iter().filter(|entry| entry.0 == ctx_ptr).count();
+
+            assert_eq!(matches, 1);
+        }
+    }
+
+    #[test]
+    fn gc_auto_registers_allocating_threads_and_cleans_them_up() {
+        use std::sync::mpsc;
+
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let baseline = gc::THREAD_REGISTRY.lock().unwrap().len();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+
+            let handle = std::thread::spawn(move || {
+                let _boxed = rt_box_int(123);
+                let ctx_ptr =
+                    gc::MY_CONTEXT.with(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
+                ready_tx.send(ctx_ptr as usize).unwrap();
+                release_rx.recv().unwrap();
+            });
+
+            let child_ctx = ready_rx.recv().unwrap() as *mut gc::ThreadContext;
+            {
+                let registry = gc::THREAD_REGISTRY.lock().unwrap();
+                assert_eq!(registry.len(), baseline + 1);
+                assert!(registry.iter().any(|entry| entry.0 == child_ctx));
+            }
+
+            release_tx.send(()).unwrap();
+            handle.join().unwrap();
+
+            let registry = gc::THREAD_REGISTRY.lock().unwrap();
+            assert_eq!(registry.len(), baseline);
+            assert!(!registry.iter().any(|entry| entry.0 == child_ctx));
+        }
+    }
+
+    #[test]
+    fn arena_roots_are_rescanned_across_major_gcs() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let offsets = [0usize];
+            rt_register_type(201, 8, 1, offsets.as_ptr(), None);
+
+            let arena = gc::rt_arena_create(4096);
+            let mut holder = gc::rt_arena_alloc(arena, 201, 8);
+            rt_push_root(&mut holder);
+
+            let field = (holder - STACK_OFFSET) as *mut i64;
+            let len = (gc::LARGE_OBJECT_THRESHOLD + 1024) as i64;
+            let first_bytes = vec![b'a'; len as usize];
+            let second_bytes = vec![b'b'; len as usize];
+
+            let first = new_string_from_bytes(first_bytes.as_ptr(), len);
+            *field = first;
+            gc::major_gc();
+
+            let second = new_string_from_bytes(second_bytes.as_ptr(), len);
+            *field = second;
+            gc::major_gc();
+
+            assert_eq!(*field, second);
+            let los_count = gc::LOS_COUNT;
+            assert_eq!(los_count, 1);
+
+            rt_pop_roots(1);
+            gc::rt_arena_destroy(arena);
+        }
+    }
+
+    #[test]
+    fn arena_cycles_are_safe_during_minor_gc() {
+        unsafe {
+            let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let offsets = [0usize, 8usize];
+            rt_register_type(202, 16, 2, offsets.as_ptr(), None);
+
+            let arena = gc::rt_arena_create(4096);
+            let mut holder = gc::rt_arena_alloc(arena, 202, 16);
+            rt_push_root(&mut holder);
+
+            let fields = (holder - STACK_OFFSET) as *mut i64;
+            *fields = holder;
+
+            let payload = b"cycle";
+            let value = new_string_from_bytes(payload.as_ptr(), payload.len() as i64);
+            *fields.add(1) = value;
+
+            gc::minor_gc();
+
+            let moved = *fields.add(1);
+            assert_eq!(
+                i64_to_rust_str(moved).as_deref(),
+                Some("cycle"),
+                "minor GC should preserve stack-held young references through cyclic arena objects"
+            );
+
+            rt_pop_roots(1);
+            gc::rt_arena_destroy(arena);
         }
     }
 }

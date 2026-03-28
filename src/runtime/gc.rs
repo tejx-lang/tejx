@@ -1,5 +1,6 @@
 use super::*;
-use std::sync::{LazyLock, Mutex};
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex, Once};
 
 // --- GC Memory System Constants ---
 pub const YOUNG_GEN_SIZE: usize = 16 * 1024 * 1024; // 16MB Eden
@@ -9,6 +10,7 @@ pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB
 
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+static GC_INIT: Once = Once::new();
 
 #[derive(Default)]
 struct StaticRoots {
@@ -273,6 +275,15 @@ pub unsafe fn rt_is_los_ptr(ptr: *mut u8) -> bool {
     false
 }
 
+unsafe fn los_snapshot() -> Vec<(*mut u8, usize)> {
+    let _los_lock = LOS_LOCK.lock().unwrap();
+    let mut snapshot = Vec::with_capacity(LOS_COUNT);
+    for i in 0..LOS_COUNT {
+        snapshot.push((LOS_OBJECTS[i], LOS_SIZES[i]));
+    }
+    snapshot
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_is_gc_ptr(ptr: *mut u8) -> bool {
     if ptr.is_null() || EDEN_START.is_null() {
@@ -483,34 +494,68 @@ thread_local! {
         roots_top: 0,
         in_safepoint: AtomicBool::new(false),
     }));
+    static THREAD_REGISTRATION: std::cell::RefCell<Option<ThreadRegistrationGuard>> = const { std::cell::RefCell::new(None) };
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rt_register_thread() {
+struct ThreadRegistrationGuard {
+    ctx_ptr: *mut ThreadContext,
+}
+
+unsafe fn unregister_thread_context(ctx_ptr: *mut ThreadContext) {
+    let removed = {
+        let mut registry = THREAD_REGISTRY.lock().unwrap();
+        let before = registry.len();
+        registry.retain(|&x| x.0 != ctx_ptr);
+        registry.len() != before
+    };
+
+    if removed
+        && SAFEPOINT_REQUEST.load(Ordering::SeqCst)
+        && !(*ctx_ptr).in_safepoint.load(Ordering::SeqCst)
+    {
+        let (lock, cvar) = &**SAFEPOINT_ACK;
+        let mut count = lock.lock().unwrap();
+        *count += 1;
+        cvar.notify_one();
+    }
+}
+
+impl Drop for ThreadRegistrationGuard {
+    fn drop(&mut self) {
+        unsafe {
+            unregister_thread_context(self.ctx_ptr);
+        }
+    }
+}
+
+unsafe fn ensure_thread_registered() {
     MY_CONTEXT.with(|ctx| {
         let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-        let mut registry = THREAD_REGISTRY.lock().unwrap();
-        registry.push(ThreadContextPtr(ctx_ptr));
+        THREAD_REGISTRATION.with(|registration| {
+            let mut registration = registration.borrow_mut();
+            if registration.is_some() {
+                return;
+            }
+
+            let mut registry = THREAD_REGISTRY.lock().unwrap();
+            if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
+                registry.push(ThreadContextPtr(ctx_ptr));
+            }
+            *registration = Some(ThreadRegistrationGuard { ctx_ptr });
+        });
     });
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_register_thread() {
+    ensure_thread_registered();
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_unregister_thread() {
-    MY_CONTEXT.with(|ctx| {
-        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-        {
-            let mut registry = THREAD_REGISTRY.lock().unwrap();
-            registry.retain(|&x| x.0 != ctx_ptr);
-        }
-        // If a safepoint is waiting on us, we must ack before we leave
-        if SAFEPOINT_REQUEST.load(Ordering::SeqCst)
-            && !(*ctx_ptr).in_safepoint.load(Ordering::SeqCst)
-        {
-            let (lock, cvar) = &**SAFEPOINT_ACK;
-            let mut count = lock.lock().unwrap();
-            *count += 1;
-            cvar.notify_one();
-        }
+    THREAD_REGISTRATION.with(|registration| {
+        let guard = registration.borrow_mut().take();
+        drop(guard);
     });
 }
 
@@ -550,6 +595,7 @@ const MAP_ANON: i32 = 0x1000;
 
 #[no_mangle]
 pub unsafe fn rt_push_root(ptr: *mut i64) {
+    ensure_thread_registered();
     MY_CONTEXT.with(|ctx| {
         let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
         if (*ctx_ptr).roots_top >= GC_STACK_SIZE {
@@ -592,64 +638,61 @@ pub unsafe extern "C" fn rt_get_header(body_ptr: *mut u8) -> *mut ObjectHeader {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_init_gc() {
-    if !EDEN_START.is_null() {
-        return;
-    }
-    let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
-    EDEN_START = mmap(
-        std::ptr::null_mut(),
-        total_young,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANON,
-        -1,
-        0,
-    ) as *mut u8;
+    GC_INIT.call_once(|| unsafe {
+        let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
+        EDEN_START = mmap(
+            std::ptr::null_mut(),
+            total_young,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANON,
+            -1,
+            0,
+        ) as *mut u8;
 
-    if EDEN_START as isize == -1 {
-        //printf("FATAL: Failed to mmap Young Gen\n\0".as_ptr() as *const _);
-        exit(1);
-    }
+        if EDEN_START as isize == -1 {
+            exit(1);
+        }
 
-    EDEN_TOP.store(EDEN_START, std::sync::atomic::Ordering::SeqCst);
-    EDEN_END = EDEN_START.add(YOUNG_GEN_SIZE);
+        EDEN_TOP.store(EDEN_START, std::sync::atomic::Ordering::SeqCst);
+        EDEN_END = EDEN_START.add(YOUNG_GEN_SIZE);
 
-    FROM_SURVIVOR = EDEN_END;
-    TO_SURVIVOR = FROM_SURVIVOR.add(SURVIVOR_SIZE);
+        FROM_SURVIVOR = EDEN_END;
+        TO_SURVIVOR = FROM_SURVIVOR.add(SURVIVOR_SIZE);
 
-    OLD_START = mmap(
-        std::ptr::null_mut(),
-        OLD_GEN_SIZE,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANON,
-        -1,
-        0,
-    ) as *mut u8;
+        OLD_START = mmap(
+            std::ptr::null_mut(),
+            OLD_GEN_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANON,
+            -1,
+            0,
+        ) as *mut u8;
 
-    if OLD_START as isize == -1 {
-        //printf("FATAL: Failed to mmap Old Gen\n\0".as_ptr() as *const _);
-        exit(1);
-    }
+        if OLD_START as isize == -1 {
+            exit(1);
+        }
 
-    OLD_TOP = OLD_START;
-    OLD_END = OLD_START.add(OLD_GEN_SIZE);
+        OLD_TOP = OLD_START;
+        OLD_END = OLD_START.add(OLD_GEN_SIZE);
 
-    // Initialize Card Table
-    CARD_TABLE_SIZE = OLD_GEN_SIZE >> CARD_SHIFT;
-    CARD_TABLE = mmap(
-        std::ptr::null_mut(),
-        CARD_TABLE_SIZE,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANON,
-        -1,
-        0,
-    ) as *mut u8;
+        CARD_TABLE_SIZE = OLD_GEN_SIZE >> CARD_SHIFT;
+        CARD_TABLE = mmap(
+            std::ptr::null_mut(),
+            CARD_TABLE_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANON,
+            -1,
+            0,
+        ) as *mut u8;
 
-    if CARD_TABLE as isize == -1 {
-        //printf("FATAL: Failed to mmap Card Table\n\0".as_ptr() as *const _);
-        exit(1);
-    }
+        if CARD_TABLE as isize == -1 {
+            exit(1);
+        }
 
-    rt_start_gc_scheduler();
+        rt_start_gc_scheduler();
+    });
+
+    ensure_thread_registered();
 }
 
 #[no_mangle]
@@ -668,6 +711,7 @@ pub unsafe extern "C" fn rt_start_gc_scheduler() {
 }
 
 pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
+    ensure_thread_registered();
     if EDEN_START.is_null() {
         rt_init_gc();
     }
@@ -724,6 +768,7 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
+    ensure_thread_registered();
     let header_size = std::mem::size_of::<ObjectHeader>();
     let total_size = size + header_size;
     let aligned_size = (total_size + 7) & !7;
@@ -846,7 +891,7 @@ pub unsafe fn in_los(ptr: *mut u8) -> bool {
     false
 }
 
-pub unsafe fn mark_object(root: *mut i64) {
+unsafe fn mark_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>) {
     if root.is_null() {
         return;
     }
@@ -867,11 +912,17 @@ pub unsafe fn mark_object(root: *mut i64) {
 
     let header = (body_ptr as *mut ObjectHeader).offset(-1);
 
-    if gc_is_marked((*header).gc_word) {
-        return; // Already marked (using bit 8 for mark_bit)
-    }
+    if is_stack {
+        if !seen_stack.insert(header as usize) {
+            return;
+        }
+    } else {
+        if gc_is_marked((*header).gc_word) {
+            return;
+        }
 
-    (*header).gc_word |= GC_MARK_BIT;
+        (*header).gc_word |= GC_MARK_BIT;
+    }
 
     // Recursively mark fields
     let type_id = (*header).type_id;
@@ -883,22 +934,27 @@ pub unsafe fn mark_object(root: *mut i64) {
         if is_ptr_array {
             let data = body_ptr as *mut i64;
             for i in 0..len {
-                mark_object(data.add(i as usize));
+                mark_object_with_seen(data.add(i as usize), seen_stack);
             }
         }
     } else if type_id == TAG_OBJECT as u16 {
-        mark_object(body_ptr.add(16) as *mut i64); // keys_handle at offset 2 (16 bytes)
-        mark_object(body_ptr.add(24) as *mut i64); // values_handle at offset 3 (24 bytes)
+        mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
+        mark_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
     } else if type_id == TAG_PROMISE as u16 {
-        mark_object(body_ptr.add(8) as *mut i64); // value
-        mark_object(body_ptr.add(16) as *mut i64); // callbacks array
+        mark_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
+        mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
     } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
         let entry = &TYPE_TABLE[type_id as usize];
         for i in 0..entry.ptr_count {
             let offset = entry.ptr_offsets[i];
-            mark_object(body_ptr.add(offset) as *mut i64);
+            mark_object_with_seen(body_ptr.add(offset) as *mut i64, seen_stack);
         }
     }
+}
+
+pub unsafe fn mark_object(root: *mut i64) {
+    let mut seen_stack = HashSet::new();
+    mark_object_with_seen(root, &mut seen_stack);
 }
 
 unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
@@ -922,8 +978,9 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
         current = current.add(size);
     }
-    for i in 0..LOS_COUNT {
-        (*(LOS_OBJECTS[i] as *mut ObjectHeader)).gc_word &= !GC_MARK_BIT;
+    let los_before_sweep = los_snapshot();
+    for &(obj_ptr, _) in &los_before_sweep {
+        (*(obj_ptr as *mut ObjectHeader)).gc_word &= !GC_MARK_BIT;
     }
 
     {
@@ -957,13 +1014,13 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         curr = curr.add(size);
     }
     // Also LOS finalizers
-    for i in 0..LOS_COUNT {
-        let header = LOS_OBJECTS[i] as *mut ObjectHeader;
+    for &(obj_ptr, _) in &los_before_sweep {
+        let header = obj_ptr as *mut ObjectHeader;
         let type_id = (*header).type_id;
         if !gc_is_marked((*header).gc_word) {
             if (type_id as usize) < MAX_TYPES {
                 if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                    let obj_val = (LOS_OBJECTS[i].add(std::mem::size_of::<ObjectHeader>()) as i64)
+                    let obj_val = (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64)
                         + HEAP_OFFSET;
                     f(obj_val);
                 }
@@ -972,22 +1029,26 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     }
 
     // 3. Sweep LOS
-    let mut new_los_count = 0;
-    let mut new_los_bytes = 0usize;
-    for i in 0..LOS_COUNT {
-        let header = LOS_OBJECTS[i] as *mut ObjectHeader;
-        if gc_is_marked((*header).gc_word) {
-            LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
-            LOS_SIZES[new_los_count] = LOS_SIZES[i];
-            new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
-            new_los_count += 1;
-        } else {
-            munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
+    {
+        let _los_lock = LOS_LOCK.lock().unwrap();
+        let mut new_los_count = 0;
+        let mut new_los_bytes = 0usize;
+        for i in 0..LOS_COUNT {
+            let header = LOS_OBJECTS[i] as *mut ObjectHeader;
+            if gc_is_marked((*header).gc_word) {
+                LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
+                LOS_SIZES[new_los_count] = LOS_SIZES[i];
+                new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
+                new_los_count += 1;
+            } else {
+                munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
+            }
         }
+        LOS_COUNT = new_los_count;
+        LOS_BYTES = new_los_bytes;
+        LOS_NEXT_GC_THRESHOLD =
+            std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
     }
-    LOS_COUNT = new_los_count;
-    LOS_BYTES = new_los_bytes;
-    LOS_NEXT_GC_THRESHOLD = std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
 
     // 4. Mark-Compact for Old Gen (3 passes)
 
@@ -1041,8 +1102,8 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     }
 
     // Update LOS objects' fields
-    for i in 0..LOS_COUNT {
-        update_object_fields(LOS_OBJECTS[i] as *mut ObjectHeader, rt_update_ptr);
+    for (obj_ptr, _) in los_snapshot() {
+        update_object_fields(obj_ptr as *mut ObjectHeader, rt_update_ptr);
     }
 
     // Pass 3: Actually move
@@ -1066,6 +1127,17 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         move_ptr = move_ptr.add(size);
     }
     OLD_TOP = dest_ptr;
+
+    // Young survivors participate in mark traversal during major GC, but they are not part
+    // of the compacted old generation. Clear any transient mark bits so a later major GC
+    // does not incorrectly skip traversing still-young roots.
+    y_scan = FROM_SURVIVOR;
+    while y_scan < FROM_SURVIVOR_TOP {
+        let header = y_scan as *mut ObjectHeader;
+        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+        (*header).gc_word &= !GC_MARK_BIT;
+        y_scan = y_scan.add(size);
+    }
 
     if !safepoint_already {
         // Resume threads
@@ -1114,6 +1186,48 @@ unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mu
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn major_gc_clears_mark_bits_on_young_survivors() {
+        unsafe {
+            let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+
+            let mut holder = crate::rt_Array_constructor_v2(0, 1, 8, crate::ARRAY_FLAG_PTR);
+            crate::gc::rt_push_root(&mut holder);
+
+            let len = (LARGE_OBJECT_THRESHOLD + 1024) as i64;
+            let bytes = vec![b'g'; len as usize];
+            let target = crate::new_string_from_bytes(bytes.as_ptr(), len);
+            crate::rt_array_set_fast(holder, 0, target);
+
+            minor_gc();
+
+            let holder_body = (holder - crate::HEAP_OFFSET) as *mut u8;
+            assert!(holder_body >= FROM_SURVIVOR && holder_body < FROM_SURVIVOR_TOP);
+
+            major_gc_locked_internal(false, false);
+            let los_count = LOS_COUNT;
+            assert_eq!(los_count, 1);
+
+            let holder_header = rt_get_header((holder - crate::HEAP_OFFSET) as *mut u8);
+            assert!(!gc_is_marked((*holder_header).gc_word));
+
+            major_gc_locked_internal(false, false);
+            let los_count = LOS_COUNT;
+            assert_eq!(
+                los_count, 1,
+                "young survivors must not retain stale mark bits across major GCs"
+            );
+
+            crate::gc::rt_pop_roots(1);
+        }
+    }
+}
+
 unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
     let type_id = (*header).type_id;
     let body_size = if type_id == TAG_STRING as u16 {
@@ -1148,7 +1262,7 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
 
 pub const PROMOTION_THRESHOLD: u8 = 2;
 
-pub unsafe fn copy_object(root: *mut i64) {
+unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>) {
     if root.is_null() {
         return;
     }
@@ -1160,7 +1274,11 @@ pub unsafe fn copy_object(root: *mut i64) {
     if val >= STACK_OFFSET && val < HEAP_OFFSET {
         // Stack object: doesn't move, but we MUST scan its fields
         let body = (val - STACK_OFFSET) as *mut u8;
-        scan_object_fields(rt_get_header(body));
+        let header = rt_get_header(body);
+        if !seen_stack.insert(header as usize) {
+            return;
+        }
+        scan_object_fields_with_seen(header, seen_stack);
         return;
     }
 
@@ -1221,7 +1339,41 @@ pub unsafe fn copy_object(root: *mut i64) {
     }
 }
 
-unsafe fn scan_object_fields(header: *mut ObjectHeader) {
+pub unsafe fn copy_object(root: *mut i64) {
+    let mut seen_stack = HashSet::new();
+    copy_object_with_seen(root, &mut seen_stack);
+}
+
+#[inline]
+unsafe fn copy_object_with_seen_and_track_young(
+    slot: *mut i64,
+    seen_stack: &mut HashSet<usize>,
+    has_young_refs: &mut bool,
+) {
+    let val = *slot;
+    if val < HEAP_OFFSET {
+        return;
+    }
+
+    let body = (val - HEAP_OFFSET) as *mut u8;
+    if !rt_is_gc_ptr(body) {
+        return;
+    }
+
+    copy_object_with_seen(slot, seen_stack);
+
+    let updated = *slot;
+    if updated < HEAP_OFFSET {
+        return;
+    }
+
+    let updated_body = (updated - HEAP_OFFSET) as *mut u8;
+    if in_young_gen(updated_body) {
+        *has_young_refs = true;
+    }
+}
+
+unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &mut HashSet<usize>) {
     let type_id = (*header).type_id;
     let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
 
@@ -1236,24 +1388,93 @@ unsafe fn scan_object_fields(header: *mut ObjectHeader) {
                 if val >= HEAP_OFFSET {
                     let body = (val - HEAP_OFFSET) as *mut u8;
                     if rt_is_gc_ptr(body) {
-                        copy_object(data.add(i as usize));
+                        copy_object_with_seen(data.add(i as usize), seen_stack);
                     }
                 }
             }
         }
     } else if type_id == TAG_OBJECT as u16 {
-        copy_object(body_ptr.add(16) as *mut i64); // keys_handle
-        copy_object(body_ptr.add(24) as *mut i64); // values_handle
+        copy_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
+        copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
     } else if type_id == TAG_PROMISE as u16 {
-        copy_object(body_ptr.add(8) as *mut i64); // value
-        copy_object(body_ptr.add(16) as *mut i64); // callbacks array
+        copy_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
+        copy_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
     } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
         let entry = &TYPE_TABLE[type_id as usize];
         for i in 0..entry.ptr_count {
             let offset = entry.ptr_offsets[i];
-            copy_object(body_ptr.add(offset) as *mut i64);
+            copy_object_with_seen(body_ptr.add(offset) as *mut i64, seen_stack);
         }
     }
+}
+
+unsafe fn scan_object_fields_minor_with_seen(
+    header: *mut ObjectHeader,
+    seen_stack: &mut HashSet<usize>,
+) -> bool {
+    let type_id = (*header).type_id;
+    let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
+    let mut has_young_refs = false;
+
+    if type_id == TAG_ARRAY as u16 {
+        let len = (*header).length;
+        let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
+
+        if is_ptr_array {
+            let data = body_ptr as *mut i64;
+            for i in 0..len {
+                copy_object_with_seen_and_track_young(
+                    data.add(i as usize),
+                    seen_stack,
+                    &mut has_young_refs,
+                );
+            }
+        }
+    } else if type_id == TAG_OBJECT as u16 {
+        copy_object_with_seen_and_track_young(
+            body_ptr.add(16) as *mut i64,
+            seen_stack,
+            &mut has_young_refs,
+        );
+        copy_object_with_seen_and_track_young(
+            body_ptr.add(24) as *mut i64,
+            seen_stack,
+            &mut has_young_refs,
+        );
+    } else if type_id == TAG_PROMISE as u16 {
+        copy_object_with_seen_and_track_young(
+            body_ptr.add(8) as *mut i64,
+            seen_stack,
+            &mut has_young_refs,
+        );
+        copy_object_with_seen_and_track_young(
+            body_ptr.add(16) as *mut i64,
+            seen_stack,
+            &mut has_young_refs,
+        );
+    } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
+        let entry = &TYPE_TABLE[type_id as usize];
+        for i in 0..entry.ptr_count {
+            let offset = entry.ptr_offsets[i];
+            copy_object_with_seen_and_track_young(
+                body_ptr.add(offset) as *mut i64,
+                seen_stack,
+                &mut has_young_refs,
+            );
+        }
+    }
+
+    has_young_refs
+}
+
+unsafe fn scan_object_fields_minor(header: *mut ObjectHeader) -> bool {
+    let mut seen_stack = HashSet::new();
+    scan_object_fields_minor_with_seen(header, &mut seen_stack)
+}
+
+unsafe fn scan_object_fields(header: *mut ObjectHeader) {
+    let mut seen_stack = HashSet::new();
+    scan_object_fields_with_seen(header, &mut seen_stack);
 }
 
 #[inline]
@@ -1356,7 +1577,9 @@ pub unsafe fn minor_gc_locked() {
     let eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
     let from_survivor_top = FROM_SURVIVOR_TOP;
     TO_SURVIVOR_TOP = TO_SURVIVOR;
-    let mut scan_ptr = TO_SURVIVOR;
+    let mut survivor_scan_ptr = TO_SURVIVOR;
+    let mut promoted_scan_ptr = OLD_TOP;
+    let mut next_dirty_cards = Vec::new();
 
     // 1. Scan roots
     {
@@ -1380,7 +1603,9 @@ pub unsafe fn minor_gc_locked() {
         let card_idx = offset >> CARD_SHIFT;
 
         if *CARD_TABLE.add(card_idx) != 0 {
-            scan_object_fields(header);
+            if scan_object_fields_minor(header) {
+                next_dirty_cards.push(card_idx);
+            }
         }
 
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
@@ -1388,17 +1613,39 @@ pub unsafe fn minor_gc_locked() {
     }
 
     // 1c. Scan all LOS objects (they can store references to Young Gen)
-    for i in 0..LOS_COUNT {
-        let header = LOS_OBJECTS[i] as *mut ObjectHeader;
+    for (obj_ptr, _) in los_snapshot() {
+        let header = obj_ptr as *mut ObjectHeader;
         scan_object_fields(header);
     }
 
-    // 2. Cheney's scan
-    while scan_ptr < TO_SURVIVOR_TOP {
-        let header = scan_ptr as *mut ObjectHeader;
-        scan_object_fields(header);
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        scan_ptr = scan_ptr.add(size);
+    // 2. Trace both survivor objects and any young objects promoted into Old Gen.
+    // Promoted containers can themselves hold references to more young objects, so keep
+    // walking both frontiers until the collection reaches a fixed point.
+    loop {
+        let mut progressed = false;
+
+        while survivor_scan_ptr < TO_SURVIVOR_TOP {
+            let header = survivor_scan_ptr as *mut ObjectHeader;
+            scan_object_fields(header);
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+            survivor_scan_ptr = survivor_scan_ptr.add(size);
+            progressed = true;
+        }
+
+        while promoted_scan_ptr < OLD_TOP {
+            let header = promoted_scan_ptr as *mut ObjectHeader;
+            if scan_object_fields_minor(header) {
+                let offset = promoted_scan_ptr as usize - OLD_START as usize;
+                next_dirty_cards.push(offset >> CARD_SHIFT);
+            }
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+            promoted_scan_ptr = promoted_scan_ptr.add(size);
+            progressed = true;
+        }
+
+        if !progressed {
+            break;
+        }
     }
 
     run_young_finalizers_in_region(EDEN_START, eden_top);
@@ -1414,4 +1661,7 @@ pub unsafe fn minor_gc_locked() {
 
     // Reset Card Table
     memset(CARD_TABLE as *mut std::ffi::c_void, 0, CARD_TABLE_SIZE);
+    for card_idx in next_dirty_cards {
+        *CARD_TABLE.add(card_idx) = 1;
+    }
 }

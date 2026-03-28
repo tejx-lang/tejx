@@ -179,7 +179,7 @@ export class Request {
         }
 
         if (this.bodyKind == 2) {
-            if (headers.get("content-type") == "") {
+            if (headers.get("content-type") == None) {
                 headers.set("content-type", "application/json");
             }
             return json.stringify(this.body);
@@ -214,7 +214,7 @@ export class HttpResponse {
         this.body = response.body;
     }
 
-    getHeader(name: string): string {
+    getHeader(name: string): Optional<string> {
         return this.headers.get(name);
     }
 

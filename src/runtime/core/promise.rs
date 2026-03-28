@@ -34,6 +34,16 @@ unsafe fn promise_flags_ptr(body: *mut i64) -> *mut i64 {
 }
 
 #[inline]
+unsafe fn promise_owner_id(body: *mut i64) -> i64 {
+    (body as i64) + HEAP_OFFSET
+}
+
+#[inline]
+unsafe fn promise_store_ref(body: *mut i64, slot: *mut i64, value: i64) {
+    rt_store_ref_slot(promise_owner_id(body), slot, value);
+}
+
+#[inline]
 unsafe fn promise_mark_observed(body: *mut i64) {
     *promise_flags_ptr(body) |= PROMISE_FLAG_OBSERVED;
 }
@@ -95,7 +105,7 @@ unsafe fn rt_promise_adopt(target_p: i64, source_p: i64) {
             callbacks_arr = rt_array_push(callbacks_arr, 0);
             callbacks_arr = rt_array_push(callbacks_arr, 0);
             callbacks_arr = rt_array_push(callbacks_arr, v_target);
-            *body.offset(2) = callbacks_arr;
+            promise_store_ref(body, body.offset(2), callbacks_arr);
             rt_pop_roots(1);
         }
         1 => {
@@ -219,7 +229,7 @@ pub unsafe extern "C" fn rt_promise_new() -> i64 {
 
     *obj.offset(0) = 0; // State: Pending
     *obj.offset(1) = 0; // Value
-    *obj.offset(2) = callbacks; // Callbacks array
+    promise_store_ref(obj, obj.offset(2), callbacks); // Callbacks array
     *obj.offset(3) = 0; // flags
     *obj.offset(4) = 0;
 
@@ -254,7 +264,7 @@ pub unsafe extern "C" fn rt_promise_resolve(p: i64, v_val: i64) {
     }
 
     *promise_state_ptr(body) = PROMISE_STATE_RESOLVED;
-    *promise_value_ptr(body) = v_v;
+    promise_store_ref(body, promise_value_ptr(body), v_v);
 
     // Execute callbacks asynchronously
     let callbacks_arr = *promise_callbacks_ptr(body);
@@ -341,7 +351,7 @@ pub unsafe extern "C" fn rt_promise_reject(p: i64, v_err: i64) {
         return;
     } // Already settled
     *promise_state_ptr(body) = PROMISE_STATE_REJECTED;
-    *promise_value_ptr(body) = v_e;
+    promise_store_ref(body, promise_value_ptr(body), v_e);
 
     // Propagate rejection asynchronously
     let callbacks_arr = *promise_callbacks_ptr(body);
@@ -475,7 +485,7 @@ pub unsafe extern "C" fn rt_promise_then(p: i64, cb_resolve: i64, cb_reject: i64
         callbacks_arr = rt_array_push(callbacks_arr, v_cb_res);
         callbacks_arr = rt_array_push(callbacks_arr, v_cb_rej);
         callbacks_arr = rt_array_push(callbacks_arr, v_new_p);
-        *promise_callbacks_ptr(body) = callbacks_arr;
+        promise_store_ref(body, promise_callbacks_ptr(body), callbacks_arr);
         rt_pop_roots(1);
     } else if state == PROMISE_STATE_RESOLVED {
         let mut val = *promise_value_ptr(body);
@@ -532,7 +542,7 @@ pub unsafe extern "C" fn rt_promise_observe(p: i64, cb_resolve: i64, cb_reject: 
         callbacks_arr = rt_array_push(callbacks_arr, v_cb_res);
         callbacks_arr = rt_array_push(callbacks_arr, v_cb_rej);
         callbacks_arr = rt_array_push(callbacks_arr, 0);
-        *promise_callbacks_ptr(body) = callbacks_arr;
+        promise_store_ref(body, promise_callbacks_ptr(body), callbacks_arr);
         rt_pop_roots(1);
     } else if state == PROMISE_STATE_RESOLVED {
         let mut val = *promise_value_ptr(body);
@@ -587,7 +597,7 @@ pub unsafe extern "C" fn rt_promise_await_resume(p: i64, worker: i64, ctx: i64) 
         callbacks_arr = rt_array_push(callbacks_arr, v_worker);
         callbacks_arr = rt_array_push(callbacks_arr, v_ctx);
         callbacks_arr = rt_array_push(callbacks_arr, -2); // Marker for state machine resume
-        *promise_callbacks_ptr(body) = callbacks_arr;
+        promise_store_ref(body, promise_callbacks_ptr(body), callbacks_arr);
         rt_pop_roots(1);
     } else {
         // Already settled: Enqueue microtask immediately
@@ -619,6 +629,10 @@ pub unsafe extern "C" fn rt_promise_clone(p: i64) -> i64 {
 mod tests {
     use super::*;
 
+    unsafe fn drain_event_loop() {
+        while crate::event_loop::tejx_run_event_loop_step() {}
+    }
+
     unsafe extern "C" fn swallow_rejection(
         _env: i64,
         _err: i64,
@@ -640,6 +654,7 @@ mod tests {
         unsafe {
             let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
+            drain_event_loop();
             take_unhandled_promise_reports();
 
             let promise = rt_promise_new();
@@ -657,6 +672,7 @@ mod tests {
         unsafe {
             let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
+            drain_event_loop();
             take_unhandled_promise_reports();
 
             let promise = rt_promise_new();
@@ -675,6 +691,7 @@ mod tests {
         unsafe {
             let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
+            drain_event_loop();
             take_unhandled_promise_reports();
 
             let promise = rt_promise_new();
@@ -694,6 +711,7 @@ mod tests {
         unsafe {
             let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
+            drain_event_loop();
             take_unhandled_promise_reports();
 
             let source = rt_promise_new();
@@ -714,6 +732,7 @@ mod tests {
         unsafe {
             let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
             rt_init_gc();
+            drain_event_loop();
             take_unhandled_promise_reports();
 
             let mut promise = rt_promise_new();
@@ -733,6 +752,53 @@ mod tests {
 
             while crate::event_loop::tejx_run_event_loop_step() {}
             assert_eq!(take_unhandled_promise_reports(), 0);
+        }
+    }
+
+    #[test]
+    fn old_promises_dirty_cards_for_young_callbacks_and_values() {
+        unsafe {
+            let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
+            rt_init_gc();
+            drain_event_loop();
+
+            let mut promise = rt_promise_new();
+            rt_push_root(&mut promise);
+            let mut pad = rt_Array_new(256, 8);
+            rt_push_root(&mut pad);
+
+            gc::minor_gc();
+            gc::minor_gc();
+
+            let promise_body = (promise - HEAP_OFFSET) as *mut u8;
+            assert!(promise_body >= gc::OLD_START && promise_body < gc::OLD_TOP);
+
+            let card_idx = (promise_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+            *gc::CARD_TABLE.add(card_idx) = 0;
+
+            let mut chained = rt_promise_then(promise, 0, 0);
+            rt_push_root(&mut chained);
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old promises must dirty their card when then() swaps in a young callback array"
+            );
+
+            *gc::CARD_TABLE.add(card_idx) = 0;
+
+            let mut value = rt_box_int(42);
+            rt_push_root(&mut value);
+            rt_promise_resolve(promise, value);
+
+            assert_eq!(
+                *gc::CARD_TABLE.add(card_idx),
+                1,
+                "old promises must dirty their card when resolving to a young heap value"
+            );
+
+            rt_pop_roots(4);
+            drain_event_loop();
         }
     }
 }

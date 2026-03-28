@@ -1061,22 +1061,16 @@ impl CodeGen {
     }
 
     pub(crate) fn emit_box_string(&mut self, raw_ptr: &str) -> String {
-        if let Some(boxed) = self.boxed_string_cache.get(raw_ptr) {
-            return boxed.clone();
-        }
-
         self.declare_runtime_fn(
             "rt_string_from_c_str_const",
             "i64 @rt_string_from_c_str_const(i64)",
         );
         self.temp_counter += 1;
         let boxed = format!("%boxed_str{}", self.temp_counter);
-        self.alloca_buffer.push_str(&format!(
-            "  {} = call i64 @rt_string_from_c_str_const(i64 {})\n",
+        self.emit_line(&format!(
+            "{} = call i64 @rt_string_from_c_str_const(i64 {})",
             boxed, raw_ptr
         ));
-        self.boxed_string_cache
-            .insert(raw_ptr.to_string(), boxed.clone());
         boxed
     }
     pub(crate) fn emit_auto_box(&mut self, val: &str, ty: &TejxType) -> String {

@@ -103,12 +103,9 @@ export class Headers {
         this.values.set(canonical, headerValue);
     }
 
-    get(name: string): string {
+    get(name: string): Optional<string> {
         let value: Optional<string> = this.values.get(canonicalHeaderName(name));
-        if (value == None) {
-            return "";
-        }
-        return value as string;
+        return value;
     }
 
     delete(name: string): void {
@@ -133,7 +130,10 @@ export class Headers {
             let keys: string[] = existing.keys();
             for (let i = 0; i < keys.length(); i++) {
                 let key: string = keys[i];
-                this.set(key, existing.get(key));
+                let value = existing.get(key);
+                if (value != None) {
+                    this.set(key, value as string);
+                }
             }
             return;
         }
@@ -290,12 +290,13 @@ class HttpClientResponse {
         }
 
         this.headers = parseHeaders(lines, 1);
-        if (this.header("transfer-encoding") == "chunked") {
+        let transferEncoding = this.header("transfer-encoding");
+        if (transferEncoding != None && (transferEncoding as string) == "chunked") {
             this.body = decodeChunkedBody(this.body);
         }
     }
 
-    header(name: string): string {
+    header(name: string): Optional<string> {
         return this.headers.get(name);
     }
 
@@ -304,24 +305,24 @@ class HttpClientResponse {
     }
 }
 
-function appendHeaderLine(request: string, name: string, value: string): string {
-    if (value == "") {
+function appendHeaderLine(request: string, name: string, value: Optional<string>): string {
+    if (value == None) {
         return request;
     }
-    return request + name + ": " + value + "\r\n";
+    return request + name + ": " + (value as string) + "\r\n";
 }
 
 function buildRequest(method: string, url: Url, body: string, headers: Headers): string {
     let request = method.toUpperCase() + " " + url.resource + " HTTP/1.1\r\n";
 
     let hostHeader = headers.get("host");
-    if (hostHeader == "") {
+    if (hostHeader == None) {
         hostHeader = url.hostHeader;
     }
     request = appendHeaderLine(request, "host", hostHeader);
 
     let connectionHeader = headers.get("connection");
-    if (connectionHeader == "") {
+    if (connectionHeader == None) {
         connectionHeader = "close";
     }
     request = appendHeaderLine(request, "connection", connectionHeader);
@@ -331,7 +332,7 @@ function buildRequest(method: string, url: Url, body: string, headers: Headers):
     request = appendHeaderLine(request, "content-type", headers.get("content-type"));
 
     let contentLength = headers.get("content-length");
-    if (contentLength == "" && body != "") {
+    if (contentLength == None && body != "") {
         contentLength = String(body.length());
     }
     request = appendHeaderLine(request, "content-length", contentLength);
@@ -343,7 +344,10 @@ function buildRequest(method: string, url: Url, body: string, headers: Headers):
         if (canonical == "host" || canonical == "connection" || canonical == "user-agent" || canonical == "accept" || canonical == "authorization" || canonical == "content-type" || canonical == "content-length") {
             continue;
         }
-        request = request + key + ": " + headers.get(key) + "\r\n";
+        let value = headers.get(key);
+        if (value != None) {
+            request = request + key + ": " + (value as string) + "\r\n";
+        }
     }
 
     request = request + "\r\n";

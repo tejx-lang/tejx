@@ -3,6 +3,11 @@
 import std:system;
 import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
+function expectSomeString(value: Optional<string>, msg: string): string {
+    assert_true(value != None, msg);
+    return value as string;
+}
+
 function hasKey(keys: string[], target: string): bool {
     for (let i = 0; i < keys.length(); i = i + 1) {
         if (keys[i] == target) {
@@ -36,8 +41,9 @@ function test_args_aliases() {
 function test_env_aliases() {
     print("--- Env Test ---");
     let missingKey = "__TEJX_SYSTEM_TEST_MISSING_ENV__";
-    assert_eq_string("", getEnv(missingKey), "getEnv missing returns empty");
-    assert_eq_string("", system.getEnv(missingKey), "system.getEnv missing returns empty");
+    assert_true(getEnv(missingKey) == None, "getEnv missing returns None");
+    assert_true(system.getEnv(missingKey) == None, "system.getEnv missing returns None");
+    assert_true(os.getEnv(missingKey) == None, "os.getEnv missing returns None");
 
     let allEnv: any = getAllEnv();
     let nsAllEnv: any = system.getAllEnv();
@@ -51,8 +57,8 @@ function test_env_aliases() {
     let topValue = allEnv[firstKey] as string;
     let nsValue = nsAllEnv[firstKey] as string;
 
-    assert_eq_string(topValue, getEnv(firstKey), "getAllEnv value matches getEnv");
-    assert_eq_string(topValue, system.getEnv(firstKey), "system.getEnv alias");
+    assert_eq_string(topValue, expectSomeString(getEnv(firstKey), "getAllEnv value matches getEnv"), "getAllEnv value matches getEnv");
+    assert_eq_string(topValue, expectSomeString(system.getEnv(firstKey), "system.getEnv alias"), "system.getEnv alias");
     assert_eq_string(topValue, nsValue, "system.getAllEnv value matches");
 }
 
@@ -65,9 +71,9 @@ function test_os_level_envs() {
 
     assert_true(hasKey(keys, "PATH"), "OS PATH env exists");
 
-    let pathValue = getEnv("PATH");
-    let nsPathValue = system.getEnv("PATH");
-    let osPathValue = os.getEnv("PATH");
+    let pathValue = expectSomeString(getEnv("PATH"), "PATH env exists");
+    let nsPathValue = expectSomeString(system.getEnv("PATH"), "system PATH env exists");
+    let osPathValue = expectSomeString(os.getEnv("PATH"), "os PATH env exists");
     assert_true(pathValue.length() > 0, "PATH has content");
     assert_eq_string(pathValue, nsPathValue, "system.getEnv PATH alias");
     assert_eq_string(pathValue, osPathValue, "os.getEnv PATH alias");
@@ -76,8 +82,8 @@ function test_os_level_envs() {
     assert_eq_string(pathValue, osAllEnv["PATH"] as string, "os.getAllEnv PATH matches");
 
     let homeValue = getEnv("HOME");
-    if (homeValue.length() > 0) {
-        assert_eq_string(homeValue, allEnv["HOME"] as string, "getAllEnv HOME matches");
+    if (homeValue != None) {
+        assert_eq_string(homeValue as string, allEnv["HOME"] as string, "getAllEnv HOME matches");
     }
 }
 
@@ -102,23 +108,23 @@ function test_os_info() {
     assert_eq_string(osArch, nsOsArch, "system.getOSArch alias");
     assert_eq_string(osArch, osNsArch, "os.getArch alias");
 
-    let cwd = getCwd();
-    let nsCwd = system.getCwd();
-    let osNsCwd = os.getCwd();
+    let cwd = expectSomeString(getCwd(), "cwd available");
+    let nsCwd = expectSomeString(system.getCwd(), "system cwd available");
+    let osNsCwd = expectSomeString(os.getCwd(), "os cwd available");
     assert_true(cwd.length() > 0, "cwd has content");
     assert_true(cwd.includes("tejx-lang"), "cwd points at repo");
     assert_eq_string(cwd, nsCwd, "system.getCwd alias");
     assert_eq_string(cwd, osNsCwd, "os.getCwd alias");
 
-    let homeDir = getHomeDir();
-    let nsHomeDir = system.getHomeDir();
-    let osNsHomeDir = os.getHomeDir();
+    let homeDir = expectSomeString(getHomeDir(), "home dir available");
+    let nsHomeDir = expectSomeString(system.getHomeDir(), "system home dir available");
+    let osNsHomeDir = expectSomeString(os.getHomeDir(), "os home dir available");
     assert_true(homeDir.length() > 0, "home dir has content");
     assert_eq_string(homeDir, nsHomeDir, "system.getHomeDir alias");
     assert_eq_string(homeDir, osNsHomeDir, "os.getHomeDir alias");
     let homeEnv = getEnv("HOME");
-    if (homeEnv.length() > 0) {
-        assert_eq_string(homeEnv, homeDir, "home dir matches HOME");
+    if (homeEnv != None) {
+        assert_eq_string(homeEnv as string, homeDir, "home dir matches HOME");
     }
 
     let tempDir = getTempDir();
@@ -129,13 +135,13 @@ function test_os_info() {
     assert_eq_string(tempDir, osNsTempDir, "os.getTempDir alias");
 
     let tmpEnv = getEnv("TMPDIR");
-    if (tmpEnv.length() > 0) {
-        assert_eq_string(tmpEnv, tempDir, "temp dir matches TMPDIR");
+    if (tmpEnv != None) {
+        assert_eq_string(tmpEnv as string, tempDir, "temp dir matches TMPDIR");
     }
 
-    let hostname = getHostname();
-    let nsHostname = system.getHostname();
-    let osNsHostname = os.getHostname();
+    let hostname = expectSomeString(getHostname(), "hostname available");
+    let nsHostname = expectSomeString(system.getHostname(), "system hostname available");
+    let osNsHostname = expectSomeString(os.getHostname(), "os hostname available");
     assert_true(hostname.length() > 0, "hostname has content");
     assert_eq_string(hostname, nsHostname, "system.getHostname alias");
     assert_eq_string(hostname, osNsHostname, "os.getHostname alias");
