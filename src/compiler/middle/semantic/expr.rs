@@ -798,22 +798,7 @@ impl TypeChecker {
                                             if let Some(current) = &self.current_class {
                                                 let current_base =
                                                     current.split('<').next().unwrap_or(current);
-                                                let mut is_subclass = current_base == name;
-                                                let mut curr = current_base.to_string();
-                                                while !is_subclass {
-                                                    if let Some(parent) =
-                                                        self.class_hierarchy.get(&curr)
-                                                    {
-                                                        if parent == name {
-                                                            is_subclass = true;
-                                                            break;
-                                                        }
-                                                        curr = parent.clone();
-                                                    } else {
-                                                        break;
-                                                    }
-                                                }
-                                                is_subclass
+                                                self.is_same_or_subclass(current_base, name)
                                             } else {
                                                 false
                                             }
@@ -888,20 +873,7 @@ impl TypeChecker {
                                     if let Some(current) = &self.current_class {
                                         let current_base =
                                             current.split('<').next().unwrap_or(current);
-                                        let mut is_subclass = current_base == obj_base;
-                                        let mut curr = current_base.to_string();
-                                        while !is_subclass {
-                                            if let Some(parent) = self.class_hierarchy.get(&curr) {
-                                                if parent == obj_base {
-                                                    is_subclass = true;
-                                                    break;
-                                                }
-                                                curr = parent.clone();
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                        is_subclass
+                                        self.is_same_or_subclass(current_base, obj_base)
                                     } else {
                                         false
                                     }

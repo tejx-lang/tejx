@@ -30,6 +30,7 @@ pub struct CodeGen {
     captured_vars_by_function: HashMap<String, Vec<String>>,
     current_env: Option<String>,
     alloca_buffer: String,
+    entry_init_buffer: String,
     stack_arrays: HashSet<String>,
     heap_array_ptrs: HashMap<String, (String, i64)>, // var_name -> (data_ptr_alloca, elem_size)
     pub unsafe_arrays: bool,
@@ -166,6 +167,7 @@ impl CodeGen {
             captured_vars_by_function: HashMap::new(),
             current_env: None,
             alloca_buffer: String::new(),
+            entry_init_buffer: String::new(),
             stack_arrays: HashSet::new(),
             heap_array_ptrs: HashMap::new(),
             unsafe_arrays: false,

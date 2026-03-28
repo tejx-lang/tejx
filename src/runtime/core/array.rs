@@ -398,9 +398,6 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         rt_throw_array_null_error("writing", index);
     }
     let mut id = id;
-    let mut value = val;
-    rt_push_root(&mut id);
-    rt_push_root(&mut value);
     let mut body: *mut u8;
     let mut header: *mut ObjectHeader;
     let mut flags: u16;
@@ -426,7 +423,22 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
 
-    let mut len = (*header).length as i64;
+    let len = (*header).length as i64;
+    let elem_size = (flags & 0xFF) as i64;
+    if index >= 0 && index < len {
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = val as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, val),
+        }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, len, elem_size);
+        }
+        return id;
+    }
+
     if index < 0 || index >= len {
         if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 {
             let msg_str = format!(
@@ -442,6 +454,10 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
             );
             rt_throw_runtime_error(&msg_str);
         }
+
+        let mut value = val;
+        rt_push_root(&mut id);
+        rt_push_root(&mut value);
         let new_len = index + 1;
         id = rt_array_ensure_capacity(id, new_len);
         if (id as u64) < (HEAP_OFFSET as u64) {
@@ -459,27 +475,18 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
             std::ptr::write_bytes(data.offset(byte_start), 0, byte_len);
         }
         (*header).length = new_len as u32;
-        len = new_len;
-        rt_update_array_cache(id, body, len, elem_size);
-    }
-
-    let data = body as *mut i8; // Data starts directly at body_ptr
-    let elem_size = (flags & 0xFF) as i64;
-    match elem_size {
-        1 => *(data.offset(index as isize) as *mut i8) = value as i8,
-        2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
-        4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
-        _ => {
-            *(data.offset((index * 8) as isize) as *mut i64) = value;
-            if id >= HEAP_OFFSET {
-                rt_write_barrier(id, value);
-            }
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = value as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, value),
         }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, new_len, elem_size);
+        }
+        rt_pop_roots(2);
     }
-    if id >= HEAP_OFFSET {
-        rt_update_array_cache(id, body, len, elem_size);
-    }
-    rt_pop_roots(2);
     id
 }
 
@@ -497,10 +504,6 @@ pub unsafe extern "C" fn rt_array_set_traced(
     }
 
     let mut id = id;
-    let mut value = val;
-    rt_push_root(&mut id);
-    rt_push_root(&mut value);
-
     let mut body: *mut u8;
     let mut header: *mut ObjectHeader;
     let mut flags: u16;
@@ -529,7 +532,22 @@ pub unsafe extern "C" fn rt_array_set_traced(
         rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
 
-    let mut len = (*header).length as i64;
+    let len = (*header).length as i64;
+    let elem_size = (flags & 0xFF) as i64;
+    if index >= 0 && index < len {
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = val as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, val),
+        }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, len, elem_size);
+        }
+        return id;
+    }
+
     if index < 0 || index >= len {
         if (flags & (ARRAY_FLAG_FIXED as u16)) != 0 || id < HEAP_OFFSET {
             runtime_set_current_location(file_ptr, line);
@@ -540,6 +558,9 @@ pub unsafe extern "C" fn rt_array_set_traced(
             rt_throw_runtime_error(&msg_str);
         }
 
+        let mut value = val;
+        rt_push_root(&mut id);
+        rt_push_root(&mut value);
         let new_len = index + 1;
         id = rt_array_ensure_capacity(id, new_len);
         if (id as u64) < (HEAP_OFFSET as u64) {
@@ -557,28 +578,18 @@ pub unsafe extern "C" fn rt_array_set_traced(
             std::ptr::write_bytes(data.offset(byte_start), 0, byte_len);
         }
         (*header).length = new_len as u32;
-        len = new_len;
-        rt_update_array_cache(id, body, len, elem_size);
-    }
-
-    let data = body as *mut i8;
-    let elem_size = (flags & 0xFF) as i64;
-    match elem_size {
-        1 => *(data.offset(index as isize) as *mut i8) = value as i8,
-        2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
-        4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
-        _ => {
-            *(data.offset((index * 8) as isize) as *mut i64) = value;
-            if id >= HEAP_OFFSET {
-                rt_write_barrier(id, value);
-            }
+        let data = body as *mut i8;
+        match elem_size {
+            1 => *(data.offset(index as isize) as *mut i8) = value as i8,
+            2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
+            4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
+            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, value),
         }
+        if id >= HEAP_OFFSET {
+            rt_update_array_cache(id, body, new_len, elem_size);
+        }
+        rt_pop_roots(2);
     }
-
-    if id >= HEAP_OFFSET {
-        rt_update_array_cache(id, body, len, elem_size);
-    }
-    rt_pop_roots(2);
     id
 }
 #[no_mangle]

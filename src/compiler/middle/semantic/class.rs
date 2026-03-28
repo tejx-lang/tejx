@@ -1,9 +1,83 @@
 use super::*;
 use crate::common::builtins;
 use crate::frontend::ast::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl TypeChecker {
+    pub(crate) fn base_class_name<'a>(&self, class_name: &'a str) -> &'a str {
+        class_name.split('<').next().unwrap_or(class_name)
+    }
+
+    pub(crate) fn parent_chain(&self, class_name: &str) -> Vec<String> {
+        let mut chain = Vec::new();
+        let mut visited = HashSet::new();
+        let mut current = self.base_class_name(class_name).to_string();
+
+        while let Some(parent) = self.class_hierarchy.get(&current) {
+            let parent_base = self.base_class_name(parent).to_string();
+            if !visited.insert(parent_base.clone()) {
+                break;
+            }
+            chain.push(parent_base.clone());
+            current = parent_base;
+        }
+
+        chain
+    }
+
+    pub(crate) fn is_same_or_subclass(&self, child: &str, ancestor: &str) -> bool {
+        let child_base = self.base_class_name(child);
+        let ancestor_base = self.base_class_name(ancestor);
+        child_base == ancestor_base
+            || self
+                .parent_chain(child_base)
+                .iter()
+                .any(|parent| parent == ancestor_base)
+    }
+
+    pub(crate) fn detect_inheritance_cycle(&self, class_name: &str) -> Option<Vec<String>> {
+        let mut order = Vec::new();
+        let mut seen = HashMap::new();
+        let mut current = self.base_class_name(class_name).to_string();
+
+        loop {
+            if let Some(&start_idx) = seen.get(&current) {
+                let mut cycle = order[start_idx..].to_vec();
+                cycle.push(current);
+                return Some(cycle);
+            }
+
+            seen.insert(current.clone(), order.len());
+            order.push(current.clone());
+
+            let parent = self.class_hierarchy.get(&current)?;
+            current = self.base_class_name(parent).to_string();
+        }
+    }
+
+    pub(crate) fn report_inheritance_cycle_if_needed(
+        &mut self,
+        class_name: &str,
+        line: usize,
+        col: usize,
+    ) -> bool {
+        if let Some(cycle) = self.detect_inheritance_cycle(class_name) {
+            self.report_error_detailed(
+                format!(
+                    "Circular inheritance detected: {}",
+                    cycle.join(" -> ")
+                ),
+                line,
+                col,
+                "E0111",
+                Some("Break the cycle so every class has a finite parent chain"),
+            );
+            return true;
+        }
+
+        false
+    }
+
     pub(crate) fn collect_declarations(&mut self, stmt: &Statement) {
         match stmt {
             Statement::ClassDeclaration(class_decl) => {

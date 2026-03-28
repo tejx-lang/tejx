@@ -1243,6 +1243,7 @@ update:\n\
         self.local_vars.clear();
         self.current_env = None;
         self.current_arena = None;
+        self.entry_init_buffer.clear();
         self.num_roots = 0;
         self.current_debug_line = None;
         self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
@@ -1529,6 +1530,8 @@ update:\n\
             ));
         }
 
+        let entry_init_marker = self.buffer.len();
+
         // Branch to first block
         if !func.blocks.is_empty() {
             self.emit_line("call void @rt_safepoint_poll()");
@@ -1618,6 +1621,12 @@ update:\n\
         }
 
         self.emit("}\n\n");
+
+        if !self.entry_init_buffer.is_empty() {
+            self.buffer
+                .insert_str(entry_init_marker, &self.entry_init_buffer);
+            self.entry_init_buffer.clear();
+        }
 
         if !self.alloca_buffer.is_empty() {
             self.buffer.insert_str(entry_marker, &self.alloca_buffer);

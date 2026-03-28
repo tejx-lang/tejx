@@ -625,6 +625,11 @@ impl TypeChecker {
             }
             Statement::ClassDeclaration(class_decl) => {
                 self.current_class = Some(class_decl.name.clone());
+                let has_inheritance_cycle = self.report_inheritance_cycle_if_needed(
+                    &class_decl.name,
+                    class_decl._line,
+                    class_decl._col,
+                );
                 // Removed self.define(...) because collect_declarations already inserted the symbol WITH correctly parsed generic parameters.
 
                 // Verify parent exists
@@ -660,9 +665,8 @@ impl TypeChecker {
                     }
                 }
 
-                if !class_decl._parent_name.is_empty() {
-                    let mut current_parent = class_decl._parent_name.clone();
-                    while !current_parent.is_empty() && current_parent != "<inferred>" {
+                if !has_inheritance_cycle && !class_decl._parent_name.is_empty() {
+                    for current_parent in self.parent_chain(&class_decl.name) {
                         if let Some(parent_members) =
                             self.class_members.get(&current_parent).cloned()
                         {
@@ -704,11 +708,6 @@ impl TypeChecker {
                                     }
                                 }
                             }
-                        }
-                        if let Some(next_parent) = self.class_hierarchy.get(&current_parent) {
-                            current_parent = next_parent.clone();
-                        } else {
-                            break;
                         }
                     }
                 }
@@ -930,20 +929,14 @@ impl TypeChecker {
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some(TejxType::Void);
 
-                    if !class_decl._parent_name.is_empty() {
+                    if !has_inheritance_cycle && !class_decl._parent_name.is_empty() {
                         let mut needs_super = false;
-                        let mut current_parent = class_decl._parent_name.clone();
-                        while !current_parent.is_empty() && current_parent != "<inferred>" {
+                        for current_parent in self.parent_chain(&class_decl.name) {
                             if let Some(parent_members) = self.class_members.get(&current_parent) {
                                 if parent_members.contains_key("constructor") {
                                     needs_super = true;
                                     break;
                                 }
-                            }
-                            if let Some(next_parent) = self.class_hierarchy.get(&current_parent) {
-                                current_parent = next_parent.clone();
-                            } else {
-                                break;
                             }
                         }
                         let is_implicit = constructor._line == class_decl._line

@@ -510,6 +510,26 @@ pub unsafe extern "C" fn rt_str_clear_local(lhs_id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
+    if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) =
+        (get_string_body_and_len(lhs_id), get_string_body_and_len(rhs_id))
+    {
+        let required = lhs_len + rhs_len;
+        let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
+            && ((*lhs_header).capacity as i64) >= required;
+
+        if can_mutate {
+            memcpy(
+                lhs_body.add(lhs_len as usize) as *mut _,
+                rhs_body as *const _,
+                rhs_len as usize,
+            );
+            *lhs_body.add(required as usize) = 0;
+            (*lhs_header).length = required as u32;
+            rt_update_array_cache(lhs_id, lhs_body, required, 1);
+            return lhs_id;
+        }
+    }
+
     let mut lhs = lhs_id;
     let mut rhs = rhs_id;
     rt_push_root(&mut lhs);

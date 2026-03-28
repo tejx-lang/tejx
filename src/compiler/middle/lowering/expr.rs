@@ -3,6 +3,7 @@ use crate::common::types::TejxType;
 use crate::frontend::ast::*;
 use crate::frontend::token::TokenType;
 use crate::middle::hir::*;
+use std::collections::HashSet;
 
 impl Lowering {
     fn is_promise_type(ty: &TejxType) -> bool {
@@ -297,8 +298,15 @@ impl Lowering {
                                 let mut found = false;
                                 let mut parent_class =
                                     { self.class_parents.borrow().get(&type_name).cloned() };
+                                let mut visited_parents = HashSet::new();
                                 while let Some(ref parent) = parent_class {
-                                    let parent_method_key = format!("f_{}_{}", parent, member);
+                                    let parent_base =
+                                        parent.split('<').next().unwrap_or(parent).to_string();
+                                    if !visited_parents.insert(parent_base.clone()) {
+                                        break;
+                                    }
+                                    let parent_method_key =
+                                        format!("f_{}_{}", parent_base, member);
                                     if let Some(ret_ty) =
                                         self.user_functions.borrow().get(&parent_method_key)
                                     {
@@ -319,7 +327,8 @@ impl Lowering {
                                         found = true;
                                         break;
                                     }
-                                    parent_class = self.class_parents.borrow().get(parent).cloned();
+                                    parent_class =
+                                        self.class_parents.borrow().get(&parent_base).cloned();
                                 }
                                 if !found {
                                     if type_name == "Any" || type_name == "any" {

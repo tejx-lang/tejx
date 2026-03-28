@@ -2065,7 +2065,13 @@ impl CodeGen {
                     self.emit_abi_cast(&final_reg, arg_ty, &effective_arg_ty)
                 };
 
+                let skip_callsite_root = is_runtime_fn
+                    && matches!(
+                        final_callee.as_str(),
+                        "rt_str_append_local" | "rt_str_clear_local"
+                    );
                 if Self::is_gc_managed(&effective_arg_ty)
+                    && !skip_callsite_root
                     && !(final_callee == "rt_string_from_c_str"
                         && matches!(arg_ty, TejxType::String)
                         && final_reg.starts_with("ptrtoint"))

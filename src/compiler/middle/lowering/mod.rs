@@ -945,11 +945,16 @@ impl Lowering {
             let mut all_fields = Vec::new();
             let mut current = Some(class_name.clone());
             let mut chain = Vec::new();
+            let mut visited = HashSet::new();
 
             // Walk up to collect inheritance chain
             while let Some(c) = current {
-                chain.push(c.clone());
-                current = parents.get(&c).cloned();
+                let base = c.split('<').next().unwrap_or(&c).to_string();
+                if !visited.insert(base.clone()) {
+                    break;
+                }
+                chain.push(base.clone());
+                current = parents.get(&base).cloned();
             }
 
             // Collect fields from top of hierarchy down
