@@ -336,10 +336,7 @@ fn main() {
 
     match linker.link() {
         Ok(_) => {
-            // Success - cleanup temp files if not compile_only or if otherwise needed
-            if !compile_only {
-                // let _ = fs::remove_file(&temp_ll_file);
-            }
+            let _ = fs::remove_file(&temp_ll_file);
         }
         Err(e) => {
             eprintln!("Error: {}", e);
