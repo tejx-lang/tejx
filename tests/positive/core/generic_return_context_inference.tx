@@ -1,0 +1,10 @@
+import { assert_eq_int } from "../utils.tx";
+
+function empty<T>(): T[] {
+    return [];
+}
+
+function main() {
+    let values: int[] = empty();
+    assert_eq_int(0, values.length(), "generic return-context inference");
+}

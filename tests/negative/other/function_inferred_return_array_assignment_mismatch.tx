@@ -1,0 +1,11 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Inferred array return types must still be checked on assignment.
+
+function ids() {
+    return [1, 2, 3];
+}
+
+function main() {
+    let names: string[] = ids();
+    print(names);
+}

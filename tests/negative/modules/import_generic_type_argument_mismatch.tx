@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Imported generic functions must still reject explicit type argument mismatches.
+
+import { identity } from "../../helpers/import_typechecking_helper.tx";
+
+function main() {
+    let label = identity<string>(123);
+    print(label);
+}

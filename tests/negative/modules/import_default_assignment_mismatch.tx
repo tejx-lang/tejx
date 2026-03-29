@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Default-imported function return types must remain strict across module boundaries.
+
+import describe from "../../helpers/import_typechecking_helper.tx";
+
+function main() {
+    let count: int = describe(5);
+    print(count);
+}

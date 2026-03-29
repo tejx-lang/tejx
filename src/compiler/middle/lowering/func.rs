@@ -9,10 +9,16 @@ impl Lowering {
         match ty {
             TejxType::Any => true,
             TejxType::Void
+            | TejxType::Int8
+            | TejxType::UInt8
             | TejxType::Int16
+            | TejxType::UInt16
+            | TejxType::UInt32
             | TejxType::Int32
+            | TejxType::UInt64
             | TejxType::Int64
             | TejxType::Int128
+            | TejxType::UInt128
             | TejxType::Float16
             | TejxType::Float32
             | TejxType::Float64
@@ -416,6 +422,61 @@ impl Lowering {
 
         if ordered_args.iter().any(|arg| !self.is_concrete_type(arg)) {
             return None;
+        }
+
+        self.discovered_function_instantiations
+            .borrow_mut()
+            .entry(self.function_template_name(callee_name))
+            .or_default()
+            .insert(ordered_args.clone());
+
+        Some((
+            self.monomorphized_name(callee_name, &ordered_args),
+            bindings,
+        ))
+    }
+
+    pub(crate) fn resolve_recorded_function_monomorph(
+        &self,
+        callee_name: &str,
+        call_name: &str,
+        line: usize,
+        col: usize,
+    ) -> Option<(String, HashMap<String, TejxType>)> {
+        if callee_name.starts_with("rt_")
+            || callee_name.starts_with("std_")
+            || callee_name.starts_with("tejx_")
+            || self.extern_functions.borrow().contains(callee_name)
+        {
+            return None;
+        }
+        if self.erased_generic_functions.borrow().contains(callee_name) {
+            return None;
+        }
+
+        let generic_params = self
+            .function_generic_params
+            .borrow()
+            .get(callee_name)
+            .cloned()?;
+        if generic_params.is_empty() {
+            return None;
+        }
+
+        let ordered_args = self
+            .call_instantiations
+            .get(&(line, col, call_name.to_string()))
+            .cloned()?;
+        if ordered_args.len() != generic_params.len() {
+            return None;
+        }
+        if ordered_args.iter().any(|arg| !self.is_concrete_type(arg)) {
+            return None;
+        }
+
+        let mut bindings = HashMap::new();
+        for (generic_name, concrete) in generic_params.iter().zip(ordered_args.iter()) {
+            bindings.insert(generic_name.clone(), concrete.clone());
         }
 
         self.discovered_function_instantiations

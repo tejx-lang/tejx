@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Inferred function return types must remain consistent across returns.
+
+function choose(flag: bool) {
+    if (flag) {
+        return 1;
+    }
+
+    return "wrong";
+}
+
+function main() {}

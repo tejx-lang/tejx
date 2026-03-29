@@ -1,0 +1,53 @@
+import { assert_eq_int } from "../utils.tx";
+
+class AccessBase {
+    private secret: int = 7;
+    protected inherited: int = 11;
+    public id: int;
+
+    constructor(id: int) {
+        this.id = id;
+    }
+
+    private secretPlus(n: int): int {
+        return this.secret + n;
+    }
+
+    protected inheritedPlus(n: int): int {
+        return this.inherited + n;
+    }
+
+    public readSecretFromSelf(): int {
+        return this.secretPlus(1);
+    }
+
+    public readSecretFromPeer(peer: AccessBase): int {
+        return peer.secret;
+    }
+}
+
+class AccessChild extends AccessBase {
+    constructor(id: int) {
+        super(id);
+    }
+
+    public useProtected(): int {
+        this.inherited = this.inherited + 1;
+        return this.inheritedPlus(1);
+    }
+
+    public readProtectedFromPeer(peer: AccessBase): int {
+        return peer.inherited;
+    }
+}
+
+function main() {
+    let base = new AccessBase(7);
+    let child = new AccessChild(21);
+
+    assert_eq_int(8, base.readSecretFromSelf(), "private member access inside class");
+    assert_eq_int(7, base.readSecretFromPeer(base), "private peer access inside class");
+    assert_eq_int(13, child.useProtected(), "protected member access inside subclass");
+    assert_eq_int(11, child.readProtectedFromPeer(base), "protected peer access inside subclass");
+    assert_eq_int(21, child.id, "public member access outside class");
+}

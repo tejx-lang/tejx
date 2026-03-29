@@ -1,0 +1,21 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Inferred higher-order returns must stay strict when assigned to class members.
+
+function makeCounter() {
+    return (value: int) => {
+        return value + 1;
+    };
+}
+
+class FormatterHolder {
+    formatter: (value: string) => string;
+
+    constructor() {
+        this.formatter = makeCounter();
+    }
+}
+
+function main() {
+    let holder = new FormatterHolder();
+    print(holder);
+}

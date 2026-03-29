@@ -316,10 +316,16 @@ impl Parser {
             | TokenType::As
             | TokenType::TypeVoid
             | TokenType::TypeInt
+            | TokenType::TypeInt8
+            | TokenType::TypeUInt8
             | TokenType::TypeFloat
             | TokenType::TypeInt16
+            | TokenType::TypeUInt16
+            | TokenType::TypeUInt
             | TokenType::TypeInt64
+            | TokenType::TypeUInt64
             | TokenType::TypeInt128
+            | TokenType::TypeUInt128
             | TokenType::TypeFloat16
             | TokenType::TypeFloat64
             | TokenType::TypeChar
@@ -686,7 +692,7 @@ impl Parser {
                     }
                 }
                 self.consume(TokenType::CloseParen, "Expected ')'");
-                let mut return_type = TypeNode::Named("void".to_string());
+                let mut return_type = TypeNode::Named("".to_string());
                 if self.match_token(TokenType::Colon) {
                     return_type = self.parse_type_annotation();
                 }
@@ -1250,12 +1256,24 @@ impl Parser {
                 base_type_name = "void".to_string();
             } else if self.match_token(TokenType::TypeInt) {
                 base_type_name = "int".to_string();
+            } else if self.match_token(TokenType::TypeInt8) {
+                base_type_name = "int8".to_string();
+            } else if self.match_token(TokenType::TypeUInt8) {
+                base_type_name = "uint8".to_string();
             } else if self.match_token(TokenType::TypeInt16) {
                 base_type_name = "int16".to_string();
+            } else if self.match_token(TokenType::TypeUInt16) {
+                base_type_name = "uint16".to_string();
+            } else if self.match_token(TokenType::TypeUInt) {
+                base_type_name = "uint".to_string();
             } else if self.match_token(TokenType::TypeInt64) {
                 base_type_name = "int64".to_string();
+            } else if self.match_token(TokenType::TypeUInt64) {
+                base_type_name = "uint64".to_string();
             } else if self.match_token(TokenType::TypeInt128) {
                 base_type_name = "int128".to_string();
+            } else if self.match_token(TokenType::TypeUInt128) {
+                base_type_name = "uint128".to_string();
             } else if self.match_token(TokenType::TypeFloat) {
                 base_type_name = "float".to_string();
             } else if self.match_token(TokenType::TypeFloat16) {

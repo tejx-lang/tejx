@@ -1,0 +1,17 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Subclasses must not access private members declared on the base class.
+
+class BaseSecret {
+    private code: int = 42;
+}
+
+class ChildSecret extends BaseSecret {
+    reveal(): int {
+        return this.code;
+    }
+}
+
+function main() {
+    let child = new ChildSecret();
+    print(child.reveal());
+}

@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Inferred higher-order return types must stay strict when assigned.
+
+function makeAdder() {
+    return (value: int) => {
+        return value + 1;
+    };
+}
+
+function main() {
+    let formatter: (string) => string = makeAdder();
+}

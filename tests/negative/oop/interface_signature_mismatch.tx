@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Interface implementations must match the declared method signature exactly.
+
+interface Greeter {
+    greet(name: string): string;
+}
+
+class Person implements Greeter {
+    greet(): string {
+        return "hello";
+    }
+}
+
+function main() {}

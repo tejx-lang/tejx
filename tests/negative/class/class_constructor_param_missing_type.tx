@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Constructor parameters must be explicitly typed.
+
+class User {
+    constructor(name, age: int) {
+        print(name, age);
+    }
+}
+
+function main() {
+    let user = new User("tejx", 1);
+}

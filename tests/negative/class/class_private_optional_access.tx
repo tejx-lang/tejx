@@ -1,0 +1,11 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Optional chaining must still respect private visibility.
+
+class SecretBox {
+    private code: int = 7;
+}
+
+function main() {
+    let maybe: Optional<SecretBox> = new SecretBox();
+    print(maybe?.code);
+}

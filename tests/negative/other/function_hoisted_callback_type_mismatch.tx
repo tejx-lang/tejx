@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Hoisted higher-order functions must preserve callback parameter types.
+
+function main() {
+    applyFormatter((value: int) => {
+        return value;
+    });
+}
+
+function applyFormatter(fn: (value: string) => string): string {
+    return fn("tejx");
+}

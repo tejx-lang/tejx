@@ -1,0 +1,10 @@
+// EXPECT: COMPILE_ERROR
+// Test: only explicitly imported symbols should be visible from a module
+import { visible } from "../../helpers/import_visibility_helper.tx";
+
+function main(): void {
+    let ok: int = visible();
+    let leakedExport: int = extra();
+    let leakedInternal: int = internal();
+    print(ok, leakedExport, leakedInternal);
+}

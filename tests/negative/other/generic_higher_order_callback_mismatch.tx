@@ -1,0 +1,13 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Generic higher-order calls must enforce callback parameter types after inference.
+
+function mapValue<T>(value: T, mapper: (item: T) => T): T {
+    return mapper(value);
+}
+
+function main() {
+    let output = mapValue(1, (item: string) => {
+        return item;
+    });
+    print(output);
+}

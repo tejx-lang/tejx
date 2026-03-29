@@ -9,6 +9,62 @@ unsafe fn rt_array_store_ptr(owner: i64, slot: *mut i64, value: i64) {
 }
 
 #[inline]
+fn rt_array_element_type_flags(flags: u16) -> i64 {
+    (flags as i64) & (ARRAY_FLAG_PTR | ARRAY_FLAG_KIND_MASK)
+}
+
+#[inline]
+unsafe fn rt_array_load_scalar(body: *mut u8, index: i64, flags: u16) -> i64 {
+    let elem_size = (flags & 0xFF) as i64;
+    let elem_kind = (flags as i64) & ARRAY_FLAG_KIND_MASK;
+    let slot = body.offset((index * elem_size) as isize);
+
+    match (elem_kind, elem_size) {
+        (ARRAY_FLAG_KIND_FLOAT, 4) => *(slot as *const i32) as i64,
+        (ARRAY_FLAG_KIND_FLOAT, 8) => *(slot as *const i64),
+        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => {
+            *(slot as *const u8) as i64
+        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 2) => *(slot as *const u16) as i64,
+        (ARRAY_FLAG_KIND_UNSIGNED, 4) => *(slot as *const u32) as i64,
+        (ARRAY_FLAG_KIND_UNSIGNED, 8) => *(slot as *const u64) as i64,
+        (ARRAY_FLAG_KIND_CHAR, 4) => *(slot as *const u32) as i64,
+        (_, 1) => *(slot as *const i8) as i64,
+        (_, 2) => *(slot as *const i16) as i64,
+        (_, 4) => *(slot as *const i32) as i64,
+        _ => *(slot as *const i64),
+    }
+}
+
+#[inline]
+unsafe fn rt_array_store_scalar(owner: i64, body: *mut u8, index: i64, flags: u16, value: i64) {
+    let elem_size = (flags & 0xFF) as i64;
+    let elem_kind = (flags as i64) & ARRAY_FLAG_KIND_MASK;
+    let slot = body.offset((index * elem_size) as isize);
+
+    if (flags & (ARRAY_FLAG_PTR as u16)) != 0 {
+        rt_array_store_ptr(owner, slot as *mut i64, value);
+        return;
+    }
+
+    match (elem_kind, elem_size) {
+        (ARRAY_FLAG_KIND_FLOAT, 4) => *(slot as *mut i32) = value as i32,
+        (ARRAY_FLAG_KIND_FLOAT, 8) => *(slot as *mut i64) = value,
+        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => {
+            *(slot as *mut u8) = value as u8
+        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 2) => *(slot as *mut u16) = value as u16,
+        (ARRAY_FLAG_KIND_UNSIGNED, 4) => *(slot as *mut u32) = value as u32,
+        (ARRAY_FLAG_KIND_UNSIGNED, 8) => *(slot as *mut u64) = value as u64,
+        (ARRAY_FLAG_KIND_CHAR, 4) => *(slot as *mut u32) = value as u32,
+        (_, 1) => *(slot as *mut i8) = value as i8,
+        (_, 2) => *(slot as *mut i16) = value as i16,
+        (_, 4) => *(slot as *mut i32) = value as i32,
+        _ => *(slot as *mut i64) = value,
+    }
+}
+
+#[inline]
 unsafe fn rt_throw_array_null_error(action: &str, index: i64) -> ! {
     let msg = format!(
         "RuntimeError: Null pointer dereference while {} array element at index {}",
@@ -134,15 +190,22 @@ pub unsafe extern "C" fn rt_array_slice(arr: i64, start: i64, end: i64) -> i64 {
     } else {
         8
     };
+    let type_flags = if !ptr.is_null() {
+        let body = (a - HEAP_OFFSET) as *mut u8;
+        let header = rt_get_header(body);
+        rt_array_element_type_flags((*header).flags)
+    } else {
+        0
+    };
 
     if s >= e {
-        let res = rt_Array_constructor(0, 0, elem_size);
+        let res = rt_Array_constructor_v2(0, 0, elem_size, type_flags);
         rt_pop_roots(1);
         return res;
     }
 
     let new_len = e - s;
-    let result = rt_Array_constructor(0, new_len, elem_size);
+    let result = rt_Array_constructor_v2(0, new_len, elem_size, type_flags);
     if !ptr.is_null() {
         let src_data = (a - HEAP_OFFSET) as *const i8;
         let dst_data = (result - HEAP_OFFSET) as *mut i8;
@@ -221,19 +284,63 @@ pub unsafe extern "C" fn rt_array_sort(arr: i64) -> i64 {
 
     let len = (*header).length as i64;
     let elem_size = (flags & 0xFF) as i64;
+    let elem_kind = (flags as i64) & ARRAY_FLAG_KIND_MASK;
     if len <= 1 {
         return arr;
     }
-    let data = body as *mut i64; // Still i64 for sort?
-                                 // WARNING: sort_unstable only works for i64 slices here.
-                                 // If we have Array<int32>, this might be wrong if it's treating it as i64.
-                                 // However, the standard sort is usually for Any[].
-    if elem_size == 8 {
-        let slice = std::slice::from_raw_parts_mut(data, len as usize);
+
+    if (flags & (ARRAY_FLAG_PTR as u16)) != 0 {
+        let slice = std::slice::from_raw_parts_mut(body as *mut i64, len as usize);
         slice.sort_unstable();
-    } else if elem_size == 4 {
-        let slice = std::slice::from_raw_parts_mut(data as *mut i32, len as usize);
-        slice.sort_unstable();
+        return arr;
+    }
+
+    match (elem_kind, elem_size) {
+        (ARRAY_FLAG_KIND_FLOAT, 4) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut f32, len as usize);
+            slice.sort_unstable_by(|a, b| a.total_cmp(b));
+        }
+        (ARRAY_FLAG_KIND_FLOAT, 8) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut f64, len as usize);
+            slice.sort_unstable_by(|a, b| a.total_cmp(b));
+        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut u8, len as usize);
+            slice.sort_unstable();
+        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 2) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut u16, len as usize);
+            slice.sort_unstable();
+        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 4) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut u32, len as usize);
+            slice.sort_unstable();
+        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 8) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut u64, len as usize);
+            slice.sort_unstable();
+        }
+        (ARRAY_FLAG_KIND_CHAR, 4) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut u32, len as usize);
+            slice.sort_unstable();
+        }
+        (_, 1) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut i8, len as usize);
+            slice.sort_unstable();
+        }
+        (_, 2) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut i16, len as usize);
+            slice.sort_unstable();
+        }
+        (_, 4) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut i32, len as usize);
+            slice.sort_unstable();
+        }
+        (_, 8) => {
+            let slice = std::slice::from_raw_parts_mut(body as *mut i64, len as usize);
+            slice.sort_unstable();
+        }
+        _ => {}
     }
     arr
 }
@@ -250,16 +357,8 @@ pub unsafe extern "C" fn rt_array_fill(arr: i64, val: i64) -> i64 {
     }
 
     let len = (*header).length as i64;
-    let elem_size = (flags & 0xFF) as i64;
-    let data = body as *mut i8;
     for i in 0..len {
-        let p = data.offset((i * elem_size) as isize);
-        match elem_size {
-            1 => *(p as *mut i8) = val as i8,
-            2 => *(p as *mut i16) = val as i16,
-            4 => *(p as *mut i32) = val as i32,
-            _ => rt_array_store_ptr(arr, p as *mut i64, val),
-        }
+        rt_array_store_scalar(arr, body, i, flags, val);
     }
     arr
 }
@@ -342,16 +441,7 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
     let elem_size = ((*new_header).flags & 0xFF) as i64;
 
     // Store val based on elem_size, direct access
-    let data = new_body as *mut i8; // Data starts directly at body_ptr
-    match elem_size {
-        1 => *(data.offset((len * elem_size) as isize) as *mut i8) = current_val as i8,
-        2 => *(data.offset((len * elem_size) as isize) as *mut i16) = current_val as i16,
-        4 => *(data.offset((len * elem_size) as isize) as *mut i32) = current_val as i32,
-        _ => {
-            *(data.offset((len * elem_size) as isize) as *mut i64) = current_val;
-            rt_write_barrier(current_id, current_val);
-        }
-    }
+    rt_array_store_scalar(current_id, new_body, len, (*new_header).flags, current_val);
 
     (*new_header).length = (len + 1) as u32;
     rt_update_array_cache(current_id, new_body, (len + 1) as i64, elem_size);
@@ -377,16 +467,9 @@ pub unsafe extern "C" fn rt_array_pop(id: i64) -> i64 {
         return 0;
     }
 
-    let elem_size = (flags & 0xFF) as i64;
-    let data = body as *mut i8; // Data starts directly at body_ptr
-
     let last_idx = len - 1;
-    let val = match elem_size {
-        1 => *(data.offset(last_idx as isize) as *mut i8) as i64,
-        2 => *(data.offset((last_idx * 2) as isize) as *mut i16) as i64,
-        4 => *(data.offset((last_idx * 4) as isize) as *mut i32) as i64,
-        _ => *(data.offset((last_idx * 8) as isize) as *mut i64),
-    };
+    let elem_size = (flags & 0xFF) as i64;
+    let val = rt_array_load_scalar(body, last_idx, flags);
 
     (*header).length = last_idx as u32;
     rt_update_array_cache(id, body, last_idx, elem_size); // Pass body_ptr directly
@@ -426,13 +509,7 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
     let len = (*header).length as i64;
     let elem_size = (flags & 0xFF) as i64;
     if index >= 0 && index < len {
-        let data = body as *mut i8;
-        match elem_size {
-            1 => *(data.offset(index as isize) as *mut i8) = val as i8,
-            2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
-            4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
-            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, val),
-        }
+        rt_array_store_scalar(id, body, index, flags, val);
         if id >= HEAP_OFFSET {
             rt_update_array_cache(id, body, len, elem_size);
         }
@@ -475,13 +552,7 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
             std::ptr::write_bytes(data.offset(byte_start), 0, byte_len);
         }
         (*header).length = new_len as u32;
-        let data = body as *mut i8;
-        match elem_size {
-            1 => *(data.offset(index as isize) as *mut i8) = value as i8,
-            2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
-            4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
-            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, value),
-        }
+        rt_array_store_scalar(id, body, index, flags, value);
         if id >= HEAP_OFFSET {
             rt_update_array_cache(id, body, new_len, elem_size);
         }
@@ -535,13 +606,7 @@ pub unsafe extern "C" fn rt_array_set_traced(
     let len = (*header).length as i64;
     let elem_size = (flags & 0xFF) as i64;
     if index >= 0 && index < len {
-        let data = body as *mut i8;
-        match elem_size {
-            1 => *(data.offset(index as isize) as *mut i8) = val as i8,
-            2 => *(data.offset((index * 2) as isize) as *mut i16) = val as i16,
-            4 => *(data.offset((index * 4) as isize) as *mut i32) = val as i32,
-            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, val),
-        }
+        rt_array_store_scalar(id, body, index, flags, val);
         if id >= HEAP_OFFSET {
             rt_update_array_cache(id, body, len, elem_size);
         }
@@ -578,13 +643,7 @@ pub unsafe extern "C" fn rt_array_set_traced(
             std::ptr::write_bytes(data.offset(byte_start), 0, byte_len);
         }
         (*header).length = new_len as u32;
-        let data = body as *mut i8;
-        match elem_size {
-            1 => *(data.offset(index as isize) as *mut i8) = value as i8,
-            2 => *(data.offset((index * 2) as isize) as *mut i16) = value as i16,
-            4 => *(data.offset((index * 4) as isize) as *mut i32) = value as i32,
-            _ => rt_array_store_ptr(id, data.offset((index * 8) as isize) as *mut i64, value),
-        }
+        rt_array_store_scalar(id, body, index, flags, value);
         if id >= HEAP_OFFSET {
             rt_update_array_cache(id, body, new_len, elem_size);
         }
@@ -612,13 +671,7 @@ pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
 
     let elem_size = (flags & 0xFF) as i64;
     let data = body as *mut i8; // Data starts directly at body_ptr
-
-    let val = match elem_size {
-        1 => *(data as *const i8) as i64,
-        2 => *(data as *const i16) as i64,
-        4 => *(data as *const i32) as i64,
-        _ => *(data as *const i64),
-    };
+    let val = rt_array_load_scalar(body, 0, flags);
 
     if len > 1 {
         memcpy(
@@ -776,17 +829,9 @@ pub unsafe extern "C" fn rt_array_indexOf(id: i64, val: i64) -> i64 {
     let body = (id - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
     let len = (*header).length as i64;
-    let elem_size = ((*header).flags & 0xFF) as i64;
-    let data = body as *const i8; // Data starts directly at body_ptr
+    let flags = (*header).flags;
     for i in 0..len {
-        let p = data.offset((i * elem_size) as isize);
-        let current_val = if elem_size == 1 {
-            *(p as *const i8) as i64
-        } else if elem_size == 4 {
-            *(p as *const i32) as i64
-        } else {
-            *(p as *const i64)
-        };
+        let current_val = rt_array_load_scalar(body, i, flags);
         if current_val == val {
             return i;
         }
@@ -804,19 +849,22 @@ pub unsafe extern "C" fn rt_array_concat(id1: i64, id2: i64) -> i64 {
     let len2 = rt_len(right);
     let new_len = len1 + len2;
 
-    let elem_size = if left >= STACK_OFFSET {
+    let (elem_size, type_flags) = if left >= STACK_OFFSET {
         let body = if left >= HEAP_OFFSET {
             (left - HEAP_OFFSET) as *mut u8
         } else {
             (left - STACK_OFFSET) as *mut u8
         };
         let header = rt_get_header(body);
-        ((*header).flags & 0xFF) as i64
+        (
+            ((*header).flags & 0xFF) as i64,
+            rt_array_element_type_flags((*header).flags),
+        )
     } else {
-        8
+        (8, 0)
     };
 
-    let obj = rt_Array_constructor(0, new_len, elem_size);
+    let obj = rt_Array_constructor_v2(0, new_len, elem_size, type_flags);
     let data = ((obj - HEAP_OFFSET) as *mut u8) as *mut i8; // Data starts directly at body_ptr
 
     if len1 > 0 {
@@ -852,16 +900,8 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
             return 0;
         }
         let body = LAST_PTR;
-        let elem_size = LAST_ELEM_SIZE;
-        return if elem_size == 1 {
-            *(body.offset(index as isize) as *mut i8) as i64
-        } else if elem_size == 2 {
-            *(body.offset((index * 2) as isize) as *mut i16) as i64
-        } else if elem_size == 4 {
-            *(body.offset((index * 4) as isize) as *mut i32) as i64
-        } else {
-            *(body.offset((index * 8) as isize) as *const i64)
-        };
+        let flags = (*rt_get_header(body)).flags;
+        return rt_array_load_scalar(body, index, flags);
     }
 
     let id = rt_resolve_array_id(id);
@@ -882,15 +922,7 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     }
 
     let elem_size = (flags & 0xFF) as i64;
-    let res = if elem_size == 1 {
-        *(body.offset(index as isize) as *mut i8) as i64
-    } else if elem_size == 2 {
-        *(body.offset((index * 2) as isize) as *mut i16) as i64
-    } else if elem_size == 4 {
-        *(body.offset((index * 4) as isize) as *mut i32) as i64
-    } else {
-        *(body.offset((index * 8) as isize) as *const i64)
-    };
+    let res = rt_array_load_scalar(body, index, flags);
 
     if id >= HEAP_OFFSET {
         rt_update_array_cache(id, body, len, elem_size);
@@ -910,16 +942,8 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
             return 0;
         }
         let body = LAST_PTR;
-        let elem_size = LAST_ELEM_SIZE;
-        return if elem_size == 1 {
-            *(body.offset(index as isize) as *mut i8) as i64
-        } else if elem_size == 2 {
-            *(body.offset((index * 2) as isize) as *mut i16) as i64
-        } else if elem_size == 4 {
-            *(body.offset((index * 4) as isize) as *mut i32) as i64
-        } else {
-            *(body.offset((index * 8) as isize) as *const i64)
-        };
+        let flags = (*rt_get_header(body)).flags;
+        return rt_array_load_scalar(body, index, flags);
     }
 
     let resolved = rt_resolve_array_id(id);
@@ -942,15 +966,7 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
     }
 
     let elem_size = (flags & 0xFF) as i64;
-    let res = if elem_size == 1 {
-        *(body.offset(index as isize) as *mut i8) as i64
-    } else if elem_size == 2 {
-        *(body.offset((index * 2) as isize) as *mut i16) as i64
-    } else if elem_size == 4 {
-        *(body.offset((index * 4) as isize) as *mut i32) as i64
-    } else {
-        *(body.offset((index * 8) as isize) as *const i64)
-    };
+    let res = rt_array_load_scalar(body, index, flags);
 
     if resolved >= HEAP_OFFSET {
         rt_update_array_cache(resolved, body, len, elem_size);
@@ -986,12 +1002,24 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     let total_size = (cap * actual_elem_size) as usize;
     let body_ptr = gc_allocate(total_size);
     let header = rt_get_header(body_ptr);
+    let inherited_type_flags = if source >= STACK_OFFSET {
+        let src_body = if source >= HEAP_OFFSET {
+            (source - HEAP_OFFSET) as *mut u8
+        } else {
+            (source - STACK_OFFSET) as *mut u8
+        };
+        let src_header = rt_get_header(src_body);
+        rt_array_element_type_flags((*src_header).flags)
+    } else {
+        0
+    };
 
     (*header).type_id = TAG_ARRAY as u16;
     (*header).length = size as u32;
     (*header).capacity = cap as u32;
     // Store elem_size in lower 8 bits of flags
-    (*header).flags = (flags as u16 & 0xFF00) | (actual_elem_size as u16 & 0x00FF);
+    (*header).flags = ((flags | inherited_type_flags) as u16 & 0xFF00)
+        | (actual_elem_size as u16 & 0x00FF);
 
     if source >= STACK_OFFSET {
         let src_body = if source >= HEAP_OFFSET {

@@ -78,9 +78,11 @@ impl CodeGen {
     pub(crate) fn get_llvm_type(ty: &TejxType) -> &str {
         match ty {
             TejxType::Bool => "i8",
-            TejxType::Int16 => "i16",
-            TejxType::Int32 | TejxType::Char => "i32",
-            TejxType::Int64 => "i64",
+            TejxType::Int8 | TejxType::UInt8 => "i8",
+            TejxType::Int16 | TejxType::UInt16 => "i16",
+            TejxType::Int32 | TejxType::UInt32 | TejxType::Char => "i32",
+            TejxType::Int64 | TejxType::UInt64 => "i64",
+            TejxType::Int128 | TejxType::UInt128 => "i128",
             TejxType::Float32 => "float",
             TejxType::Float64 => "double",
             TejxType::Void => "void",
@@ -91,9 +93,11 @@ impl CodeGen {
     pub(crate) fn get_llvm_storage_type(ty: &TejxType) -> &str {
         match ty {
             TejxType::Bool => "i8", // 1-byte storage
-            TejxType::Int16 => "i16",
-            TejxType::Int32 | TejxType::Char => "i32",
-            TejxType::Int64 => "i64",
+            TejxType::Int8 | TejxType::UInt8 => "i8",
+            TejxType::Int16 | TejxType::UInt16 => "i16",
+            TejxType::Int32 | TejxType::UInt32 | TejxType::Char => "i32",
+            TejxType::Int64 | TejxType::UInt64 => "i64",
+            TejxType::Int128 | TejxType::UInt128 => "i128",
             TejxType::Float32 => "float",
             TejxType::Float64 => "double",
             TejxType::Void => "void",

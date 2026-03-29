@@ -73,7 +73,108 @@ impl TypeChecker {
                 self.statement_guarantees_exit(then_branch)
                     && self.statement_guarantees_exit(else_branch)
             }
+            Statement::TryStmt {
+                _try_block,
+                _catch_var,
+                _catch_block,
+                _finally_block,
+                ..
+            } => {
+                if let Some(finally_block) = _finally_block {
+                    if self.statement_guarantees_exit(finally_block) {
+                        return true;
+                    }
+                }
+
+                let try_exits = self.statement_guarantees_exit(_try_block);
+                if _catch_var.is_empty() {
+                    try_exits
+                } else {
+                    try_exits && self.statement_guarantees_exit(_catch_block)
+                }
+            }
             _ => false,
+        }
+    }
+
+    fn block_guarantees_function_exit(&self, statements: &[Statement]) -> bool {
+        for statement in statements {
+            if self.statement_guarantees_function_exit(statement) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn statement_guarantees_function_exit(&self, stmt: &Statement) -> bool {
+        match stmt {
+            Statement::ReturnStmt { .. } | Statement::ThrowStmt { .. } => true,
+            Statement::BlockStmt { statements, .. } => self.block_guarantees_function_exit(statements),
+            Statement::IfStmt {
+                then_branch,
+                else_branch: Some(else_branch),
+                ..
+            } => {
+                self.statement_guarantees_function_exit(then_branch)
+                    && self.statement_guarantees_function_exit(else_branch)
+            }
+            Statement::WhileStmt {
+                condition,
+                body,
+                ..
+            } => {
+                matches!(
+                    condition.as_ref(),
+                    Expression::BooleanLiteral { value: true, .. }
+                ) && self.statement_guarantees_function_exit(body)
+            }
+            Statement::ForStmt {
+                condition: None,
+                body,
+                ..
+            } => self.statement_guarantees_function_exit(body),
+            Statement::SwitchStmt { cases, .. } => {
+                let has_default = cases.iter().any(|case| case.value.is_none());
+                has_default
+                    && cases
+                        .iter()
+                        .all(|case| self.block_guarantees_function_exit(&case.statements))
+            }
+            Statement::TryStmt {
+                _try_block,
+                _catch_var,
+                _catch_block,
+                _finally_block,
+                ..
+            } => {
+                if let Some(finally_block) = _finally_block {
+                    if self.statement_guarantees_function_exit(finally_block) {
+                        return true;
+                    }
+                }
+
+                let try_exits = self.statement_guarantees_function_exit(_try_block);
+                if _catch_var.is_empty() {
+                    try_exits
+                } else {
+                    try_exits && self.statement_guarantees_function_exit(_catch_block)
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn function_requires_explicit_return(&self, ty: &TejxType) -> bool {
+        match ty {
+            TejxType::Void => false,
+            TejxType::Class(name, generics)
+                if name == "Promise"
+                    && generics.len() == 1
+                    && generics[0] == TejxType::Void =>
+            {
+                false
+            }
+            _ => true,
         }
     }
 
@@ -164,13 +265,13 @@ impl TypeChecker {
                         );
                     }
 
-                    if !is_explicit_any
-                        && has_explicit_type
-                        && !self.are_types_compatible(
-                            declared_ty.as_ref().unwrap(),
-                            &TejxType::from_name(&init_type),
-                        )
-                    {
+                if !is_explicit_any
+                    && has_explicit_type
+                    && !self.is_assignment_compatible(
+                        declared_ty.as_ref().unwrap(),
+                        &TejxType::from_name(&init_type),
+                    )
+                {
                         if init_type == "[]" {
                             self.report_error_detailed(
                                 format!(
@@ -324,6 +425,15 @@ impl TypeChecker {
                 self.enter_scope();
                 for s in statements {
                     self.collect_declarations(s);
+                }
+                for _ in 0..4 {
+                    let mut changed = false;
+                    for statement in statements {
+                        changed |= self.refine_inferred_return_types(statement);
+                    }
+                    if !changed {
+                        break;
+                    }
                 }
                 for (i, s) in statements.iter().enumerate() {
                     // SOI: Store remaining statements for look-ahead
@@ -544,14 +654,40 @@ impl TypeChecker {
                 Ok(())
             }
             Statement::FunctionDeclaration(func) => {
-                let mut ret_ty = if func.return_type.to_string().is_empty() {
-                    "void".to_string()
+                let has_explicit_return = !func.return_type.to_string().is_empty();
+                let declared_ret_ty = if has_explicit_return {
+                    TejxType::from_node(&func.return_type)
                 } else {
-                    func.return_type.to_string()
+                    self.lookup(&func.name)
+                        .and_then(|symbol| self.callable_return_type(&symbol.ty))
+                        .unwrap_or_else(|| {
+                            self.effective_async_return_type(TejxType::Void, func._is_async)
+                        })
                 };
-                if func._is_async && !ret_ty.starts_with("Promise<") {
-                    ret_ty = format!("Promise<{}>", ret_ty);
+                if declared_ret_ty.to_name() != "<inferred>"
+                    && func.generic_params.is_empty()
+                    && declared_ret_ty != TejxType::Any
+                    && !self.is_valid_type(&declared_ret_ty)
+                {
+                    self.report_error_detailed(
+                        format!(
+                            "Unknown data type: '{}' for return type of function '{}'",
+                            declared_ret_ty.to_name(),
+                            func.name
+                        ),
+                        func._line,
+                        func._col,
+                        "E0101",
+                        Some(
+                            "Valid return types include primitive types, function types, object types, or user-defined classes",
+                        ),
+                    );
                 }
+                let effective_ret_ty = if has_explicit_return {
+                    self.effective_async_return_type(declared_ret_ty.clone(), func._is_async)
+                } else {
+                    declared_ret_ty.clone()
+                };
                 let mut is_variadic = false;
                 let min_required = func
                     .params
@@ -575,6 +711,42 @@ impl TypeChecker {
                             ),
                         );
                         p_ty = "<inferred>".to_string();
+                    } else if func.generic_params.is_empty()
+                        && p_ty != "any"
+                        && !self.is_valid_type(&TejxType::from_name(&p_ty))
+                    {
+                        self.report_error_detailed(
+                            format!("Unknown data type: '{}' for parameter '{}'", p_ty, p.name),
+                            func._line,
+                            func._col,
+                            "E0101",
+                            Some(
+                                "Valid parameter types include primitive types, function types, object types, or user-defined classes",
+                            ),
+                        );
+                    }
+                    if func.generic_params.is_empty() && p._is_rest {
+                        let parsed_param_ty = TejxType::from_name(&p_ty);
+                        if p_ty != "any"
+                            && p_ty != "<inferred>"
+                            && !matches!(
+                                parsed_param_ty,
+                                TejxType::DynamicArray(_)
+                                    | TejxType::FixedArray(_, _)
+                                    | TejxType::Slice(_)
+                            )
+                        {
+                            self.report_error_detailed(
+                                format!(
+                                    "Rest parameter '{}' must use an array or slice type",
+                                    p.name
+                                ),
+                                func._line,
+                                func._col,
+                                "E0101",
+                                Some("Use a type like 'int[]', 'string[]', or 'slice<int>'"),
+                            );
+                        }
                     }
                     params.push(p_ty);
                 }
@@ -585,7 +757,7 @@ impl TypeChecker {
                         Symbol {
                             ty: TejxType::Function(
                                 params.iter().map(|p| TejxType::from_name(p)).collect(),
-                                Box::new(TejxType::from_name(&ret_ty)),
+                                Box::new(effective_ret_ty.clone()),
                             ),
                             is_const: false,
                             is_narrowed: false,
@@ -599,28 +771,148 @@ impl TypeChecker {
                             aliased_type: None,
                             generic_params: func.generic_params.clone(),
                             literal_length: None,
+                            declared_in_file: self.current_file.clone(),
                         },
                     );
                 }
 
-                self.current_function_return = Some(TejxType::from_name(&ret_ty));
+                let prev_return = self.current_function_return.take();
+                let prev_async = self.current_function_is_async;
+                self.current_function_return = Some(effective_ret_ty.clone());
                 self.current_function_is_async = func._is_async;
                 self.enter_scope();
                 // Register function-level generic params as valid types
                 for gp in &func.generic_params {
                     self.define(gp.name.clone(), gp.name.clone());
                 }
+                if declared_ret_ty.to_name() != "<inferred>"
+                    && !func.generic_params.is_empty()
+                    && declared_ret_ty != TejxType::Any
+                    && !self.is_valid_type(&declared_ret_ty)
+                {
+                    self.report_error_detailed(
+                        format!(
+                            "Unknown data type: '{}' for return type of function '{}'",
+                            declared_ret_ty.to_name(),
+                            func.name
+                        ),
+                        func._line,
+                        func._col,
+                        "E0101",
+                        Some(
+                            "Valid return types include primitive types, function types, object types, or user-defined classes",
+                        ),
+                    );
+                }
                 for (idx, param) in func.params.iter().enumerate() {
                     let param_ty = params
                         .get(idx)
                         .cloned()
                         .unwrap_or_else(|| "<inferred>".to_string());
+                    if !func.generic_params.is_empty()
+                        && param_ty != "any"
+                        && !self.is_valid_type(&TejxType::from_name(&param_ty))
+                    {
+                        self.report_error_detailed(
+                            format!("Unknown data type: '{}' for parameter '{}'", param_ty, param.name),
+                            func._line,
+                            func._col,
+                            "E0101",
+                            Some(
+                                "Valid parameter types include primitive types, function types, object types, or user-defined classes",
+                            ),
+                        );
+                    }
+                    if !func.generic_params.is_empty() && param._is_rest {
+                        let parsed_param_ty = TejxType::from_name(&param_ty);
+                        if param_ty != "any"
+                            && param_ty != "<inferred>"
+                            && !matches!(
+                                parsed_param_ty,
+                                TejxType::DynamicArray(_)
+                                    | TejxType::FixedArray(_, _)
+                                    | TejxType::Slice(_)
+                            )
+                        {
+                            self.report_error_detailed(
+                                format!(
+                                    "Rest parameter '{}' must use an array or slice type",
+                                    param.name
+                                ),
+                                func._line,
+                                func._col,
+                                "E0101",
+                                Some("Use a type like 'int[]', 'string[]', or 'slice<int>'"),
+                            );
+                        }
+                    }
+                    if let Some(default_value) = &param._default_value {
+                        let expected_ty = TejxType::from_name(&param_ty);
+                        let prev_expected = self.current_expected_type.take();
+                        let prev_lambda_ctx = self.lambda_context_params.take();
+                        self.current_expected_type = Some(expected_ty.clone());
+                        if let TejxType::Function(default_params, _) = &expected_ty {
+                            self.lambda_context_params = Some(default_params.clone());
+                        }
+                        let default_result = self.check_expression(default_value);
+                        self.current_expected_type = prev_expected;
+                        self.lambda_context_params = prev_lambda_ctx;
+                        if let Ok(default_ty) = default_result {
+                            if param_ty != "any"
+                                && param_ty != "<inferred>"
+                                && !self.is_assignment_compatible(&expected_ty, &default_ty)
+                            {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Default value for parameter '{}' must be assignable to '{}', got '{}'",
+                                        param.name,
+                                        param_ty,
+                                        default_ty.to_name()
+                                    ),
+                                    func._line,
+                                    func._col,
+                                    "E0100",
+                                    Some(&format!(
+                                        "Change the default value or update parameter '{}' to a compatible type",
+                                        param.name
+                                    )),
+                                );
+                            }
+                        }
+                    }
                     self.define_with_params(param.name.clone(), param_ty, Vec::new());
                 }
-                self.check_statement(&func.body)?;
+                let body_result = self.check_statement(&func.body);
+                let inferred_after_body = self.current_function_return.clone();
+                if !has_explicit_return {
+                    if let Some(inferred) = inferred_after_body.clone() {
+                        if inferred.to_name() != "<inferred>" {
+                            self.remember_inferred_function_return(func, &inferred);
+                            let _ = self.update_function_symbol_return_type(&func.name, inferred);
+                        }
+                    }
+                }
+                if !func.is_extern
+                    && effective_ret_ty.to_name() != "<inferred>"
+                    && self.function_requires_explicit_return(&effective_ret_ty)
+                    && !self.statement_guarantees_function_exit(&func.body)
+                {
+                    self.report_error_detailed(
+                        format!(
+                            "Function '{}' must return a value of type '{}' on all paths",
+                            func.name,
+                            declared_ret_ty.to_name()
+                        ),
+                        func._line,
+                        func._col,
+                        "E0107",
+                        Some("Add a return statement for every possible control-flow path"),
+                    );
+                }
                 self.exit_scope();
-                self.current_function_return = None;
-                self.current_function_is_async = false;
+                self.current_function_return = prev_return;
+                self.current_function_is_async = prev_async;
+                body_result?;
                 Ok(())
             }
             Statement::ClassDeclaration(class_decl) => {
@@ -650,13 +942,66 @@ impl TypeChecker {
                     if self.lookup(interface_name).is_some() {
                         let required_methods = self.interfaces.get(interface_name).cloned();
                         if let Some(req_methods) = required_methods {
-                            let mut class_method_names = Vec::new();
-                            for m in &class_decl.methods {
-                                class_method_names.push(m.func.name.clone());
-                            }
-                            for (req_name, _) in req_methods {
-                                if !class_method_names.contains(&req_name) {
-                                    self.report_error_detailed(format!("Class '{}' missing method '{}' required by interface '{}'", class_decl.name, req_name, interface_name), class_decl._line, class_decl._col, "E0111", Some(&format!("Add method '{}' to class '{}' to satisfy the interface contract", req_name, class_decl.name)));
+                            for (req_name, req_info) in req_methods {
+                                if let Some(impl_info) =
+                                    self.resolve_instance_member(&class_decl.name, &req_name)
+                                {
+                                    if impl_info.is_static {
+                                        self.report_error_detailed(
+                                            format!(
+                                                "Class '{}' cannot satisfy interface '{}' with static member '{}'",
+                                                class_decl.name, interface_name, req_name
+                                            ),
+                                            class_decl._line,
+                                            class_decl._col,
+                                            "E0111",
+                                            Some(&format!(
+                                                "Implement '{}' as an instance method",
+                                                req_name
+                                            )),
+                                        );
+                                    } else if impl_info.access != AccessLevel::Public {
+                                        self.report_error_detailed(
+                                            format!(
+                                                "Class '{}' method '{}' must be public to satisfy interface '{}'",
+                                                class_decl.name, req_name, interface_name
+                                            ),
+                                            class_decl._line,
+                                            class_decl._col,
+                                            "E0111",
+                                            Some("Interface members are part of the public contract"),
+                                        );
+                                    } else if !self
+                                        .member_signature_matches_strict(&req_info.ty, &impl_info.ty)
+                                    {
+                                        self.report_error_detailed(
+                                            format!(
+                                                "Class '{}' method '{}' does not match interface '{}'",
+                                                class_decl.name, req_name, interface_name
+                                            ),
+                                            class_decl._line,
+                                            class_decl._col,
+                                            "E0100",
+                                            Some(&format!(
+                                                "Expected signature '{}'",
+                                                req_info.ty.to_name()
+                                            )),
+                                        );
+                                    }
+                                } else {
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Class '{}' missing method '{}' required by interface '{}'",
+                                            class_decl.name, req_name, interface_name
+                                        ),
+                                        class_decl._line,
+                                        class_decl._col,
+                                        "E0111",
+                                        Some(&format!(
+                                            "Add method '{}' to class '{}' to satisfy the interface contract",
+                                            req_name, class_decl.name
+                                        )),
+                                    );
                                 }
                             }
                         }
@@ -672,32 +1017,48 @@ impl TypeChecker {
                         {
                             for m in &class_decl.methods {
                                 if let Some(parent_m) = parent_members.get(&m.func.name) {
-                                    let mut param_types = Vec::new();
-                                    for p in &m.func.params {
-                                        let mut pt = p.type_name.to_string();
-                                        if pt.is_empty() {
-                                            pt = "<inferred>".to_string();
-                                        }
-                                        param_types.push(pt);
+                                    if parent_m.access == AccessLevel::Private {
+                                        continue;
                                     }
-                                    let p_str = param_types.join(",");
-                                    let rt_str = if m.func.return_type.to_string().is_empty() {
-                                        "void".to_string()
-                                    } else {
-                                        m.func.return_type.to_string()
-                                    };
-                                    let sig_str = if param_types.is_empty() {
-                                        format!("function:{}", rt_str)
-                                    } else {
-                                        format!("function:{}:{}", rt_str, p_str)
-                                    };
 
-                                    let derived_ty = TejxType::from_name(&sig_str);
+                                    if parent_m.is_static != m.is_static {
+                                        self.report_error_detailed(
+                                            format!(
+                                                "Method '{}' must match the parent's static modifier",
+                                                m.func.name
+                                            ),
+                                            m.func._line,
+                                            m.func._col,
+                                            "E0100",
+                                            Some("Do not change an inherited member between static and instance"),
+                                        );
+                                        continue;
+                                    }
 
-                                    // Check that child method signature is compatible with parent's
-                                    let is_compat =
-                                        self.are_types_compatible(&parent_m.ty, &derived_ty);
-                                    if !is_compat {
+                                    let child_access = match m._access {
+                                        AccessModifier::Private => AccessLevel::Private,
+                                        AccessModifier::Protected => AccessLevel::Protected,
+                                        AccessModifier::Public => AccessLevel::Public,
+                                    };
+                                    if self.access_rank(&child_access)
+                                        < self.access_rank(&parent_m.access)
+                                    {
+                                        self.report_error_detailed(
+                                            format!(
+                                                "Method '{}' cannot reduce visibility when overriding a parent member",
+                                                m.func.name
+                                            ),
+                                            m.func._line,
+                                            m.func._col,
+                                            "E0100",
+                                            Some("Keep the same visibility or make the override more accessible"),
+                                        );
+                                        continue;
+                                    }
+
+                                    let derived_ty = self.function_signature_type(&m.func);
+
+                                    if !self.member_signature_matches_strict(&parent_m.ty, &derived_ty) {
                                         self.report_error_detailed(
                                             format!("Method '{}' overrides parent method but signature is incompatible", m.func.name),
                                             m.func._line,
@@ -804,6 +1165,10 @@ impl TypeChecker {
                     if let Some(init) = &member._initializer {
                         let prev_expected = self.current_expected_type.take();
                         let prev_lambda_ctx = self.lambda_context_params.take();
+                        let prev_member_static = self.current_member_is_static;
+                        let prev_inside_constructor = self.current_inside_constructor;
+                        self.current_member_is_static = member._is_static;
+                        self.current_inside_constructor = false;
                         if member_ty_str != "any" && !member_ty_str.is_empty() {
                             let expected_ty = TejxType::from_name(&member_ty_str);
                             self.current_expected_type = Some(expected_ty.clone());
@@ -812,13 +1177,16 @@ impl TypeChecker {
                             }
                         }
 
-                        let init_type = self.check_expression(init)?.to_name();
+                        let init_result = self.check_expression(init);
                         self.current_expected_type = prev_expected;
                         self.lambda_context_params = prev_lambda_ctx;
+                        self.current_member_is_static = prev_member_static;
+                        self.current_inside_constructor = prev_inside_constructor;
+                        let init_type = init_result?.to_name();
 
                         if member_ty_str != "any"
                             && !member_ty_str.is_empty()
-                            && !self.are_types_compatible(
+                            && !self.is_assignment_compatible(
                                 &TejxType::from_name(&member_ty_str),
                                 &TejxType::from_name(&init_type),
                             )
@@ -875,6 +1243,10 @@ impl TypeChecker {
                     }
 
                     self.enter_scope();
+                    let prev_member_static = self.current_member_is_static;
+                    let prev_inside_constructor = self.current_inside_constructor;
+                    self.current_member_is_static = method.is_static;
+                    self.current_inside_constructor = false;
                     // Register method-level generic params as valid types
                     for gp in &method.func.generic_params {
                         self.define(gp.name.clone(), gp.name.clone());
@@ -904,27 +1276,100 @@ impl TypeChecker {
                     }
                     let prev_return = self.current_function_return.take();
                     let prev_async = self.current_function_is_async;
-                    let ret_ty = TejxType::from_node(&method.func.return_type);
-                    if ret_ty != TejxType::Any
-                        && ret_ty != TejxType::Void
-                        && !self.is_valid_type(&ret_ty)
+                    let has_explicit_return = !method.func.return_type.to_string().is_empty();
+                    let declared_ret_ty = if has_explicit_return {
+                        TejxType::from_node(&method.func.return_type)
+                    } else {
+                        self.class_members
+                            .get(&class_decl.name)
+                            .and_then(|members| members.get(&method.func.name))
+                            .and_then(|info| self.callable_return_type(&info.ty))
+                            .unwrap_or_else(|| {
+                                self.effective_async_return_type(
+                                    TejxType::Void,
+                                    method.func._is_async,
+                                )
+                            })
+                    };
+                    if declared_ret_ty.to_name() != "<inferred>"
+                        && declared_ret_ty != TejxType::Any
+                        && declared_ret_ty != TejxType::Void
+                        && !self.is_valid_type(&declared_ret_ty)
                     {
-                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
+                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
                     }
-                    self.current_function_return = Some(ret_ty);
+                    let effective_ret_ty = if has_explicit_return {
+                        self.effective_async_return_type(declared_ret_ty.clone(), method.func._is_async)
+                    } else {
+                        declared_ret_ty.clone()
+                    };
+                    self.current_function_return = Some(effective_ret_ty);
                     self.current_function_is_async = method.func._is_async;
 
-                    self.check_statement(&method.func.body)?;
-
+                    let body_result = self.check_statement(&method.func.body);
+                    let inferred_after_body = self.current_function_return.clone();
+                    if !has_explicit_return {
+                        if let Some(inferred) = inferred_after_body {
+                            if inferred.to_name() != "<inferred>" {
+                                self.remember_inferred_member_return(
+                                    &class_decl.name,
+                                    &method.func,
+                                    &inferred,
+                                );
+                                let _ = self.update_class_member_return_type(
+                                    &class_decl.name,
+                                    &method.func.name,
+                                    inferred,
+                                );
+                            }
+                        }
+                    }
                     self.current_function_return = prev_return;
                     self.current_function_is_async = prev_async;
+                    self.current_member_is_static = prev_member_static;
+                    self.current_inside_constructor = prev_inside_constructor;
                     self.exit_scope();
+                    body_result?;
                 }
 
                 if let Some(constructor) = &class_decl._constructor {
                     self.enter_scope();
+                    let prev_member_static = self.current_member_is_static;
+                    let prev_inside_constructor = self.current_inside_constructor;
+                    self.current_member_is_static = false;
+                    self.current_inside_constructor = true;
                     for param in &constructor.params {
-                        self.define(param.name.clone(), param.type_name.to_string());
+                        let mut param_ty = param.type_name.to_string();
+                        if param_ty.is_empty() {
+                            self.report_error_detailed(
+                                format!(
+                                    "Type annotation required for constructor parameter '{}'",
+                                    param.name
+                                ),
+                                constructor._line,
+                                constructor._col,
+                                "E0101",
+                                Some(
+                                    "Provide an explicit type (e.g., 'constructor(x: int) { ... }') or use 'any' explicitly",
+                                ),
+                            );
+                            param_ty = "<inferred>".to_string();
+                        }
+                        if param_ty != "any"
+                            && !param_ty.is_empty()
+                            && !self.is_valid_type(&TejxType::from_name(&param_ty))
+                        {
+                            self.report_error_detailed(
+                                format!("Unknown data type: '{}'", param_ty),
+                                constructor._line,
+                                constructor._col,
+                                "E0101",
+                                Some(
+                                    "Valid types include: int, int32, float, float64, string, bool, or user-defined classes",
+                                ),
+                            );
+                        }
+                        self.define(param.name.clone(), param_ty);
                     }
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some(TejxType::Void);
@@ -980,28 +1425,45 @@ impl TypeChecker {
                         }
                     }
 
-                    self.check_statement(&constructor.body)?;
+                    let constructor_result = self.check_statement(&constructor.body);
                     self.current_function_return = prev_return;
+                    self.current_member_is_static = prev_member_static;
+                    self.current_inside_constructor = prev_inside_constructor;
                     self.exit_scope();
+                    constructor_result?;
                 }
 
                 for getter in &class_decl._getters {
                     self.enter_scope();
+                    let prev_member_static = self.current_member_is_static;
+                    let prev_inside_constructor = self.current_inside_constructor;
+                    self.current_member_is_static = false;
+                    self.current_inside_constructor = false;
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some(TejxType::from_node(&getter._return_type));
-                    self.check_statement(&getter._body)?;
+                    let getter_result = self.check_statement(&getter._body);
                     self.current_function_return = prev_return;
+                    self.current_member_is_static = prev_member_static;
+                    self.current_inside_constructor = prev_inside_constructor;
                     self.exit_scope();
+                    getter_result?;
                 }
 
                 for setter in &class_decl._setters {
                     self.enter_scope();
+                    let prev_member_static = self.current_member_is_static;
+                    let prev_inside_constructor = self.current_inside_constructor;
+                    self.current_member_is_static = false;
+                    self.current_inside_constructor = false;
                     self.define(setter._param_name.clone(), setter._param_type.to_string());
                     let prev_return = self.current_function_return.take();
                     self.current_function_return = Some(TejxType::Void);
-                    self.check_statement(&setter._body)?;
+                    let setter_result = self.check_statement(&setter._body);
                     self.current_function_return = prev_return;
+                    self.current_member_is_static = prev_member_static;
+                    self.current_inside_constructor = prev_inside_constructor;
                     self.exit_scope();
+                    setter_result?;
                 }
 
                 self.exit_scope();
@@ -1074,7 +1536,7 @@ impl TypeChecker {
                         }
                     }
 
-                    if !self.is_assignable(
+                    if !self.is_assignment_compatible(
                         &TejxType::from_name(&expected_type),
                         &TejxType::from_name(&got),
                     ) {
@@ -1102,6 +1564,14 @@ impl TypeChecker {
                             self.report_error_detailed(format!("Return type mismatch: expected '{}', got '{}'", expected_original, got), *line, *col, "E0107", Some(&format!("The function signature declares return type '{}'; ensure the returned value matches", expected_original)));
                         }
                     }
+                } else {
+                    self.report_error_detailed(
+                        "'return' can only be used inside a function or method".to_string(),
+                        *line,
+                        *col,
+                        "E0107",
+                        Some("Move this return into a function body or remove it"),
+                    );
                 }
                 Ok(())
             }
@@ -1157,7 +1627,7 @@ impl TypeChecker {
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default()
                     };
-                    if !module_name.is_empty() {
+                    if !module_name.is_empty() && self.lookup(&module_name).is_none() {
                         self.define(module_name, "<inferred>".to_string());
                     }
                 } else {
@@ -1187,7 +1657,21 @@ impl TypeChecker {
                         param_types.push(p.type_name.to_string());
                     }
                     let p_str = param_types.join(",");
-                    let type_str = format!("function:{}:{}", method.return_type.to_string(), p_str);
+                    let ret_str = if method.return_type.to_string().is_empty() {
+                        self.inferred_member_returns
+                            .get(&(
+                                self.current_file.clone(),
+                                name.to_string(),
+                                method._line,
+                                method._col,
+                                method.name.clone(),
+                            ))
+                            .map(|ty| ty.to_name())
+                            .unwrap_or_else(|| "<inferred>".to_string())
+                    } else {
+                        method.return_type.to_string()
+                    };
+                    let type_str = format!("function:{}:{}", ret_str, p_str);
 
                     existing_members.insert(
                         m_name.clone(),
@@ -1213,22 +1697,71 @@ impl TypeChecker {
 
                     let prev_return = self.current_function_return.take();
                     let prev_async = self.current_function_is_async;
-
-                    let ret_ty = if method.return_type.to_string().is_empty() {
-                        "void".to_string()
-                    } else {
+                    let has_explicit_return = !method.return_type.to_string().is_empty();
+                    let ret_ty = if has_explicit_return {
                         method.return_type.to_string()
+                    } else {
+                        self.inferred_member_returns
+                            .get(&(
+                                self.current_file.clone(),
+                                name.to_string(),
+                                method._line,
+                                method._col,
+                                method.name.clone(),
+                            ))
+                            .map(|ty| ty.to_name())
+                            .unwrap_or_else(|| "<inferred>".to_string())
                     };
-                    self.current_function_return = Some(TejxType::from_name(&ret_ty));
+                    let declared_ret_ty = TejxType::from_name(&ret_ty);
+                    let effective_ret_ty = if has_explicit_return {
+                        self.effective_async_return_type(declared_ret_ty.clone(), method._is_async)
+                    } else {
+                        declared_ret_ty.clone()
+                    };
+                    self.current_function_return = Some(effective_ret_ty.clone());
                     self.current_function_is_async = method._is_async;
 
-                    self.check_statement(&method.body)?;
+                    let body_result = self.check_statement(&method.body);
+                    let inferred_after_body = self.current_function_return.clone();
+                    if !has_explicit_return {
+                        if let Some(inferred) = inferred_after_body {
+                            if inferred.to_name() != "<inferred>" {
+                                self.remember_inferred_member_return(
+                                    &name.to_string(),
+                                    method,
+                                    &inferred,
+                                );
+                                let _ = self.update_class_member_return_type(
+                                    &name.to_string(),
+                                    &method.name,
+                                    inferred,
+                                );
+                            }
+                        }
+                    }
+                    if effective_ret_ty.to_name() != "<inferred>"
+                        && self.function_requires_explicit_return(&effective_ret_ty)
+                        && !self.statement_guarantees_function_exit(&method.body)
+                    {
+                        self.report_error_detailed(
+                            format!(
+                                "Method '{}' must return a value of type '{}' on all paths",
+                                method.name,
+                                declared_ret_ty.to_name()
+                            ),
+                            method._line,
+                            method._col,
+                            "E0107",
+                            Some("Add a return statement for every possible control-flow path"),
+                        );
+                    }
 
                     self.current_function_return = prev_return;
                     self.current_function_is_async = prev_async;
 
                     self.exit_scope();
                     self.current_class = prev_class;
+                    body_result?;
                 }
                 self.class_members
                     .insert(name.to_string(), existing_members);

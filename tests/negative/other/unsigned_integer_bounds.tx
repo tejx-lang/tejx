@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Unsigned integer assignments should reject negative and out-of-range literals.
+
+function main() {
+    let badByte: uint8 = 256;
+    let badWord: uint16 = 70000;
+    let badUint: uint = 5000000000;
+    let negativeUint: uint = -1;
+    let negativeUint64: uint64 = -1;
+}

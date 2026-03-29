@@ -71,6 +71,193 @@ fn report_diagnostics(stage: &str, diagnostics: &[Diagnostic], primary_file: &st
     }
 }
 
+fn apply_inferred_function_return_annotation(
+    func: &mut ast::FunctionDeclaration,
+    current_file: &str,
+    type_checker: &TypeChecker,
+) {
+    if !func.return_type.to_string().is_empty() {
+        return;
+    }
+
+    if let Some(return_ty) = type_checker.inferred_function_returns.get(&(
+        current_file.to_string(),
+        func._line,
+        func._col,
+        func.name.clone(),
+    )) {
+        func.return_type = return_ty.to_type_node();
+    }
+}
+
+fn apply_inferred_member_return_annotation(
+    owner_name: &str,
+    func: &mut ast::FunctionDeclaration,
+    current_file: &str,
+    type_checker: &TypeChecker,
+) {
+    if !func.return_type.to_string().is_empty() {
+        return;
+    }
+
+    if let Some(return_ty) = type_checker.inferred_member_returns.get(&(
+        current_file.to_string(),
+        owner_name.to_string(),
+        func._line,
+        func._col,
+        func.name.clone(),
+    )) {
+        func.return_type = return_ty.to_type_node();
+    }
+}
+
+fn apply_inferred_return_types_to_statement(
+    stmt: &mut ast::Statement,
+    current_file: &str,
+    type_checker: &TypeChecker,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            apply_inferred_function_return_annotation(func, current_file, type_checker);
+            apply_inferred_return_types_to_statement(func.body.as_mut(), current_file, type_checker);
+        }
+        ast::Statement::ClassDeclaration(class_decl) => {
+            if let Some(constructor) = class_decl._constructor.as_mut() {
+                apply_inferred_return_types_to_statement(
+                    constructor.body.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+
+            for method in &mut class_decl.methods {
+                apply_inferred_member_return_annotation(
+                    &class_decl.name,
+                    &mut method.func,
+                    current_file,
+                    type_checker,
+                );
+                apply_inferred_return_types_to_statement(
+                    method.func.body.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+
+            for getter in &mut class_decl._getters {
+                apply_inferred_return_types_to_statement(
+                    getter._body.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+
+            for setter in &mut class_decl._setters {
+                apply_inferred_return_types_to_statement(
+                    setter._body.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+        }
+        ast::Statement::ExtensionDeclaration(ext_decl) => {
+            let owner_name = ext_decl._target_type.to_string();
+            for method in &mut ext_decl._methods {
+                apply_inferred_member_return_annotation(
+                    &owner_name,
+                    method,
+                    current_file,
+                    type_checker,
+                );
+                apply_inferred_return_types_to_statement(
+                    method.body.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+        }
+        ast::Statement::ExportDecl { declaration, .. } => {
+            apply_inferred_return_types_to_statement(declaration.as_mut(), current_file, type_checker);
+        }
+        ast::Statement::BlockStmt { statements, .. } => {
+            for statement in statements {
+                apply_inferred_return_types_to_statement(statement, current_file, type_checker);
+            }
+        }
+        ast::Statement::IfStmt {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            apply_inferred_return_types_to_statement(then_branch.as_mut(), current_file, type_checker);
+            if let Some(else_branch) = else_branch.as_mut() {
+                apply_inferred_return_types_to_statement(
+                    else_branch.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+        }
+        ast::Statement::WhileStmt { body, .. }
+        | ast::Statement::ForOfStmt { body, .. } => {
+            apply_inferred_return_types_to_statement(body.as_mut(), current_file, type_checker);
+        }
+        ast::Statement::ForStmt { init, body, .. } => {
+            if let Some(init) = init.as_mut() {
+                apply_inferred_return_types_to_statement(init.as_mut(), current_file, type_checker);
+            }
+            apply_inferred_return_types_to_statement(body.as_mut(), current_file, type_checker);
+        }
+        ast::Statement::SwitchStmt { cases, .. } => {
+            for case in cases {
+                for statement in &mut case.statements {
+                    apply_inferred_return_types_to_statement(statement, current_file, type_checker);
+                }
+            }
+        }
+        ast::Statement::TryStmt {
+            _try_block,
+            _catch_block,
+            _finally_block,
+            ..
+        } => {
+            apply_inferred_return_types_to_statement(
+                _try_block.as_mut(),
+                current_file,
+                type_checker,
+            );
+            apply_inferred_return_types_to_statement(
+                _catch_block.as_mut(),
+                current_file,
+                type_checker,
+            );
+            if let Some(finally_block) = _finally_block.as_mut() {
+                apply_inferred_return_types_to_statement(
+                    finally_block.as_mut(),
+                    current_file,
+                    type_checker,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_inferred_return_types_to_program(
+    program: &mut ast::Program,
+    statement_files: &[String],
+    default_file: &str,
+    type_checker: &TypeChecker,
+) {
+    for (index, stmt) in program.statements.iter_mut().enumerate() {
+        let current_file = statement_files
+            .get(index)
+            .map(|file| file.as_str())
+            .unwrap_or(default_file);
+        apply_inferred_return_types_to_statement(stmt, current_file, type_checker);
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut input_files = Vec::new();
@@ -210,7 +397,7 @@ fn main() {
         initial_file_path.as_deref(),
     );
 
-    let merged_program = ast::Program {
+    let mut merged_program = ast::Program {
         statements: resolved_statements,
     };
 
@@ -226,6 +413,7 @@ fn main() {
 
     let mut type_checker = TypeChecker::new();
     type_checker.async_enabled = async_enabled;
+    type_checker.set_import_access(lowering.import_access.borrow().clone());
     if type_checker
         .check(&merged_program, &filename, Some(&resolved_statement_files))
         .is_err()
@@ -235,8 +423,16 @@ fn main() {
         process::exit(1);
     }
 
+    apply_inferred_return_types_to_program(
+        &mut merged_program,
+        &resolved_statement_files,
+        &filename,
+        &type_checker,
+    );
+
     lowering.lambda_inferred_types = type_checker.lambda_inferred_types;
     lowering.lambda_inferred_returns = type_checker.lambda_inferred_returns;
+    lowering.call_instantiations = type_checker.call_instantiations;
     *lowering.generic_instantiations.borrow_mut() = type_checker.generic_instantiations;
     lowering.function_instantiations = type_checker.function_instantiations;
 

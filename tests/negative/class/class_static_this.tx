@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: 'this' cannot be used inside a static method.
+
+class Counter {
+    static value: int = 1;
+
+    static next(): int {
+        return this.value;
+    }
+}
+
+function main() {}

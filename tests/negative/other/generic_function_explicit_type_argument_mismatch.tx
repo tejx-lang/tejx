@@ -1,0 +1,10 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Explicit generic type arguments must agree with call arguments.
+
+function identity<T>(value: T): T {
+    return value;
+}
+
+function main() {
+    let text = identity<string>(123);
+}

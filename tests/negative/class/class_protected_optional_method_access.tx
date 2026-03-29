@@ -1,0 +1,13 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Optional chaining must still respect protected visibility outside the hierarchy.
+
+class ProtectedDoor {
+    protected open(): int {
+        return 1;
+    }
+}
+
+function main() {
+    let maybe: Optional<ProtectedDoor> = new ProtectedDoor();
+    print(maybe?.open());
+}

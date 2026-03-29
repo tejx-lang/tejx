@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Imported classes must still enforce constructor argument types.
+
+import { StringBox } from "../../helpers/import_typechecking_helper.tx";
+
+function main() {
+    let box = new StringBox(123);
+    print(box);
+}

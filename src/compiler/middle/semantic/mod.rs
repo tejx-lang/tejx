@@ -8,7 +8,7 @@ pub mod stmt;
 use crate::common::diagnostics::Diagnostic; // Import Diagnostic
 use crate::common::types::TejxType;
 use crate::frontend::ast::{Program, Statement};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // TypeInfo struct removed (unused)
 
@@ -39,6 +39,7 @@ pub struct Symbol {
     pub aliased_type: Option<TejxType>,
     pub generic_params: Vec<crate::frontend::ast::GenericParam>,
     pub literal_length: Option<usize>,
+    pub declared_in_file: String,
 }
 
 pub struct TypeChecker {
@@ -46,9 +47,12 @@ pub struct TypeChecker {
     current_class: Option<String>,
     current_function_return: Option<TejxType>,
     current_function_is_async: bool,
+    current_member_is_static: bool,
+    current_inside_constructor: bool,
     loop_depth: usize,
     pub diagnostics: Vec<Diagnostic>, // Collect errors
     current_file: String,
+    imported_names_by_file: HashMap<String, HashSet<String>>,
     class_hierarchy: HashMap<String, String>, // Child -> Parent
     interfaces: HashMap<String, HashMap<String, MemberInfo>>, // Interface -> Method Name -> Info
     class_members: HashMap<String, HashMap<String, MemberInfo>>, // Class -> Member info
@@ -60,6 +64,9 @@ pub struct TypeChecker {
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<TejxType>>,
     pub lambda_inferred_returns: HashMap<(usize, usize), TejxType>,
     pub(crate) current_expected_type: Option<TejxType>,
+    pub inferred_function_returns: HashMap<(String, usize, usize, String), TejxType>,
+    pub inferred_member_returns: HashMap<(String, String, usize, usize, String), TejxType>,
+    pub call_instantiations: HashMap<(usize, usize, String), Vec<TejxType>>,
     pub generic_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
     pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
 }
@@ -82,9 +89,12 @@ impl TypeChecker {
             current_class: None,
             current_function_return: None,
             current_function_is_async: false,
+            current_member_is_static: false,
+            current_inside_constructor: false,
             loop_depth: 0,
             diagnostics: Vec::new(),
             current_file: "<inferred>".to_string(),
+            imported_names_by_file: HashMap::new(),
             class_hierarchy,
             interfaces: HashMap::new(),
             class_members,
@@ -95,6 +105,9 @@ impl TypeChecker {
             lambda_inferred_types: HashMap::new(),
             lambda_inferred_returns: HashMap::new(),
             current_expected_type: None,
+            inferred_function_returns: HashMap::new(),
+            inferred_member_returns: HashMap::new(),
+            call_instantiations: HashMap::new(),
             generic_instantiations: HashMap::new(),
             function_instantiations: HashMap::new(),
         }
@@ -114,6 +127,20 @@ impl TypeChecker {
                 self.current_file = file.clone();
             }
             self.collect_declarations(stmt);
+        }
+
+        // Pass 1.5: Refine inferred callable return types now that hoisted symbols exist.
+        for _ in 0..4 {
+            let mut changed = false;
+            for (index, stmt) in program.statements.iter().enumerate() {
+                if let Some(file) = statement_files.and_then(|files| files.get(index)) {
+                    self.current_file = file.clone();
+                }
+                changed |= self.refine_inferred_return_types(stmt);
+            }
+            if !changed {
+                break;
+            }
         }
 
         // Pass 2: Basic pass
@@ -194,6 +221,7 @@ impl TypeChecker {
                     aliased_type: None,
                     generic_params: Vec::new(),
                     literal_length: None,
+                    declared_in_file: self.current_file.clone(),
                 },
             );
         }
@@ -237,6 +265,7 @@ impl TypeChecker {
                     aliased_type: None,
                     generic_params: Vec::new(),
                     literal_length: None,
+                    declared_in_file: self.current_file.clone(),
                 },
             );
         }
@@ -292,6 +321,7 @@ impl TypeChecker {
                     aliased_type: None,
                     generic_params: Vec::new(),
                     literal_length,
+                    declared_in_file: self.current_file.clone(),
                 },
             );
         }
@@ -311,15 +341,38 @@ impl TypeChecker {
                     aliased_type: None,
                     generic_params: Vec::new(),
                     literal_length: None,
+                    declared_in_file: self.current_file.clone(),
                 },
             );
         }
     }
 
+    pub fn set_import_access(&mut self, imported_names_by_file: HashMap<String, HashSet<String>>) {
+        self.imported_names_by_file = imported_names_by_file;
+    }
+
+    fn is_library_file(path: &str) -> bool {
+        path.contains("/src/library/") || path.contains("/.tejx/lib/")
+    }
+
+    fn symbol_accessible(&self, name: &str, symbol: &Symbol) -> bool {
+        symbol.declared_in_file.is_empty()
+            || symbol.declared_in_file == self.current_file
+            || (Self::is_library_file(&self.current_file)
+                && Self::is_library_file(&symbol.declared_in_file))
+            || self
+                .imported_names_by_file
+                .get(&self.current_file)
+                .map(|names| names.contains(name))
+                .unwrap_or(false)
+    }
+
     pub(crate) fn lookup(&self, name: &str) -> Option<Symbol> {
         for scope in self.scopes.iter().rev() {
             if let Some(s) = scope.get(name) {
-                return Some(s.clone());
+                if self.symbol_accessible(name, s) {
+                    return Some(s.clone());
+                }
             }
         }
         None
@@ -329,6 +382,9 @@ impl TypeChecker {
         let mut narrowed_match: Option<Symbol> = None;
         for scope in self.scopes.iter().rev() {
             if let Some(symbol) = scope.get(name) {
+                if !self.symbol_accessible(name, symbol) {
+                    continue;
+                }
                 if !symbol.is_narrowed {
                     return Some(symbol.clone());
                 }

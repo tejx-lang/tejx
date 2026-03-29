@@ -1,7 +1,7 @@
 use super::*;
 use crate::frontend::ast::*;
 use crate::frontend::token::TokenType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl TypeChecker {
     fn is_promise_type(ty: &TejxType) -> bool {
@@ -150,6 +150,96 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn merge_generic_binding(
+        &mut self,
+        generic_map: &mut HashMap<String, String>,
+        reported_conflicts: &mut HashSet<String>,
+        call_name: &str,
+        generic_name: &str,
+        concrete: &str,
+        line: usize,
+        col: usize,
+    ) {
+        if concrete.is_empty() || concrete == "<inferred>" {
+            return;
+        }
+
+        if let Some(existing) = generic_map.get(generic_name).cloned() {
+            if existing == concrete {
+                return;
+            }
+
+            let existing_ty = TejxType::from_name(&existing);
+            let concrete_ty = TejxType::from_name(concrete);
+            let existing_unresolved = Self::contains_unresolved_generic_type(&existing_ty);
+            let concrete_unresolved = Self::contains_unresolved_generic_type(&concrete_ty);
+
+            if existing_unresolved && !concrete_unresolved {
+                generic_map.insert(generic_name.to_string(), concrete.to_string());
+                return;
+            }
+            if !existing_unresolved && concrete_unresolved {
+                return;
+            }
+            if existing_unresolved && concrete_unresolved {
+                return;
+            }
+
+            if let (TejxType::Class(existing_name, _), TejxType::Class(concrete_name, _)) =
+                (&existing_ty, &concrete_ty)
+            {
+                let existing_base = self.base_class_name(existing_name);
+                let concrete_base = self.base_class_name(concrete_name);
+                if self.is_same_or_subclass(concrete_base, existing_base) {
+                    return;
+                }
+                if self.is_same_or_subclass(existing_base, concrete_base) {
+                    generic_map.insert(generic_name.to_string(), concrete.to_string());
+                    return;
+                }
+            }
+
+            if reported_conflicts.insert(generic_name.to_string()) {
+                self.report_error_detailed(
+                    format!(
+                        "Generic type parameter '{}' for '{}' was inferred inconsistently: '{}' vs '{}'",
+                        generic_name, call_name, existing, concrete
+                    ),
+                    line,
+                    col,
+                    "E0121",
+                    Some(
+                        "Pass arguments that agree on the same concrete type, or provide explicit type arguments",
+                    ),
+                );
+            }
+        } else {
+            generic_map.insert(generic_name.to_string(), concrete.to_string());
+        }
+    }
+
+    fn merge_generic_bindings(
+        &mut self,
+        generic_map: &mut HashMap<String, String>,
+        reported_conflicts: &mut HashSet<String>,
+        call_name: &str,
+        new_bindings: HashMap<String, String>,
+        line: usize,
+        col: usize,
+    ) {
+        for (generic_name, concrete) in new_bindings {
+            self.merge_generic_binding(
+                generic_map,
+                reported_conflicts,
+                call_name,
+                &generic_name,
+                &concrete,
+                line,
+                col,
+            );
         }
     }
 
@@ -377,10 +467,9 @@ impl TypeChecker {
                 match op {
                     TokenType::Bang => Ok(TejxType::Bool),
                     TokenType::Tilde => {
-                        if matches!(
-                            right_type,
-                            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
-                        ) || right_type == TejxType::from_name("<inferred>")
+                        if ((right_type.is_numeric() && !right_type.is_float())
+                            || right_type == TejxType::from_name("<inferred>"))
+                            && !matches!(right_type, TejxType::Bool | TejxType::Char)
                         {
                             Ok(right_type)
                         } else {
@@ -665,6 +754,15 @@ impl TypeChecker {
                         if left_type.is_float() || right_type.is_float() {
                             return Ok(TejxType::Float64);
                         }
+                        if left_type == TejxType::UInt128 && right_type == TejxType::UInt128 {
+                            return Ok(TejxType::UInt128);
+                        }
+                        if left_type == TejxType::UInt64 && right_type == TejxType::UInt64 {
+                            return Ok(TejxType::UInt64);
+                        }
+                        if left_type == TejxType::UInt32 && right_type == TejxType::UInt32 {
+                            return Ok(TejxType::UInt32);
+                        }
                         if left_type == TejxType::Int64 || right_type == TejxType::Int64 {
                             return Ok(TejxType::Int64);
                         }
@@ -854,31 +952,22 @@ impl TypeChecker {
                 }
 
                 // Instance access
-                if let Some(info) = self.resolve_instance_member(&obj_type, member) {
+                if let Some((declaring_type, info)) =
+                    self.resolve_instance_member_with_owner(&obj_type, member)
+                {
                     if info.is_static {
                         self.report_error_detailed(format!("Static member '{}' accessed on instance", member), *_line, *_col, "E0116", Some("Access static members using the class name, e.g., ClassName.member"));
                     }
                     if info.access != AccessLevel::Public {
-                        let obj_base = obj_type.split('<').next().unwrap_or(&obj_type);
-                        if !obj_base.starts_with("function") {
-                            let is_accessible = match info.access {
-                                AccessLevel::Public => true,
-                                AccessLevel::Private => {
-                                    self.current_class
-                                        .as_ref()
-                                        .map(|c| c.split('<').next().unwrap_or(c))
-                                        == Some(obj_base)
-                                }
-                                AccessLevel::Protected => {
-                                    if let Some(current) = &self.current_class {
-                                        let current_base =
-                                            current.split('<').next().unwrap_or(current);
-                                        self.is_same_or_subclass(current_base, obj_base)
-                                    } else {
-                                        false
-                                    }
-                                }
-                            };
+                        let declaring_base = declaring_type
+                            .split('<')
+                            .next()
+                            .unwrap_or(&declaring_type);
+                        if !declaring_base.starts_with("function") {
+                            let is_accessible = self.is_member_accessible_from_current_class(
+                                &declaring_type,
+                                &info.access,
+                            );
 
                             if !is_accessible {
                                 self.report_error_detailed(
@@ -1264,7 +1353,7 @@ impl TypeChecker {
 
                 if target_type != "<inferred>" && value_type != "<inferred>" {
                     self.check_numeric_bounds(value, &target_ty_obj, *_line, *_col);
-                    if !self.is_assignable(&target_ty_obj, &value_ty_obj) {
+                    if !self.is_assignment_compatible(&target_ty_obj, &value_ty_obj) {
                         if value_type == "[]" {
                             self.report_error_detailed(
                                 format!(
@@ -1343,15 +1432,113 @@ impl TypeChecker {
                     return Ok(TejxType::Int32);
                 }
                 if callee_str == "super" {
-                    if let Some(Symbol { ty: _type_name, .. }) = self.lookup("super") {
-                        for arg in args {
-                            self.check_expression(arg)?;
-                        }
-                        return Ok(TejxType::Void);
-                    } else {
-                        self.report_error_detailed("Cannot use 'super' here".to_string(), *_line, *_col, "E0115", Some("'super' can only be used inside a class that extends another class"));
+                    if self.current_member_is_static {
+                        self.report_error_detailed(
+                            "Cannot use 'super' in static context".to_string(),
+                            *_line,
+                            *_col,
+                            "E0115",
+                            Some("Use the parent class name directly from a static method"),
+                        );
                         return Ok(TejxType::from_name("<inferred>"));
                     }
+                    if !self.current_inside_constructor {
+                        self.report_error_detailed(
+                            "super() can only be used in a derived class constructor"
+                                .to_string(),
+                            *_line,
+                            *_col,
+                            "E0115",
+                            Some("Use 'super.method(...)' inside instance methods, or call 'super(...)' as the first statement of the constructor"),
+                        );
+                        return Ok(TejxType::from_name("<inferred>"));
+                    }
+                    if let Some(Symbol { ty: parent_type, .. }) = self.lookup("super") {
+                        let parent_name = parent_type.to_name();
+                        let mut expected_arg_types = Vec::new();
+                        if let Some(info) = self.resolve_instance_member(&parent_name, "constructor")
+                        {
+                            if let TejxType::Function(params, _) = &info.ty {
+                                expected_arg_types = params.clone();
+                            }
+                        }
+
+                        let mut actual_arg_types = Vec::new();
+                        for (index, arg) in args.iter().enumerate() {
+                            let expected_ty = expected_arg_types.get(index).cloned();
+                            let actual =
+                                self.with_expected_type(expected_ty, |s| s.check_expression(arg))?;
+                            actual_arg_types.push(actual);
+                        }
+
+                        let is_optional_param =
+                            |ty: &TejxType| matches!(ty, TejxType::Optional(_));
+                        if !expected_arg_types.is_empty() {
+                            if args.len() > expected_arg_types.len() {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Constructor for '{}' expects {} argument(s), but {} were provided",
+                                        parent_name,
+                                        expected_arg_types.len(),
+                                        args.len()
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0109",
+                                    Some(&format!(
+                                        "Provide {} argument(s)",
+                                        expected_arg_types.len()
+                                    )),
+                                );
+                            } else if args.len() < expected_arg_types.len() {
+                                let missing = &expected_arg_types[args.len()..];
+                                if !missing.iter().all(is_optional_param) {
+                                    self.report_error_detailed(
+                                        format!(
+                                            "Constructor for '{}' expects {} argument(s), but {} were provided",
+                                            parent_name,
+                                            expected_arg_types.len(),
+                                            args.len()
+                                        ),
+                                        *_line,
+                                        *_col,
+                                        "E0109",
+                                        Some(&format!(
+                                            "Provide {} argument(s)",
+                                            expected_arg_types.len()
+                                        )),
+                                    );
+                                }
+                            }
+                        }
+
+                        for (expected, actual) in
+                            expected_arg_types.iter().zip(actual_arg_types.iter())
+                        {
+                            if !self.are_types_compatible(expected, actual) {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Argument type mismatch for 'super': expected '{}', got '{}'",
+                                        expected.to_name(),
+                                        actual.to_name()
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0108",
+                                    self.optional_requires_check_hint(expected, actual)
+                                        .as_deref()
+                                        .or(Some(&format!(
+                                            "Pass a value of type '{}'",
+                                            expected.to_name()
+                                        ))),
+                                );
+                            }
+                        }
+
+                        return Ok(TejxType::Void);
+                    }
+                    self.report_error_detailed("Cannot use 'super' here".to_string(), *_line, *_col, "E0115", Some("'super' can only be used inside a class that extends another class"));
+                    return Ok(TejxType::from_name("<inferred>"));
                 }
 
                 let optional_member_return =
@@ -1543,6 +1730,7 @@ impl TypeChecker {
 
                 let mut generic_map: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
+                let mut reported_generic_conflicts: HashSet<String> = HashSet::new();
                 let mut call_generic_params: Vec<crate::frontend::ast::GenericParam> = Vec::new();
                 let mut call_generic_owner = callee_str.clone();
                 let mut member_lookup_resolved = false;
@@ -1719,9 +1907,15 @@ impl TypeChecker {
                                 }
                             }
                             explicit_generic_bindings.insert(gp.name.clone(), concrete.clone());
-                            generic_map
-                                .entry(gp.name.clone())
-                                .or_insert_with(|| concrete.to_name());
+                            self.merge_generic_binding(
+                                &mut generic_map,
+                                &mut reported_generic_conflicts,
+                                &call_generic_owner,
+                                &gp.name,
+                                &concrete.to_name(),
+                                *_line,
+                                *_col,
+                            );
                         }
                     }
                 }
@@ -1952,10 +2146,19 @@ impl TypeChecker {
                             );
                         }
 
+                        let mut inferred_arg_bindings = HashMap::new();
                         Self::collect_generic_bindings_from_types(
                             &expected_obj,
                             &actual_obj,
+                            &mut inferred_arg_bindings,
+                        );
+                        self.merge_generic_bindings(
                             &mut generic_map,
+                            &mut reported_generic_conflicts,
+                            &call_generic_owner,
+                            inferred_arg_bindings,
+                            *_line,
+                            *_col,
                         );
 
                         let is_print_call = callee_str == "print" || callee_str == "eprint";
@@ -2017,9 +2220,35 @@ impl TypeChecker {
                             && t.chars().all(|c| c.is_alphanumeric())
                     };
                     if is_generic_param_check(&target_type) && arg_type != "<inferred>" {
-                        generic_map
-                            .entry(target_type.clone())
-                            .or_insert(arg_type.clone());
+                        self.merge_generic_binding(
+                            &mut generic_map,
+                            &mut reported_generic_conflicts,
+                            &call_generic_owner,
+                            &target_type,
+                            &arg_type,
+                            *_line,
+                            *_col,
+                        );
+                    }
+                }
+
+                if !call_generic_params.is_empty() {
+                    if let Some(expected_ty) = self.current_expected_type.clone() {
+                        let mut inferred_return_bindings = HashMap::new();
+                        let formal_return_ty = parse_type_string(self, &return_type);
+                        Self::collect_generic_bindings_from_types(
+                            &formal_return_ty,
+                            &expected_ty,
+                            &mut inferred_return_bindings,
+                        );
+                        for (generic_name, concrete) in inferred_return_bindings {
+                            if !generic_map.contains_key(&generic_name)
+                                && !concrete.is_empty()
+                                && concrete != "<inferred>"
+                            {
+                                generic_map.insert(generic_name, concrete);
+                            }
+                        }
                     }
                 }
 
@@ -2027,6 +2256,10 @@ impl TypeChecker {
                 if explicit_type_args_valid {
                     if !call_generic_params.is_empty() {
                         if let Some(explicit_args) = explicit_type_args.clone() {
+                            self.call_instantiations.insert(
+                                (*_line, *_col, callee_str.clone()),
+                                explicit_args.clone(),
+                            );
                             self.function_instantiations
                                 .entry(func_name.to_string())
                                 .or_default()
@@ -2113,6 +2346,10 @@ impl TypeChecker {
                             Some("Pass an argument with a concrete type or provide explicit type arguments"),
                         );
                     } else {
+                        self.call_instantiations.insert(
+                            (*_line, *_col, callee_str.clone()),
+                            concrete_args.clone(),
+                        );
                         self.function_instantiations
                             .entry(func_name.to_string())
                             .or_default()
@@ -2432,7 +2669,12 @@ impl TypeChecker {
                 }
                 Ok(TejxType::from_name("<inferred>"))
             }
-            Expression::OptionalMemberAccessExpr { object, member, .. } => {
+            Expression::OptionalMemberAccessExpr {
+                object,
+                member,
+                _line,
+                _col,
+            } => {
                 let checked_obj_type = self.check_expression(object)?;
                 let is_optional_object = matches!(checked_obj_type, TejxType::Optional(_));
                 let mut obj_type = checked_obj_type.to_name();
@@ -2480,8 +2722,32 @@ impl TypeChecker {
                     });
                 }
 
-                if let Some(info) = self.resolve_instance_member(&resolved_obj_ty.to_name(), member)
+                if let Some((declaring_type, info)) =
+                    self.resolve_instance_member_with_owner(&resolved_obj_ty.to_name(), member)
                 {
+                    if info.access != AccessLevel::Public
+                        && !self.is_member_accessible_from_current_class(
+                            &declaring_type,
+                            &info.access,
+                        )
+                    {
+                        self.report_error_detailed(
+                            format!(
+                                "Member '{}' is {} and cannot be accessed here",
+                                member,
+                                if info.access == AccessLevel::Private {
+                                    "private"
+                                } else {
+                                    "protected"
+                                }
+                            ),
+                            *_line,
+                            *_col,
+                            "E0106",
+                            Some("Check the member's visibility modifier in the class definition"),
+                        );
+                        return Ok(TejxType::from_name("<inferred>"));
+                    }
                     let member_ty = TejxType::from_name(
                         &self.substitute_generics(&info.ty.to_name(), &resolved_obj_ty.to_name()),
                     );
@@ -2665,9 +2931,10 @@ impl TypeChecker {
                 // so we don't require explicit type args on the constructor call.
                 let mut class_ty = TejxType::from_name(class_name);
                 let mut effective_class_name = class_name.clone();
+                let mut reported_explicit_generic_issue = false;
                 if let TejxType::Class(base, generics) = class_ty.clone() {
-                    if !generics.is_empty() {
-                        if let Some(sym) = self.lookup(&base) {
+                    if let Some(sym) = self.lookup(&base) {
+                        if !generics.is_empty() {
                             if sym.generic_params.is_empty() {
                                 self.report_error_detailed(
                                     format!(
@@ -2679,14 +2946,69 @@ impl TypeChecker {
                                     "E0122",
                                     Some("Remove the explicit type arguments"),
                                 );
+                                reported_explicit_generic_issue = true;
                                 // Ignore type arguments on non-generic classes to avoid cascading errors.
                                 class_ty = TejxType::Class(base.clone(), vec![]);
                                 effective_class_name = base.clone();
+                            } else if generics.len() != sym.generic_params.len() {
+                                self.report_error_detailed(
+                                    format!(
+                                        "Generic type argument count mismatch for '{}': expected {}, got {}",
+                                        base,
+                                        sym.generic_params.len(),
+                                        generics.len()
+                                    ),
+                                    *_line,
+                                    *_col,
+                                    "E0122",
+                                    Some("Provide the correct number of type arguments"),
+                                );
+                                reported_explicit_generic_issue = true;
+                            } else {
+                                for (gp, concrete) in sym.generic_params.iter().zip(generics.iter()) {
+                                    if !self.is_valid_type(concrete) {
+                                        self.report_error_detailed(
+                                            format!(
+                                                "Unknown data type: '{}' for generic parameter '{}'",
+                                                concrete.to_name(),
+                                                gp.name
+                                            ),
+                                            *_line,
+                                            *_col,
+                                            "E0101",
+                                            Some("Provide a valid concrete type"),
+                                        );
+                                        reported_explicit_generic_issue = true;
+                                        break;
+                                    }
+                                    if let Some(bound) = &gp.bound {
+                                        let bound_ty = TejxType::from_node(bound);
+                                        if !self.is_assignable(&bound_ty, concrete) {
+                                            self.report_error_detailed(
+                                                format!(
+                                                    "Type '{}' does not satisfy constraint '{}' for generic parameter '{}'",
+                                                    concrete.to_name(),
+                                                    bound_ty.to_name(),
+                                                    gp.name
+                                                ),
+                                                *_line,
+                                                *_col,
+                                                "E0120",
+                                                Some(&format!(
+                                                    "Provide a type that satisfies the constraint '{}'",
+                                                    bound_ty.to_name()
+                                                )),
+                                            );
+                                            reported_explicit_generic_issue = true;
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                if !self.is_valid_type(&class_ty) {
+                if !reported_explicit_generic_issue && !self.is_valid_type(&class_ty) {
                     let base_name = match &class_ty {
                         TejxType::Class(name, _) => name.as_str(),
                         _ => class_name.as_str(),
@@ -2706,20 +3028,25 @@ impl TypeChecker {
                     self.report_error_detailed(format!("Cannot instantiate abstract class '{}'", class_name), *_line, *_col, "E0110", Some("Create a concrete subclass that implements all abstract methods, then instantiate that instead"));
                 }
 
-                let mut expected_arg_types = Vec::new();
-                if let Some(info) =
-                    self.resolve_instance_member(&effective_class_name, "constructor")
-                {
-                    if let TejxType::Function(params, _) = &info.ty {
-                        expected_arg_types = params.clone();
-                    } else if let TejxType::Class(sig, _) = &info.ty {
-                        if sig.starts_with("function:") || sig.contains("=>") {
-                            let (_ret, params, _) = self.parse_signature(sig.clone());
-                            expected_arg_types =
-                                params.iter().map(|p| TejxType::from_name(p)).collect();
+                let constructor_arg_types_for = |tc: &TypeChecker, class_ref: &str| -> Vec<TejxType> {
+                    let Some((_, info)) =
+                        tc.resolve_instance_member_with_owner(class_ref, "constructor")
+                    else {
+                        return Vec::new();
+                    };
+
+                    let substituted = tc.substitute_generics(&info.ty.to_name(), class_ref);
+                    match TejxType::from_name(&substituted) {
+                        TejxType::Function(params, _) => params,
+                        TejxType::Class(sig, _) if sig.starts_with("function:") || sig.contains("=>") => {
+                            let (_ret, params, _) = tc.parse_signature(sig);
+                            params.iter().map(|p| TejxType::from_name(p)).collect()
                         }
+                        _ => Vec::new(),
                     }
-                }
+                };
+
+                let expected_arg_types = constructor_arg_types_for(self, &class_ty.to_name());
 
                 let mut actual_arg_types = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
@@ -2858,24 +3185,73 @@ impl TypeChecker {
                         }
                     }
                 }
+
+                let concrete_constructor_arg_types =
+                    constructor_arg_types_for(self, &inferred_class_name);
+                if !concrete_constructor_arg_types.is_empty() {
+                    for (expected, actual) in concrete_constructor_arg_types
+                        .iter()
+                        .zip(actual_arg_types.iter())
+                    {
+                        if !self.are_types_compatible(expected, actual) {
+                            self.report_error_detailed(
+                                format!(
+                                    "Constructor argument mismatch for '{}': expected '{}', got '{}'",
+                                    inferred_class_name,
+                                    expected.to_name(),
+                                    actual.to_name()
+                                ),
+                                *_line,
+                                *_col,
+                                "E0108",
+                                self.optional_requires_check_hint(expected, actual)
+                                    .as_deref()
+                                    .or(Some(&format!(
+                                        "Pass a value of type '{}'",
+                                        expected.to_name()
+                                    ))),
+                            );
+                        }
+                    }
+                }
                 self.register_instantiation(&inferred_class_name, *_line, *_col);
                 Ok(TejxType::from_name(&inferred_class_name))
             }
             Expression::ThisExpr { _line, _col } => {
+                if self.current_member_is_static {
+                    self.report_error_detailed(
+                        "Cannot use 'this' in static context".to_string(),
+                        *_line,
+                        *_col,
+                        "E0115",
+                        Some("Access static members through the class name instead"),
+                    );
+                    return Ok(TejxType::from_name("<inferred>"));
+                }
                 if let Some(sym) = self.lookup("this") {
                     Ok(sym.ty.clone())
                 } else {
                     self.report_error_detailed(
-                        "Using 'super' outside of a derived class".to_string(),
+                        "Using 'this' outside of an instance context".to_string(),
                         *_line,
                         *_col,
                         "E0115",
-                        Some("'super' can only be used inside methods of a class that extends another class"),
+                        Some("'this' can only be used inside instance methods, constructors, getters, or setters"),
                     );
                     Ok(TejxType::from_name("<inferred>"))
                 }
             }
             Expression::SuperExpr { _line, _col } => {
+                if self.current_member_is_static {
+                    self.report_error_detailed(
+                        "Cannot use 'super' in static context".to_string(),
+                        *_line,
+                        *_col,
+                        "E0115",
+                        Some("Use the parent class name directly from a static method"),
+                    );
+                    return Ok(TejxType::from_name("<inferred>"));
+                }
                 if let Some(s) = self.lookup("super") {
                     Ok(s.ty.clone())
                 } else {

@@ -1,0 +1,16 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Overrides must keep the same static or instance modifier as the parent.
+
+class Base {
+    static version(): string {
+        return "1";
+    }
+}
+
+class Derived extends Base {
+    version(): string {
+        return "2";
+    }
+}
+
+function main() {}

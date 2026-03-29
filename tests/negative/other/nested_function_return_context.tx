@@ -1,0 +1,12 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Nested functions must not break the enclosing function return-type checking.
+
+function outer(): int {
+    function inner(): string {
+        return "ok";
+    }
+
+    return "wrong";
+}
+
+function main() {}

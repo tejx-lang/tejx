@@ -1,0 +1,14 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Interface implementations must use public instance methods.
+
+interface Greeter {
+    greet(name: string): string;
+}
+
+class Person implements Greeter {
+    protected greet(name: string): string {
+        return "hello " + name;
+    }
+}
+
+function main() {}

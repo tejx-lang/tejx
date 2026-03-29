@@ -9,6 +9,10 @@ use std::collections::HashMap;
 
 const ARRAY_FLAG_FIXED: i64 = 0x0100;
 const ARRAY_FLAG_PTR: i64 = 0x0400;
+const ARRAY_FLAG_KIND_UNSIGNED: i64 = 0x1000;
+const ARRAY_FLAG_KIND_FLOAT: i64 = 0x2000;
+const ARRAY_FLAG_KIND_BOOL: i64 = 0x3000;
+const ARRAY_FLAG_KIND_CHAR: i64 = 0x4000;
 
 #[derive(Clone)]
 struct LoopContext {
@@ -1440,6 +1444,17 @@ impl MIRLowering {
         if self.is_heap_ref_type(&elem_ty) {
             flags |= ARRAY_FLAG_PTR;
         }
+        flags |= match elem_ty {
+            TejxType::UInt8
+            | TejxType::UInt16
+            | TejxType::UInt32
+            | TejxType::UInt64
+            | TejxType::UInt128 => ARRAY_FLAG_KIND_UNSIGNED,
+            TejxType::Float16 | TejxType::Float32 | TejxType::Float64 => ARRAY_FLAG_KIND_FLOAT,
+            TejxType::Bool => ARRAY_FLAG_KIND_BOOL,
+            TejxType::Char => ARRAY_FLAG_KIND_CHAR,
+            _ => 0,
+        };
         flags
     }
 

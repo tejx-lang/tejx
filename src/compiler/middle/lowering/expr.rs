@@ -53,9 +53,15 @@ impl Lowering {
             expr.get_type(),
             TejxType::String
                 | TejxType::Bool
+                | TejxType::Int8
+                | TejxType::UInt8
                 | TejxType::Int16
+                | TejxType::UInt16
+                | TejxType::UInt32
                 | TejxType::Int32
+                | TejxType::UInt64
                 | TejxType::Int64
+                | TejxType::UInt128
                 | TejxType::Float32
                 | TejxType::Float64
         )
@@ -77,7 +83,14 @@ impl Lowering {
                 args: vec![expr],
                 ty: TejxType::String,
             },
-            TejxType::Int16 | TejxType::Int32 | TejxType::Int64 => HIRExpression::Call {
+            TejxType::Int8
+            | TejxType::UInt8
+            | TejxType::Int16
+            | TejxType::UInt16
+            | TejxType::UInt32
+            | TejxType::Int32
+            | TejxType::UInt64
+            | TejxType::Int64 => HIRExpression::Call {
                 line,
                 callee: "rt_to_string_int".to_string(),
                 args: vec![expr],
@@ -1005,6 +1018,7 @@ impl Lowering {
                 callee,
                 args,
                 type_args,
+                _col,
                 ..
             } => {
                 let hir_args: Vec<HIRExpression> =
@@ -1031,10 +1045,16 @@ impl Lowering {
                         } else {
                             // Extract known static type string
                             let type_str = match &arg_ty {
-                                TejxType::Int32
-                                | TejxType::Int64
+                                TejxType::Int8
+                                | TejxType::UInt8
                                 | TejxType::Int16
-                                | TejxType::Int128 => "int",
+                                | TejxType::UInt16
+                                | TejxType::UInt32
+                                | TejxType::Int32
+                                | TejxType::UInt64
+                                | TejxType::Int64
+                                | TejxType::Int128
+                                | TejxType::UInt128 => "int",
                                 TejxType::Float32 | TejxType::Float64 => "float",
                                 TejxType::Bool => "bool",
                                 TejxType::String => "string",
@@ -1066,10 +1086,16 @@ impl Lowering {
                 if callee_str == "sizeof" {
                     let sizeof_const = |ty: &TejxType| -> Option<i64> {
                         match ty {
+                            TejxType::Int8 => Some(1),
+                            TejxType::UInt8 => Some(1),
                             TejxType::Int16 => Some(2),
+                            TejxType::UInt16 => Some(2),
+                            TejxType::UInt32 => Some(4),
                             TejxType::Int32 => Some(4),
+                            TejxType::UInt64 => Some(8),
                             TejxType::Int64 => Some(8),
                             TejxType::Int128 => Some(16),
+                            TejxType::UInt128 => Some(16),
                             TejxType::Float16 => Some(2),
                             TejxType::Float32 => Some(4),
                             TejxType::Float64 => Some(8),
@@ -1556,8 +1582,16 @@ impl Lowering {
                     }
                 }
 
-                if let Some((monomorphized_callee, bindings)) =
-                    self.resolve_function_monomorph(&final_callee, &final_args, type_args.as_ref())
+                if let Some((monomorphized_callee, bindings)) = self
+                    .resolve_function_monomorph(&final_callee, &final_args, type_args.as_ref())
+                    .or_else(|| {
+                        self.resolve_recorded_function_monomorph(
+                            &final_callee,
+                            &callee_str,
+                            line,
+                            *_col,
+                        )
+                    })
                 {
                     if let Some(base_ty) = self.user_functions.borrow().get(&final_callee).cloned()
                     {
@@ -2288,11 +2322,42 @@ impl Lowering {
             return TejxType::Float64;
         }
 
+        if lt == TejxType::UInt64 && rt == TejxType::UInt64 {
+            return TejxType::UInt64;
+        }
+        if lt == TejxType::UInt32 && rt == TejxType::UInt32 {
+            return TejxType::UInt32;
+        }
+        if lt == TejxType::UInt128 && rt == TejxType::UInt128 {
+            return TejxType::UInt128;
+        }
+
         if lt == TejxType::Int64 || rt == TejxType::Int64 {
             return TejxType::Int64;
         }
-        if matches!(lt, TejxType::Int16 | TejxType::Int32 | TejxType::Int128)
-            || matches!(rt, TejxType::Int16 | TejxType::Int32 | TejxType::Int128)
+        if matches!(
+            lt,
+            TejxType::Int8
+                | TejxType::UInt8
+                | TejxType::Int16
+                | TejxType::UInt16
+                | TejxType::UInt32
+                | TejxType::Int32
+                | TejxType::UInt64
+                | TejxType::Int128
+                | TejxType::UInt128
+        ) || matches!(
+            rt,
+            TejxType::Int8
+                | TejxType::UInt8
+                | TejxType::Int16
+                | TejxType::UInt16
+                | TejxType::UInt32
+                | TejxType::Int32
+                | TejxType::UInt64
+                | TejxType::Int128
+                | TejxType::UInt128
+        )
         {
             return TejxType::Int32; // Default promotion
         }
