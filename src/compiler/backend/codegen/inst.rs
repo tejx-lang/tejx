@@ -55,7 +55,7 @@ impl CodeGen {
         inst: &MIRInstruction,
         func: &MIRFunction,
         _bb_name: &str,
-        _current_bb: usize,
+        block_idx: usize,
     ) {
         if self.instruction_needs_runtime_location(inst) {
             self.emit_runtime_location_marker(inst.get_line());
@@ -91,6 +91,11 @@ impl CodeGen {
 
             MIRInstruction::Jump { target, .. } => {
                 if *target < func.blocks.len() {
+                    // Emit safepoint poll on back-edges (loops) so the GC can
+                    // collect during tight iteration.
+                    if *target <= block_idx {
+                        self.emit_line("call void @rt_safepoint_poll()");
+                    }
                     self.emit_line(&format!("br label %{}", func.blocks[*target].name));
                 }
             }
@@ -141,6 +146,10 @@ impl CodeGen {
                 } else {
                     "unreachable_block".to_string()
                 };
+                // Insert safepoint poll if either branch target is a back-edge (loop)
+                if *true_target <= block_idx || *false_target <= block_idx {
+                    self.emit_line("call void @rt_safepoint_poll()");
+                }
                 self.emit_line(&format!(
                     "br i1 {}, label %{}, label %{}",
                     cond, true_name, false_name
@@ -151,6 +160,7 @@ impl CodeGen {
                     .blocks
                     .iter()
                     .any(|b| b.name == _bb_name && b.exception_handler.is_some());
+                let _ = block_idx; // suppress unused warning on non-loop paths
                 if has_handler {
                     self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
                 }

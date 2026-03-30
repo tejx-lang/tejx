@@ -1,5 +1,7 @@
 pub mod binary;
 pub use binary::*;
+pub mod crypto;
+pub use crypto::*;
 pub mod array;
 pub use array::*;
 pub mod atomic;

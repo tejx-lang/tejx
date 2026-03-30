@@ -871,6 +871,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
             .is_ok()
         {
             if refill_size == aligned_size {
+                memset(current_top as *mut _, 0, refill_size);
                 let header = current_top as *mut ObjectHeader;
                 (*header).gc_word = 0;
                 (*header).type_id = 0;
@@ -882,6 +883,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 return body_ptr;
             } else {
                 // Refill TLAB
+                memset(current_top as *mut _, 0, refill_size);
                 tlab.top = current_top.add(aligned_size);
                 tlab.end = current_top.add(refill_size);
                 MY_TLAB.with(|t| t.set(tlab));
@@ -896,6 +898,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 memset(body_ptr as *mut _, 0, size);
                 return body_ptr;
             }
+
         }
     }
 }
@@ -1258,6 +1261,8 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
         (*header).capacity as usize * elem_size
     } else if type_id == TAG_OBJECT as u16 {
         40 // Object layout: [size, capacity, keys_ptr, values_ptr, data_base]
+    } else if type_id == TAG_FUNCTION as u16 {
+        32 // Closure layout: [size (8), capacity (8), fn_ptr (8), env_ptr (8)]
     } else if type_id == TAG_INT as u16
         || type_id == TAG_FLOAT as u16
         || type_id == TAG_CHAR as u16
@@ -1417,6 +1422,9 @@ unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &m
     } else if type_id == TAG_OBJECT as u16 {
         copy_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
         copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
+    } else if type_id == TAG_FUNCTION as u16 {
+        // Closure environment root
+        copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
     } else if type_id == TAG_PROMISE as u16 {
         copy_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
         copy_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
@@ -1457,6 +1465,13 @@ unsafe fn scan_object_fields_minor_with_seen(
             seen_stack,
             &mut has_young_refs,
         );
+        copy_object_with_seen_and_track_young(
+            body_ptr.add(24) as *mut i64,
+            seen_stack,
+            &mut has_young_refs,
+        );
+    } else if type_id == TAG_FUNCTION as u16 {
+        // Closure environment root
         copy_object_with_seen_and_track_young(
             body_ptr.add(24) as *mut i64,
             seen_stack,
@@ -1515,8 +1530,17 @@ unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
     while scan < end {
         let header = scan as *mut ObjectHeader;
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+
+        if size <= std::mem::size_of::<ObjectHeader>() {
+            scan = scan.add(std::mem::size_of::<ObjectHeader>());
+            continue;
+        }
+
         if !gc_is_forwarded((*header).gc_word) {
-            run_finalizer_for_header(header);
+            let body = scan.add(std::mem::size_of::<ObjectHeader>());
+            if rt_is_gc_ptr(body) {
+                run_finalizer_for_header(header);
+            }
         }
         scan = scan.add(size);
     }

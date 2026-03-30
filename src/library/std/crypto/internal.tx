@@ -1,0 +1,20 @@
+extern function rt_crypto_sha256(data: int[]): int[];
+extern function rt_crypto_hmac_sha256(key: int[], data: int[]): int[];
+extern function rt_crypto_pbkdf2_sha256(password: int[], salt: int[], iterations: int, dkLen: int): int[];
+extern function rt_crypto_random_bytes(len: int): int[];
+
+function _crypto_sha256(data: int[]): int[] {
+    return rt_crypto_sha256(data);
+}
+
+function _crypto_hmac_sha256(key: int[], data: int[]): int[] {
+    return rt_crypto_hmac_sha256(key, data);
+}
+
+function _crypto_pbkdf2_sha256(password: int[], salt: int[], iterations: int, dkLen: int): int[] {
+    return rt_crypto_pbkdf2_sha256(password, salt, iterations, dkLen);
+}
+
+function _crypto_random_bytes(len: int): int[] {
+    return rt_crypto_random_bytes(len);
+}

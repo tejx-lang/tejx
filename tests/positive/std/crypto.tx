@@ -1,0 +1,51 @@
+import std:binary;
+import std:crypto;
+import { assert_eq_int, assert_true } from "../utils.tx";
+
+function bytesEqual(left: int[], right: int[]): bool {
+    if (left.length() != right.length()) {
+        return false;
+    }
+
+    for (let i: int = 0; i < left.length(); i++) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function test_sha256(): void {
+    let digest: int[] = crypto.sha256(binary.fromString("abc"));
+    assert_eq_int(32, digest.length(), "sha256 returns 32 bytes");
+    assert_eq_int(186, digest[0], "sha256 first byte");
+    assert_eq_int(120, digest[1], "sha256 second byte");
+    assert_eq_int(22, digest[2], "sha256 third byte");
+}
+
+function test_hmac_sha256(): void {
+    let first: int[] = crypto.hmacSha256(binary.fromString("key"), binary.fromString("payload"));
+    let second: int[] = crypto.hmacSha256(binary.fromString("key"), binary.fromString("payload"));
+    assert_eq_int(32, first.length(), "hmacSha256 returns 32 bytes");
+    assert_true(bytesEqual(first, second), "hmacSha256 is deterministic");
+}
+
+function test_pbkdf2_sha256(): void {
+    let first: int[] = crypto.pbkdf2Sha256(binary.fromString("password"), binary.fromString("salt"), 2, 32);
+    let second: int[] = crypto.pbkdf2Sha256(binary.fromString("password"), binary.fromString("salt"), 2, 32);
+    assert_eq_int(32, first.length(), "pbkdf2Sha256 returns requested bytes");
+    assert_true(bytesEqual(first, second), "pbkdf2Sha256 is deterministic");
+}
+
+function test_random_bytes(): void {
+    let bytes: int[] = crypto.randomBytes(24);
+    assert_eq_int(24, bytes.length(), "randomBytes returns requested length");
+}
+
+function main(): void {
+    test_sha256();
+    test_hmac_sha256();
+    test_pbkdf2_sha256();
+    test_random_bytes();
+}

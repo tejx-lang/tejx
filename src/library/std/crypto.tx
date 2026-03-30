@@ -1,0 +1,35 @@
+import "./crypto/internal.tx";
+
+export function sha256(data: int[]): int[] {
+    return _crypto_sha256(data);
+}
+
+export function hmacSha256(key: int[], data: int[]): int[] {
+    return _crypto_hmac_sha256(key, data);
+}
+
+export function pbkdf2Sha256(password: int[], salt: int[], iterations: int, dkLen: int = 32): int[] {
+    return _crypto_pbkdf2_sha256(password, salt, iterations, dkLen);
+}
+
+export function randomBytes(len: int): int[] {
+    return _crypto_random_bytes(len);
+}
+
+export namespace crypto {
+    export function sha256(data: int[]): int[] {
+        return _crypto_sha256(data);
+    }
+
+    export function hmacSha256(key: int[], data: int[]): int[] {
+        return _crypto_hmac_sha256(key, data);
+    }
+
+    export function pbkdf2Sha256(password: int[], salt: int[], iterations: int, dkLen: int = 32): int[] {
+        return _crypto_pbkdf2_sha256(password, salt, iterations, dkLen);
+    }
+
+    export function randomBytes(len: int): int[] {
+        return _crypto_random_bytes(len);
+    }
+}
