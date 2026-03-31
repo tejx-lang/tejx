@@ -91,9 +91,7 @@ impl CodeGen {
 
             MIRInstruction::Jump { target, .. } => {
                 if *target < func.blocks.len() {
-                    // Emit safepoint poll on back-edges (loops) so the GC can
-                    // collect during tight iteration.
-                    if *target <= block_idx {
+                    if self.current_function_needs_loop_safepoints && *target <= block_idx {
                         self.emit_line("call void @rt_safepoint_poll()");
                     }
                     self.emit_line(&format!("br label %{}", func.blocks[*target].name));
@@ -146,10 +144,7 @@ impl CodeGen {
                 } else {
                     "unreachable_block".to_string()
                 };
-                // Insert safepoint poll if either branch target is a back-edge (loop)
-                if *true_target <= block_idx || *false_target <= block_idx {
-                    self.emit_line("call void @rt_safepoint_poll()");
-                }
+
                 self.emit_line(&format!(
                     "br i1 {}, label %{}, label %{}",
                     cond, true_name, false_name
@@ -823,6 +818,37 @@ impl CodeGen {
         }
     }
 
+    fn class_requires_heap_alloc(&self, class_name: &str) -> bool {
+        let lookup_name = if class_name.contains('<') {
+            class_name.split('<').next().unwrap()
+        } else {
+            class_name
+        };
+
+        if matches!(
+            lookup_name,
+            "Timeout"
+                | "Interval"
+                | "Thread"
+                | "Atomic"
+                | "Condition"
+                | "Mutex"
+                | "TcpStream"
+                | "TcpListener"
+        ) {
+            return true;
+        }
+
+        self.class_methods
+            .get(lookup_name)
+            .map(|methods| {
+                methods
+                    .iter()
+                    .any(|method| method == "finalize" || method == "~destructor")
+            })
+            .unwrap_or(false)
+    }
+
     fn emit_fixed_layout_alloc(
         &mut self,
         func: &MIRFunction,
@@ -853,7 +879,8 @@ impl CodeGen {
             )
         };
 
-        let can_stack_allocate = func.name != "tejx_main";
+        let requires_heap = self.class_requires_heap_alloc(shape_name);
+        let can_stack_allocate = func.name != "tejx_main" && !requires_heap;
         if can_stack_allocate && !is_escaped && !dst.is_empty() && self.current_arena.is_some() {
             let arena = self.current_arena.clone().unwrap();
             self.declare_runtime_fn(
@@ -1181,11 +1208,22 @@ impl CodeGen {
                 _ => "UnknownClass".to_string(),
             };
 
-            let type_id = self.type_id_map.get(&class_name).cloned().unwrap_or(2);
+            let lookup_name = if class_name.contains('<') {
+                class_name.split('<').next().unwrap().to_string()
+            } else {
+                class_name.clone()
+            };
+
+            if let Some(fields) = self.class_fields.get(&lookup_name).cloned() {
+                self.emit_fixed_layout_alloc(func, dst, &lookup_name, &fields);
+                return;
+            }
+
+            let type_id = self.type_id_map.get(&lookup_name).cloned().unwrap_or(2);
             let mut ptr_offsets = Vec::new();
             let body_size = self
                 .class_fields
-                .get(&class_name)
+                .get(&lookup_name)
                 .map(|fields| {
                     let mut offset = 0;
                     for (_, ty) in fields {
@@ -1199,31 +1237,6 @@ impl CodeGen {
                 })
                 .unwrap_or(0);
 
-            let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
-
-            if func.name != "tejx_main"
-                && !is_escaped
-                && !dst.is_empty()
-                && self.current_arena.is_some()
-            {
-                let arena = self.current_arena.clone().unwrap();
-                self.declare_runtime_fn(
-                    RT_ARENA_ALLOC,
-                    &format!("i64 @{}(i64, i32, i64) nounwind", RT_ARENA_ALLOC),
-                );
-
-                self.temp_counter += 1;
-                let result_tmp = format!("%call{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @{}(i64 {}, i32 {}, i64 {})",
-                    result_tmp, RT_ARENA_ALLOC, arena, type_id, body_size as i64
-                ));
-
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &result_tmp, dst_ty);
-                return;
-            }
-
             let offsets_ptr = if ptr_offsets.is_empty() {
                 "null".to_string()
             } else {
@@ -1234,100 +1247,29 @@ impl CodeGen {
                 )
             };
 
-            if func.name != "tejx_main" && !is_escaped && !dst.is_empty() {
-                // Stack Allocation (24 bytes header + body_size)
-                let total_size = body_size + 24;
-                let obj_alloca = format!("%stack_class_{}", dst.replace(".", "_"));
-                self.alloca_buffer.push_str(&format!(
-                    "  {} = alloca i8, i32 {}, align 16\n",
-                    obj_alloca, total_size
-                ));
+            // Class instances must stay heap-backed because stdlib/runtime wrappers attach
+            // finalizers dynamically in constructors (for example timers, threads, mutexes,
+            // sockets). Stack or arena allocation would bypass GC finalization entirely.
+            self.declare_runtime_fn(
+                RT_CLASS_NEW,
+                &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
+            );
 
-                // Zero-initialize entire object (Header + Body) to be GC-safe
-                self.declare_runtime_fn(
-                    "llvm.memset.p0i8.i64",
-                    "void @llvm.memset.p0i8.i64(i8*, i8, i64, i1 immarg)",
-                );
-                self.emit_line(&format!(
-                    "call void @llvm.memset.p0i8.i64(i8* {}, i8 0, i64 {}, i1 0)",
-                    obj_alloca, total_size
-                ));
+            self.temp_counter += 1;
+            let result_tmp = format!("%call{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 0)",
+                result_tmp,
+                RT_CLASS_NEW,
+                type_id,
+                body_size as i64,
+                ptr_offsets.len(),
+                offsets_ptr
+            ));
 
-                // Initialize Header after memset so the type tag survives.
-                self.temp_counter += 1;
-                let header_ptr = format!("%header_ptr_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = bitcast i8* {} to %struct.ObjectHeader*",
-                    header_ptr, obj_alloca
-                ));
-
-                self.temp_counter += 1;
-                let tid_ptr = format!("%tid_ptr_{}", self.temp_counter);
-                self.emit_line(&format!("{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 1", tid_ptr, header_ptr));
-                self.emit_line(&format!("store i16 {}, i16* {}", type_id, tid_ptr));
-
-                // Body pointer (header + 24)
-                self.temp_counter += 1;
-                let body_ptr_i8 = format!("%body_ptr_i8_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = getelementptr i8, i8* {}, i32 24",
-                    body_ptr_i8, obj_alloca
-                ));
-
-                self.temp_counter += 1;
-                let body_ptr = format!("%body_ptr_{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = ptrtoint i8* {} to i64",
-                    body_ptr, body_ptr_i8
-                ));
-
-                // Call runtime to finalize setup (age, etc.)
-                self.declare_runtime_fn(
-                    RT_CLASS_NEW,
-                    &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
-                );
-
-                self.temp_counter += 1;
-                let result_tmp = format!("%call{}", self.temp_counter);
-                // call rt_class_new(type_id, body_size, ptr_count, offsets_ptr, stack_ptr)
-                self.emit_line(&format!(
-                    "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 {})",
-                    result_tmp,
-                    RT_CLASS_NEW,
-                    type_id,
-                    body_size as i64,
-                    ptr_offsets.len(),
-                    offsets_ptr,
-                    body_ptr
-                ));
-
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &result_tmp, dst_ty);
-
-                return;
-            } else {
-                // Heap Allocation
-                self.declare_runtime_fn(
-                    RT_CLASS_NEW,
-                    &format!("i64 @{}(i32, i64, i64, i64*, i64) nounwind", RT_CLASS_NEW),
-                );
-
-                self.temp_counter += 1;
-                let result_tmp = format!("%call{}", self.temp_counter);
-                self.emit_line(&format!(
-                    "{} = call i64 @{}(i32 {}, i64 {}, i64 {}, i64* {}, i64 0)",
-                    result_tmp,
-                    RT_CLASS_NEW,
-                    type_id,
-                    body_size as i64,
-                    ptr_offsets.len(),
-                    offsets_ptr
-                ));
-
-                let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-                self.emit_store_variable(dst, &result_tmp, dst_ty);
-                return;
-            }
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            self.emit_store_variable(dst, &result_tmp, dst_ty);
+            return;
         }
 
         if callee == "rt_Array_constructor_v2" {

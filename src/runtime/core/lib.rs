@@ -34,7 +34,7 @@ pub use gc::{
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{self, PanicHookInfo};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, Once};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
@@ -2563,6 +2563,74 @@ static TIMEOUT_CANCELS: LazyLock<Mutex<HashMap<i64, TimeoutState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static INTERVAL_CANCELS: LazyLock<Mutex<HashMap<i64, IntervalState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static TIMEOUT_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static INTERVAL_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMEOUT_OBJECTS: LazyLock<Mutex<HashMap<i64, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static INTERVAL_OBJECTS: LazyLock<Mutex<HashMap<i64, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn bind_timer_object(
+    objects: &Mutex<HashMap<i64, i64>>,
+    count: &AtomicUsize,
+    obj: i64,
+    timer_id: i64,
+) {
+    if timer_id <= 0 {
+        return;
+    }
+    if let Ok(mut objects) = objects.lock() {
+        if objects.insert(obj, timer_id).is_none() {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn timer_id_for_object(objects: &Mutex<HashMap<i64, i64>>, count: &AtomicUsize, obj: i64) -> i64 {
+    if count.load(Ordering::Relaxed) == 0 {
+        return 0;
+    }
+    objects
+        .lock()
+        .ok()
+        .and_then(|objects| objects.get(&obj).copied())
+        .unwrap_or(0)
+}
+
+fn unbind_timer_object(objects: &Mutex<HashMap<i64, i64>>, count: &AtomicUsize, obj: i64) -> i64 {
+    objects
+        .lock()
+        .ok()
+        .and_then(|mut objects| {
+            let removed = objects.remove(&obj);
+            if removed.is_some() {
+                count.fetch_sub(1, Ordering::Relaxed);
+            }
+            removed
+        })
+        .unwrap_or(0)
+}
+
+fn unbind_timer_objects_by_id(
+    objects: &Mutex<HashMap<i64, i64>>,
+    count: &AtomicUsize,
+    timer_id: i64,
+) {
+    if timer_id <= 0 {
+        return;
+    }
+    if count.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    if let Ok(mut objects) = objects.lock() {
+        let before = objects.len();
+        objects.retain(|_, current_id| *current_id != timer_id);
+        let removed = before.saturating_sub(objects.len());
+        if removed > 0 {
+            count.fetch_sub(removed, Ordering::Relaxed);
+        }
+    }
+}
 
 fn timeout_duration_from_ms(ms: i64) -> Duration {
     Duration::from_millis(ms.max(0) as u64)
@@ -2579,6 +2647,7 @@ pub unsafe extern "C" fn rt_timeout_worker(timer_id: i64) {
         .ok()
         .and_then(|mut timeouts| timeouts.remove(&timer_id).map(|state| state.handle))
         .unwrap_or(0);
+    unbind_timer_objects_by_id(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, timer_id);
     if handle == 0 {
         return;
     }
@@ -2684,6 +2753,7 @@ pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
+    unbind_timer_objects_by_id(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, id);
     let timeout = TIMEOUT_CANCELS
         .lock()
         .ok()
@@ -2699,6 +2769,7 @@ pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
+    unbind_timer_objects_by_id(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, id);
     let interval = INTERVAL_CANCELS
         .lock()
         .ok()
@@ -2719,8 +2790,7 @@ pub unsafe extern "C" fn rt_Timeout_constructor(this: i64, id: i64) {
         }
         return;
     }
-    rt_ensure_type_finalizer(this, rt_timeout_object_finalizer);
-    *ptr.offset(0) = id;
+    bind_timer_object(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, this, id);
 }
 
 #[no_mangle]
@@ -2732,8 +2802,33 @@ pub unsafe extern "C" fn rt_Interval_constructor(this: i64, id: i64) {
         }
         return;
     }
-    rt_ensure_type_finalizer(this, rt_interval_object_finalizer);
-    *ptr.offset(0) = id;
+    bind_timer_object(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, this, id);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Timeout_cancel(this: i64) {
+    let id = unbind_timer_object(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, this);
+    if id > 0 {
+        rt_clearTimeout(id);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Interval_cancel(this: i64) {
+    let id = unbind_timer_object(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, this);
+    if id > 0 {
+        rt_clearInterval(id);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Timeout_id(this: i64) -> i64 {
+    timer_id_for_object(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, this)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Interval_id(this: i64) -> i64 {
+    timer_id_for_object(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, this)
 }
 
 #[no_mangle]
@@ -3360,32 +3455,6 @@ unsafe extern "C" fn rt_thread_object_finalizer(obj: i64) {
         }
         let _ = data.handle.take();
     }
-}
-
-unsafe extern "C" fn rt_timeout_object_finalizer(obj: i64) {
-    let ptr = rt_obj_ptr(obj);
-    if ptr.is_null() {
-        return;
-    }
-    let id = *ptr.offset(0);
-    if id <= 0 {
-        return;
-    }
-    *ptr.offset(0) = 0;
-    rt_clearTimeout(id);
-}
-
-unsafe extern "C" fn rt_interval_object_finalizer(obj: i64) {
-    let ptr = rt_obj_ptr(obj);
-    if ptr.is_null() {
-        return;
-    }
-    let id = *ptr.offset(0);
-    if id <= 0 {
-        return;
-    }
-    *ptr.offset(0) = 0;
-    rt_clearInterval(id);
 }
 
 unsafe extern "C" fn rt_tcp_stream_object_finalizer(obj: i64) {

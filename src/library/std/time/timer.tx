@@ -1,38 +1,38 @@
 extern function rt_Timeout_constructor(_this: Timeout, id: int): void;
+extern function rt_Timeout_cancel(_this: Timeout): void;
+extern function rt_Timeout_id(_this: Timeout): int;
 extern function rt_Interval_constructor(_this: Interval, id: int): void;
+extern function rt_Interval_cancel(_this: Interval): void;
+extern function rt_Interval_id(_this: Interval): int;
 
 export class Timeout {
-    private id: int;
+    private handle: int64;
 
     constructor(callback: () => void, ms: int64) {
         rt_Timeout_constructor(this, _time_set_timeout(callback, ms));
     }
 
     cancel(): void {
-        if (this.id == 0) return;
-        _time_clear_timeout(this.id);
-        this.id = 0;
+        rt_Timeout_cancel(this);
     }
 
     isActive(): bool {
-        return this.id != 0;
+        return rt_Timeout_id(this) != 0;
     }
 }
 
 export class Interval {
-    private id: int;
+    private handle: int64;
 
     constructor(callback: () => void, ms: int64) {
         rt_Interval_constructor(this, _time_set_interval(callback, ms));
     }
 
     cancel(): void {
-        if (this.id == 0) return;
-        _time_clear_interval(this.id);
-        this.id = 0;
+        rt_Interval_cancel(this);
     }
 
     isActive(): bool {
-        return this.id != 0;
+        return rt_Interval_id(this) != 0;
     }
 }

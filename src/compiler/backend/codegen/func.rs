@@ -6,6 +6,41 @@ use crate::middle::mir::*;
 use std::collections::{HashMap, HashSet};
 
 impl CodeGen {
+    fn type_needs_loop_safepoints(ty: &TejxType) -> bool {
+        match ty {
+            TejxType::Class(class_name, _) => {
+                let base_name = class_name.split('<').next().unwrap_or(class_name.as_str());
+                matches!(
+                    base_name,
+                    "Thread"
+                        | "Atomic"
+                        | "Mutex"
+                        | "Condition"
+                        | "SharedQueue"
+                        | "Timeout"
+                        | "Interval"
+                        | "TcpStream"
+                        | "TcpListener"
+                        | "Promise"
+                )
+            }
+            TejxType::Optional(inner)
+            | TejxType::DynamicArray(inner)
+            | TejxType::Slice(inner) => Self::type_needs_loop_safepoints(inner),
+            TejxType::FixedArray(inner, _) => Self::type_needs_loop_safepoints(inner),
+            TejxType::Object(props) => props
+                .iter()
+                .any(|(_, _, field_ty)| Self::type_needs_loop_safepoints(field_ty)),
+            _ => false,
+        }
+    }
+
+    fn function_needs_loop_safepoints(func: &MIRFunction) -> bool {
+        func.variables
+            .values()
+            .any(Self::type_needs_loop_safepoints)
+    }
+
     fn function_tracks_runtime_location(function_name: &str) -> bool {
         function_name != "tejx_main"
             && function_name != "rt_main_async_worker"
@@ -702,7 +737,7 @@ impl CodeGen {
         for bb in &func.blocks {
             for inst in &bb.instructions {
                 if let MIRInstruction::Call {
-                    callee, args, dst, ..
+                    callee, args: _, dst, ..
                 } = inst
                 {
                     if callee == "f_Array_constructor"
@@ -713,15 +748,6 @@ impl CodeGen {
                     }
                     if callee == "rt_object_new" && !dst.is_empty() && !self.does_escape(func, dst)
                     {
-                        return true;
-                    }
-                    if callee == RT_CLASS_NEW && !dst.is_empty() && !self.does_escape(func, dst) {
-                        let _class_name = match args.first() {
-                            Some(MIRValue::Constant { value, .. }) => {
-                                value.trim_matches('"').to_string()
-                            }
-                            _ => continue,
-                        };
                         return true;
                     }
                 }
@@ -1250,6 +1276,7 @@ update:\n\
         self.local_vars.clear();
         self.current_env = None;
         self.current_arena = None;
+        self.current_function_needs_loop_safepoints = Self::function_needs_loop_safepoints(func);
         self.entry_init_buffer.clear();
         self.num_roots = 0;
         self.current_debug_line = None;

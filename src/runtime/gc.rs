@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, Once};
 
 // --- GC Memory System Constants ---
@@ -118,6 +118,138 @@ pub struct TypeEntry {
 
 #[no_mangle]
 pub static mut TYPE_TABLE: [TypeEntry; MAX_TYPES] = unsafe { std::mem::zeroed() };
+
+unsafe fn rewrite_timer_objects_after_minor(
+    objects: &Mutex<HashMap<i64, i64>>,
+    clear: unsafe extern "C" fn(i64) -> i64,
+    eden_top: *mut u8,
+    from_survivor_top: *mut u8,
+) {
+    let mut objects = match objects.lock() {
+        Ok(objects) => objects,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if objects.is_empty() {
+        return;
+    }
+
+    let mut updated = HashMap::with_capacity(objects.len());
+    let mut to_clear = Vec::new();
+    for (&obj, &timer_id) in objects.iter() {
+        let body = rt_obj_ptr(obj) as *mut u8;
+        if body.is_null() {
+            if timer_id > 0 {
+                to_clear.push(timer_id);
+            }
+            continue;
+        }
+
+        let in_old_eden = body >= EDEN_START && body < eden_top;
+        let in_old_from_survivor = body >= FROM_SURVIVOR && body < from_survivor_top;
+        if in_old_eden || in_old_from_survivor {
+            let header = rt_get_header(body);
+            if gc_is_forwarded((*header).gc_word) {
+                let new_header = gc_forward_ptr((*header).gc_word);
+                let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
+                updated.insert((new_body as i64) + HEAP_OFFSET, timer_id);
+            } else if timer_id > 0 {
+                to_clear.push(timer_id);
+            }
+        } else {
+            updated.insert(obj, timer_id);
+        }
+    }
+
+    *objects = updated;
+    drop(objects);
+
+    for timer_id in to_clear {
+        clear(timer_id);
+    }
+}
+
+unsafe fn prune_timer_objects_for_major(
+    objects: &Mutex<HashMap<i64, i64>>,
+    clear: unsafe extern "C" fn(i64) -> i64,
+) {
+    let mut objects = match objects.lock() {
+        Ok(objects) => objects,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if objects.is_empty() {
+        return;
+    }
+
+    let mut updated = HashMap::with_capacity(objects.len());
+    let mut to_clear = Vec::new();
+    for (&obj, &timer_id) in objects.iter() {
+        let body = rt_obj_ptr(obj) as *mut u8;
+        if body.is_null() {
+            if timer_id > 0 {
+                to_clear.push(timer_id);
+            }
+            continue;
+        }
+
+        if body >= OLD_START && body < OLD_TOP {
+            let header = rt_get_header(body);
+            if gc_is_marked((*header).gc_word) {
+                updated.insert(obj, timer_id);
+            } else if timer_id > 0 {
+                to_clear.push(timer_id);
+            }
+        } else if in_los(body) {
+            let header = rt_get_header(body);
+            if gc_is_marked((*header).gc_word) {
+                updated.insert(obj, timer_id);
+            } else if timer_id > 0 {
+                to_clear.push(timer_id);
+            }
+        } else {
+            updated.insert(obj, timer_id);
+        }
+    }
+
+    *objects = updated;
+    drop(objects);
+
+    for timer_id in to_clear {
+        clear(timer_id);
+    }
+}
+
+unsafe fn rewrite_timer_objects_after_major_compaction(objects: &Mutex<HashMap<i64, i64>>) {
+    let mut objects = match objects.lock() {
+        Ok(objects) => objects,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if objects.is_empty() {
+        return;
+    }
+
+    let mut updated = HashMap::with_capacity(objects.len());
+    for (&obj, &timer_id) in objects.iter() {
+        let body = rt_obj_ptr(obj) as *mut u8;
+        if body.is_null() {
+            continue;
+        }
+
+        if body >= OLD_START && body < OLD_TOP {
+            let header = rt_get_header(body);
+            if gc_is_forwarded((*header).gc_word) {
+                let new_header = gc_forward_ptr((*header).gc_word);
+                let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
+                updated.insert((new_body as i64) + HEAP_OFFSET, timer_id);
+            } else {
+                updated.insert(obj, timer_id);
+            }
+        } else {
+            updated.insert(obj, timer_id);
+        }
+    }
+
+    *objects = updated;
+}
 
 #[no_mangle]
 pub unsafe fn rt_update_ptr(ptr: *mut i64) {
@@ -1020,6 +1152,13 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     mark_static_roots();
     super::event_loop::rt_gc_mark_tasks();
 
+    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        prune_timer_objects_for_major(&crate::TIMEOUT_OBJECTS, crate::rt_clearTimeout);
+    }
+    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        prune_timer_objects_for_major(&crate::INTERVAL_OBJECTS, crate::rt_clearInterval);
+    }
+
     // 2.5 Run Finalizers for unmarked objects
     let mut curr = OLD_START;
     while curr < OLD_TOP {
@@ -1089,6 +1228,13 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
             free_ptr = free_ptr.add(size);
         }
         scan_ptr = scan_ptr.add(size);
+    }
+
+    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        rewrite_timer_objects_after_major_compaction(&crate::TIMEOUT_OBJECTS);
+    }
+    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        rewrite_timer_objects_after_major_compaction(&crate::INTERVAL_OBJECTS);
     }
 
     // Update roots
@@ -1691,6 +1837,23 @@ pub unsafe fn minor_gc_locked() {
         if !progressed {
             break;
         }
+    }
+
+    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        rewrite_timer_objects_after_minor(
+            &crate::TIMEOUT_OBJECTS,
+            crate::rt_clearTimeout,
+            eden_top,
+            from_survivor_top,
+        );
+    }
+    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        rewrite_timer_objects_after_minor(
+            &crate::INTERVAL_OBJECTS,
+            crate::rt_clearInterval,
+            eden_top,
+            from_survivor_top,
+        );
     }
 
     run_young_finalizers_in_region(EDEN_START, eden_top);
