@@ -245,8 +245,6 @@ function requestFromInput(input: any, options: any): Request {
     throw new Error("fetch expects a string URL or Request");
 }
 
-export function fetch(input: any, options: any = None): Promise<HttpResponse> {
-    return Promise.spawn(() => {
-        return requestFromInput(input, options).send();
-    });
+export function fetch(input: any, options: any = None): HttpResponse {
+    return requestFromInput(input, options).send();
 }

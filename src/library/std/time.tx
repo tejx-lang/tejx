@@ -18,14 +18,6 @@ export function sleep(ms: int64): void {
     _time_sleep(ms);
 }
 
-export async function delay(ms: int64): Promise<void> {
-    return _time_delay(ms);
-}
-
-export async function sleepAsync(ms: int64): Promise<void> {
-    return _time_delay(ms);
-}
-
 export function setTimeout(callback: () => void, ms: int64): int {
     return _time_set_timeout(callback, ms);
 }

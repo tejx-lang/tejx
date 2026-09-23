@@ -31,15 +31,15 @@ function test_fs_sync() {
     assert_false(fs.existsSync(path), "File deleted");
 }
 
-async function test_fs_async() {
+function test_fs_async() {
     print("--- FS Async Test ---");
     let path = "test_io_async.txt";
     if (fs.existsSync(path)) fs.unlinkSync(path);
 
-    await fs.writeFile(path, "Hello Async IO");
+    fs.writeFile(path, "Hello Async IO");
     assert_true(fs.existsSync(path), "Async File created");
 
-    let content = await fs.readFile(path);
+    let content = fs.readFile(path);
     assert_eq_string("Hello Async IO", content, "Async Read content");
 
     fs.unlinkSync(path);
@@ -71,11 +71,11 @@ function test_directories() {
     assert_false(fs.existsSync(dir), "Dir deleted");
 }
 
-async function main() {
+function main() {
     print("=== IO TESTS START ===");
     test_output();
     test_fs_sync();
-    await test_fs_async();
+    test_fs_async();
     test_directories();
     print("=== IO TESTS COMPLETE ===");
 }

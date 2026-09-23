@@ -2,55 +2,55 @@ import "./fs/internal.tx";
 
 export namespace fs {
     export function exists(path: string): bool {
-        return _fs_exists_sync(path);
+        return _fs_exists(path);
     }
 
     export function readFile(path: string): string {
-        return _fs_read_sync(path);
+        return _fs_read(path);
     }
 
     export function readText(path: string): string {
-        return _fs_read_sync(path);
+        return _fs_read(path);
     }
 
     export function writeFile(path: string, content: string): bool {
-        return _fs_write_sync(path, content);
+        return _fs_write(path, content);
     }
 
     export function writeText(path: string, content: string): bool {
-        return _fs_write_sync(path, content);
+        return _fs_write(path, content);
     }
 
     export function appendFile(path: string, content: string): bool {
-        return _fs_append_sync(path, content);
+        return _fs_append(path, content);
     }
 
     export function appendText(path: string, content: string): bool {
-        return _fs_append_sync(path, content);
+        return _fs_append(path, content);
     }
 
     export function unlink(path: string): bool {
-        return _fs_remove_sync(path);
+        return _fs_remove(path);
     }
 
     export function remove(path: string): bool {
-        return _fs_remove_sync(path);
+        return _fs_remove(path);
     }
 
     export function mkdir(path: string): bool {
-        return _fs_mkdir_sync(path);
+        return _fs_mkdir(path);
     }
 
     export function ensureDir(path: string): bool {
-        return _fs_ensure_dir_sync(path);
+        return _fs_ensure_dir(path);
     }
 
     export function readdir(path: string): string[] {
-        return _fs_readdir_sync(path);
+        return _fs_readdir(path);
     }
 
     export function listDir(path: string): string[] {
-        return _fs_readdir_sync(path);
+        return _fs_readdir(path);
     }
 }
 

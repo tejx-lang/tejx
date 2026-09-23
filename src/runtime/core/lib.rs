@@ -2119,7 +2119,7 @@ unsafe fn i64_to_rust_str(val: i64) -> Option<String> {
 // Legacy Map and Set implementations removed.
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_fs_read_sync(path: i64) -> i64 {
+pub unsafe extern "C" fn rt_fs_read(path: i64) -> i64 {
     if let Some(p) = i64_to_rust_str(path) {
         if let Ok(content) = std::fs::read_to_string(&p) {
             return new_string_from_rust_str(&content);
@@ -2129,7 +2129,7 @@ pub unsafe extern "C" fn rt_fs_read_sync(path: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_fs_write_sync(path: i64, content: i64) -> i64 {
+pub unsafe extern "C" fn rt_fs_write(path: i64, content: i64) -> i64 {
     if let (Some(p), Some(c)) = (i64_to_rust_str(path), i64_to_rust_str(content)) {
         if std::fs::write(&p, c).is_ok() {
             return 1;
@@ -2139,7 +2139,7 @@ pub unsafe extern "C" fn rt_fs_write_sync(path: i64, content: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_fs_append_sync(path: i64, content: i64) -> i64 {
+pub unsafe extern "C" fn rt_fs_append(path: i64, content: i64) -> i64 {
     if let (Some(p), Some(c)) = (i64_to_rust_str(path), i64_to_rust_str(content)) {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -2166,7 +2166,7 @@ pub unsafe extern "C" fn rt_fs_exists(path: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_fs_unlink_sync(path: i64) -> i64 {
+pub unsafe extern "C" fn rt_fs_unlink(path: i64) -> i64 {
     if let Some(p) = i64_to_rust_str(path) {
         let path = std::path::Path::new(&p);
         if path.is_dir() {
@@ -2183,7 +2183,7 @@ pub unsafe extern "C" fn rt_fs_unlink_sync(path: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_fs_mkdir_sync(path: i64) -> i64 {
+pub unsafe extern "C" fn rt_fs_mkdir(path: i64) -> i64 {
     if let Some(p) = i64_to_rust_str(path) {
         if std::fs::create_dir_all(&p).is_ok() {
             return 1;
@@ -2193,7 +2193,7 @@ pub unsafe extern "C" fn rt_fs_mkdir_sync(path: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_fs_readdir_sync(path: i64) -> i64 {
+pub unsafe extern "C" fn rt_fs_readdir(path: i64) -> i64 {
     let mut v_path = path;
     let mut result = rt_Array_new_fixed(0, 8);
     rt_push_root(&mut v_path);
@@ -2820,11 +2820,7 @@ pub unsafe extern "C" fn rt_Interval_id(this: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_delay(ms: i64) -> i64 {
-    let actual_ms = rt_to_number(ms).max(0.0) as u64;
-    std::thread::sleep(Duration::from_millis(actual_ms));
-    0
-}
+
 
 // --- Fast Path Helpers (for Codegen) ---
 
@@ -4443,7 +4439,7 @@ mod tests {
             let mut path_id = new_string_from_rust_str(&path_string);
             rt_push_root(&mut path_id);
 
-            let entries = rt_fs_readdir_sync(path_id);
+            let entries = rt_fs_readdir(path_id);
             assert_eq!(rt_len(entries), 1);
             assert_eq!(to_rust_string(rt_array_get_fast(entries, 0)), file_name);
 
@@ -4472,7 +4468,7 @@ mod tests {
             let mut path_id = new_string_from_rust_str(&path_string);
             rt_push_root(&mut path_id);
 
-            let content = rt_fs_read_sync(path_id);
+            let content = rt_fs_read(path_id);
             assert_eq!(rt_len(content), 3);
             assert_eq!(crate::string::rt_String_charCodeAt(content, 0), b'a' as i32);
             assert_eq!(crate::string::rt_String_charCodeAt(content, 1), 0);

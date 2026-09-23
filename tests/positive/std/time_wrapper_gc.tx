@@ -1,5 +1,5 @@
 import { collect } from "std:gc";
-import { after, every, delay } from "std:time";
+import { after, every, sleep } from "std:time";
 import { assert_true } from "../utils.tx";
 
 function allocateUntrackedTimers(): void {
@@ -23,14 +23,14 @@ function createMemoryPressure(): void {
     }
 }
 
-async function main(): Promise<void> {
+function main(): void {
     print("=== TIME WRAPPER GC START ===");
 
     allocateUntrackedTimers();
     createMemoryPressure();
 
     collect();
-    await delay(120);
+    sleep(120);
     assert_true(true, "GC'd timer wrappers stay cancelled");
     print("=== TIME WRAPPER GC COMPLETE ===");
 }

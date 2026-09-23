@@ -1,6 +1,5 @@
 extern function rt_time_now_ms(): int64;
 extern function rt_sleep(ms: int64): void;
-extern function rt_delay(ms: int64): Promise<void>;
 extern function rt_setTimeout(callback: () => void, ms: int64): int;
 extern function rt_setInterval(callback: () => void, ms: int64): int;
 extern function rt_clearTimeout(id: int): void;
@@ -17,10 +16,6 @@ function _time_elapsed(start: int64): int64 {
 
 function _time_sleep(ms: int64): void {
     rt_sleep(ms);
-}
-
-async function _time_delay(ms: int64): Promise<void> {
-    return rt_delay(ms);
 }
 
 function _time_set_timeout(callback: () => void, ms: int64): int {

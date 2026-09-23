@@ -2,7 +2,7 @@
 import { setTimeout, setInterval, clearInterval, clearTimeout, delay } from "std:time";
 import { assert_eq_int, assert_true } from "./utils.tx";
 
-async function main(): Promise<void> {
+function main(): void {
     print("Starting timers...");
 
     let counts = {
@@ -20,12 +20,12 @@ async function main(): Promise<void> {
         print("Interval executed!");
     }, 30);
 
-    await delay(170);
+    delay(170);
     clearInterval(intervalId);
     clearTimeout(timeoutId);
 
     let intervalCountAfterClear = counts.intervalCount;
-    await delay(90);
+    delay(90);
 
     assert_eq_int(1, counts.timeoutCount, "setTimeout fires exactly once");
     assert_true(intervalCountAfterClear >= 2, "setInterval fires before clearInterval");
