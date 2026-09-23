@@ -126,7 +126,7 @@ fn splitmix64_next(state: &mut u64) -> u64 {
 
 pub unsafe fn rt_throw_runtime_error(msg: &str) -> ! {
     let msg_id = new_string_from_rust_str(msg);
-    crate::event_loop::tejx_throw(msg_id);
+    tejx_throw(msg_id);
     std::hint::unreachable_unchecked();
 }
 
@@ -189,7 +189,7 @@ unsafe fn runtime_exception_trace_position(
 ) -> Option<usize> {
     traces
         .iter()
-        .position(|entry| crate::event_loop::tejx_get_global_handle(entry.handle_id) == exception)
+        .position(|entry| tejx_get_global_handle(entry.handle_id) == exception)
 }
 
 #[cfg(test)]
@@ -199,7 +199,7 @@ pub(crate) unsafe fn clear_stored_exception_traces() {
         Err(poisoned) => poisoned.into_inner(),
     };
     while let Some(entry) = traces.pop_front() {
-        crate::event_loop::tejx_drop_global_handle(entry.handle_id);
+        tejx_drop_global_handle(entry.handle_id);
     }
 }
 
@@ -222,7 +222,7 @@ unsafe fn remember_exception_trace_with_stack(exception: i64, stack: &[RuntimeFr
         return;
     }
 
-    let handle_id = crate::event_loop::tejx_create_global_handle(exception);
+    let handle_id = tejx_create_global_handle(exception);
     traces.push_back(StoredExceptionTrace {
         handle_id,
         stack: stack.to_vec(),
@@ -230,7 +230,7 @@ unsafe fn remember_exception_trace_with_stack(exception: i64, stack: &[RuntimeFr
 
     while traces.len() > STORED_EXCEPTION_TRACE_LIMIT {
         if let Some(entry) = traces.pop_front() {
-            crate::event_loop::tejx_drop_global_handle(entry.handle_id);
+            tejx_drop_global_handle(entry.handle_id);
         }
     }
 }
@@ -2651,8 +2651,8 @@ pub unsafe extern "C" fn rt_timeout_worker(timer_id: i64) {
         return;
     }
 
-    let closure_id = crate::event_loop::tejx_get_global_handle(handle);
-    crate::event_loop::tejx_drop_global_handle(handle);
+    let closure_id = tejx_get_global_handle(handle);
+    tejx_drop_global_handle(handle);
     if closure_id > 0 {
         rt_call_closure_no_args(closure_id);
     }
@@ -2669,7 +2669,7 @@ pub unsafe extern "C" fn rt_interval_worker(timer_id: i64) {
         return;
     }
 
-    let closure_id = crate::event_loop::tejx_get_global_handle(handle);
+    let closure_id = tejx_get_global_handle(handle);
     if closure_id > 0 {
         rt_call_closure_no_args(closure_id);
     }
@@ -2679,7 +2679,7 @@ pub unsafe extern "C" fn rt_interval_worker(timer_id: i64) {
 pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
 
-    let handle = unsafe { crate::event_loop::tejx_create_global_handle(callback) };
+    let handle = unsafe { tejx_create_global_handle(callback) };
     let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<()>();
     if let Ok(mut cancels) = TIMEOUT_CANCELS.lock() {
         cancels.insert(
@@ -2690,22 +2690,26 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
             },
         );
     }
-    std::thread::spawn(move || {
-        let fired = match cancel_rx.recv_timeout(timeout_duration_from_ms(ms)) {
-            Ok(_) => false,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
-        };
+    // Use a may virtual thread so timers don't consume OS thread stacks.
+    may::coroutine::Builder::new()
+        .stack_size(VTHREAD_STACK_SIZE)
+        .spawn(move || {
+            let fired = match cancel_rx.recv_timeout(timeout_duration_from_ms(ms)) {
+                Ok(_) => false,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
+            };
 
-        if fired {
-            if let Ok(mut timeouts) = TIMEOUT_CANCELS.lock() {
-                if let Some(timeout) = timeouts.get_mut(&timer_id) {
-                    timeout.cancel_tx = None;
-                    rt_call_closure_no_args(callback);
+            if fired {
+                if let Ok(mut timeouts) = TIMEOUT_CANCELS.lock() {
+                    if let Some(timeout) = timeouts.get_mut(&timer_id) {
+                        timeout.cancel_tx = None;
+                        unsafe { rt_call_closure_no_args(callback) };
+                    }
                 }
             }
-        }
-    });
+        })
+        .expect("setTimeout virtual thread spawn failed");
 
     timer_id
 }
@@ -2714,27 +2718,31 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
 pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
 
-    let handle = unsafe { crate::event_loop::tejx_create_global_handle(callback) };
+    let handle = unsafe { tejx_create_global_handle(callback) };
     let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<()>();
     if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
         cancels.insert(timer_id, IntervalState { handle, cancel_tx });
     }
-    std::thread::spawn(move || {
-        let dur = interval_duration_from_ms(ms);
-        loop {
-            match cancel_rx.recv_timeout(dur) {
-                Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    break;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    rt_call_closure_no_args(callback);
+    // Use a may virtual thread so intervals don't consume OS thread stacks.
+    may::coroutine::Builder::new()
+        .stack_size(VTHREAD_STACK_SIZE)
+        .spawn(move || {
+            let dur = interval_duration_from_ms(ms);
+            loop {
+                match cancel_rx.recv_timeout(dur) {
+                    Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        break;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        unsafe { rt_call_closure_no_args(callback) };
+                    }
                 }
             }
-        }
-        if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
-            cancels.remove(&timer_id);
-        }
-    });
+            if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
+                cancels.remove(&timer_id);
+            }
+        })
+        .expect("setInterval virtual thread spawn failed");
 
     timer_id
 }
@@ -2747,7 +2755,7 @@ pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
         .ok()
         .and_then(|mut cancels| cancels.remove(&id));
     if let Some(timeout) = timeout {
-        crate::event_loop::tejx_drop_global_handle(timeout.handle);
+        tejx_drop_global_handle(timeout.handle);
         if let Some(cancel_tx) = timeout.cancel_tx {
             let _ = cancel_tx.send(());
         }
@@ -2763,7 +2771,7 @@ pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
         .ok()
         .and_then(|mut cancels| cancels.remove(&id));
     if let Some(interval) = interval {
-        crate::event_loop::tejx_drop_global_handle(interval.handle);
+        tejx_drop_global_handle(interval.handle);
         let _ = interval.cancel_tx.send(());
     }
     0
@@ -2918,6 +2926,18 @@ extern "C" {
 #[no_mangle]
 pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *mut *mut u8) -> i32 {
     install_runtime_panic_hook();
+
+    // Configure the may M:P:N virtual thread scheduler BEFORE any GC or
+    // coroutine activity. Workers = all available CPU cores; stack starts
+    // at 32KB per coroutine (grows on demand via mmap). Pool reuses up to
+    // 10,000 coroutine stacks to avoid repeated mmap/munmap overhead.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    may::config()
+        .set_workers(workers)
+        .set_stack_size(VTHREAD_STACK_SIZE)
+        .set_pool_capacity(10_000);
 
     let run_result = panic::catch_unwind(|| unsafe {
         rt_init_gc();
@@ -3310,7 +3330,7 @@ pub unsafe extern "C" fn f_any_unlock(m: i64) {
 // --- Thread Operations ---
 
 struct ThreadData {
-    handle: Option<std::thread::JoinHandle<()>>,
+    handle: Option<may::coroutine::JoinHandle<()>>,
     started: bool,
     cb_slot: usize,
     slot_live: std::sync::Arc<AtomicBool>,
@@ -3401,16 +3421,18 @@ unsafe extern "C" fn rt_thread_object_finalizer(obj: i64) {
     *ptr.offset(1) = 0;
     let mut data = Box::from_raw(data_ptr);
     if !data.started {
+        // Never started: safe to release the GC root immediately.
         rt_release_thread_cb_slot(data.cb_slot, &data.slot_live);
     } else {
-        let finished = data
-            .handle
-            .as_ref()
-            .map(|handle| handle.is_finished())
-            .unwrap_or(true);
+        // slot_live is set to false by ThreadRunGuard::drop when the
+        // virtual thread exits — so !slot_live means the coroutine finished.
+        // may::JoinHandle has no is_finished(); we rely on the atomic flag.
+        let finished = !data.slot_live.load(Ordering::Acquire);
         if finished {
             rt_release_thread_cb_slot(data.cb_slot, &data.slot_live);
         }
+        // Drop the JoinHandle without blocking — if not finished, the
+        // virtual thread still holds the static root via ThreadRunGuard.
         let _ = data.handle.take();
     }
 }
@@ -3727,9 +3749,173 @@ pub unsafe extern "C" fn rt_to_slice(val: i64) -> Slice {
     }
 }
 
-#[path = "../event_loop.rs"]
-pub mod event_loop;
-pub use event_loop::*;
+// ============================================================
+// Global Handles — cross-thread GC root pinning for closures,
+// timer callbacks, and exception traces.
+// ============================================================
+
+#[derive(Default)]
+struct GlobalHandles {
+    slots: Vec<Option<i64>>,
+    free: Vec<usize>,
+}
+
+static GLOBAL_HANDLES: LazyLock<Mutex<GlobalHandles>> =
+    LazyLock::new(|| Mutex::new(GlobalHandles::default()));
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_create_global_handle(ptr: i64) -> usize {
+    let mut handles = lock_unpoisoned(&GLOBAL_HANDLES);
+    if handles.slots.is_empty() {
+        handles.slots.push(None);
+    }
+    if let Some(id) = handles.free.pop() {
+        handles.slots[id] = Some(ptr);
+        return id;
+    }
+    handles.slots.push(Some(ptr));
+    handles.slots.len() - 1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_get_global_handle(id: usize) -> i64 {
+    let handles = lock_unpoisoned(&GLOBAL_HANDLES);
+    handles.slots.get(id).and_then(|slot| *slot).unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_drop_global_handle(id: usize) {
+    let mut handles = lock_unpoisoned(&GLOBAL_HANDLES);
+    if let Some(slot) = handles.slots.get_mut(id) {
+        if slot.take().is_some() {
+            handles.free.push(id);
+        }
+    }
+}
+
+/// GC hook: copy (minor GC) all global handle roots and the current exception.
+/// Called by gc.rs during minor collection from every thread's scan.
+pub unsafe fn rt_gc_scan_tasks() {
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
+        gc::copy_object(val as *mut i64);
+    }
+}
+
+/// GC hook: mark (major GC) all global handle roots and the current exception.
+pub unsafe fn rt_gc_mark_tasks() {
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
+        gc::mark_object(val as *mut i64);
+    }
+}
+
+/// GC hook: update pointers (compaction) for all global handle roots.
+pub unsafe fn rt_gc_update_tasks() {
+    for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
+        gc::rt_update_ptr(val as *mut i64);
+    }
+}
+
+// ============================================================
+// Exception Handling — per-virtual-thread stack of setjmp
+// frames. Using thread_local! ensures each coroutine (virtual
+// thread) has its own exception stack, preventing one thread's
+// handlers from being popped by another thread's throw.
+// ============================================================
+
+struct ExceptionHandler {
+    jmpbuf: i64,
+    roots_top: usize,
+    frame_depth: usize,
+}
+
+thread_local! {
+    /// Per-virtual-thread handler stack. `may` maps thread_local! to
+    /// coroutine-local storage (CLS), so each virtual thread has its own
+    /// independent try/catch frame stack. This prevents cross-thread
+    /// handler corruption that a global Mutex<Vec> would cause.
+    static EXCEPTION_STACK: std::cell::RefCell<Vec<ExceptionHandler>> =
+        std::cell::RefCell::new(Vec::new());
+
+    /// The last thrown exception value for this virtual thread.
+    /// thread_local ensures a throw in thread A never clobbers thread B's
+    /// in-flight exception.
+    static CURRENT_EXCEPTION: std::cell::Cell<i64> = std::cell::Cell::new(0);
+}
+
+pub(crate) unsafe fn log_exception(prefix: &str, exception: i64) {
+    use std::io::Write;
+    let report = crate::render_runtime_exception_report(prefix, exception);
+    let _ = std::io::stderr().write_all(report.as_bytes());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_get_exception() -> i64 {
+    CURRENT_EXCEPTION.with(|cell| cell.get())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_push_handler(jmpbuf: *mut u8) {
+    use gc::{ThreadContext, MY_CONTEXT};
+    let top = MY_CONTEXT.with(|ctx: &std::cell::UnsafeCell<Box<ThreadContext>>| {
+        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+        (*ctx_ptr).roots_top
+    });
+    EXCEPTION_STACK.with(|stack| {
+        stack.borrow_mut().push(ExceptionHandler {
+            jmpbuf: jmpbuf as i64,
+            roots_top: top,
+            frame_depth: crate::runtime_call_stack_depth(),
+        });
+    });
+}
+
+extern "C" {
+    fn longjmp(env: *mut i8, val: i32);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_pop_handler() {
+    EXCEPTION_STACK.with(|stack| { stack.borrow_mut().pop(); });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tejx_throw(exception: i64) {
+    use gc::{ThreadContext, MY_CONTEXT};
+    let exception = crate::runtime_prepare_thrown_exception_value(exception);
+    crate::remember_exception_trace(exception);
+    CURRENT_EXCEPTION.with(|cell| cell.set(exception));
+    let handler = EXCEPTION_STACK.with(|stack| stack.borrow_mut().pop());
+
+    if let Some(h) = handler {
+        MY_CONTEXT.with(|ctx: &std::cell::UnsafeCell<Box<ThreadContext>>| {
+            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+            (*ctx_ptr).roots_top = h.roots_top;
+        });
+        crate::runtime_restore_call_stack(h.frame_depth);
+        longjmp(h.jmpbuf as *mut i8, 1);
+    } else {
+        log_exception("UnhandledException", exception);
+        exit(1);
+    }
+}
+
+// ============================================================
+// Virtual Thread Configuration
+// ============================================================
+
+/// Initial stack size for each TejX virtual thread (coroutine).
+/// `may` grows this automatically via mmap when a coroutine needs more.
+/// GC root arrays live on the heap (not the stack), so 32KB covers
+/// typical closure call frames with a comfortable margin.
+pub const VTHREAD_STACK_SIZE: usize = 32 * 1024;
+
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_box_boolean(b: i64) -> i64 {

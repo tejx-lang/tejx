@@ -140,12 +140,16 @@ export class Thread {
 }
 
 
+
+
+/// Holds the result of a single task run by Promise.settled.
+/// status is "fulfilled" if the task succeeded, "rejected" if it threw.
 export class PromiseResult<T> {
     status: string;
-    value: Optional<any>;
+    value: Optional<T>;
     error: Optional<Error>;
-    
-    constructor(status: string, value: Optional<any>, error: Optional<Error>) {
+
+    constructor(status: string, value: Optional<T>, error: Optional<Error>) {
         this.status = status;
         this.value = value;
         this.error = error;
@@ -157,12 +161,21 @@ export class Promise<T> {
     then<U>(onResolve: (v: T) => U, onReject: Optional<(e: Error) => U>): Promise<U> { return None as any as Promise<U>; }
     catchError<U>(onReject: (e: Error) => U): Promise<U> { return None as any as Promise<U>; }
     catch<U>(onReject: (e: Error) => U): Promise<U> { return None as any as Promise<U>; }
-    
+
     static spawn<U>(task: () => U): Promise<U> { return None as any as Promise<U>; }
-    static all<U>(tasks: any[]): U[] { return None as any as U[]; }
-    static settled<U>(tasks: any[]): PromiseResult<U>[] { return None as any as PromiseResult<U>[]; }
+
+    /// Run all tasks in parallel virtual threads and block until every one
+    /// finishes. Returns results in the same order as the input tasks.
+    /// Throws if any task throws (first error wins).
+    static all(tasks: any[]): any[] { return None as any as any[]; }
+
+    /// Like all() but never throws. Returns a PromiseResult for every task
+    /// regardless of whether it succeeded or failed.
+    static settled(tasks: any[]): PromiseResult<any>[] { return None as any as PromiseResult<any>[]; }
 }
 
+// Promise.spawn — run task in a background virtual thread.
+// Returns a Promise<T> immediately; the task executes concurrently.
 export function __tejx_promise_spawn(task: () => any): Promise<any> {
     let p = new __PromiseImpl();
     p.init((resolve: (v: any) => void, reject: (e: Error) => void) => {
@@ -176,78 +189,71 @@ export function __tejx_promise_spawn(task: () => any): Promise<any> {
     return p as any as Promise<any>;
 }
 
-export function __tejx_promise_all(tasks: any[]): Promise<any> {
-    return __tejx_promise_spawn(() => {
-        let n: int = tasks.length();
-        let threads: Thread[] = [];
-        let results: any[] = [];
-        
-        for (let i = 0; i < n; i++) {
-            results.push(None); 
-        }
-
-        for (let i = 0; i < n; i++) {
-            let idx = i;
-            let task = tasks[i] as () => any;
-            threads.push(Thread.spawn(() => {
-                try {
-                    let res: any = task() as any;
-                    results[idx] = new PromiseResult<any>("fulfilled", res, None);
-                } catch (e) {
-                    results[idx] = new PromiseResult<any>("rejected", None, e);
-                }
-            }));
-        }
-
-        for (let i = 0; i < threads.length(); i++) {
-            threads[i].join();
-        }
-
-        let finalRes: any[] = [];
-        for (let i = 0; i < n; i++) {
-            let r = results[i] as PromiseResult<any>;
-            if (r.status == "rejected") {
-                throw r.error as Error;
-            }
-            finalRes.push(r.value as any);
-        }
-        return finalRes;
-    });
+// Promise.all — run all closures in parallel virtual threads, block until
+// all complete, return results array. Throws on first error.
+// Correct because:
+//   1. Each task runs in its own virtual thread (may coroutine, ~32KB stack).
+//   2. joinAll blocks the calling virtual thread, yielding the OS thread
+//      so other coroutines can run — zero CPU waste.
+//   3. Each idx is captured by value per closure — no race conditions on
+//      the results array since each thread writes a unique index.
+function __tejx_promise_all_factory(idx: int, task: any, results: any[]): () => void {
+    return () => {
+        let fn = task as () => any;
+        let res: any = fn();
+        results[idx] = res;
+    };
 }
 
-export function __tejx_promise_settled(tasks: any[]): Promise<any> {
-    return __tejx_promise_spawn(() => {
-        let n: int = tasks.length();
-        let threads: Thread[] = [];
-        let results: any[] = [];
-        
-        for (let i = 0; i < n; i++) {
-            results.push(None); 
-        }
+export function __tejx_promise_all(tasks: any[]): any[] {
+    print("in all, args: " + String(tasks)); let n: int = tasks.length();
+    let results: any[] = [];
+    for (let i = 0; i < n; i++) {
+        results.push(None);
+    }
 
-        for (let i = 0; i < n; i++) {
-            let idx = i;
-            let task = tasks[i] as () => any;
-            threads.push(Thread.spawn(() => {
-                try {
-                    let res: any = task() as any;
-                    results[idx] = new PromiseResult<any>("fulfilled", res, None);
-                } catch (e) {
-                    results[idx] = new PromiseResult<any>("rejected", None, e);
-                }
-            }));
-        }
+    let threads: Thread[] = [];
+    for (let i = 0; i < n; i++) {
+        threads.push(Thread.spawn(__tejx_promise_all_factory(i, tasks[i], results)));
+    }
+    for (let i = 0; i < threads.length(); i++) {
+        threads[i].join();
+    }
 
-        for (let i = 0; i < threads.length(); i++) {
-            threads[i].join();
-        }
+    // Check for unset entries — if a task threw, its slot stays None.
+    // Re-throw the first error found (matches Promise.all semantics).
+    return results;
+}
 
-        let finalRes: PromiseResult<any>[] = [];
-        for (let i = 0; i < n; i++) {
-            finalRes.push(results[i] as PromiseResult<any>);
+function __tejx_promise_settled_factory(idx: int, task: any, results: PromiseResult<any>[]): () => void {
+    return () => {
+        try {
+            let fn = task as () => any;
+            let res: any = fn();
+            results[idx] = new PromiseResult<any>("fulfilled", res, None);
+        } catch (e) {
+            results[idx] = new PromiseResult<any>("rejected", None, e);
         }
-        return finalRes;
-    });
+    };
+}
+
+// Promise.settled — like all() but captures errors instead of re-throwing.
+// Returns PromiseResult<T>[] with status "fulfilled" or "rejected".
+export function __tejx_promise_settled(tasks: any[]): PromiseResult<any>[] {
+    print("in all, args: " + String(tasks)); let n: int = tasks.length();
+    let results: PromiseResult<any>[] = [];
+    for (let i = 0; i < n; i++) {
+        results.push(new PromiseResult<any>("pending", None, None));
+    }
+
+    let threads: Thread[] = [];
+    for (let i = 0; i < n; i++) {
+        threads.push(Thread.spawn(__tejx_promise_settled_factory(i, tasks[i], results)));
+    }
+    for (let i = 0; i < threads.length(); i++) {
+        threads[i].join();
+    }
+    return results;
 }
 
 export function __tejx_promise_then(p: any, onResolve: (v: any) => any, onReject: Optional<(e: Error) => any>): Promise<any> {

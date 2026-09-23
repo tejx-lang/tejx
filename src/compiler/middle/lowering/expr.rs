@@ -387,8 +387,8 @@ impl Lowering {
             }
         }
 
-        if final_callee == "f_Promise_spawn" || final_callee == "Promise_spawn" {
-            let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
+        if final_callee.starts_with("f_Promise_spawn") || final_callee.starts_with("Promise_spawn") {
+            println!("Promise_all final_args len: {}", final_args.len()); let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_spawn".to_string(),
@@ -396,8 +396,10 @@ impl Lowering {
                 ty,
             };
         }
-        if final_callee == "f_Promise_all" || final_callee == "Promise_all" {
-            let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
+        // Promise.all(tasks) — runs closures in parallel virtual threads,
+        // blocks until all complete, returns T[] directly (not a Promise).
+        if final_callee.starts_with("f_Promise_all") || final_callee.starts_with("Promise_all") {
+            println!("Promise_all final_args len: {}", final_args.len()); let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_all".to_string(),
@@ -405,8 +407,10 @@ impl Lowering {
                 ty,
             };
         }
-        if final_callee == "f_Promise_settled" || final_callee == "Promise_settled" {
-            let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
+        // Promise.settled(tasks) — like all() but captures errors.
+        // Returns PromiseResult<T>[] — never throws.
+        if final_callee.starts_with("f_Promise_settled") || final_callee.starts_with("Promise_settled") {
+            println!("Promise_all final_args len: {}", final_args.len()); let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_settled".to_string(),
@@ -414,7 +418,7 @@ impl Lowering {
                 ty,
             };
         }
-        if final_callee == "f_Promise_then" || final_callee == "Promise_then" {
+        if final_callee.starts_with("f_Promise_then") || final_callee.starts_with("Promise_then") {
             let p_arg = final_args[0].clone();
             let res_arg = if final_args.len() > 1 { final_args[1].clone() } else { HIRExpression::NoneLiteral { line } };
             let rej_arg = if final_args.len() > 2 { final_args[2].clone() } else { HIRExpression::NoneLiteral { line } };
@@ -425,7 +429,7 @@ impl Lowering {
                 ty,
             };
         }
-        if final_callee == "f_Promise_catch" || final_callee == "f_Promise_catchError" || final_callee == "Promise_catch" || final_callee == "Promise_catchError" {
+        if final_callee.starts_with("f_Promise_catch") || final_callee.starts_with("f_Promise_catchError") || final_callee.starts_with("Promise_catch") || final_callee.starts_with("Promise_catchError") {
             let p_arg = final_args[0].clone();
             let rej_arg = if final_args.len() > 1 { final_args[1].clone() } else { HIRExpression::NoneLiteral { line } };
             return HIRExpression::Call {

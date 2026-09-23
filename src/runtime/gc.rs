@@ -1148,7 +1148,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         }
     }
     mark_static_roots();
-    super::event_loop::rt_gc_mark_tasks();
+    super::rt_gc_mark_tasks();
 
     if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
         prune_timer_objects_for_major(&crate::TIMEOUT_OBJECTS, crate::rt_clearTimeout);
@@ -1247,7 +1247,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         }
     }
     update_static_roots();
-    super::event_loop::rt_gc_update_tasks();
+    super::rt_gc_update_tasks();
 
     // Update Young Gen (Survivor)
     let mut y_scan = FROM_SURVIVOR;
@@ -1782,7 +1782,7 @@ pub unsafe fn minor_gc_locked() {
         }
     }
     copy_static_roots();
-    super::event_loop::rt_gc_scan_tasks();
+    super::rt_gc_scan_tasks();
 
     // 1b. Scan dirty cards in Old Gen
     let mut current = OLD_START;
