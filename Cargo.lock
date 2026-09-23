@@ -493,7 +493,6 @@ dependencies = [
  "pbkdf2",
  "rand",
  "sha2",
- "tokio",
 ]
 
 [[package]]

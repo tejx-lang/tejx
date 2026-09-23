@@ -47,18 +47,3 @@ function _fs_readdir_sync(path: string): string[] {
     return entries as string[];
 }
 
-async function _fs_read_async(path: string): Promise<string> {
-    return _fs_read_sync(path);
-}
-
-async function _fs_write_async(path: string, content: string): Promise<bool> {
-    return _fs_write_sync(path, content);
-}
-
-async function _fs_append_async(path: string, content: string): Promise<bool> {
-    return _fs_append_sync(path, content);
-}
-
-async function _fs_remove_async(path: string): Promise<bool> {
-    return _fs_remove_sync(path);
-}

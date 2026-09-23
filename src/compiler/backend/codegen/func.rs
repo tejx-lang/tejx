@@ -24,9 +24,9 @@ impl CodeGen {
                         | "Promise"
                 )
             }
-            TejxType::Optional(inner)
-            | TejxType::DynamicArray(inner)
-            | TejxType::Slice(inner) => Self::type_needs_loop_safepoints(inner),
+            TejxType::Optional(inner) | TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
+                Self::type_needs_loop_safepoints(inner)
+            }
             TejxType::FixedArray(inner, _) => Self::type_needs_loop_safepoints(inner),
             TejxType::Object(props) => props
                 .iter()
@@ -72,8 +72,10 @@ impl CodeGen {
         known_functions: &HashSet<String>,
         extern_functions: &HashSet<String>,
     ) -> bool {
-        func.blocks.iter().flat_map(|bb| bb.instructions.iter()).any(|inst| {
-            match inst {
+        func.blocks
+            .iter()
+            .flat_map(|bb| bb.instructions.iter())
+            .any(|inst| match inst {
                 MIRInstruction::Throw { .. }
                 | MIRInstruction::IndirectCall { .. }
                 | MIRInstruction::LoadMember { .. }
@@ -94,8 +96,7 @@ impl CodeGen {
                 | MIRInstruction::Cast { .. }
                 | MIRInstruction::TrySetup { .. }
                 | MIRInstruction::PopHandler { .. } => false,
-            }
-        })
+            })
     }
 
     fn compute_tracked_runtime_functions(
@@ -128,18 +129,19 @@ impl CodeGen {
                     continue;
                 }
 
-                let propagates_tracked_exception =
-                    func.blocks.iter().flat_map(|bb| bb.instructions.iter()).any(|inst| {
-                        match inst {
-                            MIRInstruction::Call { callee, .. } => {
-                                !Self::known_non_throwing_call_target(callee)
-                                    && (tracked_functions.contains(callee)
+                let propagates_tracked_exception = func
+                    .blocks
+                    .iter()
+                    .flat_map(|bb| bb.instructions.iter())
+                    .any(|inst| match inst {
+                        MIRInstruction::Call { callee, .. } => {
+                            !Self::known_non_throwing_call_target(callee)
+                                && (tracked_functions.contains(callee)
                                     || extern_functions.contains(callee)
                                     || !known_functions.contains(callee))
-                            }
-                            MIRInstruction::IndirectCall { .. } => true,
-                            _ => false,
                         }
+                        MIRInstruction::IndirectCall { .. } => true,
+                        _ => false,
                     });
 
                 if propagates_tracked_exception {
@@ -737,7 +739,10 @@ impl CodeGen {
         for bb in &func.blocks {
             for inst in &bb.instructions {
                 if let MIRInstruction::Call {
-                    callee, args: _, dst, ..
+                    callee,
+                    args: _,
+                    dst,
+                    ..
                 } = inst
                 {
                     if callee == "f_Array_constructor"
@@ -1187,9 +1192,15 @@ update:\n\
         self.declare_runtime_fn("rt_Arena_create", "i64 @rt_Arena_create()");
         self.declare_runtime_fn("rt_Arena_destroy", "void @rt_Arena_destroy(i64)");
         self.declare_runtime_fn("rt_closure_from_ptr", "i64 @rt_closure_from_ptr(i64)");
-        self.declare_runtime_fn("rt_enter_frame", "void @rt_enter_frame(i64, i64, i64) nounwind");
+        self.declare_runtime_fn(
+            "rt_enter_frame",
+            "void @rt_enter_frame(i64, i64, i64) nounwind",
+        );
         self.declare_runtime_fn("rt_leave_frame", "void @rt_leave_frame() nounwind");
-        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
+        self.declare_runtime_fn(
+            "rt_set_location",
+            "void @rt_set_location(i64, i64) nounwind",
+        );
 
         // Filter functions to remove duplicates, prioritizing non-empty tejx_main
         let mut unique_functions = Vec::new();
@@ -1283,9 +1294,8 @@ update:\n\
         self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
         self.current_function_has_runtime_frame =
             !self.source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
-        self.current_function_tracks_location =
-            self.current_function_has_runtime_frame
-                && Self::function_tracks_runtime_location(&func.name);
+        self.current_function_tracks_location = self.current_function_has_runtime_frame
+            && Self::function_tracks_runtime_location(&func.name);
 
         let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
 

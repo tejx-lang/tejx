@@ -58,7 +58,7 @@ impl Lowering {
 
             let mut ret_type =
                 self.resolve_alias_type(&TejxType::from_node(&method.func.return_type));
-            if method.func._is_async {
+            if false {
                 let is_promise = matches!(ret_type, TejxType::Class(ref n, _) if n == "Promise");
                 if !is_promise {
                     ret_type = TejxType::Class("Promise".to_string(), vec![ret_type]);
@@ -196,7 +196,6 @@ impl Lowering {
             params: vec![],
             return_type: TypeNode::Named("void".to_string()),
             body: default_body,
-            _is_async: false,
             is_extern: false,
             generic_params: vec![],
             _line: 0,
@@ -226,7 +225,17 @@ impl Lowering {
             let name = format!("f_{}_{}", class_decl.name, func_decl.name);
             let return_type = self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
 
-            let env_owner_name = if func_decl._is_async {
+            if !func_decl.generic_params.is_empty() {
+                self.function_generic_params.borrow_mut().insert(
+                    name.clone(),
+                    func_decl.generic_params
+                        .iter()
+                        .map(|gp| gp.name.clone())
+                        .collect(),
+                );
+            }
+
+            let env_owner_name = if false {
                 format!("f_{}_worker", name)
             } else {
                 name.clone()
@@ -314,45 +323,21 @@ impl Lowering {
                 }
             }
 
-            if func_decl._is_async {
-                let mangled_name = format!("f_{}_{}", class_decl.name, func_decl.name);
-                let (worker_func, _state_struct, wrapper_body) = self.lower_async_function_impl(
-                    &mangled_name,
-                    &mangled_params,
-                    &func_decl.return_type.to_string(),
-                    &func_decl.body,
-                );
-                self._exit_scope();
-                self.pop_env_owner();
-                functions.push(worker_func);
-                functions.push(_state_struct);
-                functions.push(HIRStatement::Function {
-                    async_params: None,
-                    line,
-                    name: mangled_name,
-                    params: mangled_params,
-                    _return_type: TejxType::Int64,
-                    body: Box::new(wrapper_body),
-                    is_extern: false,
-                });
-            } else {
-                self._exit_scope();
-                self.pop_env_owner();
-                let mangled_name = format!(
-                    "f_{}_{}",
-                    class_decl.name.replace("[", "_").replace("]", "_"),
-                    func_decl.name
-                );
-                functions.push(HIRStatement::Function {
-                    async_params: None,
-                    line,
-                    name: mangled_name,
-                    params: mangled_params,
-                    _return_type: return_type,
-                    body: Box::new(hir_body),
-                    is_extern: false,
-                });
-            }
+            self._exit_scope();
+            self.pop_env_owner();
+            let mangled_name = format!(
+                "f_{}_{}",
+                class_decl.name.replace("[", "_").replace("]", "_"),
+                func_decl.name
+            );
+            functions.push(HIRStatement::Function {
+                line,
+                name: mangled_name,
+                params: mangled_params,
+                _return_type: return_type,
+                body: Box::new(hir_body),
+                is_extern: false,
+            });
         }
 
         // Lower getters
@@ -378,7 +363,6 @@ impl Lowering {
             self._exit_scope();
             self.pop_env_owner();
             functions.push(HIRStatement::Function {
-                async_params: None,
                 line,
                 name,
                 params: mangled_params,
@@ -416,7 +400,6 @@ impl Lowering {
             self._exit_scope();
             self.pop_env_owner();
             functions.push(HIRStatement::Function {
-                async_params: None,
                 line,
                 name,
                 params: mangled_params,
@@ -528,7 +511,6 @@ impl Lowering {
             self.pop_env_owner();
 
             functions.push(HIRStatement::Function {
-                async_params: None,
                 line,
                 name,
                 params: mangled_params,

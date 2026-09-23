@@ -122,9 +122,7 @@ impl CodeGen {
     }
 
     pub(crate) fn needs_gc_root(name: &str, ty: &TejxType) -> bool {
-        Self::is_gc_managed(ty)
-            || name.starts_with("promise_id_local")
-            || name.starts_with("__p_")
+        Self::is_gc_managed(ty) || name.starts_with("promise_id_local") || name.starts_with("__p_")
     }
 
     pub(crate) fn canonical_global_name(name: &str) -> String {

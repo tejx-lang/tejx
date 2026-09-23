@@ -65,3 +65,8 @@ pub unsafe extern "C" fn rt_Thread_join(this: i64) {
     let _ = Box::from_raw(data_ptr);
     *ptr.offset(0) = 0;
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_Thread_sleep(ms: i64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+}

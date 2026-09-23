@@ -249,7 +249,7 @@ impl CodeGen {
                     typed_field_ptr, field_ptr, llvm_ty
                 ));
 
-                let final_src = self.emit_abi_cast(&v_val, &v_ty, &field_ty);
+                let final_src = self.emit_abi_cast(&v_val, v_ty, &field_ty);
                 let store_val = if llvm_ty == "i8" && matches!(field_ty, TejxType::Bool) {
                     self.emit_value_to_storage(&final_src, &field_ty)
                 } else {
@@ -260,7 +260,7 @@ impl CodeGen {
                     llvm_ty, store_val, llvm_ty, typed_field_ptr
                 ));
                 if Self::is_gc_managed(&field_ty) {
-                    let barrier_val = self.emit_abi_cast(&v_val, &v_ty, &TejxType::Int64);
+                    let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
                     self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
                     self.emit_line(&format!(
                         "call void @rt_write_barrier(i64 {}, i64 {})",
@@ -276,7 +276,7 @@ impl CodeGen {
                 value: format!("\"{}\"", member),
                 ty: TejxType::String,
             });
-            let boxed_v = self.emit_auto_box(&v_val, &v_ty);
+            let boxed_v = self.emit_auto_box(&v_val, v_ty);
             let mut temp_root_count = 0;
             if Self::is_gc_managed(obj.get_type()) {
                 self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
@@ -604,7 +604,7 @@ impl CodeGen {
         }
 
         if matches!(idx_ty, TejxType::String) {
-            let boxed_v = self.emit_auto_box(&v_val, &v_ty);
+            let boxed_v = self.emit_auto_box(&v_val, v_ty);
             let mut temp_root_count = 0;
             if Self::is_gc_managed(obj.get_type()) {
                 self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");

@@ -10,18 +10,7 @@ use std::sync::{Condvar, LazyLock, Mutex};
 // TejX user callbacks still resume on a single event-loop thread, but async helpers
 // may complete from different worker threads. Keep the queue/handle table global so
 // wakeups and GC-visible handles stay correct across those boundaries.
-type TejxTask = (i64, i64);
 
-static MICROTASK_QUEUE: LazyLock<Mutex<VecDeque<TejxTask>>> =
-    LazyLock::new(|| Mutex::new(VecDeque::new()));
-static TASK_QUEUE: LazyLock<Mutex<VecDeque<TejxTask>>> =
-    LazyLock::new(|| Mutex::new(VecDeque::new()));
-static ACTIVE_MICROTASKS: LazyLock<Mutex<VecDeque<TejxTask>>> =
-    LazyLock::new(|| Mutex::new(VecDeque::new()));
-static ACTIVE_TASKS: LazyLock<Mutex<VecDeque<TejxTask>>> =
-    LazyLock::new(|| Mutex::new(VecDeque::new()));
-static READY_MICROTASKS: AtomicUsize = AtomicUsize::new(0);
-static READY_TASKS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
 struct GlobalHandles {
@@ -32,200 +21,15 @@ struct GlobalHandles {
 static GLOBAL_HANDLES: LazyLock<Mutex<GlobalHandles>> =
     LazyLock::new(|| Mutex::new(GlobalHandles::default()));
 
-// Global Tokio Runtime for background I/O tasks and timers
-pub static TOKIO_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    let worker_threads = std::thread::available_parallelism()
-        .map(|count| count.get().clamp(2, 4))
-        .unwrap_or(2);
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .thread_name("tejx-async")
-        .enable_all()
-        .build()
-        .unwrap()
-});
 
-#[no_mangle]
-pub static ASYNC_OPS: AtomicI64 = AtomicI64::new(0);
 
-// Wake the blocked TejX event loop when async state changes or a task is enqueued.
-static EVENT_LOOP_WAKE: LazyLock<(Mutex<u64>, Condvar)> =
-    LazyLock::new(|| (Mutex::new(0), Condvar::new()));
+
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
-}
-
-fn wait_unpoisoned<'a, T>(
-    cvar: &Condvar,
-    guard: std::sync::MutexGuard<'a, T>,
-) -> std::sync::MutexGuard<'a, T> {
-    match cvar.wait(guard) {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-fn pop_ready_task(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> Option<TejxTask> {
-    refill_active_batch(queue);
-    let task = lock_unpoisoned(active_batch_for(queue)).pop_front();
-    if task.is_some() {
-        ready_count_for(queue).fetch_sub(1, Ordering::AcqRel);
-    }
-    task
-}
-
-fn active_batch_for(
-    queue: &LazyLock<Mutex<VecDeque<TejxTask>>>,
-) -> &'static LazyLock<Mutex<VecDeque<TejxTask>>> {
-    if std::ptr::eq(queue, &MICROTASK_QUEUE) {
-        &ACTIVE_MICROTASKS
-    } else {
-        &ACTIVE_TASKS
-    }
-}
-
-fn refill_active_batch(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) {
-    let active = active_batch_for(queue);
-    let mut active_guard = lock_unpoisoned(active);
-    if !active_guard.is_empty() {
-        return;
-    }
-    let mut queued = lock_unpoisoned(queue);
-    if queued.is_empty() {
-        return;
-    }
-    *active_guard = std::mem::take(&mut *queued);
-}
-
-fn ready_count_for(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> &'static AtomicUsize {
-    if std::ptr::eq(queue, &MICROTASK_QUEUE) {
-        &READY_MICROTASKS
-    } else {
-        &READY_TASKS
-    }
-}
-
-fn any_ready_tasks() -> bool {
-    READY_MICROTASKS.load(Ordering::Acquire) != 0 || READY_TASKS.load(Ordering::Acquire) != 0
-}
-
-unsafe fn run_task((worker, args): TejxTask) {
-    if worker != 0 {
-        let worker_fn: unsafe extern "C" fn(i64) = std::mem::transmute(worker);
-        worker_fn(args);
-    }
-}
-
-unsafe fn run_ready_tasks(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> usize {
-    let mut ran = 0;
-    while let Some(task) = pop_ready_task(queue) {
-        run_task(task);
-        ran += 1;
-    }
-    ran
-}
-
-unsafe fn run_one_task(queue: &LazyLock<Mutex<VecDeque<TejxTask>>>) -> bool {
-    if let Some(task) = pop_ready_task(queue) {
-        run_task(task);
-        true
-    } else {
-        false
-    }
-}
-
-fn notify_event_loop() {
-    let (lock, cvar) = &*EVENT_LOOP_WAKE;
-    let mut generation = lock_unpoisoned(lock);
-    *generation = generation.wrapping_add(1);
-    cvar.notify_one();
-}
-
-fn park_event_loop_if_idle() {
-    let (lock, cvar) = &*EVENT_LOOP_WAKE;
-    let mut generation = lock_unpoisoned(lock);
-    loop {
-        if any_ready_tasks() || ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
-            return;
-        }
-        let seen = *generation;
-        generation = wait_unpoisoned(cvar, generation);
-        if *generation != seen {
-            continue;
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tejx_enqueue_task(worker: i64, args: i64) {
-    lock_unpoisoned(&TASK_QUEUE).push_back((worker, args));
-    READY_TASKS.fetch_add(1, Ordering::Release);
-    notify_event_loop();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tejx_enqueue_microtask(worker: i64, args: i64) {
-    lock_unpoisoned(&MICROTASK_QUEUE).push_back((worker, args));
-    READY_MICROTASKS.fetch_add(1, Ordering::Release);
-    notify_event_loop();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tejx_inc_async_ops() {
-    ASYNC_OPS.fetch_add(1, Ordering::SeqCst);
-    notify_event_loop();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tejx_dec_async_ops() {
-    let prev = ASYNC_OPS.fetch_sub(1, Ordering::SeqCst);
-    if prev <= 1 {
-        notify_event_loop();
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tejx_run_event_loop_step() -> bool {
-    let ran_microtasks = run_ready_tasks(&MICROTASK_QUEUE) > 0;
-
-    if run_one_task(&TASK_QUEUE) {
-        run_ready_tasks(&MICROTASK_QUEUE);
-        return true;
-    }
-
-    if ran_microtasks {
-        return true;
-    }
-
-    if ASYNC_OPS.load(Ordering::SeqCst) <= 0 {
-        return false;
-    }
-
-    // Background async work now progresses on Tokio worker threads, so the TejX loop can
-    // sleep on a lightweight condition variable until new work is enqueued or async drains.
-    park_event_loop_if_idle();
-
-    let ran_microtasks = run_ready_tasks(&MICROTASK_QUEUE) > 0;
-
-    if run_one_task(&TASK_QUEUE) {
-        run_ready_tasks(&MICROTASK_QUEUE);
-        return true;
-    }
-
-    if ran_microtasks {
-        return true;
-    }
-
-    ASYNC_OPS.load(Ordering::SeqCst) > 0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tejx_run_event_loop() {
-    while tejx_run_event_loop_step() {}
 }
 
 #[no_mangle]
@@ -259,18 +63,6 @@ pub unsafe extern "C" fn tejx_drop_global_handle(id: usize) {
 }
 
 pub unsafe fn rt_gc_scan_tasks() {
-    for (_, ref mut args) in lock_unpoisoned(&MICROTASK_QUEUE).iter_mut() {
-        crate::gc::copy_object(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&ACTIVE_MICROTASKS).iter_mut() {
-        crate::gc::copy_object(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
-        crate::gc::copy_object(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&ACTIVE_TASKS).iter_mut() {
-        crate::gc::copy_object(args as *mut i64);
-    }
     crate::gc::copy_object(std::ptr::addr_of_mut!(CURRENT_EXCEPTION));
     for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
         crate::gc::copy_object(val as *mut i64);
@@ -278,18 +70,6 @@ pub unsafe fn rt_gc_scan_tasks() {
 }
 
 pub unsafe fn rt_gc_mark_tasks() {
-    for (_, ref mut args) in lock_unpoisoned(&MICROTASK_QUEUE).iter_mut() {
-        crate::gc::mark_object(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&ACTIVE_MICROTASKS).iter_mut() {
-        crate::gc::mark_object(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
-        crate::gc::mark_object(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&ACTIVE_TASKS).iter_mut() {
-        crate::gc::mark_object(args as *mut i64);
-    }
     crate::gc::mark_object(std::ptr::addr_of_mut!(CURRENT_EXCEPTION));
     for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
         crate::gc::mark_object(val as *mut i64);
@@ -297,18 +77,6 @@ pub unsafe fn rt_gc_mark_tasks() {
 }
 
 pub unsafe fn rt_gc_update_tasks() {
-    for (_, ref mut args) in lock_unpoisoned(&MICROTASK_QUEUE).iter_mut() {
-        crate::gc::rt_update_ptr(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&ACTIVE_MICROTASKS).iter_mut() {
-        crate::gc::rt_update_ptr(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&TASK_QUEUE).iter_mut() {
-        crate::gc::rt_update_ptr(args as *mut i64);
-    }
-    for (_, ref mut args) in lock_unpoisoned(&ACTIVE_TASKS).iter_mut() {
-        crate::gc::rt_update_ptr(args as *mut i64);
-    }
     crate::gc::rt_update_ptr(std::ptr::addr_of_mut!(CURRENT_EXCEPTION));
     for val in lock_unpoisoned(&GLOBAL_HANDLES).slots.iter_mut().flatten() {
         crate::gc::rt_update_ptr(val as *mut i64);
@@ -340,7 +108,10 @@ mod tests {
 
     unsafe extern "C" fn recursive_microtask_worker(remaining: i64) {
         if remaining > 0 {
-            tejx_enqueue_microtask(recursive_microtask_worker as *const () as i64, remaining - 1);
+            tejx_enqueue_microtask(
+                recursive_microtask_worker as *const () as i64,
+                remaining - 1,
+            );
         }
     }
 

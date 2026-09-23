@@ -247,11 +247,7 @@ impl TejxType {
     pub fn is_signed_integer(&self) -> bool {
         matches!(
             self,
-            TejxType::Int8
-                | TejxType::Int16
-                | TejxType::Int32
-                | TejxType::Int64
-                | TejxType::Int128
+            TejxType::Int8 | TejxType::Int16 | TejxType::Int32 | TejxType::Int64 | TejxType::Int128
         )
     }
 

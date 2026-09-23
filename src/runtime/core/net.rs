@@ -10,13 +10,7 @@ enum NetStream {
     Tls(TlsStream<TcpStream>),
 }
 
-enum HttpFetchResultData {
-    Ok(Vec<u8>),
-    Err(String),
-}
 
-static HTTP_FETCH_RESULTS: LazyLock<Mutex<std::collections::HashMap<usize, HttpFetchResultData>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 fn string_from_bytes(bytes: &[u8]) -> i64 {
     unsafe { new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64) }
@@ -114,30 +108,6 @@ unsafe fn http_result_array(status: &str, payload: &[u8]) -> i64 {
     result
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rt_http_fetch_resolver_worker(handle_id: i64) {
-    let handle = handle_id as usize;
-    let mut actual_pid = crate::event_loop::tejx_get_global_handle(handle);
-    rt_push_root(&mut actual_pid);
-    let fetch_result = HTTP_FETCH_RESULTS
-        .lock()
-        .ok()
-        .and_then(|mut results| results.remove(&handle));
-
-    crate::event_loop::tejx_drop_global_handle(handle);
-
-    if actual_pid > 0 {
-        let value = match fetch_result {
-            Some(HttpFetchResultData::Ok(bytes)) => http_result_array("ok", &bytes),
-            Some(HttpFetchResultData::Err(err)) => http_result_array("err", err.as_bytes()),
-            None => http_result_array("err", b"Fetch result unavailable"),
-        };
-        rt_promise_resolve(actual_pid, value);
-    }
-
-    rt_pop_roots(1);
-    crate::event_loop::tejx_dec_async_ops();
-}
 
 fn start_tls_stream(stream: &mut NetStream, host: &str, verify: bool) -> bool {
     let current = std::mem::replace(stream, NetStream::Closed);
@@ -513,7 +483,7 @@ pub unsafe extern "C" fn rt_net_start_tls_insecure(stream: i64, host_ptr: i64) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_http_fetch_async(
+pub unsafe extern "C" fn rt_http_fetch(
     host_ptr: i64,
     port: i64,
     use_tls: i64,
@@ -521,61 +491,26 @@ pub unsafe extern "C" fn rt_http_fetch_async(
     timeout_ms: i64,
     insecure_tls: i64,
 ) -> i64 {
-    let pid = rt_promise_new();
-    let mut v_pid = pid;
-    rt_push_root(&mut v_pid);
-
     let Some(host) = i64_to_rust_str(host_ptr) else {
-        let mut result = http_result_array("err", b"Invalid fetch host");
-        rt_push_root(&mut result);
-        rt_promise_resolve(v_pid, result);
-        rt_pop_roots(2);
-        return pid;
+        return http_result_array("err", b"Invalid fetch host");
     };
 
     let Some(request) = i64_to_rust_str(request_ptr) else {
-        let mut result = http_result_array("err", b"Invalid fetch request");
-        rt_push_root(&mut result);
-        rt_promise_resolve(v_pid, result);
-        rt_pop_roots(2);
-        return pid;
+        return http_result_array("err", b"Invalid fetch request");
     };
 
-    let handle = crate::event_loop::tejx_create_global_handle(pid);
-    crate::event_loop::tejx_inc_async_ops();
-    rt_pop_roots(1);
-
-    crate::event_loop::TOKIO_RT.spawn(async move {
-        let fetch_result = match tokio::task::spawn_blocking(move || {
-            blocking_http_fetch(host, port, use_tls != 0, request, timeout_ms, insecure_tls != 0)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(err) => Err(format!("Async fetch task failed: {}", err)),
-        };
-
-        if let Ok(mut results) = HTTP_FETCH_RESULTS.lock() {
-            results.insert(
-                handle,
-                match fetch_result {
-                    Ok(bytes) => HttpFetchResultData::Ok(bytes),
-                    Err(err) => HttpFetchResultData::Err(err),
-                },
-            );
-        }
-
-        unsafe {
-            crate::event_loop::tejx_enqueue_task(
-                rt_http_fetch_resolver_worker as *const () as i64,
-                handle as i64,
-            );
-        }
-    });
-
-    pid
+    match blocking_http_fetch(
+        host,
+        port,
+        use_tls != 0,
+        request,
+        timeout_ms,
+        insecure_tls != 0,
+    ) {
+        Ok(bytes) => http_result_array("ok", &bytes),
+        Err(err) => http_result_array("err", err.as_bytes()),
+    }
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
     if let Some(addr) = i64_to_rust_str(addr_ptr) {
@@ -591,54 +526,6 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn http_fetch_resolver_roots_promise_during_response_allocation() {
-        unsafe {
-            let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap();
-            rt_init_gc();
-
-            if let Ok(mut results) = HTTP_FETCH_RESULTS.lock() {
-                results.clear();
-            }
-
-            let mut pid = rt_promise_new();
-            rt_push_root(&mut pid);
-            let handle = crate::event_loop::tejx_create_global_handle(pid);
-
-            if let Ok(mut results) = HTTP_FETCH_RESULTS.lock() {
-                results.insert(handle, HttpFetchResultData::Ok(vec![b'x'; 64 * 1024]));
-            }
-
-            gc::rt_clear_tlab();
-            while (gc::EDEN_END as usize)
-                .saturating_sub(gc::EDEN_TOP.load(Ordering::SeqCst) as usize)
-                > 96 * 1024
-            {
-                let _ = rt_Array_new(256, 8);
-            }
-            gc::rt_clear_tlab();
-
-            crate::event_loop::tejx_inc_async_ops();
-            rt_http_fetch_resolver_worker(handle as i64);
-
-            let body = (pid - HEAP_OFFSET) as *mut i64;
-            let header = rt_get_header(body as *mut u8);
-            assert_eq!((*header).type_id, TAG_PROMISE as u16);
-            assert_eq!(*body.offset(0), 1);
-
-            let result = *body.offset(1);
-            assert_eq!(i64_to_rust_str(rt_array_get_fast(result, 0)).as_deref(), Some("ok"));
-            assert_eq!(rt_len(rt_array_get_fast(result, 1)), 64 * 1024);
-
-            rt_pop_roots(1);
-        }
-    }
-}
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {

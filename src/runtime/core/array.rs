@@ -22,9 +22,7 @@ unsafe fn rt_array_load_scalar(body: *mut u8, index: i64, flags: u16) -> i64 {
     match (elem_kind, elem_size) {
         (ARRAY_FLAG_KIND_FLOAT, 4) => *(slot as *const i32) as i64,
         (ARRAY_FLAG_KIND_FLOAT, 8) => *(slot as *const i64),
-        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => {
-            *(slot as *const u8) as i64
-        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => *(slot as *const u8) as i64,
         (ARRAY_FLAG_KIND_UNSIGNED, 2) => *(slot as *const u16) as i64,
         (ARRAY_FLAG_KIND_UNSIGNED, 4) => *(slot as *const u32) as i64,
         (ARRAY_FLAG_KIND_UNSIGNED, 8) => *(slot as *const u64) as i64,
@@ -1018,8 +1016,8 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     (*header).length = size as u32;
     (*header).capacity = cap as u32;
     // Store elem_size in lower 8 bits of flags
-    (*header).flags = ((flags | inherited_type_flags) as u16 & 0xFF00)
-        | (actual_elem_size as u16 & 0x00FF);
+    (*header).flags =
+        ((flags | inherited_type_flags) as u16 & 0xFF00) | (actual_elem_size as u16 & 0x00FF);
 
     if source >= STACK_OFFSET {
         let src_body = if source >= HEAP_OFFSET {

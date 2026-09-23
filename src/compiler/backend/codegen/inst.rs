@@ -9,8 +9,8 @@ impl CodeGen {
     fn call_can_raise_runtime_exception(&self, callee: &str) -> bool {
         !Self::known_non_throwing_call_target(callee)
             && (self.tracked_runtime_functions.contains(callee)
-            || self.extern_mir_functions.contains(callee)
-            || !self.known_mir_functions.contains(callee))
+                || self.extern_mir_functions.contains(callee)
+                || !self.known_mir_functions.contains(callee))
     }
 
     fn instruction_needs_runtime_location(&self, inst: &MIRInstruction) -> bool {
@@ -2262,18 +2262,7 @@ impl CodeGen {
                     should_consume = true;
                 }
 
-                // Fix: The worker task must NOT free the promise ID (Arg 0) after resolving.
-                // Consider it consumed by the resolve call (ownership transfer to runtime/void).
-                if (final_callee == RT_PROMISE_RESOLVE || final_callee == RT_PROMISE_REJECT)
-                    && (i == 0 || i == 1)
-                {
-                    should_consume = true;
-                }
 
-                // Fix: The arguments bundle passed to a task MUST be consumed (moved to the task queue).
-                if final_callee == TEJX_ENQUEUE_TASK && i == 1 {
-                    should_consume = true;
-                }
 
                 // Container mutators consume value args (not the container itself at arg[0])
                 if is_container_mutator && i > 0 {

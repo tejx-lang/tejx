@@ -1,7 +1,6 @@
 import std:collections;
 import std:net;
 
-extern function rt_http_fetch_async(host: string, port: int, useTls: bool, request: string, timeoutMs: int, insecureTls: bool): Promise<string[]>;
 
 function parseDecimalInt(text: string): int {
     let digits = "0123456789";
@@ -380,17 +379,7 @@ function readRawResponse(stream: TcpStream): string {
     return rawResponse;
 }
 
-function asyncResultRaw(result: string[]): string {
-    if (result.length() < 2) {
-        throw new Error("Invalid async fetch response");
-    }
 
-    if (result[0] == "ok") {
-        return result[1];
-    }
-
-    throw new Error(result[1]);
-}
 
 class HttpClient {
     scheme: string;
@@ -448,15 +437,4 @@ class HttpClient {
         return new HttpClientResponse(rawResponse);
     }
 
-    requestAsync(method: string, url: string, body: string, headers: Headers, timeoutMs: int): Promise<HttpClientResponse> {
-        let parsedUrl: Url = this.requireUrl(url);
-        let port: int = resolvedPort(parsedUrl);
-        let requestText: string = buildRequest(method, parsedUrl, body, headers);
-        return rt_promise_then(rt_http_fetch_async(parsedUrl.host, port, parsedUrl.scheme == "https", requestText, timeoutMs, this.insecureTls),
-            (result) => {
-                return new HttpClientResponse(asyncResultRaw(result));
-            },
-            0 as any as (e: Error) => HttpClientResponse
-        );
-    }
 }

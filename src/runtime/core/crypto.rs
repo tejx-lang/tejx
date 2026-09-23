@@ -48,8 +48,8 @@ pub unsafe extern "C" fn rt_crypto_sha256(data: i64) -> i64 {
 pub unsafe extern "C" fn rt_crypto_hmac_sha256(key: i64, data: i64) -> i64 {
     let key_bytes = require_byte_vec(key, "crypto.hmacSha256 key");
     let data_bytes = require_byte_vec(data, "crypto.hmacSha256 data");
-    let mut mac = HmacSha256::new_from_slice(&key_bytes)
-        .expect("HMAC-SHA-256 accepts keys of any length");
+    let mut mac =
+        HmacSha256::new_from_slice(&key_bytes).expect("HMAC-SHA-256 accepts keys of any length");
     mac.update(&data_bytes);
     let digest = mac.finalize().into_bytes();
     crate::binary::int_array_from_bytes(digest.as_slice())

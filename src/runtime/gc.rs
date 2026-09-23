@@ -875,8 +875,7 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 
     let needs_major_gc = {
         let _los_lock = LOS_LOCK.lock().unwrap();
-        LOS_COUNT >= MAX_LOS_OBJECTS
-            || LOS_BYTES.saturating_add(total_size) > LOS_NEXT_GC_THRESHOLD
+        LOS_COUNT >= MAX_LOS_OBJECTS || LOS_BYTES.saturating_add(total_size) > LOS_NEXT_GC_THRESHOLD
     };
 
     if needs_major_gc {
@@ -1030,7 +1029,6 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 memset(body_ptr as *mut _, 0, size);
                 return body_ptr;
             }
-
         }
     }
 }
@@ -1183,8 +1181,8 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         if !gc_is_marked((*header).gc_word) {
             if (type_id as usize) < MAX_TYPES {
                 if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                    let obj_val = (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64)
-                        + HEAP_OFFSET;
+                    let obj_val =
+                        (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
                     f(obj_val);
                 }
             }

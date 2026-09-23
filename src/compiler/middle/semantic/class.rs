@@ -21,7 +21,10 @@ impl TypeChecker {
                         .map(|(_, ret_ty)| ret_ty)
                         .unwrap_or(ret.as_str());
                     TejxType::Function(
-                        params.iter().map(|param| TejxType::from_name(param)).collect(),
+                        params
+                            .iter()
+                            .map(|param| TejxType::from_name(param))
+                            .collect(),
                         Box::new(TejxType::from_name(actual_ret)),
                     )
                 }
@@ -69,7 +72,7 @@ impl TypeChecker {
         } else {
             ret_ty_str
         };
-        if func._is_async && !ret_ty.starts_with("Promise<") && ret_ty != "Promise" {
+        if false && !ret_ty.starts_with("Promise<") && ret_ty != "Promise" {
             ret_ty = format!("Promise<{}>", ret_ty);
         }
 
@@ -92,7 +95,8 @@ impl TypeChecker {
         match ty {
             TejxType::Function(_, ret) => Some((**ret).clone()),
             TejxType::Class(name, generics)
-                if generics.is_empty() && (name.starts_with("function:") || name.contains("=>")) =>
+                if generics.is_empty()
+                    && (name.starts_with("function:") || name.contains("=>")) =>
             {
                 let (ret, _, _) = self.parse_signature(name.clone());
                 let actual_ret = ret
@@ -106,9 +110,7 @@ impl TypeChecker {
     }
 
     pub(crate) fn effective_async_return_type(&self, ty: TejxType, is_async: bool) -> TejxType {
-        if is_async
-            && !matches!(ty, TejxType::Class(ref name, _) if name == "Promise")
-        {
+        if is_async && !matches!(ty, TejxType::Class(ref name, _) if name == "Promise") {
             TejxType::Class("Promise".to_string(), vec![ty])
         } else {
             ty
@@ -285,7 +287,7 @@ impl TypeChecker {
                     &func.params,
                     &func.body,
                     &func.generic_params,
-                    func._is_async,
+                    false,
                 );
                 self.remember_inferred_function_return(func, &inferred);
                 self.update_function_symbol_return_type(&func.name, inferred)
@@ -317,13 +319,9 @@ impl TypeChecker {
                         &method.func.params,
                         &method.func.body,
                         &method.func.generic_params,
-                        method.func._is_async,
+                        false,
                     );
-                    self.remember_inferred_member_return(
-                        &class_decl.name,
-                        &method.func,
-                        &inferred,
-                    );
+                    self.remember_inferred_member_return(&class_decl.name, &method.func, &inferred);
                     changed |= self.update_class_member_return_type(
                         &class_decl.name,
                         &method.func.name,
@@ -357,7 +355,7 @@ impl TypeChecker {
                         &method.params,
                         &method.body,
                         &method.generic_params,
-                        method._is_async,
+                        false,
                     );
                     self.remember_inferred_member_return(
                         &ext_decl._target_type.to_string(),
@@ -377,7 +375,9 @@ impl TypeChecker {
                 self.current_inside_constructor = prev_inside_constructor;
                 changed
             }
-            Statement::ExportDecl { declaration, .. } => self.refine_inferred_return_types(declaration),
+            Statement::ExportDecl { declaration, .. } => {
+                self.refine_inferred_return_types(declaration)
+            }
             _ => false,
         }
     }
@@ -441,10 +441,7 @@ impl TypeChecker {
     ) -> bool {
         if let Some(cycle) = self.detect_inheritance_cycle(class_name) {
             self.report_error_detailed(
-                format!(
-                    "Circular inheritance detected: {}",
-                    cycle.join(" -> ")
-                ),
+                format!("Circular inheritance detected: {}", cycle.join(" -> ")),
                 line,
                 col,
                 "E0111",
@@ -530,7 +527,7 @@ impl TypeChecker {
                         ret_ty_str
                     };
                     if ret_ty != "<inferred>"
-                        && method.func._is_async
+                        && false
                         && !ret_ty.starts_with("Promise<")
                         && ret_ty != "Promise"
                     {
@@ -646,7 +643,7 @@ impl TypeChecker {
                     ret_ty_str
                 };
                 if ret_ty != "<inferred>"
-                    && func._is_async
+                    && false
                     && !ret_ty.starts_with("Promise<")
                     && ret_ty != "Promise"
                 {

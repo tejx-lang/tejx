@@ -1,4 +1,3 @@
-pub mod async_desugar;
 pub mod builtins;
 pub mod class;
 pub mod expr;
@@ -41,8 +40,6 @@ pub struct Lowering {
     discovered_function_instantiations:
         RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     type_aliases: RefCell<HashMap<String, TejxType>>,
-    pub async_enabled: bool,
-    current_async_promise_id: RefCell<Option<String>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
     pub filename: RefCell<String>,
     pub stdlib_path: RefCell<std::path::PathBuf>,
@@ -108,8 +105,6 @@ impl Lowering {
             erased_generic_functions: RefCell::new(HashSet::new()),
             discovered_function_instantiations: RefCell::new(HashMap::new()),
             type_aliases: RefCell::new(HashMap::new()),
-            async_enabled: false,
-            current_async_promise_id: RefCell::new(None),
             diagnostics: RefCell::new(Vec::new()),
             filename: RefCell::new(String::new()),
             stdlib_path: RefCell::new(std::path::PathBuf::from("lib")),
@@ -569,16 +564,12 @@ impl Lowering {
         let line = 0; // Top level
         let mut functions = Vec::new();
         let mut main_stmts = Vec::new();
-        let mut main_is_async = false;
         let mut merged_statements = program.statements.clone();
 
-        // Pass 0.5: Scan for Variadic Functions + async main discovery
+        // Pass 0.5: Scan for Variadic Functions
         for stmt in &merged_statements {
             match stmt {
                 Statement::FunctionDeclaration(func) => {
-                    if func.name == "main" {
-                        main_is_async = func._is_async;
-                    }
                     let fixed_count = func.params.iter().take_while(|p| !p._is_rest).count();
                     if fixed_count < func.params.len() {
                         self.variadic_functions
@@ -588,9 +579,6 @@ impl Lowering {
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::FunctionDeclaration(func) = declaration.as_ref() {
-                        if func.name == "main" {
-                            main_is_async = func._is_async;
-                        }
                         let fixed_count = func.params.iter().take_while(|p| !p._is_rest).count();
                         if fixed_count < func.params.len() {
                             self.variadic_functions
@@ -797,78 +785,18 @@ impl Lowering {
                 .cloned()
                 .unwrap_or(TejxType::Void);
 
-            if main_is_async {
-                let main_call = HIRExpression::Call {
+            entry_body_stmts.push(HIRStatement::ExpressionStmt {
+                line: 0,
+                expr: HIRExpression::Call {
                     line: 0,
                     callee: "f_main".to_string(),
                     args: vec![],
-                    ty: TejxType::Int64,
-                };
-                entry_body_stmts.push(HIRStatement::ExpressionStmt {
-                    line: 0,
-                    expr: HIRExpression::Call {
-                        line: 0,
-                        callee: "rt_await".to_string(),
-                        args: vec![main_call],
-                        ty: TejxType::Int64,
-                    },
-                });
-            } else {
-                entry_body_stmts.push(HIRStatement::ExpressionStmt {
-                    line: 0,
-                    expr: HIRExpression::Call {
-                        line: 0,
-                        callee: "f_main".to_string(),
-                        args: vec![],
-                        ty: main_ret_ty,
-                    },
-                });
-            }
+                    ty: main_ret_ty,
+                },
+            });
         }
 
-        // Finalize entry point: Run event loop (moved to runtime.rs)
-        // entry_body_stmts.push(HIRStatement::ExpressionStmt { line: line,
-        //     expr: HIRExpression::Call { line: line,
-        //         callee: TEJX_RUN_EVENT_LOOP.to_string(),
-        //         args: vec![],
-        //         ty: TejxType::Void,
-        //     }
-        // });
-        // entry_body_stmts.push(HIRStatement::Return { line: line,  value: Some(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }) });
-
-        // Create the actual entry point function
         functions.push(HIRStatement::Function {
-            name: "f_async_add".to_string(),
-            async_params: None,
-            params: vec![
-                ("a".to_string(), TejxType::Int32),
-                ("b".to_string(), TejxType::Int32),
-            ],
-            _return_type: TejxType::Int64,
-            body: Box::new(HIRStatement::Block {
-                line: 0,
-                statements: vec![],
-            }),
-            is_extern: false,
-            line: 0,
-        });
-        functions.push(HIRStatement::Function {
-            name: "rt_main_async_worker".to_string(),
-            params: vec![(
-                "ctx".to_string(),
-                TejxType::DynamicArray(Box::new(TejxType::Int64)),
-            )],
-            _return_type: TejxType::Void,
-            body: Box::new(HIRStatement::Block {
-                line: 0,
-                statements: vec![],
-            }),
-            is_extern: false,
-            async_params: None,
-            line: 0,
-        });
-        functions.push(HIRStatement::Function {
-            async_params: None,
             line,
             name: TEJX_MAIN.to_string(),
             params: vec![],
@@ -915,15 +843,7 @@ impl Lowering {
             RT_MOVE_MEMBER.to_string(),
             vec![TejxType::Int64, TejxType::Int32],
         );
-        signatures.insert(
-            TEJX_ENQUEUE_TASK.to_string(),
-            vec![TejxType::Int64, TejxType::Int64],
-        );
-        signatures.insert(TEJX_INC_ASYNC_OPS.to_string(), vec![]);
-        signatures.insert(TEJX_DEC_ASYNC_OPS.to_string(), vec![]);
-        signatures.insert(TEJX_RUN_EVENT_LOOP.to_string(), vec![]);
-        signatures.insert("rt_sleep".to_string(), vec![TejxType::Int64]);
-        signatures.insert("rt_await".to_string(), vec![TejxType::Int64]);
+
         signatures.insert(
             "__optional_chain".to_string(),
             vec![TejxType::Int64, TejxType::Int64],

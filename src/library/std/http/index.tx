@@ -99,17 +99,7 @@ export class Request {
         return new Response(client.request(this.method, this.url, bodyText, headers, this.timeoutMs));
     }
 
-    sendAsync(): Promise<HttpResponse> {
-        let client: HttpClient = httpClientFor(this.url, this.insecureTls);
-        let headers = this.headers.copy();
-        let bodyText = this.bodyText(headers);
-        return rt_promise_then(client.requestAsync(this.method, this.url, bodyText, headers, this.timeoutMs),
-            (response) => {
-                return new Response(response);
-            },
-            0 as any as (e: Error) => HttpResponse
-        );
-    }
+
 
     private setBody(body: any): void {
         this.body = body;
@@ -255,10 +245,8 @@ function requestFromInput(input: any, options: any): Request {
     throw new Error("fetch expects a string URL or Request");
 }
 
-export function fetchSync(input: any, options: any = None): HttpResponse {
-    return requestFromInput(input, options).send();
-}
-
 export function fetch(input: any, options: any = None): Promise<HttpResponse> {
-    return requestFromInput(input, options).sendAsync();
+    return Promise.spawn(() => {
+        return requestFromInput(input, options).send();
+    });
 }

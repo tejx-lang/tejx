@@ -414,7 +414,11 @@ impl CodeGen {
             | ("i32", "i64")
             | ("i32", "i128")
             | ("i64", "i128") => {
-                let ext_op = if src_ty.is_unsigned_integer() { "zext" } else { "sext" };
+                let ext_op = if src_ty.is_unsigned_integer() {
+                    "zext"
+                } else {
+                    "sext"
+                };
                 if dst_llvm == "i64" && matches!(dst_ty, TejxType::Any) {
                     // Primitive -> Any: Use raw bit pattern (unboxed).
                     // Small integers are kept as-is; heuristic in runtime handles this.
@@ -470,7 +474,10 @@ impl CodeGen {
                 } else {
                     "fptosi"
                 };
-                self.emit_line(&format!("{} = {} double {} to i128", cast_reg, op, val_name));
+                self.emit_line(&format!(
+                    "{} = {} double {} to i128",
+                    cast_reg, op, val_name
+                ));
             }
             ("i64", "double") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
@@ -493,7 +500,10 @@ impl CodeGen {
                 } else {
                     "sitofp"
                 };
-                self.emit_line(&format!("{} = {} i128 {} to double", cast_reg, op, val_name));
+                self.emit_line(&format!(
+                    "{} = {} i128 {} to double",
+                    cast_reg, op, val_name
+                ));
             }
             ("i64", "float") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
@@ -1220,7 +1230,10 @@ impl CodeGen {
         }
 
         self.current_debug_line = Some(line);
-        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
+        self.declare_runtime_fn(
+            "rt_set_location",
+            "void @rt_set_location(i64, i64) nounwind",
+        );
 
         let source_file = self.source_file.clone();
         let file_ptr = self.emit_string_constant(&source_file);

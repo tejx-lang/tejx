@@ -48,7 +48,12 @@ where
     unique
 }
 
-fn report_diagnostics(stage: &str, diagnostics: &[Diagnostic], primary_file: &str, primary_source: &str) {
+fn report_diagnostics(
+    stage: &str,
+    diagnostics: &[Diagnostic],
+    primary_file: &str,
+    primary_source: &str,
+) {
     let count = diagnostics.len();
     let suffix = if count == 1 { "" } else { "s" };
     eprintln!("{} failed with {} error{}:", stage, count, suffix);
@@ -119,7 +124,11 @@ fn apply_inferred_return_types_to_statement(
     match stmt {
         ast::Statement::FunctionDeclaration(func) => {
             apply_inferred_function_return_annotation(func, current_file, type_checker);
-            apply_inferred_return_types_to_statement(func.body.as_mut(), current_file, type_checker);
+            apply_inferred_return_types_to_statement(
+                func.body.as_mut(),
+                current_file,
+                type_checker,
+            );
         }
         ast::Statement::ClassDeclaration(class_decl) => {
             if let Some(constructor) = class_decl._constructor.as_mut() {
@@ -177,7 +186,11 @@ fn apply_inferred_return_types_to_statement(
             }
         }
         ast::Statement::ExportDecl { declaration, .. } => {
-            apply_inferred_return_types_to_statement(declaration.as_mut(), current_file, type_checker);
+            apply_inferred_return_types_to_statement(
+                declaration.as_mut(),
+                current_file,
+                type_checker,
+            );
         }
         ast::Statement::BlockStmt { statements, .. } => {
             for statement in statements {
@@ -189,7 +202,11 @@ fn apply_inferred_return_types_to_statement(
             else_branch,
             ..
         } => {
-            apply_inferred_return_types_to_statement(then_branch.as_mut(), current_file, type_checker);
+            apply_inferred_return_types_to_statement(
+                then_branch.as_mut(),
+                current_file,
+                type_checker,
+            );
             if let Some(else_branch) = else_branch.as_mut() {
                 apply_inferred_return_types_to_statement(
                     else_branch.as_mut(),
@@ -198,8 +215,7 @@ fn apply_inferred_return_types_to_statement(
                 );
             }
         }
-        ast::Statement::WhileStmt { body, .. }
-        | ast::Statement::ForOfStmt { body, .. } => {
+        ast::Statement::WhileStmt { body, .. } | ast::Statement::ForOfStmt { body, .. } => {
             apply_inferred_return_types_to_statement(body.as_mut(), current_file, type_checker);
         }
         ast::Statement::ForStmt { init, body, .. } => {
@@ -261,7 +277,7 @@ fn apply_inferred_return_types_to_program(
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut input_files = Vec::new();
-    let mut async_enabled = true;
+
     let mut emit_mir = false;
     let mut emit_llvm = false;
     let mut compile_only = false;
@@ -282,9 +298,7 @@ fn main() {
                 print_version();
                 return;
             }
-            "--disable-async" => {
-                async_enabled = false;
-            }
+            "--disable-async" => {}
             "--unsafe-arrays" => {
                 unsafe_arrays = true;
             }
@@ -362,7 +376,7 @@ fn main() {
     }
 
     let mut parser = Parser::new(tokens, &filename);
-    parser.async_enabled = async_enabled;
+
     let program = parser.parse_program();
 
     if parser.has_errors() {
@@ -375,7 +389,7 @@ fn main() {
     let _runtime_resolved = crate::common::paths::resolve_runtime_path(cli_runtime_path.as_deref());
 
     let mut lowering = Lowering::new();
-    lowering.async_enabled = async_enabled;
+
     *lowering.stdlib_path.borrow_mut() = stdlib_resolved;
     *lowering.filename.borrow_mut() = filename.clone();
     let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
@@ -412,7 +426,7 @@ fn main() {
     }
 
     let mut type_checker = TypeChecker::new();
-    type_checker.async_enabled = async_enabled;
+
     type_checker.set_import_access(lowering.import_access.borrow().clone());
     if type_checker
         .check(&merged_program, &filename, Some(&resolved_statement_files))

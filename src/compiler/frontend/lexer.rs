@@ -63,8 +63,6 @@ impl Lexer {
         keywords.insert("protected".to_string(), TokenType::Protected);
         keywords.insert("abstract".to_string(), TokenType::Abstract);
         keywords.insert("static".to_string(), TokenType::Static);
-        keywords.insert("async".to_string(), TokenType::Async);
-        keywords.insert("await".to_string(), TokenType::Await);
         keywords.insert("try".to_string(), TokenType::Try);
         keywords.insert("catch".to_string(), TokenType::Catch);
         keywords.insert("finally".to_string(), TokenType::Finally);

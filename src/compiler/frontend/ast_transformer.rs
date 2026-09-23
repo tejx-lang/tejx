@@ -247,7 +247,7 @@ impl<'a> TypeSubstitutor<'a> {
                 }
                 self.transform_statement(body);
             }
-            Expression::AwaitExpr { expr, .. } => self.transform_expression(expr),
+
             Expression::TernaryExpr {
                 _condition,
                 _true_branch,
@@ -288,6 +288,41 @@ impl<'a> TypeSubstitutor<'a> {
     }
 
     pub fn transform_function(&self, func: &mut FunctionDeclaration) {
+        if false {
+            // Async functions always return Promise<T>
+            let current_ret = func.return_type.clone();
+            func.return_type = TypeNode::Generic("Promise".to_string(), vec![current_ret]);
+
+            // Wrap the body in return __spawn_async(() => { original_body })
+            let old_body = std::mem::replace(
+                &mut func.body,
+                Box::new(Statement::BlockStmt {
+                    statements: vec![],
+                    _line: 0,
+                    _col: 0,
+                }),
+            );
+            *func.body = Statement::ReturnStmt {
+                value: Some(Box::new(Expression::CallExpr {
+                    callee: Box::new(Expression::Identifier {
+                        name: "__spawn_async".to_string(),
+                        _line: func._line,
+                        _col: 0,
+                    }),
+                    type_args: None,
+                    args: vec![Expression::LambdaExpr {
+                        params: vec![],
+                        body: old_body,
+                        _line: func._line,
+                        _col: 0,
+                    }],
+                    _line: func._line,
+                    _col: 0,
+                })),
+                _line: func._line,
+                _col: 0,
+            };
+        }
         self.substitute_type(&mut func.return_type);
         for p in &mut func.params {
             self.substitute_type(&mut p.type_name);

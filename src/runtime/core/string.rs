@@ -19,7 +19,7 @@ pub unsafe extern "C" fn rt_String_toUpperCase(arg_s: i64) -> i64 {
                 } else {
                     ch
                 };
-            };
+            }
             *dst.offset(len as isize) = 0;
             (body_ptr as i64) + HEAP_OFFSET
         } else {
@@ -52,7 +52,7 @@ pub unsafe extern "C" fn rt_String_toLowerCase(arg_s: i64) -> i64 {
                 } else {
                     ch
                 };
-            };
+            }
             *dst.offset(len as isize) = 0;
             (body_ptr as i64) + HEAP_OFFSET
         } else {
@@ -510,9 +510,10 @@ pub unsafe extern "C" fn rt_str_clear_local(lhs_id: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
-    if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) =
-        (get_string_body_and_len(lhs_id), get_string_body_and_len(rhs_id))
-    {
+    if let (Some((lhs_body, lhs_header, lhs_len)), Some((rhs_body, _rhs_header, rhs_len))) = (
+        get_string_body_and_len(lhs_id),
+        get_string_body_and_len(rhs_id),
+    ) {
         let required = lhs_len + rhs_len;
         let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
             && ((*lhs_header).capacity as i64) >= required;
@@ -535,9 +536,10 @@ pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
     rt_push_root(&mut lhs);
     rt_push_root(&mut rhs);
 
-    let res = if let (Some((lhs_body, lhs_header, lhs_len)), Some((_rhs_body, _rhs_header, rhs_len))) =
-        (get_string_body_and_len(lhs), get_string_body_and_len(rhs))
-    {
+    let res =
+        if let (Some((lhs_body, lhs_header, lhs_len)), Some((_rhs_body, _rhs_header, rhs_len))) =
+            (get_string_body_and_len(lhs), get_string_body_and_len(rhs))
+        {
             let required = lhs_len + rhs_len;
             let can_mutate = ((*lhs_header).flags & STRING_FLAG_FROZEN) == 0
                 && ((*lhs_header).capacity as i64) >= required;
@@ -556,10 +558,16 @@ pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
             } else {
                 let capacity = next_string_capacity(required);
                 let body_ptr = alloc_string_body(capacity, required);
-                if let (Some((lhs_body_new, _lhs_header_new, _)), Some((rhs_body_new, _rhs_header_new, _))) =
-                    (get_string_body_and_len(lhs), get_string_body_and_len(rhs))
+                if let (
+                    Some((lhs_body_new, _lhs_header_new, _)),
+                    Some((rhs_body_new, _rhs_header_new, _)),
+                ) = (get_string_body_and_len(lhs), get_string_body_and_len(rhs))
                 {
-                    memcpy(body_ptr as *mut _, lhs_body_new as *const _, lhs_len as usize);
+                    memcpy(
+                        body_ptr as *mut _,
+                        lhs_body_new as *const _,
+                        lhs_len as usize,
+                    );
                     memcpy(
                         body_ptr.add(lhs_len as usize) as *mut _,
                         rhs_body_new as *const _,

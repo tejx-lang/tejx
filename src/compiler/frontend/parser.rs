@@ -6,7 +6,6 @@ pub struct Parser {
     current: usize,
     errors: Vec<crate::common::diagnostics::Diagnostic>,
     filename: String,
-    pub async_enabled: bool,
 }
 
 impl Parser {
@@ -16,7 +15,6 @@ impl Parser {
             current: 0,
             errors: Vec::new(),
             filename: filename.to_string(),
-            async_enabled: true,
         }
     }
 
@@ -77,7 +75,13 @@ impl Parser {
         );
     }
 
-    fn push_feature_error(&mut self, message: impl Into<String>, line: usize, col: usize, hint: &str) {
+    fn push_feature_error(
+        &mut self,
+        message: impl Into<String>,
+        line: usize,
+        col: usize,
+        hint: &str,
+    ) {
         let message = message.into();
         self.errors.push(
             crate::common::diagnostics::Diagnostic::new(
@@ -109,25 +113,9 @@ impl Parser {
                 None
             }
             TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
-            TokenType::Function => Some(self.parse_function_declaration(false, false)),
-            TokenType::Async => {
-                if !self.async_enabled {
-                    let t = self.peek();
-                    self.push_feature_error(
-                        "async/await is disabled",
-                        t.line,
-                        t.column,
-                        "Remove 'async'/'await' here or compile without disabling async support.",
-                    );
-                }
-                if self.check_next(TokenType::Function) {
-                    self.advance(); // consume async
-                    Some(self.parse_function_declaration(true, false))
-                } else {
-                    // Could be async arrow func or just expression statement?
-                    Some(self.parse_statement())
-                }
-            }
+            TokenType::Function => Some(self.parse_function_declaration(false)),
+
+
             TokenType::Class => Some(self.parse_class_declaration(false)),
             TokenType::Abstract => {
                 if self.check_next(TokenType::Class) {
@@ -148,11 +136,8 @@ impl Parser {
 
                 let decl = match self.peek().token_type {
                     TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
-                    TokenType::Function => Some(self.parse_function_declaration(false, is_extern)),
-                    TokenType::Async => {
-                        self.advance(); // consume async
-                        Some(self.parse_function_declaration(true, is_extern))
-                    }
+                    TokenType::Function => Some(self.parse_function_declaration(is_extern)),
+
                     TokenType::Class => Some(self.parse_class_declaration(false)),
                     TokenType::Abstract => {
                         self.advance(); // consume abstract
@@ -179,7 +164,7 @@ impl Parser {
             TokenType::Namespace => Some(self.parse_namespace_declaration()),
             TokenType::Extern => {
                 self.advance(); // consume extern
-                Some(self.parse_function_declaration(false, true))
+                Some(self.parse_function_declaration(true))
             }
             TokenType::Import => Some(self.parse_import_statement()),
             _ => Some(self.parse_statement()),
@@ -293,8 +278,6 @@ impl Parser {
         match self.peek().token_type {
             TokenType::Interface
             | TokenType::Enum
-            | TokenType::Async
-            | TokenType::Await
             | TokenType::Catch
             | TokenType::Finally
             | TokenType::Option
@@ -392,7 +375,7 @@ impl Parser {
         }
     }
 
-    fn parse_function_declaration(&mut self, is_async: bool, is_extern: bool) -> Statement {
+    fn parse_function_declaration(&mut self, is_extern: bool) -> Statement {
         let start = self
             .consume(TokenType::Function, "Expected 'function'")
             .clone();
@@ -480,7 +463,6 @@ impl Parser {
             params,
             return_type,
             body: Box::new(body),
-            _is_async: is_async,
             is_extern,
             generic_params,
             _line: start.line,
@@ -551,7 +533,6 @@ impl Parser {
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let mut is_static = false;
             let mut is_abstract_member = false;
-            let mut is_async = false;
             let mut access = AccessModifier::Public;
 
             // Modifiers
@@ -566,8 +547,6 @@ impl Parser {
                     is_static = true;
                 } else if self.match_token(TokenType::Abstract) {
                     is_abstract_member = true;
-                } else if self.match_token(TokenType::Async) {
-                    is_async = true;
                 } else {
                     break;
                 }
@@ -610,7 +589,6 @@ impl Parser {
                     params,
                     return_type: TypeNode::Named("void".to_string()),
                     body: Box::new(body),
-                    _is_async: false,
                     is_extern: false,
                     generic_params: Vec::new(),
                     _line: constructor_start.line,
@@ -714,7 +692,6 @@ impl Parser {
                         params,
                         return_type,
                         body,
-                        _is_async: is_async,
                         is_extern: false,
                         generic_params: method_generic_params,
                         _line: 0,
@@ -769,7 +746,6 @@ impl Parser {
                     _line: start.line,
                     _col: start.column,
                 }),
-                _is_async: false,
                 is_extern: false,
                 generic_params: Vec::new(),
                 _line: start.line,
@@ -1404,7 +1380,10 @@ impl Parser {
 
         if self.is_at_end() && !self.check(TokenType::CloseBrace) {
             self.push_parse_error_with_hint(
-                format!("Unclosed block starting at line {}:{}", start.line, start.column),
+                format!(
+                    "Unclosed block starting at line {}:{}",
+                    start.line, start.column
+                ),
                 self.previous().line,
                 self.previous().column + self.previous().value.len(),
                 "Add the missing '}' to close this block.",
@@ -1948,23 +1927,6 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Expression {
-        if self.match_token(TokenType::Await) {
-            let op_token = self.previous().clone();
-            if !self.async_enabled {
-                self.push_feature_error(
-                    "async/await is disabled",
-                    op_token.line,
-                    op_token.column,
-                    "Remove 'await' here or compile without disabling async support.",
-                );
-            }
-            let right = self.parse_unary();
-            return Expression::AwaitExpr {
-                expr: Box::new(right),
-                _line: op_token.line,
-                _col: op_token.column,
-            };
-        }
         if self.match_token(TokenType::PlusPlus)
             || self.match_token(TokenType::MinusMinus)
             || self.match_token(TokenType::Bang)
@@ -2660,18 +2622,17 @@ impl Parser {
                 (t.line, t.column)
             };
 
-            self.errors
-                .push(
-                    crate::common::diagnostics::Diagnostic::new(
-                        message.to_string(),
-                        line,
-                        col,
-                        self.filename.clone(),
-                    )
-                    .with_code("E0002")
-                    .with_hint("Check for a missing, extra, or misplaced token near this location.")
-                    .with_label(message),
-                );
+            self.errors.push(
+                crate::common::diagnostics::Diagnostic::new(
+                    message.to_string(),
+                    line,
+                    col,
+                    self.filename.clone(),
+                )
+                .with_code("E0002")
+                .with_hint("Check for a missing, extra, or misplaced token near this location.")
+                .with_label(message),
+            );
 
             // Advance to avoid infinite loops
             self.advance()
@@ -2831,10 +2792,8 @@ impl Parser {
 
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let _is_export = self.match_token(TokenType::Export);
-            let is_async = self.match_token(TokenType::Async);
-
             if self.check(TokenType::Function) {
-                let func_decl = match self.parse_function_declaration(is_async, false) {
+                let func_decl = match self.parse_function_declaration(false) {
                     Statement::FunctionDeclaration(f) => f,
                     _ => unreachable!(),
                 };
@@ -2918,7 +2877,6 @@ impl Parser {
                     _line: start.line,
                     _col: start.column,
                 }),
-                _is_async: false,
                 is_extern: false,
                 generic_params: Vec::new(),
                 _line: start.line,
