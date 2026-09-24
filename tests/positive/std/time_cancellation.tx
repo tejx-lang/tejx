@@ -1,4 +1,4 @@
-import { clearTimeout, delay, setTimeout } from "std:time";
+import { clearTimeout, sleep, setTimeout } from "std:time";
 import { assert_true } from "../utils.tx";
 
 function main() {
@@ -10,7 +10,7 @@ function main() {
     }, 20000);
 
     clearTimeout(id);
-    delay(25);
+    sleep(25);
 
     assert_true(!fired, "cleared timeout does not fire");
     print("=== TIME CANCELLATION COMPLETE ===");

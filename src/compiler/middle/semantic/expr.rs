@@ -815,7 +815,6 @@ impl TypeChecker {
 
                 // Special case for class names (static access)
                 if let Expression::Identifier { name, .. } = &**object {
-
                     if let Some(s) = self.lookup(name) {
                         if s.ty.to_name() == "class" || s.ty.to_name() == "enum" {
                             if let Some(members) = self.class_members.get(name) {
@@ -1343,9 +1342,7 @@ impl TypeChecker {
                     }
                     _ => None,
                 };
-                if let Some((object, member)) = member_callee {
-
-                }
+                if let Some((object, member)) = member_callee {}
 
                 if callee_str == "typeof" {
                     for arg in args {
@@ -2206,10 +2203,27 @@ impl TypeChecker {
                 if explicit_type_args_valid {
                     if !call_generic_params.is_empty() {
                         if let Some(explicit_args) = explicit_type_args.clone() {
+                            let mut inst_name = func_name.to_string();
+                            if let Some((object, member)) = member_callee {
+                                if let Ok(mut receiver_ty) = self.check_expression(object) {
+                                    if let TejxType::Optional(inner) = receiver_ty {
+                                        receiver_ty = *inner;
+                                    }
+                                    if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                        if let Some(aliased) = &sym.aliased_type {
+                                            receiver_ty = aliased.clone();
+                                        }
+                                    }
+                                    if matches!(receiver_ty, TejxType::Class(..)) {
+                                        inst_name = format!("{}_{}", receiver_ty.to_name(), member);
+                                    }
+                                }
+                            }
+
                             self.call_instantiations
                                 .insert((*_line, *_col, callee_str.clone()), explicit_args.clone());
                             self.function_instantiations
-                                .entry(func_name.to_string())
+                                .entry(inst_name)
                                 .or_default()
                                 .insert(explicit_args);
                         }
@@ -2294,10 +2308,27 @@ impl TypeChecker {
                             Some("Pass an argument with a concrete type or provide explicit type arguments"),
                         );
                     } else {
+                        let mut inst_name = func_name.to_string();
+                        if let Some((object, member)) = member_callee {
+                            if let Ok(mut receiver_ty) = self.check_expression(object) {
+                                if let TejxType::Optional(inner) = receiver_ty {
+                                    receiver_ty = *inner;
+                                }
+                                if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                    if let Some(aliased) = &sym.aliased_type {
+                                        receiver_ty = aliased.clone();
+                                    }
+                                }
+                                if matches!(receiver_ty, TejxType::Class(..)) {
+                                    inst_name = format!("{}_{}", receiver_ty.to_name(), member);
+                                }
+                            }
+                        }
+
                         self.call_instantiations
                             .insert((*_line, *_col, callee_str.clone()), concrete_args.clone());
                         self.function_instantiations
-                            .entry(func_name.to_string())
+                            .entry(inst_name)
                             .or_default()
                             .insert(concrete_args);
                     }

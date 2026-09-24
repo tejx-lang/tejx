@@ -501,11 +501,15 @@ pub struct Tlab {
     pub end: *mut u8,
 }
 
-thread_local! {
-    pub static MY_TLAB: std::cell::Cell<Tlab> = std::cell::Cell::new(Tlab {
+may::coroutine_local! {
+    static MY_TLAB: std::cell::Cell<Tlab> = std::cell::Cell::new(Tlab {
         top: std::ptr::null_mut(),
         end: std::ptr::null_mut(),
-    });
+    })
+}
+
+pub fn with_my_tlab<R, F: FnOnce(&std::cell::Cell<Tlab>) -> R>(f: F) -> R {
+    MY_TLAB.with(f)
 }
 
 #[no_mangle]
@@ -620,13 +624,19 @@ pub struct ThreadContext {
     pub in_safepoint: AtomicBool,
 }
 
-thread_local! {
-    pub static MY_CONTEXT: std::cell::UnsafeCell<Box<ThreadContext>> = std::cell::UnsafeCell::new(Box::new(ThreadContext {
+may::coroutine_local! {
+    static MY_CONTEXT: std::cell::UnsafeCell<Box<ThreadContext>> = std::cell::UnsafeCell::new(Box::new(ThreadContext {
         roots: [std::ptr::null_mut(); GC_STACK_SIZE],
         roots_top: 0,
         in_safepoint: AtomicBool::new(false),
-    }));
-    static THREAD_REGISTRATION: std::cell::RefCell<Option<ThreadRegistrationGuard>> = const { std::cell::RefCell::new(None) };
+    }))
+}
+may::coroutine_local! {
+    static THREAD_REGISTRATION: std::cell::RefCell<Option<ThreadRegistrationGuard>> = std::cell::RefCell::new(None)
+}
+
+pub fn with_my_context<R, F: FnOnce(&std::cell::UnsafeCell<Box<ThreadContext>>) -> R>(f: F) -> R {
+    MY_CONTEXT.with(f)
 }
 
 struct ThreadRegistrationGuard {
@@ -706,6 +716,17 @@ pub unsafe extern "C" fn rt_register_thread() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_unregister_thread() {
+    // If a GC is requested, we MUST acknowledge it before unregistering so the GC doesn't deadlock.
+    // However, we cannot call rt_safepoint_poll_slow() here because this might be called during
+    // coroutine TLS destruction, where blocking on SAFEPOINT_RESUME causes an is_generator() panic.
+    // Instead, we simply notify the GC that we have reached a safepoint (by exiting the registry).
+    if SAFEPOINT_REQUEST.load(Ordering::Acquire) {
+        let (lock, cvar) = &**SAFEPOINT_ACK;
+        let mut count = lock.lock().unwrap();
+        *count += 1;
+        cvar.notify_one();
+    }
+
     THREAD_REGISTRATION.with(|registration| {
         let guard = registration.borrow_mut().take();
         drop(guard);
@@ -1049,9 +1070,15 @@ unsafe fn mark_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     if root.is_null() {
         return;
     }
-    let val = *root;
+    let mut val = *root;
     if val < STACK_OFFSET {
         return;
+    }
+
+    let resolved_val = crate::rt_gc_resolve_array_id(val);
+    if resolved_val != val {
+        *root = resolved_val;
+        val = resolved_val;
     }
 
     let (body_ptr, is_stack) = if val >= HEAP_OFFSET {
@@ -1113,6 +1140,7 @@ pub unsafe fn mark_object(root: *mut i64) {
 
 unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
     rt_clear_tlab();
+    crate::rt_gc_prepare_array_forward();
 
     if !safepoint_already {
         trigger_safepoint();
@@ -1149,13 +1177,6 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     }
     mark_static_roots();
     super::rt_gc_mark_tasks();
-
-    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        prune_timer_objects_for_major(&crate::TIMEOUT_OBJECTS, crate::rt_clearTimeout);
-    }
-    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        prune_timer_objects_for_major(&crate::INTERVAL_OBJECTS, crate::rt_clearInterval);
-    }
 
     // 2.5 Run Finalizers for unmarked objects
     let mut curr = OLD_START;
@@ -1226,13 +1247,6 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
             free_ptr = free_ptr.add(size);
         }
         scan_ptr = scan_ptr.add(size);
-    }
-
-    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_major_compaction(&crate::TIMEOUT_OBJECTS);
-    }
-    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_major_compaction(&crate::INTERVAL_OBJECTS);
     }
 
     // Update roots
@@ -1406,7 +1420,7 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
     } else if type_id == TAG_OBJECT as u16 {
         40 // Object layout: [size, capacity, keys_ptr, values_ptr, data_base]
     } else if type_id == TAG_FUNCTION as u16 {
-        32 // Closure layout: [size (8), capacity (8), fn_ptr (8), env_ptr (8)]
+        16 // Closure layout: [fn_ptr (8), env_ptr (8)]
     } else if type_id == TAG_INT as u16
         || type_id == TAG_FLOAT as u16
         || type_id == TAG_CHAR as u16
@@ -1436,9 +1450,15 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     if root.is_null() {
         return;
     }
-    let val = *root;
+    let mut val = *root;
     if val < STACK_OFFSET {
         return;
+    }
+
+    let resolved_val = crate::rt_gc_resolve_array_id(val);
+    if resolved_val != val {
+        *root = resolved_val;
+        val = resolved_val;
     }
 
     if val >= STACK_OFFSET && val < HEAP_OFFSET {
@@ -1568,7 +1588,7 @@ unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &m
         copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
     } else if type_id == TAG_FUNCTION as u16 {
         // Closure environment root
-        copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
+        copy_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
     } else if type_id == TAG_PROMISE as u16 {
         copy_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
         copy_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
@@ -1617,7 +1637,7 @@ unsafe fn scan_object_fields_minor_with_seen(
     } else if type_id == TAG_FUNCTION as u16 {
         // Closure environment root
         copy_object_with_seen_and_track_young(
-            body_ptr.add(24) as *mut i64,
+            body_ptr.add(8) as *mut i64,
             seen_stack,
             &mut has_young_refs,
         );
@@ -1719,7 +1739,23 @@ unsafe fn trigger_safepoint() {
         });
 
         while *count < target_count {
-            count = cvar.wait(count).unwrap();
+            println!(
+                "GC Deadlock debug: count = {}, target_count = {}",
+                *count, target_count
+            );
+            let (new_count, timeout_res) = cvar
+                .wait_timeout(count, std::time::Duration::from_secs(1))
+                .unwrap();
+            count = new_count;
+            if timeout_res.timed_out() {
+                println!(
+                    "GC Deadlock timeout! count = {}, target_count = {}",
+                    *count, target_count
+                );
+                // Print registry contents
+                let registry = THREAD_REGISTRY.lock().unwrap();
+                println!("Registry size: {}", registry.len());
+            }
         }
     }
 }
@@ -1743,25 +1779,8 @@ unsafe fn resume_safepoint() {
     }
 }
 
-#[inline]
-unsafe fn clear_array_caches() {
-    LAST_ID = 0;
-    LAST_PTR = std::ptr::null_mut();
-    LAST_LEN = 0;
-    LAST_ELEM_SIZE = 0;
-    PREV_ID = 0;
-    PREV_PTR = std::ptr::null_mut();
-    PREV_LEN = 0;
-    PREV2_ID = 0;
-    PREV2_PTR = std::ptr::null_mut();
-    PREV2_LEN = 0;
-    PREV2_ELEM_SIZE = 0;
-    ARRAY_FORWARD.lock().unwrap().clear();
-    ARRAY_FORWARD_ACTIVE.store(false, Ordering::Release);
-}
-
 pub unsafe fn minor_gc_locked() {
-    clear_array_caches();
+    crate::rt_gc_prepare_array_forward();
     rt_clear_tlab();
     let eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
     let from_survivor_top = FROM_SURVIVOR_TOP;
@@ -1837,23 +1856,6 @@ pub unsafe fn minor_gc_locked() {
         }
     }
 
-    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_minor(
-            &crate::TIMEOUT_OBJECTS,
-            crate::rt_clearTimeout,
-            eden_top,
-            from_survivor_top,
-        );
-    }
-    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_minor(
-            &crate::INTERVAL_OBJECTS,
-            crate::rt_clearInterval,
-            eden_top,
-            from_survivor_top,
-        );
-    }
-
     run_young_finalizers_in_region(EDEN_START, eden_top);
     run_young_finalizers_in_region(FROM_SURVIVOR, from_survivor_top);
 
@@ -1870,4 +1872,5 @@ pub unsafe fn minor_gc_locked() {
     for card_idx in next_dirty_cards {
         *CARD_TABLE.add(card_idx) = 1;
     }
+    crate::rt_gc_cleanup_array_forward();
 }

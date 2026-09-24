@@ -10,8 +10,6 @@ enum NetStream {
     Tls(TlsStream<TcpStream>),
 }
 
-
-
 fn string_from_bytes(bytes: &[u8]) -> i64 {
     unsafe { new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64) }
 }
@@ -107,7 +105,6 @@ unsafe fn http_result_array(status: &str, payload: &[u8]) -> i64 {
     rt_pop_roots(3);
     result
 }
-
 
 fn start_tls_stream(stream: &mut NetStream, host: &str, verify: bool) -> bool {
     let current = std::mem::replace(stream, NetStream::Closed);
@@ -525,7 +522,6 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
         -1
     }
 }
-
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {

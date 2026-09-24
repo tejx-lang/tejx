@@ -6,8 +6,6 @@ pub const TEJX_GET_EXCEPTION: &str = "tejx_get_exception";
 pub const TEJX_PUSH_HANDLER: &str = "tejx_push_handler";
 pub const TEJX_POP_HANDLER: &str = "tejx_pop_handler";
 
-
-
 // Runtime helpers referenced by codegen
 pub const RT_STRING_FROM_C_STR: &str = "rt_string_from_c_str";
 pub const RT_MOVE_MEMBER: &str = "rt_move_member";

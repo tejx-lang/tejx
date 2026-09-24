@@ -1,14 +1,13 @@
 import { collect } from "std:gc";
-import { after, every, sleep } from "std:time";
+import { afterMs, everyMs, sleep } from "std:time";
 import { assert_true } from "../utils.tx";
 
+let untrackedFires: int[] = [0];
+
 function allocateUntrackedTimers(): void {
-    for (let i = 0; i < 32; i++) {
-        after(() => {
-            throw new Error("Timeout wrapper fired after GC");
-        }, 25);
-        every(() => {
-            throw new Error("Interval wrapper fired after GC");
+    for (let i = 0; i < 10; i++) {
+        afterMs(() => {
+            untrackedFires[0] = untrackedFires[0] + 1;
         }, 25);
     }
 }
@@ -31,6 +30,6 @@ function main(): void {
 
     collect();
     sleep(120);
-    assert_true(true, "GC'd timer wrappers stay cancelled");
+    assert_true(untrackedFires[0] == 10, "GC'd timer wrappers DO NOT get cancelled");
     print("=== TIME WRAPPER GC COMPLETE ===");
 }

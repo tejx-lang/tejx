@@ -115,7 +115,6 @@ impl Parser {
             TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
             TokenType::Function => Some(self.parse_function_declaration(false)),
 
-
             TokenType::Class => Some(self.parse_class_declaration(false)),
             TokenType::Abstract => {
                 if self.check_next(TokenType::Class) {

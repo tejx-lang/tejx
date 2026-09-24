@@ -5,7 +5,7 @@ function test_missing_file_sync_throws() {
     print("--- FS Missing File Sync ---");
     let threw = false;
     try {
-        fs.readFileSync("__tejx_missing_file__.txt");
+        fs.readFile("__tejx_missing_file__.txt");
     } catch (e) {
         threw = true;
     }
@@ -27,7 +27,7 @@ function test_missing_directory_readdir_throws() {
     print("--- FS Missing Dir ---");
     let threw = false;
     try {
-        fs.readdirSync("__tejx_missing_dir__");
+        fs.readdir("__tejx_missing_dir__");
     } catch (e) {
         threw = true;
     }

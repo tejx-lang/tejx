@@ -50,10 +50,18 @@ impl Linker {
 
         let mut final_objects = Vec::new();
 
+        struct CleanupGuard<'a>(&'a std::path::Path);
+        impl<'a> Drop for CleanupGuard<'a> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0);
+            }
+        }
+
         // Step 1: Compile any .ll files to .s (assembly) to bypass Apple Clang object emitter bugs, then assemble to .o
         for obj in &self.obj_paths {
             if obj.extension().and_then(|s| s.to_str()) == Some("ll") {
                 let out_asm = obj.with_extension("s");
+                let _guard = CleanupGuard(&out_asm);
                 let out_obj = if self.compile_only && self.obj_paths.len() == 1 {
                     // If we have only one object and we are in compile-only mode, use output_path with .o
                     self.output_path.with_extension("o")
@@ -91,6 +99,7 @@ impl Linker {
                 let output_obj = obj_cmd
                     .output()
                     .map_err(|e| format!("Failed to assemble {}: {}", out_asm.display(), e))?;
+
                 if !output_obj.status.success() {
                     let stderr = String::from_utf8_lossy(&output_obj.stderr);
                     return Err(format!(
@@ -99,9 +108,6 @@ impl Linker {
                         stderr
                     ));
                 }
-
-                // Cleanup intermediate .s
-                let _ = std::fs::remove_file(&out_asm);
 
                 final_objects.push(out_obj);
             } else {
@@ -156,7 +162,6 @@ impl Linker {
                 // If it was generated from a .ll in this session, it will be in the same dir as the .ll
                 // Or if it was the runtime lib (which is .a, so won't match)
                 // For now, simple cleanup.
-                let _ = std::fs::remove_file(obj);
             }
         }
 

@@ -34,10 +34,10 @@ export function clearInterval(id: int): void {
     _time_clear_interval(id);
 }
 
-export function after(callback: () => void, ms: int64): Timeout {
+export function afterMs(callback: () => void, ms: int64): Timeout {
     return new Timeout(callback, ms);
 }
 
-export function every(callback: () => void, ms: int64): Interval {
+export function everyMs(callback: () => void, ms: int64): Interval {
     return new Interval(callback, ms);
 }

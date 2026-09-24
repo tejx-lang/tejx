@@ -454,7 +454,7 @@ impl CodeGen {
                 }
             }
             ("double", "i64") => {
-                if src_ty.is_float() && (dst_ty.is_numeric() || matches!(dst_ty, TejxType::Any)) {
+                if src_ty.is_float() && matches!(dst_ty, TejxType::Any) {
                     self.emit_line(&format!(
                         "{} = bitcast double {} to i64",
                         cast_reg, val_name

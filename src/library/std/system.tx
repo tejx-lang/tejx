@@ -12,8 +12,13 @@ export function getEnv(key: string): Optional<string> {
     return _system_get_env(key);
 }
 
-export function getAllEnv(): any {
-    return _system_get_all_env();
+export function getAllEnv(): Map<string, string> {
+    let arr = _system_get_all_env();
+    let map = new Map<string, string>();
+    for (let i = 0; i < arr.length(); i = i + 2) {
+        map.set(arr[i], arr[i + 1]);
+    }
+    return map;
 }
 
 export function getOSType(): string {
@@ -53,8 +58,13 @@ export namespace system {
         return _system_get_env(key);
     }
 
-    export function getAllEnv(): any {
-        return _system_get_all_env();
+    export function getAllEnv(): Map<string, string> {
+        let arr = _system_get_all_env();
+        let map = new Map<string, string>();
+        for (let i = 0; i < arr.length(); i = i + 2) {
+            map.set(arr[i], arr[i + 1]);
+        }
+        return map;
     }
 
     export function getOSType(): string {
@@ -87,8 +97,13 @@ export namespace os {
         return _system_get_env(key);
     }
 
-    export function getAllEnv(): any {
-        return _system_get_all_env();
+    export function getAllEnv(): Map<string, string> {
+        let arr = _system_get_all_env();
+        let map = new Map<string, string>();
+        for (let i = 0; i < arr.length(); i = i + 2) {
+            map.set(arr[i], arr[i + 1]);
+        }
+        return map;
     }
 
     export function getType(): string {

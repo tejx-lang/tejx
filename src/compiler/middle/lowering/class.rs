@@ -228,7 +228,8 @@ impl Lowering {
             if !func_decl.generic_params.is_empty() {
                 self.function_generic_params.borrow_mut().insert(
                     name.clone(),
-                    func_decl.generic_params
+                    func_decl
+                        .generic_params
                         .iter()
                         .map(|gp| gp.name.clone())
                         .collect(),

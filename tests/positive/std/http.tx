@@ -37,9 +37,9 @@ function test_header_json_preserves_key_case() {
 }
 
 function test_fetch_sync_with_options_object() {
-    print("--- HTTP fetchSync (Options Object) ---");
+    print("--- HTTP fetch (Options Object) ---");
     
-    let response = fetchSync(dummyProductUrl, {
+    let response = fetch(dummyProductUrl, {
         headers: {
             accept: "application/json",
             userAgent: "TejXHttpTest/1.0"
@@ -49,20 +49,20 @@ function test_fetch_sync_with_options_object() {
     
     let contentType = response.headers.get("content-type");
     let legacyContentType = response.header.get("content-type");
-    assert_true(response.ok(), "fetchSync ok");
-    assert_eq_int(200, response.status, "fetchSync status");
-    assert_true(contentType != None, "fetchSync content type header available");
+    assert_true(response.ok(), "fetch ok");
+    assert_eq_int(200, response.status, "fetch status");
+    assert_true(contentType != None, "fetch content type header available");
     assert_true(legacyContentType != None, "legacy header object available");
     if (contentType != None) {
-        assert_true((contentType as string).toLowerCase().includes("application/json"), "fetchSync content type");
+        assert_true((contentType as string).toLowerCase().includes("application/json"), "fetch content type");
     }
     if (legacyContentType != None) {
         assert_true((legacyContentType as string).toLowerCase().includes("application/json"), "legacy header object");
     }
-    assert_true(response.body.includes("\"id\":1"), "fetchSync body contains product id");
+    assert_true(response.body.includes("\"id\":1"), "fetch body contains product id");
     
     let parsed: ProductIdResponse = response.json<ProductIdResponse>();
-    assert_eq_int(1, parsed.id, "fetchSync json id");
+    assert_eq_int(1, parsed.id, "fetch json id");
 }
 
 function test_fetch_post() {

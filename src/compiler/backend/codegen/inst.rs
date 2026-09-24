@@ -2262,8 +2262,6 @@ impl CodeGen {
                     should_consume = true;
                 }
 
-
-
                 // Container mutators consume value args (not the container itself at arg[0])
                 if is_container_mutator && i > 0 {
                     should_consume = true;

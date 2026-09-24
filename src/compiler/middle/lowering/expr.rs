@@ -160,8 +160,6 @@ impl Lowering {
             let mut resolved = false;
 
             if let Expression::Identifier { name: obj_name, .. } = object {
-
-
                 if !resolved && self.class_methods.borrow().contains_key(obj_name) {
                     let static_candidates = [
                         format!("f_{}_{}", obj_name, member),
@@ -387,8 +385,14 @@ impl Lowering {
             }
         }
 
-        if final_callee.starts_with("f_Promise_spawn") || final_callee.starts_with("Promise_spawn") {
-            println!("Promise_all final_args len: {}", final_args.len()); let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
+        if final_callee.starts_with("f_Promise_spawn") || final_callee.starts_with("Promise_spawn")
+        {
+            println!("Promise_all final_args len: {}", final_args.len());
+            let arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                final_args[0].clone()
+            };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_spawn".to_string(),
@@ -399,7 +403,12 @@ impl Lowering {
         // Promise.all(tasks) — runs closures in parallel virtual threads,
         // blocks until all complete, returns T[] directly (not a Promise).
         if final_callee.starts_with("f_Promise_all") || final_callee.starts_with("Promise_all") {
-            println!("Promise_all final_args len: {}", final_args.len()); let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
+            println!("Promise_all final_args len: {}", final_args.len());
+            let arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                final_args[0].clone()
+            };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_all".to_string(),
@@ -409,8 +418,15 @@ impl Lowering {
         }
         // Promise.settled(tasks) — like all() but captures errors.
         // Returns PromiseResult<T>[] — never throws.
-        if final_callee.starts_with("f_Promise_settled") || final_callee.starts_with("Promise_settled") {
-            println!("Promise_all final_args len: {}", final_args.len()); let arg = if final_args.len() > 1 { final_args[1].clone() } else { final_args[0].clone() };
+        if final_callee.starts_with("f_Promise_settled")
+            || final_callee.starts_with("Promise_settled")
+        {
+            println!("Promise_all final_args len: {}", final_args.len());
+            let arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                final_args[0].clone()
+            };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_settled".to_string(),
@@ -420,8 +436,16 @@ impl Lowering {
         }
         if final_callee.starts_with("f_Promise_then") || final_callee.starts_with("Promise_then") {
             let p_arg = final_args[0].clone();
-            let res_arg = if final_args.len() > 1 { final_args[1].clone() } else { HIRExpression::NoneLiteral { line } };
-            let rej_arg = if final_args.len() > 2 { final_args[2].clone() } else { HIRExpression::NoneLiteral { line } };
+            let res_arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                HIRExpression::NoneLiteral { line }
+            };
+            let rej_arg = if final_args.len() > 2 {
+                final_args[2].clone()
+            } else {
+                HIRExpression::NoneLiteral { line }
+            };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_then".to_string(),
@@ -429,9 +453,17 @@ impl Lowering {
                 ty,
             };
         }
-        if final_callee.starts_with("f_Promise_catch") || final_callee.starts_with("f_Promise_catchError") || final_callee.starts_with("Promise_catch") || final_callee.starts_with("Promise_catchError") {
+        if final_callee.starts_with("f_Promise_catch")
+            || final_callee.starts_with("f_Promise_catchError")
+            || final_callee.starts_with("Promise_catch")
+            || final_callee.starts_with("Promise_catchError")
+        {
             let p_arg = final_args[0].clone();
-            let rej_arg = if final_args.len() > 1 { final_args[1].clone() } else { HIRExpression::NoneLiteral { line } };
+            let rej_arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                HIRExpression::NoneLiteral { line }
+            };
             return HIRExpression::Call {
                 line,
                 callee: "f___tejx_promise_catch".to_string(),
@@ -1015,15 +1047,18 @@ impl Lowering {
             } => {
                 let callee_str = callee.to_callee_name();
                 let hir_args: Vec<HIRExpression> = if callee_str == "__spawn_async" {
-                    args.iter().map(|a| {
-                        let prev = self.current_expected_type.borrow_mut().take();
-                        if let Some(inner) = &prev {
-                            *self.current_expected_type.borrow_mut() = Some(TejxType::Function(vec![], Box::new(inner.clone())));
-                        }
-                        let lowered = self.lower_expression(a);
-                        *self.current_expected_type.borrow_mut() = prev;
-                        lowered
-                    }).collect()
+                    args.iter()
+                        .map(|a| {
+                            let prev = self.current_expected_type.borrow_mut().take();
+                            if let Some(inner) = &prev {
+                                *self.current_expected_type.borrow_mut() =
+                                    Some(TejxType::Function(vec![], Box::new(inner.clone())));
+                            }
+                            let lowered = self.lower_expression(a);
+                            *self.current_expected_type.borrow_mut() = prev;
+                            lowered
+                        })
+                        .collect()
                 } else {
                     args.iter().map(|a| self.lower_expression(a)).collect()
                 };
@@ -1264,8 +1299,6 @@ impl Lowering {
                         if !resolved {
                             // Priority 2: Static Methods
                             if let Expression::Identifier { name: obj_name, .. } = object.as_ref() {
-
-
                                 if !resolved && self.class_methods.borrow().contains_key(obj_name) {
                                     let static_candidates = [
                                         format!("f_{}_{}", obj_name, member),

@@ -520,8 +520,8 @@ pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
 
         if can_mutate {
             memcpy(
-                lhs_body.add(lhs_len as usize) as *mut _,
-                rhs_body as *const _,
+                lhs_body.add(lhs_len as usize) as *mut std::ffi::c_void,
+                rhs_body as *const std::ffi::c_void,
                 rhs_len as usize,
             );
             *lhs_body.add(required as usize) = 0;

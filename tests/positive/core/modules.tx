@@ -39,7 +39,7 @@ function test_std_imports() {
     // fs existence check - Cargo.toml should exist in root, but we are running from root?
     // tests/core/modules.tx is executed. CWD is usually project root.
     // If CWD is project root, "Cargo.toml" exists.
-    assert_true(fs.existsSync("Cargo.toml"), "fs.existsSync(Cargo.toml)");
+    assert_true(fs.exists("Cargo.toml"), "fs.exists(Cargo.toml)");
 
     let t = now();
     assert_true(t > 0, "std:time now() > 0");

@@ -483,23 +483,17 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
     let mut header: *mut ObjectHeader;
     let mut flags: u16;
 
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        body = LAST_PTR;
-        header = rt_get_header(body);
-        flags = (*header).flags;
-    } else {
-        id = rt_resolve_array_id(id);
-        if id < STACK_OFFSET {
-            rt_throw_array_null_error("writing", index);
-        }
-        body = if id >= HEAP_OFFSET {
-            (id - HEAP_OFFSET) as *mut u8
-        } else {
-            (id - STACK_OFFSET) as *mut u8
-        };
-        header = rt_get_header(body);
-        flags = (*header).flags;
+    id = rt_resolve_array_id(id);
+    if id < STACK_OFFSET {
+        rt_throw_array_null_error("writing", index);
     }
+    body = if id >= HEAP_OFFSET {
+        (id - HEAP_OFFSET) as *mut u8
+    } else {
+        (id - STACK_OFFSET) as *mut u8
+    };
+    header = rt_get_header(body);
+    flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
         rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
@@ -577,24 +571,18 @@ pub unsafe extern "C" fn rt_array_set_traced(
     let mut header: *mut ObjectHeader;
     let mut flags: u16;
 
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        body = LAST_PTR;
-        header = rt_get_header(body);
-        flags = (*header).flags;
-    } else {
-        id = rt_resolve_array_id(id);
-        if id < STACK_OFFSET {
-            runtime_set_current_location(file_ptr, line);
-            rt_throw_array_null_error("writing", index);
-        }
-        body = if id >= HEAP_OFFSET {
-            (id - HEAP_OFFSET) as *mut u8
-        } else {
-            (id - STACK_OFFSET) as *mut u8
-        };
-        header = rt_get_header(body);
-        flags = (*header).flags;
+    id = rt_resolve_array_id(id);
+    if id < STACK_OFFSET {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_array_null_error("writing", index);
     }
+    body = if id >= HEAP_OFFSET {
+        (id - HEAP_OFFSET) as *mut u8
+    } else {
+        (id - STACK_OFFSET) as *mut u8
+    };
+    header = rt_get_header(body);
+    flags = (*header).flags;
 
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
         runtime_set_current_location(file_ptr, line);
@@ -893,14 +881,7 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     if id < STACK_OFFSET {
         rt_throw_array_null_error("reading", index);
     }
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        if index < 0 || index >= LAST_LEN {
-            return 0;
-        }
-        let body = LAST_PTR;
-        let flags = (*rt_get_header(body)).flags;
-        return rt_array_load_scalar(body, index, flags);
-    }
+    // removed cache logic
 
     let id = rt_resolve_array_id(id);
     if id < STACK_OFFSET {
@@ -922,9 +903,7 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     let elem_size = (flags & 0xFF) as i64;
     let res = rt_array_load_scalar(body, index, flags);
 
-    if id >= HEAP_OFFSET {
-        rt_update_array_cache(id, body, len, elem_size);
-    }
+    // removed cache update
     res
 }
 
@@ -935,14 +914,7 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
         rt_throw_array_null_error("reading", index);
     }
 
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        if index < 0 || index >= LAST_LEN {
-            return 0;
-        }
-        let body = LAST_PTR;
-        let flags = (*rt_get_header(body)).flags;
-        return rt_array_load_scalar(body, index, flags);
-    }
+    // removed cache logic
 
     let resolved = rt_resolve_array_id(id);
     if resolved < STACK_OFFSET {
@@ -966,9 +938,7 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
     let elem_size = (flags & 0xFF) as i64;
     let res = rt_array_load_scalar(body, index, flags);
 
-    if resolved >= HEAP_OFFSET {
-        rt_update_array_cache(resolved, body, len, elem_size);
-    }
+    // removed cache update
     res
 }
 #[no_mangle]

@@ -658,9 +658,7 @@ impl TypeChecker {
                 } else {
                     self.lookup(&func.name)
                         .and_then(|symbol| self.callable_return_type(&symbol.ty))
-                        .unwrap_or_else(|| {
-                            self.effective_async_return_type(TejxType::Void, false)
-                        })
+                        .unwrap_or_else(|| self.effective_async_return_type(TejxType::Void, false))
                 };
                 if declared_ret_ty.to_name() != "<inferred>"
                     && func.generic_params.is_empty()
@@ -900,7 +898,7 @@ impl TypeChecker {
                     } else {
                         effective_ret_ty.clone()
                     };
-                    
+
                     let inner_type = if let TejxType::Class(name, generics) = &actual_ret {
                         if name == "Promise" && generics.len() == 1 {
                             generics[0].clone()
@@ -910,7 +908,7 @@ impl TypeChecker {
                     } else {
                         actual_ret.clone()
                     };
-                    
+
                     self.function_instantiations
                         .entry("__spawn_async".to_string())
                         .or_default()
@@ -1311,10 +1309,7 @@ impl TypeChecker {
                             .and_then(|members| members.get(&method.func.name))
                             .and_then(|info| self.callable_return_type(&info.ty))
                             .unwrap_or_else(|| {
-                                self.effective_async_return_type(
-                                    TejxType::Void,
-                                    false,
-                                )
+                                self.effective_async_return_type(TejxType::Void, false)
                             })
                     };
                     if declared_ret_ty.to_name() != "<inferred>"
@@ -1325,10 +1320,7 @@ impl TypeChecker {
                         self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
                     }
                     let effective_ret_ty = if has_explicit_return {
-                        self.effective_async_return_type(
-                            declared_ret_ty.clone(),
-                            false,
-                        )
+                        self.effective_async_return_type(declared_ret_ty.clone(), false)
                     } else {
                         declared_ret_ty.clone()
                     };

@@ -34,7 +34,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{self, PanicHookInfo};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex, Once};
+use std::sync::{Arc, LazyLock, Mutex, Once};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
 #[derive(Default)]
@@ -83,8 +83,8 @@ struct StoredExceptionTrace {
     stack: Vec<RuntimeFrame>,
 }
 
-thread_local! {
-    static RUNTIME_CALL_STACK: RefCell<Vec<RuntimeFrame>> = const { RefCell::new(Vec::new()) };
+may::coroutine_local! {
+    static RUNTIME_CALL_STACK: RefCell<Vec<RuntimeFrame>> = RefCell::new(Vec::new())
 }
 
 static RUNTIME_PANIC_HOOK: Once = Once::new();
@@ -506,7 +506,7 @@ unsafe fn runtime_class_body_and_type_id(val: i64) -> Option<(*mut u8, usize)> {
 }
 
 unsafe fn runtime_type_field_index(type_id: usize, field_name: &str) -> Option<usize> {
-    let field_count = TYPE_FIELD_COUNTS[type_id].min(TYPE_INFO_MAX_FIELDS);
+    let field_count = std::cmp::min(TYPE_FIELD_COUNTS[type_id], TYPE_INFO_MAX_FIELDS);
     (0..field_count).find(|&i| rt_field_name_string(type_id, i) == field_name)
 }
 
@@ -664,7 +664,7 @@ unsafe fn runtime_exception_message_field(val: i64) -> Option<String> {
         return None;
     }
 
-    let field_count = TYPE_FIELD_COUNTS[type_id].min(TYPE_INFO_MAX_FIELDS);
+    let field_count = std::cmp::min(TYPE_FIELD_COUNTS[type_id], TYPE_INFO_MAX_FIELDS);
     for i in 0..field_count {
         if rt_field_name_string(type_id, i) != "message" {
             continue;
@@ -1137,72 +1137,50 @@ pub static BOOL_FALSE: i64 = 0;
 pub static BOOL_TRUE: i64 = 1;
 
 #[no_mangle]
-pub static mut LAST_ID: i64 = 0;
-#[no_mangle]
-pub static mut LAST_PTR: *mut u8 = 0 as *mut u8;
-#[no_mangle]
-pub static mut LAST_LEN: i64 = 0;
-#[no_mangle]
-pub static mut LAST_ELEM_SIZE: i64 = 0;
+pub unsafe extern "C" fn rt_invalidate_array_cache(_id: i64) {}
 
 #[no_mangle]
-pub static mut PREV_ID: i64 = 0;
-#[no_mangle]
-pub static mut PREV_PTR: *mut u8 = 0 as *mut u8;
-#[no_mangle]
-pub static mut PREV_LEN: i64 = 0;
-#[no_mangle]
-pub static mut PREV_ELEM_SIZE: i64 = 0;
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_invalidate_array_cache(id: i64) {
-    if LAST_ID == id {
-        LAST_ID = 0;
-    }
-    if PREV_ID == id {
-        PREV_ID = 0;
-    }
-    if PREV2_ID == id {
-        PREV2_ID = 0;
-    }
+pub unsafe extern "C" fn rt_update_array_cache(
+    _id: i64,
+    _data: *mut u8,
+    _len: i64,
+    _elem_size: i64,
+) {
 }
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_update_array_cache(id: i64, data: *mut u8, len: i64, elem_size: i64) {
-    if LAST_ID == id {
-        LAST_PTR = data;
-        LAST_LEN = len;
-        LAST_ELEM_SIZE = elem_size;
-        return;
-    }
-    PREV2_ID = PREV_ID;
-    PREV2_PTR = PREV_PTR;
-    PREV2_LEN = PREV_LEN;
-    PREV2_ELEM_SIZE = PREV_ELEM_SIZE;
-
-    PREV_ID = LAST_ID;
-    PREV_PTR = LAST_PTR;
-    PREV_LEN = LAST_LEN;
-    PREV_ELEM_SIZE = LAST_ELEM_SIZE;
-
-    LAST_ID = id;
-    LAST_PTR = data;
-    LAST_LEN = len;
-    LAST_ELEM_SIZE = elem_size;
-}
-
-#[no_mangle]
-pub static mut PREV2_ID: i64 = 0;
-#[no_mangle]
-pub static mut PREV2_PTR: *mut u8 = 0 as *mut u8;
-#[no_mangle]
-pub static mut PREV2_LEN: i64 = 0;
-#[no_mangle]
-pub static mut PREV2_ELEM_SIZE: i64 = 0;
 
 static ARRAY_FORWARD: LazyLock<Mutex<HashMap<i64, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ARRAY_FORWARD_ACTIVE: AtomicBool = AtomicBool::new(false);
+static mut GC_ARRAY_FORWARD: Option<HashMap<i64, i64>> = None;
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_prepare_array_forward() {
+    let mut map = ARRAY_FORWARD.lock().unwrap();
+    if !map.is_empty() {
+        GC_ARRAY_FORWARD = Some(map.clone());
+        map.clear();
+        ARRAY_FORWARD_ACTIVE.store(false, Ordering::Release);
+    } else {
+        GC_ARRAY_FORWARD = None;
+    }
+}
+
+pub unsafe fn rt_gc_cleanup_array_forward() {
+    GC_ARRAY_FORWARD = None;
+}
+
+#[inline]
+pub unsafe fn rt_gc_resolve_array_id(mut id: i64) -> i64 {
+    if let Some(map) = &GC_ARRAY_FORWARD {
+        while let Some(&next) = map.get(&id) {
+            if next == id {
+                break;
+            }
+            id = next;
+        }
+    }
+    id
+}
 
 #[inline]
 pub unsafe fn rt_resolve_array_id(mut id: i64) -> i64 {
@@ -1805,7 +1783,7 @@ unsafe fn rt_format_composite_value(val: i64, depth: usize, seen: &mut Vec<i64>)
             let type_name = rt_type_name_string(type_id);
             let field_count = TYPE_FIELD_COUNTS[type_id];
             let mut fields = Vec::new();
-            for i in 0..field_count.min(TYPE_INFO_MAX_FIELDS) {
+            for i in 0..std::cmp::min(field_count, TYPE_INFO_MAX_FIELDS) {
                 let field_name = rt_field_name_string(type_id, i);
                 let offset = TYPE_FIELD_OFFSETS[type_id][i];
                 let kind = TYPE_FIELD_KINDS[type_id][i];
@@ -2310,22 +2288,25 @@ pub unsafe extern "C" fn rt_getenv(key: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_all_env() -> i64 {
-    let mut obj = rt_object_new();
-    rt_push_root(&mut obj);
+    let vars: Vec<(String, String)> = std::env::vars().collect();
+    let len = (vars.len() * 2) as i64;
+    let mut arr = rt_Array_constructor_v2(0, len, 8, crate::ARRAY_FLAG_PTR as i64);
+    rt_push_root(&mut arr);
 
-    for (key, value) in std::env::vars() {
+    for (i, (key, value)) in vars.into_iter().enumerate() {
         let mut key_id = new_string_from_rust_str(&key);
         rt_push_root(&mut key_id);
         let mut value_id = new_string_from_rust_str(&value);
         rt_push_root(&mut value_id);
 
-        rt_set_property(obj, key_id, value_id);
+        rt_array_set_fast(arr, (i * 2) as i64, key_id);
+        rt_array_set_fast(arr, (i * 2 + 1) as i64, value_id);
 
         rt_pop_roots(2);
     }
 
     rt_pop_roots(1);
-    obj
+    arr
 }
 
 unsafe fn rt_string_from_owned_string(value: String) -> i64 {
@@ -2545,29 +2526,7 @@ pub unsafe extern "C" fn rt_random_int(lower: i64, upper: i64) -> i64 {
 use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 
-
 static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
-
-struct TimeoutState {
-    handle: usize,
-    cancel_tx: Option<std::sync::mpsc::Sender<()>>,
-}
-
-struct IntervalState {
-    handle: usize,
-    cancel_tx: std::sync::mpsc::Sender<()>,
-}
-
-static TIMEOUT_CANCELS: LazyLock<Mutex<HashMap<i64, TimeoutState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static INTERVAL_CANCELS: LazyLock<Mutex<HashMap<i64, IntervalState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-pub(crate) static TIMEOUT_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static INTERVAL_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static TIMEOUT_OBJECTS: LazyLock<Mutex<HashMap<i64, i64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-pub(crate) static INTERVAL_OBJECTS: LazyLock<Mutex<HashMap<i64, i64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn bind_timer_object(
     objects: &Mutex<HashMap<i64, i64>>,
@@ -2631,6 +2590,196 @@ fn unbind_timer_objects_by_id(
     }
 }
 
+// Timer event loop messages
+enum TimerMsg {
+    AddTimeout {
+        id: i64,
+        expire_at: std::time::Instant,
+        handle: usize,
+    },
+    AddInterval {
+        id: i64,
+        expire_at: std::time::Instant,
+        interval_ms: u64,
+        handle: usize,
+    },
+    Cancel(i64),
+}
+
+#[derive(Eq, PartialEq)]
+struct TimerEntry {
+    expire_at: std::time::Instant,
+    id: i64,
+}
+
+impl std::cmp::Ord for TimerEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.expire_at.cmp(&other.expire_at)
+    }
+}
+
+impl std::cmp::PartialOrd for TimerEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+static mut TIMER_SENDER: Option<std::sync::mpsc::Sender<TimerMsg>> = None;
+static TIMER_INIT: Once = Once::new();
+
+fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
+    TIMER_INIT.call_once(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<TimerMsg>();
+        unsafe { TIMER_SENDER = Some(tx.clone()) };
+
+        std::thread::Builder::new()
+            .name("tejx-timer-manager".to_string())
+            .spawn(move || {
+                let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<TimerEntry>> =
+                    std::collections::BinaryHeap::new();
+                let mut active: HashMap<i64, (usize, Option<u64>)> = HashMap::new();
+
+                loop {
+                    let now = std::time::Instant::now();
+
+                    // 1. Process expired timers
+                    while let Some(std::cmp::Reverse(entry)) = heap.peek() {
+                        let entry_id = entry.id;
+                        let entry_expire_at = entry.expire_at;
+
+                        if !active.contains_key(&entry_id) {
+                            heap.pop();
+                            continue;
+                        }
+
+                        if entry_expire_at <= now {
+                            heap.pop();
+                            let (handle, interval_ms) = *active.get(&entry_id).unwrap();
+
+                            if let Some(ms) = interval_ms {
+                                // Interval: execute in worker, then reschedule
+                                unsafe {
+                                    may::coroutine::Builder::new()
+                                        .spawn(move || {
+                                            let closure = tejx_get_global_handle(handle);
+                                            if closure > 0 {
+                                                rt_call_closure_no_args(closure);
+                                            }
+                                        })
+                                        .unwrap();
+                                }
+
+                                heap.push(std::cmp::Reverse(TimerEntry {
+                                    id: entry_id,
+                                    expire_at: now + Duration::from_millis(ms),
+                                }));
+                            } else {
+                                // Timeout: execute in worker and cleanup
+                                active.remove(&entry_id);
+                                unsafe {
+                                    may::coroutine::Builder::new()
+                                        .spawn(move || {
+                                            let closure = tejx_get_global_handle(handle);
+                                            tejx_drop_global_handle(handle);
+                                            if closure > 0 {
+                                                rt_call_closure_no_args(closure);
+                                            }
+                                        })
+                                        .unwrap();
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // 2. Wait for next timeout or message
+                    let next_timeout = heap.peek().map(|std::cmp::Reverse(entry)| entry.expire_at);
+                    let msg_result = if let Some(expire_at) = next_timeout {
+                        let now = std::time::Instant::now();
+                        if expire_at > now {
+                            rx.recv_timeout(expire_at - now)
+                        } else {
+                            rx.try_recv().map_err(|e| match e {
+                                std::sync::mpsc::TryRecvError::Empty => {
+                                    std::sync::mpsc::RecvTimeoutError::Timeout
+                                }
+                                std::sync::mpsc::TryRecvError::Disconnected => {
+                                    std::sync::mpsc::RecvTimeoutError::Disconnected
+                                }
+                            })
+                        }
+                    } else {
+                        rx.recv()
+                            .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    };
+
+                    // 3. Process the message
+                    match msg_result {
+                        Ok(TimerMsg::AddTimeout {
+                            id,
+                            expire_at,
+                            handle,
+                        }) => {
+                            active.insert(id, (handle, None));
+                            heap.push(std::cmp::Reverse(TimerEntry { id, expire_at }));
+                        }
+                        Ok(TimerMsg::AddInterval {
+                            id,
+                            expire_at,
+                            interval_ms,
+                            handle,
+                        }) => {
+                            active.insert(id, (handle, Some(interval_ms)));
+                            heap.push(std::cmp::Reverse(TimerEntry { id, expire_at }));
+                        }
+                        Ok(TimerMsg::Cancel(id)) => {
+                            if let Some((handle, _)) = active.remove(&id) {
+                                unsafe { tejx_drop_global_handle(handle) };
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Loop around and process expired timers
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            break; // Shutting down
+                        }
+                    }
+
+                    // Drain any additional pending messages
+                    while let Ok(msg) = rx.try_recv() {
+                        match msg {
+                            TimerMsg::AddTimeout {
+                                id,
+                                expire_at,
+                                handle,
+                            } => {
+                                active.insert(id, (handle, None));
+                                heap.push(std::cmp::Reverse(TimerEntry { id, expire_at }));
+                            }
+                            TimerMsg::AddInterval {
+                                id,
+                                expire_at,
+                                interval_ms,
+                                handle,
+                            } => {
+                                active.insert(id, (handle, Some(interval_ms)));
+                                heap.push(std::cmp::Reverse(TimerEntry { id, expire_at }));
+                            }
+                            TimerMsg::Cancel(id) => {
+                                if let Some((handle, _)) = active.remove(&id) {
+                                    unsafe { tejx_drop_global_handle(handle) };
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn tejx-timer-manager thread");
+    });
+    unsafe { TIMER_SENDER.as_ref().unwrap().clone() }
+}
+
 fn timeout_duration_from_ms(ms: i64) -> Duration {
     Duration::from_millis(ms.max(0) as u64)
 }
@@ -2640,76 +2789,20 @@ fn interval_duration_from_ms(ms: i64) -> Duration {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_timeout_worker(timer_id: i64) {
-    let handle = TIMEOUT_CANCELS
-        .lock()
-        .ok()
-        .and_then(|mut timeouts| timeouts.remove(&timer_id).map(|state| state.handle))
-        .unwrap_or(0);
-    unbind_timer_objects_by_id(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, timer_id);
-    if handle == 0 {
-        return;
-    }
-
-    let closure_id = tejx_get_global_handle(handle);
-    tejx_drop_global_handle(handle);
-    if closure_id > 0 {
-        rt_call_closure_no_args(closure_id);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_interval_worker(timer_id: i64) {
-    let handle = INTERVAL_CANCELS
-        .lock()
-        .ok()
-        .and_then(|intervals| intervals.get(&timer_id).map(|state| state.handle))
-        .unwrap_or(0);
-    if handle == 0 {
-        return;
-    }
-
-    let closure_id = tejx_get_global_handle(handle);
-    if closure_id > 0 {
-        rt_call_closure_no_args(closure_id);
-    }
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-
     let handle = unsafe { tejx_create_global_handle(callback) };
-    let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<()>();
-    if let Ok(mut cancels) = TIMEOUT_CANCELS.lock() {
-        cancels.insert(
-            timer_id,
-            TimeoutState {
-                handle,
-                cancel_tx: Some(cancel_tx),
-            },
-        );
-    }
-    // Use a may virtual thread so timers don't consume OS thread stacks.
-    may::coroutine::Builder::new()
-        .stack_size(VTHREAD_STACK_SIZE)
-        .spawn(move || {
-            let fired = match cancel_rx.recv_timeout(timeout_duration_from_ms(ms)) {
-                Ok(_) => false,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
-            };
 
-            if fired {
-                if let Ok(mut timeouts) = TIMEOUT_CANCELS.lock() {
-                    if let Some(timeout) = timeouts.get_mut(&timer_id) {
-                        timeout.cancel_tx = None;
-                        unsafe { rt_call_closure_no_args(callback) };
-                    }
-                }
-            }
+    let sender = init_timer_thread();
+    let expire_at = std::time::Instant::now() + timeout_duration_from_ms(ms);
+
+    sender
+        .send(TimerMsg::AddTimeout {
+            id: timer_id,
+            expire_at,
+            handle,
         })
-        .expect("setTimeout virtual thread spawn failed");
+        .unwrap();
 
     timer_id
 }
@@ -2717,121 +2810,40 @@ pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_setInterval(callback: i64, ms: i64) -> i64 {
     let timer_id = NEXT_TIMER_ID.fetch_add(1, Ordering::SeqCst);
-
     let handle = unsafe { tejx_create_global_handle(callback) };
-    let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<()>();
-    if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
-        cancels.insert(timer_id, IntervalState { handle, cancel_tx });
-    }
-    // Use a may virtual thread so intervals don't consume OS thread stacks.
-    may::coroutine::Builder::new()
-        .stack_size(VTHREAD_STACK_SIZE)
-        .spawn(move || {
-            let dur = interval_duration_from_ms(ms);
-            loop {
-                match cancel_rx.recv_timeout(dur) {
-                    Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        break;
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        unsafe { rt_call_closure_no_args(callback) };
-                    }
-                }
-            }
-            if let Ok(mut cancels) = INTERVAL_CANCELS.lock() {
-                cancels.remove(&timer_id);
-            }
+
+    let ms_val = ms.max(1) as u64;
+    let sender = init_timer_thread();
+    let expire_at = std::time::Instant::now() + Duration::from_millis(ms_val);
+
+    sender
+        .send(TimerMsg::AddInterval {
+            id: timer_id,
+            expire_at,
+            interval_ms: ms_val,
+            handle,
         })
-        .expect("setInterval virtual thread spawn failed");
+        .unwrap();
 
     timer_id
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearTimeout(id: i64) -> i64 {
-    unbind_timer_objects_by_id(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, id);
-    let timeout = TIMEOUT_CANCELS
-        .lock()
-        .ok()
-        .and_then(|mut cancels| cancels.remove(&id));
-    if let Some(timeout) = timeout {
-        tejx_drop_global_handle(timeout.handle);
-        if let Some(cancel_tx) = timeout.cancel_tx {
-            let _ = cancel_tx.send(());
-        }
-    }
+    let sender = init_timer_thread();
+    let _ = sender.send(TimerMsg::Cancel(id));
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
-    unbind_timer_objects_by_id(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, id);
-    let interval = INTERVAL_CANCELS
-        .lock()
-        .ok()
-        .and_then(|mut cancels| cancels.remove(&id));
-    if let Some(interval) = interval {
-        tejx_drop_global_handle(interval.handle);
-        let _ = interval.cancel_tx.send(());
-    }
+    let sender = init_timer_thread();
+    let _ = sender.send(TimerMsg::Cancel(id));
     0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_Timeout_constructor(this: i64, id: i64) {
-    let ptr = rt_obj_ptr(this);
-    if ptr.is_null() {
-        if id > 0 {
-            rt_clearTimeout(id);
-        }
-        return;
-    }
-    bind_timer_object(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, this, id);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Interval_constructor(this: i64, id: i64) {
-    let ptr = rt_obj_ptr(this);
-    if ptr.is_null() {
-        if id > 0 {
-            rt_clearInterval(id);
-        }
-        return;
-    }
-    bind_timer_object(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, this, id);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Timeout_cancel(this: i64) {
-    let id = unbind_timer_object(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, this);
-    if id > 0 {
-        rt_clearTimeout(id);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Interval_cancel(this: i64) {
-    let id = unbind_timer_object(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, this);
-    if id > 0 {
-        rt_clearInterval(id);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Timeout_id(this: i64) -> i64 {
-    timer_id_for_object(&TIMEOUT_OBJECTS, &TIMEOUT_OBJECT_COUNT, this)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rt_Interval_id(this: i64) -> i64 {
-    timer_id_for_object(&INTERVAL_OBJECTS, &INTERVAL_OBJECT_COUNT, this)
-}
-
-#[no_mangle]
-
-
 // --- Fast Path Helpers (for Codegen) ---
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_number_v2(v: i64) -> i64 {
     // Unbox Any, convert it to f64 using standard rules, then return raw bits
@@ -3313,9 +3325,9 @@ struct HeldMutexGuard {
     _mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
 }
 
-thread_local! {
+may::coroutine_local! {
     static HELD_MUTEX_GUARDS: std::cell::RefCell<std::collections::HashMap<usize, HeldMutexGuard>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+        std::cell::RefCell::new(std::collections::HashMap::new())
 }
 
 #[no_mangle]
@@ -3731,8 +3743,6 @@ pub unsafe extern "C" fn rt_sizeof(val: i64) -> i64 {
     header_size + body_size
 }
 
-
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_slice(val: i64) -> Slice {
     if val < HEAP_OFFSET {
@@ -3835,18 +3845,11 @@ struct ExceptionHandler {
     frame_depth: usize,
 }
 
-thread_local! {
-    /// Per-virtual-thread handler stack. `may` maps thread_local! to
-    /// coroutine-local storage (CLS), so each virtual thread has its own
-    /// independent try/catch frame stack. This prevents cross-thread
-    /// handler corruption that a global Mutex<Vec> would cause.
-    static EXCEPTION_STACK: std::cell::RefCell<Vec<ExceptionHandler>> =
-        std::cell::RefCell::new(Vec::new());
-
-    /// The last thrown exception value for this virtual thread.
-    /// thread_local ensures a throw in thread A never clobbers thread B's
-    /// in-flight exception.
-    static CURRENT_EXCEPTION: std::cell::Cell<i64> = std::cell::Cell::new(0);
+may::coroutine_local! {
+    static EXCEPTION_STACK: std::cell::RefCell<Vec<ExceptionHandler>> = std::cell::RefCell::new(Vec::new())
+}
+may::coroutine_local! {
+    static CURRENT_EXCEPTION: std::cell::Cell<i64> = std::cell::Cell::new(0)
 }
 
 pub(crate) unsafe fn log_exception(prefix: &str, exception: i64) {
@@ -3862,9 +3865,8 @@ pub unsafe extern "C" fn tejx_get_exception() -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_push_handler(jmpbuf: *mut u8) {
-    use gc::{ThreadContext, MY_CONTEXT};
-    let top = MY_CONTEXT.with(|ctx: &std::cell::UnsafeCell<Box<ThreadContext>>| {
-        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+    let top = gc::with_my_context(|ctx: &std::cell::UnsafeCell<Box<gc::ThreadContext>>| {
+        let ctx_ptr = (*ctx.get()).as_mut() as *mut gc::ThreadContext;
         (*ctx_ptr).roots_top
     });
     EXCEPTION_STACK.with(|stack| {
@@ -3882,20 +3884,21 @@ extern "C" {
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_pop_handler() {
-    EXCEPTION_STACK.with(|stack| { stack.borrow_mut().pop(); });
+    EXCEPTION_STACK.with(|stack| {
+        stack.borrow_mut().pop();
+    });
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tejx_throw(exception: i64) {
-    use gc::{ThreadContext, MY_CONTEXT};
     let exception = crate::runtime_prepare_thrown_exception_value(exception);
     crate::remember_exception_trace(exception);
     CURRENT_EXCEPTION.with(|cell| cell.set(exception));
     let handler = EXCEPTION_STACK.with(|stack| stack.borrow_mut().pop());
 
     if let Some(h) = handler {
-        MY_CONTEXT.with(|ctx: &std::cell::UnsafeCell<Box<ThreadContext>>| {
-            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+        gc::with_my_context(|ctx: &std::cell::UnsafeCell<Box<gc::ThreadContext>>| {
+            let ctx_ptr = (*ctx.get()).as_mut() as *mut gc::ThreadContext;
             (*ctx_ptr).roots_top = h.roots_top;
         });
         crate::runtime_restore_call_stack(h.frame_depth);
@@ -3914,8 +3917,7 @@ pub unsafe extern "C" fn tejx_throw(exception: i64) {
 /// `may` grows this automatically via mmap when a coroutine needs more.
 /// GC root arrays live on the heap (not the stack), so 32KB covers
 /// typical closure call frames with a comfortable margin.
-pub const VTHREAD_STACK_SIZE: usize = 32 * 1024;
-
+pub const VTHREAD_STACK_SIZE: usize = 2 * 1024 * 1024;
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_box_boolean(b: i64) -> i64 {
@@ -4794,8 +4796,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn const_string_interning_reuses_identical_bytes_across_addresses() {
         unsafe {
@@ -5251,7 +5251,7 @@ mod tests {
             rt_register_thread();
 
             let ctx_ptr =
-                gc::MY_CONTEXT.with(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
+                gc::gc::with_my_context(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
             let registry = gc::THREAD_REGISTRY.lock().unwrap();
             let matches = registry.iter().filter(|entry| entry.0 == ctx_ptr).count();
 
@@ -5274,7 +5274,7 @@ mod tests {
             let handle = std::thread::spawn(move || {
                 let _boxed = rt_box_int(123);
                 let ctx_ptr =
-                    gc::MY_CONTEXT.with(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
+                    gc::gc::with_my_context(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
                 ready_tx.send(ctx_ptr as usize).unwrap();
                 release_rx.recv().unwrap();
             });

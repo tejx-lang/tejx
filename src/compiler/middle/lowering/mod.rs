@@ -390,10 +390,49 @@ impl Lowering {
                 Statement::FunctionDeclaration(func) if func.name == base_name => {
                     return Some(func.clone());
                 }
+                Statement::ClassDeclaration(class_decl) => {
+                    for method in &class_decl.methods {
+                        let expected = format!("{}_{}", class_decl.name, method.func.name);
+                        if expected == base_name || method.func.name == base_name {
+                            let mut func = method.func.clone();
+                            func.params.insert(
+                                0,
+                                crate::frontend::ast::Parameter {
+                                    name: "this".to_string(),
+                                    type_name: crate::frontend::ast::TypeNode::Named(
+                                        class_decl.name.clone(),
+                                    ),
+                                    _default_value: None,
+                                    _is_rest: false,
+                                },
+                            );
+                            return Some(func);
+                        }
+                    }
+                }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::FunctionDeclaration(func) = declaration.as_ref() {
                         if func.name == base_name {
                             return Some(func.clone());
+                        }
+                    } else if let Statement::ClassDeclaration(class_decl) = declaration.as_ref() {
+                        for method in &class_decl.methods {
+                            let expected = format!("{}_{}", class_decl.name, method.func.name);
+                            if expected == base_name || method.func.name == base_name {
+                                let mut func = method.func.clone();
+                                func.params.insert(
+                                    0,
+                                    crate::frontend::ast::Parameter {
+                                        name: "this".to_string(),
+                                        type_name: crate::frontend::ast::TypeNode::Named(
+                                            class_decl.name.clone(),
+                                        ),
+                                        _default_value: None,
+                                        _is_rest: false,
+                                    },
+                                );
+                                return Some(func);
+                            }
                         }
                     }
                 }
