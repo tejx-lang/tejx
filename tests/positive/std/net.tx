@@ -2,6 +2,7 @@
 // =============
 import std:net;
 import std:binary;
+import { sleep } from "std:time";
 import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
 class BoundListener {
@@ -93,6 +94,27 @@ function test_connect_failure() {
     print("--- TCP Connect Failure ---");
     let stream = net.connectHost("localhost", 43999);
     assert_true(stream == None, "Connect to unopened port returns None");
+}
+
+function make_client_task(i: int, port: int): () => any {
+    return () => {
+        let stream_opt = net.connectHost("127.0.0.1", port);
+        if (stream_opt == None) throw new Error("Client " + i + " failed to connect");
+        let stream = stream_opt as TcpStream;
+        stream.send("HELLO" + i);
+        let reply = stream.receive(32);
+        stream.close();
+        return reply;
+    };
+}
+
+function make_server_worker(client: TcpStream): () => any {
+    return () => {
+        let incoming = client.receive(32);
+        client.send("ACK:" + incoming);
+        client.close();
+        return 1;
+    };
 }
 
 function main() {

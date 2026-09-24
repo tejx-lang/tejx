@@ -550,7 +550,7 @@ fn main() {
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            // Keep .ll file for debugging
+            let _ = fs::remove_file(&temp_ll_file);
             process::exit(1);
         }
     }

@@ -157,7 +157,7 @@ export class PromiseResult<T> {
 }
 
 export class Promise<T> {
-    constructor(executor: (resolve: (v: T) => void, reject: (e: Error) => void) => void) {}
+    constructor() {}
     then<U>(onResolve: (v: T) => U, onReject: Optional<(e: Error) => U>): Promise<U> { return None as any as Promise<U>; }
     catchError<U>(onReject: (e: Error) => U): Promise<U> { return None as any as Promise<U>; }
     catch<U>(onReject: (e: Error) => U): Promise<U> { return None as any as Promise<U>; }
@@ -206,7 +206,7 @@ function __tejx_promise_all_factory(idx: int, task: any, results: any[]): () => 
 }
 
 export function __tejx_promise_all(tasks: any[]): any[] {
-    print("in all, args: " + String(tasks)); let n: int = tasks.length();
+    let n: int = tasks.length();
     let results: any[] = [];
     for (let i = 0; i < n; i++) {
         results.push(None);
@@ -240,7 +240,7 @@ function __tejx_promise_settled_factory(idx: int, task: any, results: PromiseRes
 // Promise.settled — like all() but captures errors instead of re-throwing.
 // Returns PromiseResult<T>[] with status "fulfilled" or "rejected".
 export function __tejx_promise_settled(tasks: any[]): PromiseResult<any>[] {
-    print("in all, args: " + String(tasks)); let n: int = tasks.length();
+    let n: int = tasks.length();
     let results: PromiseResult<any>[] = [];
     for (let i = 0; i < n; i++) {
         results.push(new PromiseResult<any>("pending", None, None));

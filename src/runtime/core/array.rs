@@ -900,7 +900,7 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
         return 0;
     }
 
-    let elem_size = (flags & 0xFF) as i64;
+    let _elem_size = (flags & 0xFF) as i64;
     let res = rt_array_load_scalar(body, index, flags);
 
     // removed cache update
@@ -935,7 +935,7 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
         return 0;
     }
 
-    let elem_size = (flags & 0xFF) as i64;
+    let _elem_size = (flags & 0xFF) as i64;
     let res = rt_array_load_scalar(body, index, flags);
 
     // removed cache update

@@ -57,6 +57,8 @@ impl Linker {
             }
         }
 
+        let mut generated_objects = Vec::new();
+
         // Step 1: Compile any .ll files to .s (assembly) to bypass Apple Clang object emitter bugs, then assemble to .o
         for obj in &self.obj_paths {
             if obj.extension().and_then(|s| s.to_str()) == Some("ll") {
@@ -109,6 +111,7 @@ impl Linker {
                     ));
                 }
 
+                generated_objects.push(out_obj.clone());
                 final_objects.push(out_obj);
             } else {
                 final_objects.push(obj.to_path_buf());
@@ -154,15 +157,8 @@ impl Linker {
             .map_err(|e| format!("Failed to execute linker {}: {}", compiler, e))?;
 
         // Cleanup intermediate .o files to prevent disk clutter
-        for obj in &final_objects {
-            // Only cleanup if it wasn't an input object file and we aren't in compile_only mode
-            // Actually, we already returned if compile_only.
-            // But we should only delete .o files that were generated from .ll files in this session.
-            if obj.extension().and_then(|s| s.to_str()) == Some("o") {
-                // If it was generated from a .ll in this session, it will be in the same dir as the .ll
-                // Or if it was the runtime lib (which is .a, so won't match)
-                // For now, simple cleanup.
-            }
+        for obj in &generated_objects {
+            let _ = std::fs::remove_file(obj);
         }
 
         if !output.status.success() {

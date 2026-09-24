@@ -75,26 +75,7 @@ impl Parser {
         );
     }
 
-    fn push_feature_error(
-        &mut self,
-        message: impl Into<String>,
-        line: usize,
-        col: usize,
-        hint: &str,
-    ) {
-        let message = message.into();
-        self.errors.push(
-            crate::common::diagnostics::Diagnostic::new(
-                message.clone(),
-                line,
-                col,
-                self.filename.clone(),
-            )
-            .with_code("E0003")
-            .with_hint(hint)
-            .with_label(&message),
-        );
-    }
+
 
     // --- Declarations ---
 

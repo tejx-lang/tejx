@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, Once};
 
 // --- GC Memory System Constants ---
@@ -119,137 +119,11 @@ pub struct TypeEntry {
 #[no_mangle]
 pub static mut TYPE_TABLE: [TypeEntry; MAX_TYPES] = unsafe { std::mem::zeroed() };
 
-unsafe fn rewrite_timer_objects_after_minor(
-    objects: &Mutex<HashMap<i64, i64>>,
-    clear: unsafe extern "C" fn(i64) -> i64,
-    eden_top: *mut u8,
-    from_survivor_top: *mut u8,
-) {
-    let mut objects = match objects.lock() {
-        Ok(objects) => objects,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if objects.is_empty() {
-        return;
-    }
 
-    let mut updated = HashMap::with_capacity(objects.len());
-    let mut to_clear = Vec::new();
-    for (&obj, &timer_id) in objects.iter() {
-        let body = rt_obj_ptr(obj) as *mut u8;
-        if body.is_null() {
-            if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-            continue;
-        }
 
-        let in_old_eden = body >= EDEN_START && body < eden_top;
-        let in_old_from_survivor = body >= FROM_SURVIVOR && body < from_survivor_top;
-        if in_old_eden || in_old_from_survivor {
-            let header = rt_get_header(body);
-            if gc_is_forwarded((*header).gc_word) {
-                let new_header = gc_forward_ptr((*header).gc_word);
-                let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
-                updated.insert((new_body as i64) + HEAP_OFFSET, timer_id);
-            } else if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-        } else {
-            updated.insert(obj, timer_id);
-        }
-    }
 
-    *objects = updated;
-    drop(objects);
 
-    for timer_id in to_clear {
-        clear(timer_id);
-    }
-}
 
-unsafe fn prune_timer_objects_for_major(
-    objects: &Mutex<HashMap<i64, i64>>,
-    clear: unsafe extern "C" fn(i64) -> i64,
-) {
-    let mut objects = match objects.lock() {
-        Ok(objects) => objects,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if objects.is_empty() {
-        return;
-    }
-
-    let mut updated = HashMap::with_capacity(objects.len());
-    let mut to_clear = Vec::new();
-    for (&obj, &timer_id) in objects.iter() {
-        let body = rt_obj_ptr(obj) as *mut u8;
-        if body.is_null() {
-            if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-            continue;
-        }
-
-        if body >= OLD_START && body < OLD_TOP {
-            let header = rt_get_header(body);
-            if gc_is_marked((*header).gc_word) {
-                updated.insert(obj, timer_id);
-            } else if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-        } else if in_los(body) {
-            let header = rt_get_header(body);
-            if gc_is_marked((*header).gc_word) {
-                updated.insert(obj, timer_id);
-            } else if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-        } else {
-            updated.insert(obj, timer_id);
-        }
-    }
-
-    *objects = updated;
-    drop(objects);
-
-    for timer_id in to_clear {
-        clear(timer_id);
-    }
-}
-
-unsafe fn rewrite_timer_objects_after_major_compaction(objects: &Mutex<HashMap<i64, i64>>) {
-    let mut objects = match objects.lock() {
-        Ok(objects) => objects,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if objects.is_empty() {
-        return;
-    }
-
-    let mut updated = HashMap::with_capacity(objects.len());
-    for (&obj, &timer_id) in objects.iter() {
-        let body = rt_obj_ptr(obj) as *mut u8;
-        if body.is_null() {
-            continue;
-        }
-
-        if body >= OLD_START && body < OLD_TOP {
-            let header = rt_get_header(body);
-            if gc_is_forwarded((*header).gc_word) {
-                let new_header = gc_forward_ptr((*header).gc_word);
-                let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
-                updated.insert((new_body as i64) + HEAP_OFFSET, timer_id);
-            } else {
-                updated.insert(obj, timer_id);
-            }
-        } else {
-            updated.insert(obj, timer_id);
-        }
-    }
-
-    *objects = updated;
-}
 
 #[no_mangle]
 pub unsafe fn rt_update_ptr(ptr: *mut i64) {

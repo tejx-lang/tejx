@@ -1334,7 +1334,7 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
-                let mut callee_str = callee.to_callee_name();
+                let callee_str = callee.to_callee_name();
                 let member_callee = match &**callee {
                     Expression::MemberAccessExpr { object, member, .. }
                     | Expression::OptionalMemberAccessExpr { object, member, .. } => {
@@ -1342,7 +1342,7 @@ impl TypeChecker {
                     }
                     _ => None,
                 };
-                if let Some((object, member)) = member_callee {}
+                if let Some((_object, _member)) = member_callee {}
 
                 if callee_str == "typeof" {
                     for arg in args {

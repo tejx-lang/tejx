@@ -387,7 +387,6 @@ impl Lowering {
 
         if final_callee.starts_with("f_Promise_spawn") || final_callee.starts_with("Promise_spawn")
         {
-            println!("Promise_all final_args len: {}", final_args.len());
             let arg = if final_args.len() > 1 {
                 final_args[1].clone()
             } else {
@@ -403,7 +402,6 @@ impl Lowering {
         // Promise.all(tasks) — runs closures in parallel virtual threads,
         // blocks until all complete, returns T[] directly (not a Promise).
         if final_callee.starts_with("f_Promise_all") || final_callee.starts_with("Promise_all") {
-            println!("Promise_all final_args len: {}", final_args.len());
             let arg = if final_args.len() > 1 {
                 final_args[1].clone()
             } else {
@@ -421,7 +419,6 @@ impl Lowering {
         if final_callee.starts_with("f_Promise_settled")
             || final_callee.starts_with("Promise_settled")
         {
-            println!("Promise_all final_args len: {}", final_args.len());
             let arg = if final_args.len() > 1 {
                 final_args[1].clone()
             } else {

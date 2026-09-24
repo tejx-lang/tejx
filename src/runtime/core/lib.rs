@@ -33,8 +33,8 @@ pub use gc::{
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{self, PanicHookInfo};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, Once};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex, Once};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
 #[derive(Default)]
@@ -249,9 +249,7 @@ unsafe fn runtime_exception_trace_snapshot(exception: i64) -> Option<Vec<Runtime
     traces.get(pos).map(|entry| entry.stack.clone())
 }
 
-pub(crate) unsafe fn exception_trace_exists(exception: i64) -> bool {
-    runtime_exception_trace_snapshot(exception).is_some()
-}
+
 
 pub(crate) unsafe fn runtime_prepare_thrown_exception_value(exception: i64) -> i64 {
     let mut exception = exception;
@@ -1171,7 +1169,7 @@ pub unsafe fn rt_gc_cleanup_array_forward() {
 
 #[inline]
 pub unsafe fn rt_gc_resolve_array_id(mut id: i64) -> i64 {
-    if let Some(map) = &GC_ARRAY_FORWARD {
+    if let Some(map) = unsafe { &*(&raw const GC_ARRAY_FORWARD) } {
         while let Some(&next) = map.get(&id) {
             if next == id {
                 break;
@@ -2528,67 +2526,6 @@ use std::time::Duration;
 
 static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
 
-fn bind_timer_object(
-    objects: &Mutex<HashMap<i64, i64>>,
-    count: &AtomicUsize,
-    obj: i64,
-    timer_id: i64,
-) {
-    if timer_id <= 0 {
-        return;
-    }
-    if let Ok(mut objects) = objects.lock() {
-        if objects.insert(obj, timer_id).is_none() {
-            count.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-fn timer_id_for_object(objects: &Mutex<HashMap<i64, i64>>, count: &AtomicUsize, obj: i64) -> i64 {
-    if count.load(Ordering::Relaxed) == 0 {
-        return 0;
-    }
-    objects
-        .lock()
-        .ok()
-        .and_then(|objects| objects.get(&obj).copied())
-        .unwrap_or(0)
-}
-
-fn unbind_timer_object(objects: &Mutex<HashMap<i64, i64>>, count: &AtomicUsize, obj: i64) -> i64 {
-    objects
-        .lock()
-        .ok()
-        .and_then(|mut objects| {
-            let removed = objects.remove(&obj);
-            if removed.is_some() {
-                count.fetch_sub(1, Ordering::Relaxed);
-            }
-            removed
-        })
-        .unwrap_or(0)
-}
-
-fn unbind_timer_objects_by_id(
-    objects: &Mutex<HashMap<i64, i64>>,
-    count: &AtomicUsize,
-    timer_id: i64,
-) {
-    if timer_id <= 0 {
-        return;
-    }
-    if count.load(Ordering::Relaxed) == 0 {
-        return;
-    }
-    if let Ok(mut objects) = objects.lock() {
-        let before = objects.len();
-        objects.retain(|_, current_id| *current_id != timer_id);
-        let removed = before.saturating_sub(objects.len());
-        if removed > 0 {
-            count.fetch_sub(removed, Ordering::Relaxed);
-        }
-    }
-}
 
 // Timer event loop messages
 enum TimerMsg {
@@ -2661,10 +2598,16 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                 unsafe {
                                     may::coroutine::Builder::new()
                                         .spawn(move || {
-                                            let closure = tejx_get_global_handle(handle);
-                                            if closure > 0 {
-                                                rt_call_closure_no_args(closure);
-                                            }
+                                            rt_register_thread();
+                                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                                let mut closure = tejx_get_global_handle(handle);
+                                                if closure > 0 {
+                                                    rt_push_root(&mut closure);
+                                                    rt_call_closure_no_args(closure);
+                                                    rt_pop_roots(1);
+                                                }
+                                            }));
+                                            rt_unregister_thread();
                                         })
                                         .unwrap();
                                 }
@@ -2679,11 +2622,17 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                 unsafe {
                                     may::coroutine::Builder::new()
                                         .spawn(move || {
-                                            let closure = tejx_get_global_handle(handle);
-                                            tejx_drop_global_handle(handle);
-                                            if closure > 0 {
-                                                rt_call_closure_no_args(closure);
-                                            }
+                                            rt_register_thread();
+                                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                                let mut closure = tejx_get_global_handle(handle);
+                                                tejx_drop_global_handle(handle);
+                                                if closure > 0 {
+                                                    rt_push_root(&mut closure);
+                                                    rt_call_closure_no_args(closure);
+                                                    rt_pop_roots(1);
+                                                }
+                                            }));
+                                            rt_unregister_thread();
                                         })
                                         .unwrap();
                                 }
@@ -2777,16 +2726,14 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
             })
             .expect("failed to spawn tejx-timer-manager thread");
     });
-    unsafe { TIMER_SENDER.as_ref().unwrap().clone() }
+    unsafe { (*(&raw const TIMER_SENDER)).as_ref().unwrap().clone() }
 }
 
 fn timeout_duration_from_ms(ms: i64) -> Duration {
     Duration::from_millis(ms.max(0) as u64)
 }
 
-fn interval_duration_from_ms(ms: i64) -> Duration {
-    Duration::from_millis(ms.max(1) as u64)
-}
+
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
@@ -2844,7 +2791,6 @@ pub unsafe extern "C" fn rt_clearInterval(id: i64) -> i64 {
 
 #[no_mangle]
 // --- Fast Path Helpers (for Codegen) ---
-#[no_mangle]
 pub unsafe extern "C" fn rt_to_number_v2(v: i64) -> i64 {
     // Unbox Any, convert it to f64 using standard rules, then return raw bits
     // instead of boxing it back in TAG_FLOAT. This allows LLVM to `bitcast` it directly to `double`.

@@ -38,9 +38,47 @@ function main() {
         assert_eq_string("hello", parsed.y, "Parsed y (property)");
         
         assert_eq_int(3, parsed["z"].length(), "Parsed z length");
+        assert_true(parsed.w.nested, "Parsed w.nested (property)");
         
-        // Nested access
-        print("Parsed w.nested: ", parsed["w"]["nested"]);
+        test_intense_json();
+}
 
-   
+function test_intense_json(): void {
+    print("--- JSON Intense Payload ---");
+    let payload = `
+    {
+        "status": "success",
+        "data": {
+            "users": [
+                { "id": 1, "name": "Alice", "active": true, "roles": ["admin", "user"] },
+                { "id": 2, "name": "Bob", "active": false, "roles": ["user"] }
+            ],
+            "metadata": {
+                "page": 1,
+                "total": 50,
+                "query": "something"
+            }
+        }
+    }
+    `;
+
+    let p: any = parse(payload);
+    assert_eq_string("success", p["status"], "Intense status");
+    
+    let users = p["data"]["users"] as any[];
+    assert_eq_int(2, users.length(), "Intense users count");
+    
+    assert_eq_string("Alice", users[0]["name"], "Intense user 1 name");
+    assert_true(users[0]["active"], "Intense user 1 active");
+    
+    let roles1 = users[0]["roles"] as any[];
+    assert_eq_int(2, roles1.length(), "Intense user 1 roles count");
+    
+    assert_eq_string("Bob", users[1]["name"], "Intense user 2 name");
+    
+    assert_eq_int(50, p["data"]["metadata"]["total"], "Intense metadata total");
+    
+    let stringified = stringify(p);
+    assert_true(stringified.includes("Alice"), "Stringified contains Alice");
+    assert_true(stringified.includes("metadata"), "Stringified contains metadata");
 }

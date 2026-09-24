@@ -71,11 +71,43 @@ function test_directories() {
     assert_false(fs.exists(dir), "Dir deleted");
 }
 
+function test_fs_intense() {
+    print("--- FS Intense Test ---");
+    let intense_dir = "test_io_intense_dir";
+    if (fs.exists(intense_dir)) {
+        fs.unlink(intense_dir);
+    }
+    fs.mkdir(intense_dir);
+    
+    // Create 100 files sequentially to stress file system
+    for (let i = 0; i < 100; i++) {
+        let fpath = intense_dir + "/file_" + i + ".txt";
+        fs.writeFile(fpath, "Data payload for file " + i);
+    }
+    
+    let files = fs.readdir(intense_dir);
+    assert_eq_int(100, files.length(), "100 files created");
+    
+    // Read and verify a random one
+    let content = fs.readFile(intense_dir + "/file_42.txt");
+    assert_eq_string("Data payload for file 42", content, "Intense file 42 content");
+    
+    // Cleanup
+    for (let i = 0; i < 100; i++) {
+        let fpath = intense_dir + "/file_" + i + ".txt";
+        fs.unlink(fpath);
+    }
+    
+    fs.unlink(intense_dir);
+    assert_false(fs.exists(intense_dir), "Intense dir cleaned up");
+}
+
 function main() {
     print("=== IO TESTS START ===");
     test_output();
     test_fs_sync();
     test_fs_async();
     test_directories();
+    test_fs_intense();
     print("=== IO TESTS COMPLETE ===");
 }
