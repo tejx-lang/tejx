@@ -2603,6 +2603,7 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                                 let mut closure = tejx_get_global_handle(handle);
                                                 if closure > 0 {
                                                     rt_push_root(&mut closure);
+                                                    // No global handle drop here because it's an interval!
                                                     rt_call_closure_no_args(closure);
                                                     rt_pop_roots(1);
                                                 }
@@ -2625,11 +2626,13 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                             rt_register_thread();
                                             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                                 let mut closure = tejx_get_global_handle(handle);
-                                                tejx_drop_global_handle(handle);
                                                 if closure > 0 {
                                                     rt_push_root(&mut closure);
+                                                    tejx_drop_global_handle(handle);
                                                     rt_call_closure_no_args(closure);
                                                     rt_pop_roots(1);
+                                                } else {
+                                                    tejx_drop_global_handle(handle);
                                                 }
                                             }));
                                             rt_unregister_thread();
