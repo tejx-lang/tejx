@@ -12,6 +12,14 @@ static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 static GC_INIT: Once = Once::new();
 
+pub static FINALIZER_QUEUE: std::sync::LazyLock<std::sync::Mutex<Vec<(unsafe extern "C" fn(i64), i64)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+pub static FINALIZER_CONDVAR: std::sync::LazyLock<std::sync::Condvar> =
+    std::sync::LazyLock::new(|| std::sync::Condvar::new());
+
+const FLAG_FINALIZED: u16 = 0x1;
+
 #[derive(Default)]
 struct StaticRoots {
     slots: Vec<Option<i64>>,
@@ -235,6 +243,13 @@ unsafe fn copy_static_roots() {
     let mut roots = STATIC_ROOTS.lock().unwrap();
     for root in roots.slots.iter_mut().flatten() {
         copy_object(root as *mut i64);
+    }
+}
+
+unsafe fn update_finalizer_queue() {
+    let mut queue = FINALIZER_QUEUE.lock().unwrap();
+    for (_, obj_val) in queue.iter_mut() {
+        rt_update_ptr(obj_val as *mut i64);
     }
 }
 
@@ -738,9 +753,33 @@ pub unsafe extern "C" fn rt_init_gc() {
         }
 
         rt_start_gc_scheduler();
+        rt_start_finalizer_thread();
     });
 
     ensure_thread_registered();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_start_finalizer_thread() {
+    std::thread::spawn(|| {
+        loop {
+            let mut tasks = Vec::new();
+            {
+                let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                while queue.is_empty() {
+                    queue = FINALIZER_CONDVAR.wait(queue).unwrap();
+                }
+                std::mem::swap(&mut tasks, &mut *queue);
+            }
+            if !tasks.is_empty() {
+                // Synchronize with GC to prevent reading objects while they are being moved
+                let _gc_lock = GC_LOCK.lock().unwrap();
+                for (f, obj_val) in tasks {
+                    unsafe { f(obj_val); }
+                }
+            }
+        }
+    });
 }
 
 #[no_mangle]
@@ -998,6 +1037,8 @@ unsafe fn mark_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     } else if type_id == TAG_PROMISE as u16 {
         mark_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
         mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
+    } else if type_id == TAG_FUNCTION as u16 {
+        mark_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
     } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
         let entry = &TYPE_TABLE[type_id as usize];
         for i in 0..entry.ptr_count {
@@ -1052,17 +1093,26 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     mark_static_roots();
     super::rt_gc_mark_tasks();
 
-    // 2.5 Run Finalizers for unmarked objects
+    // 2.5 Queue Finalizers for unmarked objects and resurrect them
+    let mut resurrected = false;
     let mut curr = OLD_START;
     while curr < OLD_TOP {
         let header = curr as *mut ObjectHeader;
         let type_id = (*header).type_id;
         if !gc_is_marked((*header).gc_word) {
-            if (type_id as usize) < MAX_TYPES {
-                if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                    let obj_val =
-                        (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
-                    f(obj_val);
+            if ((*header).flags & FLAG_FINALIZED) == 0 {
+                if (type_id as usize) < MAX_TYPES {
+                    if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                        let mut obj_val =
+                            (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                        {
+                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                            queue.push((f, obj_val));
+                        }
+                        (*header).flags |= FLAG_FINALIZED;
+                        mark_object(&mut obj_val as *mut i64);
+                        resurrected = true;
+                    }
                 }
             }
         }
@@ -1074,14 +1124,26 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         let header = obj_ptr as *mut ObjectHeader;
         let type_id = (*header).type_id;
         if !gc_is_marked((*header).gc_word) {
-            if (type_id as usize) < MAX_TYPES {
-                if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                    let obj_val =
-                        (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
-                    f(obj_val);
+            if ((*header).flags & FLAG_FINALIZED) == 0 {
+                if (type_id as usize) < MAX_TYPES {
+                    if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                        let mut obj_val =
+                            (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                        {
+                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                            queue.push((f, obj_val));
+                        }
+                        (*header).flags |= FLAG_FINALIZED;
+                        mark_object(&mut obj_val as *mut i64);
+                        resurrected = true;
+                    }
                 }
             }
         }
+    }
+
+    if resurrected {
+        FINALIZER_CONDVAR.notify_one();
     }
 
     // 3. Sweep LOS
@@ -1135,6 +1197,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         }
     }
     update_static_roots();
+    update_finalizer_queue();
     super::rt_gc_update_tasks();
 
     // Update Young Gen (Survivor)
@@ -1233,6 +1296,8 @@ unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mu
     } else if type_id == TAG_PROMISE as u16 {
         updater(body_ptr.add(8) as *mut i64); // value
         updater(body_ptr.add(16) as *mut i64); // callbacks array
+    } else if type_id == TAG_FUNCTION as u16 {
+        updater(body_ptr.add(8) as *mut i64); // closure env
     } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
         let entry = &TYPE_TABLE[type_id as usize];
         for i in 0..entry.ptr_count {
