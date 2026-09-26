@@ -2,7 +2,6 @@ use super::*; // Extracted \n
 #[no_mangle]
 pub unsafe extern "C" fn rt_String_toUpperCase(arg_s: i64) -> i64 {
     let mut s = arg_s;
-    rt_push_root(&mut s);
 
     let res = if let Some((_, len)) = get_str_parts(s) {
         let body_ptr = gc_allocate(len as usize + 1);
@@ -29,13 +28,11 @@ pub unsafe extern "C" fn rt_String_toUpperCase(arg_s: i64) -> i64 {
         s
     };
 
-    rt_pop_roots(1);
     res
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_String_toLowerCase(arg_s: i64) -> i64 {
     let mut s = arg_s;
-    rt_push_root(&mut s);
 
     let res = if let Some((_, len)) = get_str_parts(s) {
         let body_ptr = gc_allocate(len as usize + 1);
@@ -62,7 +59,6 @@ pub unsafe extern "C" fn rt_String_toLowerCase(arg_s: i64) -> i64 {
         s
     };
 
-    rt_pop_roots(1);
     res
 }
 #[no_mangle]
@@ -105,7 +101,6 @@ pub unsafe extern "C" fn rt_String_trimEnd(s_id: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_String_substring(arg_s: i64, start: i64, end: i64) -> i64 {
     let mut s = arg_s;
-    rt_push_root(&mut s);
 
     let res = if let Some((_, len)) = get_str_parts(s) {
         let s0 = if start < 0 {
@@ -128,7 +123,6 @@ pub unsafe extern "C" fn rt_String_substring(arg_s: i64, start: i64, end: i64) -
         s
     };
 
-    rt_pop_roots(1);
     res
 }
 #[no_mangle]
@@ -146,9 +140,6 @@ pub unsafe extern "C" fn rt_String_split(s: i64, sep: i64) -> i64 {
     let mut v_sep = sep;
     let mut result = rt_Array_new_fixed(0, 8);
 
-    rt_push_root(&mut v_s);
-    rt_push_root(&mut v_sep);
-    rt_push_root(&mut result);
 
     let s_len = rt_len(v_s);
     let sep_len = rt_len(v_sep);
@@ -192,7 +183,6 @@ pub unsafe extern "C" fn rt_String_split(s: i64, sep: i64) -> i64 {
         }
     }
 
-    rt_pop_roots(3);
     result
 }
 #[no_mangle]
@@ -431,8 +421,6 @@ pub unsafe extern "C" fn rt_str_equals(a: i64, b: i64) -> i32 {
 pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
     let mut val_a = a_id;
     let mut val_b = b_id;
-    rt_push_root(&mut val_a);
-    rt_push_root(&mut val_b);
 
     // Ensure they are strings by converting if necessary
     if get_str_parts(val_a).is_none() {
@@ -472,7 +460,6 @@ pub unsafe extern "C" fn rt_str_concat_v2(a_id: i64, b_id: i64) -> i64 {
         rt_string_from_c_str("\0".as_ptr() as *const _)
     };
 
-    rt_pop_roots(2);
     res
 }
 
@@ -533,8 +520,6 @@ pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
 
     let mut lhs = lhs_id;
     let mut rhs = rhs_id;
-    rt_push_root(&mut lhs);
-    rt_push_root(&mut rhs);
 
     let res =
         if let (Some((lhs_body, lhs_header, lhs_len)), Some((_rhs_body, _rhs_header, rhs_len))) =
@@ -588,6 +573,5 @@ pub unsafe extern "C" fn rt_str_append_local(lhs_id: i64, rhs_id: i64) -> i64 {
         } else {
             rt_string_from_c_str("\0".as_ptr() as *const _)
         };
-    rt_pop_roots(2);
     res
 }

@@ -35,7 +35,7 @@ pub struct CodeGen {
     heap_array_ptrs: HashMap<String, (String, i64)>, // var_name -> (data_ptr_alloca, elem_size)
     pub unsafe_arrays: bool,
     float_ssa_vars: HashMap<String, String>, // var_name -> LLVM double SSA variable
-    num_roots: usize,
+    pub local_gc_allocas: Vec<String>,
     volatile_locals: bool,
     pub class_fields: HashMap<String, Vec<(String, TejxType)>>,
     pub class_methods: HashMap<String, Vec<String>>,
@@ -175,7 +175,7 @@ impl CodeGen {
             heap_array_ptrs: HashMap::new(),
             unsafe_arrays: false,
             float_ssa_vars: HashMap::new(),
-            num_roots: 0,
+            local_gc_allocas: Vec::new(),
             volatile_locals: false,
             class_fields: HashMap::new(),
             class_methods: HashMap::new(),

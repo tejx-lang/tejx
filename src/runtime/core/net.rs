@@ -91,18 +91,14 @@ fn blocking_http_fetch(
 
 unsafe fn http_result_array(status: &str, payload: &[u8]) -> i64 {
     let mut result = rt_Array_new_fixed(2, 8);
-    rt_push_root(&mut result);
 
     let mut status_id = string_from_bytes(status.as_bytes());
-    rt_push_root(&mut status_id);
 
     let mut payload_id = string_from_bytes(payload);
-    rt_push_root(&mut payload_id);
 
     rt_array_set_fast(result, 0, status_id);
     rt_array_set_fast(result, 1, payload_id);
 
-    rt_pop_roots(3);
     result
 }
 
@@ -241,16 +237,12 @@ fn read_exact(stream: &mut NetStream, expected_len: usize) -> Vec<u8> {
 
 unsafe fn new_string_array(items: Vec<String>) -> i64 {
     let mut result = rt_Array_new_fixed(0, 8);
-    rt_push_root(&mut result);
 
     for item in items {
         let mut item_id = string_from_bytes(item.as_bytes());
-        rt_push_root(&mut item_id);
         result = rt_array_push(result, item_id);
-        rt_pop_roots(1);
     }
 
-    rt_pop_roots(1);
     result
 }
 

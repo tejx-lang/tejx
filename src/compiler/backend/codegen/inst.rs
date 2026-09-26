@@ -160,9 +160,34 @@ impl CodeGen {
                     self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
                 }
 
-                if self.num_roots > 0 {
-                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", self.num_roots));
+                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
+                let mut final_val_str = None;
+
+                if let Some(v) = value {
+                    let val_str = self.resolve_value(v);
+                    let final_val = self.emit_abi_cast(&val_str, v.get_type(), &func.return_type);
+                    if Self::is_gc_managed(&func.return_type) && final_val != "0" && final_val != "null" {
+                        self.declare_runtime_fn("rt_retain", "void @rt_retain(i64) nounwind");
+                        // We must cast final_val to i64 if it's not already
+                        let mut retain_val = final_val.clone();
+                        if ret_llvm_ty != "i64" {
+                            self.temp_counter += 1;
+                            retain_val = format!("%ret_retain_cast_{}", self.temp_counter);
+                            self.emit_line(&format!("{} = ptrtoint {} {} to i64", retain_val, ret_llvm_ty, final_val));
+                        }
+                        self.emit_line(&format!("call void @rt_retain(i64 {})", retain_val));
+                    }
+                    final_val_str = Some(final_val);
+                }
+
+                if !self.local_gc_allocas.is_empty() {
+                    self.declare_runtime_fn("rt_release", "void @rt_release(i64) nounwind");
+                    for ptr in self.local_gc_allocas.clone() {
+                        self.temp_counter += 1;
+                        let val_reg = format!("%local_gc_val_{}", self.temp_counter);
+                        self.emit_line(&format!("{} = load i64, i64* {}", val_reg, ptr));
+                        self.emit_line(&format!("call void @rt_release(i64 {})", val_reg));
+                    }
                 }
 
                 if let Some(arena) = self.current_arena.clone() {
@@ -173,10 +198,7 @@ impl CodeGen {
                     self.emit_line("call void @rt_leave_frame()");
                 }
 
-                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
-                if let Some(v) = value {
-                    let val_str = self.resolve_value(v);
-                    let final_val = self.emit_abi_cast(&val_str, v.get_type(), &func.return_type);
+                if let Some(final_val) = final_val_str {
                     self.emit_line(&format!("ret {} {}", ret_llvm_ty, final_val));
                 } else if ret_llvm_ty == "void" {
                     self.emit_line("ret void");
@@ -264,35 +286,16 @@ impl CodeGen {
             MIRValue::Variable { ty, .. } => ty,
         };
 
-        let mut temp_root_count = 0;
         let l = self.resolve_value(left);
         if Self::is_gc_managed(l_ty)
             && !(matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint"))
         {
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let tmp_root = format!("%bin_l_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", tmp_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", l, tmp_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-            temp_root_count += 1;
         }
 
         let r = self.resolve_value(right);
         if Self::is_gc_managed(r_ty)
             && !(matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint"))
         {
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let tmp_root = format!("%bin_r_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", tmp_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", r, tmp_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-            temp_root_count += 1;
         }
 
         self.temp_counter += 1;
@@ -340,9 +343,6 @@ impl CodeGen {
             let final_res = self.emit_abi_cast(&cmp_bool, &TejxType::Bool, dst_ty);
             self.emit_store_variable(dst, &final_res, dst_ty);
 
-            if temp_root_count > 0 {
-                self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
-            }
             return;
         }
 
@@ -399,15 +399,6 @@ impl CodeGen {
                 self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]))
             };
 
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let l_val_root = format!("%str_l_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", l_val_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", l_val, l_val_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", l_val_root));
-            temp_root_count += 1;
 
             let r_val = if r_ty.is_numeric() {
                 if r_ty.is_float() {
@@ -450,15 +441,6 @@ impl CodeGen {
                 self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]))
             };
 
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let r_val_root = format!("%str_r_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", r_val_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", r_val, r_val_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", r_val_root));
-            temp_root_count += 1;
 
             if matches!(op, TokenType::Plus) {
                 self.declare_runtime_fn(
@@ -525,9 +507,6 @@ impl CodeGen {
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
                 let final_tmp = self.emit_abi_cast(&bool_res, &TejxType::Bool, dst_ty);
                 self.emit_store_variable(dst, &final_tmp, dst_ty);
-                if temp_root_count > 0 {
-                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
-                }
                 return;
             } else {
                 // Fallback numeric addition on strings
@@ -540,27 +519,9 @@ impl CodeGen {
         } else if is_any_op {
             let l_any = self.emit_abi_cast(&l, l_ty, &TejxType::Class("Any".to_string(), vec![]));
 
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let l_any_root = format!("%any_l_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", l_any_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", l_any, l_any_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", l_any_root));
-            temp_root_count += 1;
 
             let r_any = self.emit_abi_cast(&r, r_ty, &TejxType::Class("Any".to_string(), vec![]));
 
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let r_any_root = format!("%any_r_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", r_any_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", r_any, r_any_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", r_any_root));
-            temp_root_count += 1;
 
             let rt_fn = match op {
                 TokenType::Plus => "rt_add",
@@ -786,9 +747,6 @@ impl CodeGen {
             }
         }
 
-        if temp_root_count > 0 {
-            self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
-        }
     }
 
     fn fixed_layout_shape(&self, ty: &TejxType) -> Option<(String, Vec<(String, TejxType)>)> {
@@ -901,7 +859,7 @@ impl CodeGen {
         }
 
         if can_stack_allocate && !is_escaped && !dst.is_empty() {
-            let total_size = body_size + 24;
+            let total_size = body_size + 32;
             let obj_alloca = format!("%stack_obj_{}", dst.replace('.', "_"));
             self.alloca_buffer.push_str(&format!(
                 "  {} = alloca i8, i32 {}, align 16\n",
@@ -933,9 +891,17 @@ impl CodeGen {
             self.emit_line(&format!("store i16 {}, i16* {}", type_id, tid_ptr));
 
             self.temp_counter += 1;
+            let flags_ptr = format!("%flags_ptr_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = getelementptr inbounds %struct.ObjectHeader, %struct.ObjectHeader* {}, i32 0, i32 2",
+                flags_ptr, header_ptr
+            ));
+            self.emit_line(&format!("store i16 32768, i16* {}", flags_ptr));
+
+            self.temp_counter += 1;
             let body_ptr_i8 = format!("%body_ptr_i8_{}", self.temp_counter);
             self.emit_line(&format!(
-                "{} = getelementptr i8, i8* {}, i32 24",
+                "{} = getelementptr i8, i8* {}, i32 32",
                 body_ptr_i8, obj_alloca
             ));
 
@@ -1010,7 +976,7 @@ impl CodeGen {
             self.temp_counter += 1;
             let header_i8 = format!("%strlen_header_i8_{}", self.temp_counter);
             self.emit_line(&format!(
-                "{} = getelementptr i8, i8* {}, i32 -24",
+                "{} = getelementptr i8, i8* {}, i32 -32",
                 header_i8, body_i8
             ));
             self.temp_counter += 1;
@@ -1279,7 +1245,7 @@ impl CodeGen {
                 let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
                 if func.name != "tejx_main" && !is_escaped && body_size <= 256 {
                     let stack_arr = format!("%stack_arr_{}", dst.replace('.', "_"));
-                    let total_size = body_size + 24;
+                    let total_size = body_size + 32;
                     self.alloca_buffer.push_str(&format!(
                         "  {} = alloca i8, i32 {}, align 16\n",
                         stack_arr, total_size
@@ -1314,7 +1280,8 @@ impl CodeGen {
                     } else {
                         0
                     };
-                    let flags = 0x0100
+                    let flags = 0x8000
+                        | 0x0100
                         | ptr_flag
                         | Self::array_kind_flags_for_element_type(inner)
                         | (elem_size as i64 & 0xFF);
@@ -1346,7 +1313,7 @@ impl CodeGen {
                     self.temp_counter += 1;
                     let body_ptr_i8 = format!("%arr_body_ptr_i8_{}", self.temp_counter);
                     self.emit_line(&format!(
-                        "{} = getelementptr i8, i8* {}, i32 24",
+                        "{} = getelementptr i8, i8* {}, i32 32",
                         body_ptr_i8, stack_arr
                     ));
 
@@ -1397,7 +1364,7 @@ impl CodeGen {
             if !dst.is_empty() {
                 let ptr = self.resolve_ptr(dst);
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Int64);
-                self.store_ptr(&ptr, &result_tmp, Some(dst_ty));
+                self.store_ptr(&ptr, &result_tmp, Some(dst_ty), false);
             }
             return;
         }
@@ -1414,7 +1381,7 @@ impl CodeGen {
             if !dst.is_empty() {
                 let ptr = self.resolve_ptr(dst);
                 let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Int64);
-                self.store_ptr(&ptr, &result_tmp, Some(dst_ty));
+                self.store_ptr(&ptr, &result_tmp, Some(dst_ty), false);
             }
             return;
         }
@@ -1703,7 +1670,7 @@ impl CodeGen {
                         }
                     }
                     let ptr = self.resolve_ptr(dst);
-                    self.store_ptr(&ptr, &final_val, Some(&store_ty));
+                    self.store_ptr(&ptr, &final_val, Some(&store_ty), false);
                 }
             }
         } else {
@@ -1823,7 +1790,6 @@ impl CodeGen {
             let mut call_args_info: Vec<(MIRValue, String)> = Vec::new();
             let mut llvm_args = Vec::new();
             let mut llvm_decl_args = Vec::new();
-            let mut temp_root_count = 0;
             let expected_param_tys = if is_runtime_fn || final_callee.starts_with("virtual_call_") {
                 None
             } else {
@@ -1909,13 +1875,6 @@ impl CodeGen {
                                 "rt_pop_roots",
                                 "void @rt_pop_roots(i64) nounwind",
                             );
-                            self.temp_counter += 1;
-                            let tmp_root = format!("%arg_root_{}", self.temp_counter);
-                            self.alloca_buffer
-                                .push_str(&format!("  {} = alloca i64\n", tmp_root));
-                            self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
-                            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-                            temp_root_count += 1;
                         }
 
                         call_args_info.push((arg_mir, final_reg));
@@ -2054,15 +2013,6 @@ impl CodeGen {
                         && matches!(arg_ty, TejxType::String)
                         && final_reg.starts_with("ptrtoint"))
                 {
-                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-                    self.temp_counter += 1;
-                    let tmp_root = format!("%arg_root_{}", self.temp_counter);
-                    self.alloca_buffer
-                        .push_str(&format!("  {} = alloca i64\n", tmp_root));
-                    self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
-                    self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-                    temp_root_count += 1;
                 }
 
                 call_args_info.push((arg.clone(), final_reg));
@@ -2168,9 +2118,6 @@ impl CodeGen {
                 ));
             }
 
-            if temp_root_count > 0 {
-                self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
-            }
 
             let mut final_val = result_tmp.clone();
             if !dst.is_empty() {
@@ -2360,17 +2307,7 @@ impl CodeGen {
 
         self.emit(&format!("{}:\n", ok_label));
 
-        let mut temp_root_count = 0;
         if Self::is_gc_managed(callee_ty) {
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let tmp_root = format!("%callee_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", tmp_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", callee_val, tmp_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-            temp_root_count += 1;
         }
 
         self.declare_runtime_fn("rt_get_closure_ptr", "i64 @rt_get_closure_ptr(i64)");
@@ -2426,15 +2363,6 @@ impl CodeGen {
 
             let casted = self.emit_abi_cast(&val, arg_ty, &param_ty);
             if Self::is_gc_managed(arg_ty) {
-                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-                self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-                self.temp_counter += 1;
-                let tmp_root = format!("%arg_root_{}", self.temp_counter);
-                self.alloca_buffer
-                    .push_str(&format!("  {} = alloca i64\n", tmp_root));
-                self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
-                self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-                temp_root_count += 1;
             }
             arg_vals.push(format!("{} {}", Self::get_llvm_type(&param_ty), casted));
         }
@@ -2455,9 +2383,6 @@ impl CodeGen {
             ));
         }
 
-        if temp_root_count > 0 {
-            self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
-        }
 
         if !dst.is_empty() && ret_llvm != "void" {
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
@@ -2474,9 +2399,14 @@ impl CodeGen {
             );
             self.emit_line(&format!("call void @{}(i64 {})", RT_ARENA_DESTROY, arena));
         }
-        if self.num_roots > 0 {
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.emit_line(&format!("call void @rt_pop_roots(i64 {})", self.num_roots));
+        if !self.local_gc_allocas.is_empty() {
+            self.declare_runtime_fn("rt_release", "void @rt_release(i64) nounwind");
+            for ptr in self.local_gc_allocas.clone() {
+                self.temp_counter += 1;
+                let val_reg = format!("%local_gc_val_throw_{}", self.temp_counter);
+                self.emit_line(&format!("{} = load i64, i64* {}", val_reg, ptr));
+                self.emit_line(&format!("call void @rt_release(i64 {})", val_reg));
+            }
         }
         let val = self.resolve_value(value);
         self.emit_line(&format!("call void @tejx_throw(i64 {})", val));

@@ -67,7 +67,6 @@ pub unsafe extern "C" fn rt_Thread_start(this: i64) {
                 let mut cb_root = 0;
                 rt_pin_static_root(cb_slot, &mut cb_root);
                 rt_call_closure_no_args(cb_root);
-                rt_pop_roots(1);
             }));
         })
         .expect("TejX virtual thread spawn failed — may scheduler not initialized");

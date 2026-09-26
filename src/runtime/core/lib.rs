@@ -29,6 +29,7 @@ pub use gc::{
     rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pin_static_root, rt_pop_roots, rt_push_root,
     rt_register_thread, rt_register_type, rt_release_static_root, rt_set_static_root,
     rt_unregister_thread, rt_write_barrier, ObjectHeader, MAX_TYPES,
+    rt_retain, rt_release, rt_store_local, rt_store_local_no_retain,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -418,10 +419,8 @@ fn runtime_error_hint(message: &str) -> Option<&'static str> {
 
 unsafe fn runtime_value_to_string(val: i64) -> String {
     let mut rooted_val = val;
-    rt_push_root(&mut rooted_val);
 
     let mut string_id = rt_to_string(rooted_val);
-    rt_push_root(&mut string_id);
 
     let rendered = if let Some((data, len)) = get_str_parts(string_id) {
         String::from_utf8_lossy(std::slice::from_raw_parts(data, len as usize)).into_owned()
@@ -429,7 +428,6 @@ unsafe fn runtime_value_to_string(val: i64) -> String {
         "<unprintable>".to_string()
     };
 
-    rt_pop_roots(2);
     rendered
 }
 
@@ -445,10 +443,8 @@ unsafe fn runtime_inline_value_to_string(val: i64) -> String {
 
 unsafe fn runtime_type_to_string(val: i64) -> String {
     let mut rooted_val = val;
-    rt_push_root(&mut rooted_val);
 
     let mut type_id = rt_typeof(rooted_val);
-    rt_push_root(&mut type_id);
 
     let rendered = if let Some((data, len)) = get_str_parts(type_id) {
         String::from_utf8_lossy(std::slice::from_raw_parts(data, len as usize)).into_owned()
@@ -456,7 +452,6 @@ unsafe fn runtime_type_to_string(val: i64) -> String {
         "unknown".to_string()
     };
 
-    rt_pop_roots(2);
     rendered
 }
 
@@ -762,9 +757,7 @@ unsafe fn runtime_attach_stack_to_error_value(exception: i64, stack: &[RuntimeFr
     }
 
     let mut stack_value = new_string_from_rust_str(&runtime_render_stack_trace_text(stack));
-    rt_push_root(&mut stack_value);
     let _ = runtime_set_class_ref_field(exception, "stack", stack_value);
-    rt_pop_roots(1);
 }
 
 unsafe fn runtime_build_error_wrapper(
@@ -781,17 +774,13 @@ unsafe fn runtime_build_error_wrapper(
 
     let mut message_value = new_string_from_rust_str(message);
     let mut stack_value = new_string_from_rust_str(&runtime_render_stack_trace_text(stack));
-    rt_push_root(&mut message_value);
-    rt_push_root(&mut stack_value);
 
     let mut error_value = rt_class_new(type_id as i32, body_size as i64, 0, std::ptr::null(), 0);
-    rt_push_root(&mut error_value);
 
     let _ = runtime_set_class_ref_field(error_value, "message", message_value);
     let _ = runtime_set_class_ref_field(error_value, "stack", stack_value);
     let _ = runtime_set_class_i32_field(error_value, "code", 0);
 
-    rt_pop_roots(3);
     Some(error_value)
 }
 
@@ -1122,6 +1111,7 @@ pub const OBJECT_VALUES_OFFSET: isize = 24;
 pub const ARRAY_FLAG_FIXED: i64 = 0x0100;
 pub const ARRAY_FLAG_CONSTANT: i64 = 0x0200;
 pub const ARRAY_FLAG_PTR: i64 = 0x0400;
+pub const FLAG_STACK_ALLOCATED: u16 = 0x8000;
 pub const ARRAY_FLAG_KIND_MASK: i64 = 0xF000;
 pub const ARRAY_FLAG_KIND_SIGNED: i64 = 0x0000;
 pub const ARRAY_FLAG_KIND_UNSIGNED: i64 = 0x1000;
@@ -1398,7 +1388,6 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
         return val;
     }
     let mut source = val;
-    rt_push_root(&mut source);
 
     let body = (source - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
@@ -1413,7 +1402,6 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
 
         // Create new array with same elem_size
         let mut new_arr_val = rt_Array_new(len, elem_size);
-        rt_push_root(&mut new_arr_val);
         let new_body = (new_arr_val - HEAP_OFFSET) as *mut u8;
         let new_data = new_body as *mut i8;
 
@@ -1432,7 +1420,6 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
                 );
             }
         }
-        rt_pop_roots(1);
         new_arr_val
     } else {
         // For other types (Objects, Char, Int, Float, Boolean, etc.), we can do a shallow copy for now,
@@ -1441,7 +1428,6 @@ pub unsafe extern "C" fn rt_clone(val: i64) -> i64 {
         source
     };
 
-    rt_pop_roots(1);
     res
 }
 
@@ -1626,20 +1612,21 @@ fn rt_float_to_rust_string(v: f64) -> String {
 }
 
 unsafe fn rt_value_body_and_tag(val: i64) -> Option<(*mut u8, i64)> {
-    let is_gc = if val >= HEAP_OFFSET {
-        rt_is_gc_ptr((val - HEAP_OFFSET) as *mut u8)
+    let clean_val = val & !TAG_MASK;
+    let is_gc = if clean_val >= HEAP_OFFSET {
+        rt_is_gc_ptr((clean_val - HEAP_OFFSET) as *mut u8)
     } else {
         false
     };
-    let is_stack = val >= STACK_OFFSET && val < HEAP_OFFSET;
+    let is_stack = clean_val >= STACK_OFFSET && clean_val < HEAP_OFFSET;
     if !is_gc && !is_stack {
         return None;
     }
 
     let body_ptr = if is_gc {
-        (val - HEAP_OFFSET) as *mut u8
+        (clean_val - HEAP_OFFSET) as *mut u8
     } else {
-        (val - STACK_OFFSET) as *mut u8
+        (clean_val - STACK_OFFSET) as *mut u8
     };
     let header = rt_get_header(body_ptr);
     Some((body_ptr, (*header).type_id as i64))
@@ -1843,12 +1830,9 @@ unsafe fn rt_format_composite_value(val: i64, depth: usize, seen: &mut Vec<i64>)
 pub unsafe extern "C" fn rt_to_string(val: i64) -> i64 {
     let mut v = val;
     let mut res_id = 0i64;
-    rt_push_root(&mut v);
-    rt_push_root(&mut res_id);
     let rendered = rt_format_composite_value(v, FORMAT_MAX_DEPTH, &mut Vec::new());
     res_id = new_string_from_rust_str(&rendered);
 
-    rt_pop_roots(2);
     res_id
 }
 
@@ -1865,14 +1849,11 @@ unsafe fn render_captured_exception_report(exception: i64) -> Option<String> {
 pub unsafe extern "C" fn rt_exception_report_for_print(val: i64) -> i64 {
     let mut v = val;
     let mut report_id = 0i64;
-    rt_push_root(&mut v);
-    rt_push_root(&mut report_id);
 
     if let Some(report) = render_captured_exception_report(v) {
         report_id = new_string_from_rust_str(&report);
     }
 
-    rt_pop_roots(2);
     report_id
 }
 
@@ -2040,14 +2021,12 @@ pub unsafe extern "C" fn rt_class_new(
         return stack_ptr + STACK_OFFSET;
     }
     let size = (body_size) as usize; // Body size is now just for data, no internal tag
-    let obj = gc_allocate(size) as *mut i64;
-
-    // Primitives and fields now start at offset 0.
-
+    let obj = crate::gc::gc_allocate(size) as *mut i64;
+    
     let header = rt_get_header(obj as *mut u8);
     (*header).type_id = type_id as u16;
-    // *obj = TAG_OBJECT; // Removed, type_id is in header
-    (obj as i64) + HEAP_OFFSET
+    
+    (obj as i64) + crate::HEAP_OFFSET
 }
 
 // --- Array Primitives ---
@@ -2172,43 +2151,32 @@ pub unsafe extern "C" fn rt_fs_mkdir(path: i64) -> i64 {
 pub unsafe extern "C" fn rt_fs_readdir(path: i64) -> i64 {
     let mut v_path = path;
     let mut result = rt_Array_new_fixed(0, 8);
-    rt_push_root(&mut v_path);
-    rt_push_root(&mut result);
 
     if let Some(p) = i64_to_rust_str(v_path) {
         if let Ok(entries) = std::fs::read_dir(p) {
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
                     let mut name_id = new_string_from_rust_str(&name);
-                    rt_push_root(&mut name_id);
                     result = rt_array_push(result, name_id);
-                    rt_pop_roots(1);
                 }
             }
         } else {
-            rt_pop_roots(2);
             return 0;
         }
     } else {
-        rt_pop_roots(2);
         return 0;
     }
-    rt_pop_roots(2);
     result
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_args() -> i64 {
     let mut result = rt_Array_new_fixed(0, 8);
-    rt_push_root(&mut result);
     let args: Vec<String> = std::env::args().collect();
     for arg in args {
         let mut arg_id = new_string_from_rust_str(&arg);
-        rt_push_root(&mut arg_id);
         result = rt_array_push(result, arg_id);
-        rt_pop_roots(1);
     }
-    rt_pop_roots(1);
     result
 }
 
@@ -2251,7 +2219,6 @@ unsafe fn new_string_from_parts(source_s: i64, offset: i64, len: i64) -> i64 {
     }
 
     let mut s = source_s;
-    rt_push_root(&mut s);
 
     let body_ptr = alloc_string_body(len, len);
 
@@ -2262,10 +2229,8 @@ unsafe fn new_string_from_parts(source_s: i64, offset: i64, len: i64) -> i64 {
 
         let res = (body_ptr as i64) + HEAP_OFFSET;
         rt_update_array_cache(res, body_ptr, len as i64, 1);
-        rt_pop_roots(1);
         res
     } else {
-        rt_pop_roots(1);
         0
     }
 }
@@ -2289,21 +2254,16 @@ pub unsafe extern "C" fn rt_get_all_env() -> i64 {
     let vars: Vec<(String, String)> = std::env::vars().collect();
     let len = (vars.len() * 2) as i64;
     let mut arr = rt_Array_constructor_v2(0, len, 8, crate::ARRAY_FLAG_PTR as i64);
-    rt_push_root(&mut arr);
 
     for (i, (key, value)) in vars.into_iter().enumerate() {
         let mut key_id = new_string_from_rust_str(&key);
-        rt_push_root(&mut key_id);
         let mut value_id = new_string_from_rust_str(&value);
-        rt_push_root(&mut value_id);
 
         rt_array_set_fast(arr, (i * 2) as i64, key_id);
         rt_array_set_fast(arr, (i * 2 + 1) as i64, value_id);
 
-        rt_pop_roots(2);
     }
 
-    rt_pop_roots(1);
     arr
 }
 
@@ -2602,10 +2562,8 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                                 let mut closure = tejx_get_global_handle(handle);
                                                 if closure > 0 {
-                                                    rt_push_root(&mut closure);
                                                     // No global handle drop here because it's an interval!
                                                     rt_call_closure_no_args(closure);
-                                                    rt_pop_roots(1);
                                                 }
                                             }));
                                             rt_unregister_thread();
@@ -2627,10 +2585,8 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                                 let mut closure = tejx_get_global_handle(handle);
                                                 if closure > 0 {
-                                                    rt_push_root(&mut closure);
                                                     tejx_drop_global_handle(handle);
                                                     rt_call_closure_no_args(closure);
-                                                    rt_pop_roots(1);
                                                 } else {
                                                     tejx_drop_global_handle(handle);
                                                 }
@@ -2970,8 +2926,6 @@ pub unsafe extern "C" fn rt_get_closure_env(closure: i64) -> i64 {
 pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
     let mut c = closure;
     let mut a = arg;
-    rt_push_root(&mut c);
-    rt_push_root(&mut a);
 
     let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
     let ptr_val;
@@ -2996,7 +2950,6 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
     }
 
     if raw_func_ptr == 0 {
-        rt_pop_roots(2);
         return 0;
     }
     let result = if is_raw_ptr {
@@ -3015,7 +2968,6 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
         func(env, a, 0, 0, 0)
     };
 
-    rt_pop_roots(2);
     result
 }
 
@@ -3023,8 +2975,6 @@ pub unsafe extern "C" fn rt_call_closure(closure: i64, arg: i64) -> i64 {
 pub unsafe extern "C" fn rt_call_closure_void(closure: i64, arg: i64) {
     let mut c = closure;
     let mut a = arg;
-    rt_push_root(&mut c);
-    rt_push_root(&mut a);
 
     let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
     let ptr_val;
@@ -3048,7 +2998,6 @@ pub unsafe extern "C" fn rt_call_closure_void(closure: i64, arg: i64) {
     }
 
     if raw_func_ptr == 0 {
-        rt_pop_roots(2);
         return;
     }
 
@@ -3066,15 +3015,12 @@ pub unsafe extern "C" fn rt_call_closure_void(closure: i64, arg: i64) {
         func(env, a, 0, 0, 0);
     }
 
-    rt_pop_roots(2);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
     let mut c = closure;
     let mut a = args;
-    rt_push_root(&mut c);
-    rt_push_root(&mut a);
 
     let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
     let ptr_val;
@@ -3099,7 +3045,6 @@ pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
     }
 
     if raw_func_ptr == 0 {
-        rt_pop_roots(2);
         return 0;
     }
 
@@ -3145,7 +3090,6 @@ pub unsafe extern "C" fn rt_call_closure_argv(closure: i64, args: i64) -> i64 {
             );
         func(env, a0, a1, a2, a3)
     };
-    rt_pop_roots(2);
     result
 }
 
@@ -3158,7 +3102,6 @@ pub unsafe extern "C" fn rt_test_invoke(func: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
     let mut c = closure;
-    rt_push_root(&mut c);
 
     let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
     let ptr_val = if !is_raw_ptr {
@@ -3183,7 +3126,6 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
     }
 
     if raw_func_ptr == 0 {
-        rt_pop_roots(1);
         return 0;
     }
 
@@ -3210,7 +3152,6 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
         func(env)
     };
 
-    rt_pop_roots(1);
     result
 }
 
@@ -3560,8 +3501,6 @@ pub unsafe extern "C" fn rt_strict_ne(a: i64, b: i64) -> i64 {
 pub unsafe extern "C" fn rt_print(val: i64) {
     let mut v = val;
     let mut s_id = 0i64;
-    rt_push_root(&mut v);
-    rt_push_root(&mut s_id);
 
     s_id = rt_to_string(v);
 
@@ -3579,7 +3518,6 @@ pub unsafe extern "C" fn rt_print(val: i64) {
     }
     println!();
 
-    rt_pop_roots(2);
 }
 
 #[no_mangle]
@@ -4016,12 +3954,9 @@ pub unsafe extern "C" fn rt_object_new() -> i64 {
     (*header).type_id = TAG_OBJECT as u16;
 
     let mut obj_id = (body_ptr as i64) + HEAP_OFFSET;
-    rt_push_root(&mut obj_id);
 
     let mut keys = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-    rt_push_root(&mut keys);
     let mut values = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-    rt_push_root(&mut values);
 
     let body_ptr = (obj_id - HEAP_OFFSET) as *mut u8;
 
@@ -4038,7 +3973,6 @@ pub unsafe extern "C" fn rt_object_new() -> i64 {
         values,
     );
 
-    rt_pop_roots(3);
     obj_id
 }
 
@@ -4173,14 +4107,9 @@ pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
     let mut obj = obj;
     let mut key = key;
     let mut val = val;
-    rt_push_root(&mut obj);
-    rt_push_root(&mut key);
-    rt_push_root(&mut val);
 
     let mut keys = rt_object_keys_array(obj);
     let mut values = rt_object_values_array(obj);
-    rt_push_root(&mut keys);
-    rt_push_root(&mut values);
 
     let idx = rt_object_find_key_index(obj, key);
     if idx >= 0 {
@@ -4192,7 +4121,6 @@ pub unsafe extern "C" fn rt_set_property(obj: i64, key: i64, val: i64) {
         rt_object_refresh_meta(obj);
     }
 
-    rt_pop_roots(5);
 }
 
 #[no_mangle]
@@ -4380,7 +4308,6 @@ mod tests {
             rt_init_gc();
 
             let mut obj = rt_object_new();
-            rt_push_root(&mut obj);
 
             let key_message = rt_string_from_c_str_const("message\0".as_ptr() as *const _);
             let value_message = rt_string_from_c_str_const("boom\0".as_ptr() as *const _);
@@ -4395,7 +4322,6 @@ mod tests {
                 "{ message: \"boom\", code: 7 }"
             );
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4424,7 +4350,6 @@ mod tests {
             );
 
             let mut obj = rt_class_new(200, 16, 1, std::ptr::null(), 0);
-            rt_push_root(&mut obj);
 
             let message = rt_string_from_c_str_const("boom\0".as_ptr() as *const _);
             let body = (obj - HEAP_OFFSET) as *mut u8;
@@ -4436,7 +4361,6 @@ mod tests {
                 "Sample { message: \"boom\", active: true }"
             );
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4447,7 +4371,6 @@ mod tests {
             rt_init_gc();
 
             let mut source = new_string_from_bytes(b"MiXeD".as_ptr(), 5);
-            rt_push_root(&mut source);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
@@ -4459,7 +4382,6 @@ mod tests {
             let lower = crate::string::rt_String_toLowerCase(source);
             assert_eq!(to_rust_string(lower), "mixed");
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4471,15 +4393,12 @@ mod tests {
 
             let mut lhs = new_string_from_bytes(b"left".as_ptr(), 4);
             let mut rhs = new_string_from_bytes(b"-right".as_ptr(), 6);
-            rt_push_root(&mut lhs);
-            rt_push_root(&mut rhs);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
             let appended = crate::string::rt_str_append_local(lhs, rhs);
             assert_eq!(to_rust_string(appended), "left-right");
 
-            rt_pop_roots(2);
         }
     }
 
@@ -4504,7 +4423,6 @@ mod tests {
 
             let bytes = [b'a', 0, b'b'];
             let mut source = new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64);
-            rt_push_root(&mut source);
 
             let repeated = crate::string::rt_String_repeat(source, 2);
             assert_eq!(rt_len(repeated), 6);
@@ -4536,9 +4454,6 @@ mod tests {
             let replacement_bytes = [b'z', 0, b'y'];
             let mut replacement =
                 new_string_from_bytes(replacement_bytes.as_ptr(), replacement_bytes.len() as i64);
-            rt_push_root(&mut single);
-            rt_push_root(&mut search);
-            rt_push_root(&mut replacement);
 
             let replaced = crate::string::rt_String_replace(single, search, replacement);
             assert_eq!(rt_len(replaced), 3);
@@ -4552,7 +4467,6 @@ mod tests {
                 b'y' as i32
             );
 
-            rt_pop_roots(4);
         }
     }
 
@@ -4574,13 +4488,11 @@ mod tests {
 
             let path_string = dir.to_string_lossy().into_owned();
             let mut path_id = new_string_from_rust_str(&path_string);
-            rt_push_root(&mut path_id);
 
             let entries = rt_fs_readdir(path_id);
             assert_eq!(rt_len(entries), 1);
             assert_eq!(to_rust_string(rt_array_get_fast(entries, 0)), file_name);
 
-            rt_pop_roots(1);
             let _ = std::fs::remove_file(dir.join(file_name));
             let _ = std::fs::remove_dir(&dir);
         }
@@ -4603,7 +4515,6 @@ mod tests {
 
             let path_string = file.to_string_lossy().into_owned();
             let mut path_id = new_string_from_rust_str(&path_string);
-            rt_push_root(&mut path_id);
 
             let content = rt_fs_read(path_id);
             assert_eq!(rt_len(content), 3);
@@ -4611,7 +4522,6 @@ mod tests {
             assert_eq!(crate::string::rt_String_charCodeAt(content, 1), 0);
             assert_eq!(crate::string::rt_String_charCodeAt(content, 2), b'b' as i32);
 
-            rt_pop_roots(1);
             let _ = std::fs::remove_file(&file);
             let _ = std::fs::remove_dir(&dir);
         }
@@ -4624,14 +4534,12 @@ mod tests {
             rt_init_gc();
 
             let mut source = new_string_from_bytes(b"clone-source".as_ptr(), 12);
-            rt_push_root(&mut source);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
             let cloned = rt_clone(source);
             assert_eq!(to_rust_string(cloned), "clone-source");
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4642,9 +4550,7 @@ mod tests {
             rt_init_gc();
 
             let mut source = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut source);
             let mut item = new_string_from_bytes(b"array-clone".as_ptr(), 11);
-            rt_push_root(&mut item);
             source = rt_array_set_fast(source, 0, item);
 
             gc::rt_clear_tlab();
@@ -4652,7 +4558,6 @@ mod tests {
             let cloned = rt_clone(source);
             assert_eq!(to_rust_string(rt_array_get_fast(cloned, 0)), "array-clone");
 
-            rt_pop_roots(2);
         }
     }
 
@@ -4663,11 +4568,8 @@ mod tests {
             rt_init_gc();
 
             let mut obj = rt_object_new();
-            rt_push_root(&mut obj);
             let mut key = new_string_from_bytes(b"name".as_ptr(), 4);
             let mut value = new_string_from_bytes(b"tejx".as_ptr(), 4);
-            rt_push_root(&mut key);
-            rt_push_root(&mut value);
             rt_set_property(obj, key, value);
 
             gc::rt_clear_tlab();
@@ -4677,7 +4579,6 @@ mod tests {
             assert_eq!(to_rust_string(rt_array_get_fast(first, 0)), "name");
             assert_eq!(to_rust_string(rt_array_get_fast(first, 1)), "tejx");
 
-            rt_pop_roots(3);
         }
     }
 
@@ -4689,12 +4590,8 @@ mod tests {
 
             let mut source = rt_object_new();
             let mut target = rt_object_new();
-            rt_push_root(&mut source);
-            rt_push_root(&mut target);
             let mut key = new_string_from_bytes(b"city".as_ptr(), 4);
             let mut value = new_string_from_bytes(b"pune".as_ptr(), 4);
-            rt_push_root(&mut key);
-            rt_push_root(&mut value);
             rt_set_property(source, key, value);
 
             gc::rt_clear_tlab();
@@ -4702,7 +4599,6 @@ mod tests {
             crate::object::rt_Object_assign(target, source);
             assert_eq!(to_rust_string(rt_get_property(target, key)), "pune");
 
-            rt_pop_roots(4);
         }
     }
 
@@ -4713,7 +4609,6 @@ mod tests {
             rt_init_gc();
 
             let mut source = new_string_from_bytes(b"ABC".as_ptr(), 3);
-            rt_push_root(&mut source);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
@@ -4722,7 +4617,6 @@ mod tests {
             assert_eq!(rt_array_get_fast(bytes, 1), 66);
             assert_eq!(rt_array_get_fast(bytes, 2), 67);
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4774,7 +4668,6 @@ mod tests {
             let bytes = vec![b'x'; gc::LARGE_OBJECT_THRESHOLD + 1024];
 
             let mut keeper = new_string_from_bytes(bytes.as_ptr(), bytes.len() as i64);
-            rt_push_root(&mut keeper);
 
             let baseline_count = gc::LOS_COUNT;
             for _ in 0..80 {
@@ -4786,7 +4679,6 @@ mod tests {
                 "dead large objects should be reclaimed before LOS keeps growing"
             );
 
-            rt_pop_roots(1);
             gc::major_gc();
 
             assert!(
@@ -4803,9 +4695,7 @@ mod tests {
             rt_init_gc();
 
             let mut obj = rt_object_new();
-            rt_push_root(&mut obj);
             let mut pad = rt_Array_new(256, 8);
-            rt_push_root(&mut pad);
 
             gc::minor_gc();
             gc::minor_gc();
@@ -4840,7 +4730,6 @@ mod tests {
                 "old objects must dirty their card when property growth swaps in young arrays"
             );
 
-            rt_pop_roots(2);
         }
     }
 
@@ -4854,9 +4743,7 @@ mod tests {
             rt_register_type(203, 8, 1, offsets.as_ptr(), None);
 
             let mut queue = rt_class_new(203, 8, 1, std::ptr::null(), 0);
-            rt_push_root(&mut queue);
             let mut pad = rt_Array_new(256, 8);
-            rt_push_root(&mut pad);
             crate::queue::rt_SharedQueue_constructor(queue);
 
             gc::minor_gc();
@@ -4876,7 +4763,6 @@ mod tests {
                 "old shared queues must dirty their card when enqueue swaps in a young backing array"
             );
 
-            rt_pop_roots(2);
         }
     }
 
@@ -4890,7 +4776,6 @@ mod tests {
             rt_register_type(204, 8, 1, offsets.as_ptr(), None);
 
             let mut queue = rt_class_new(204, 8, 1, std::ptr::null(), 0);
-            rt_push_root(&mut queue);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
@@ -4904,7 +4789,6 @@ mod tests {
             );
             assert_eq!(crate::queue::rt_SharedQueue_size(queue), 0);
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4918,7 +4802,6 @@ mod tests {
             rt_register_type(205, 8, 1, offsets.as_ptr(), None);
 
             let mut queue = rt_class_new(205, 8, 1, std::ptr::null(), 0);
-            rt_push_root(&mut queue);
             crate::queue::rt_SharedQueue_constructor(queue);
 
             let payload = b"queued-through-gc";
@@ -4937,7 +4820,6 @@ mod tests {
                 "SharedQueue enqueue must root heap values and update the moved backing array"
             );
 
-            rt_pop_roots(1);
         }
     }
 
@@ -4948,9 +4830,7 @@ mod tests {
             rt_init_gc();
 
             let mut source = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut source);
             let mut value = new_string_from_bytes(b"clone-me".as_ptr(), 8);
-            rt_push_root(&mut value);
             rt_array_set_fast(source, 0, value);
 
             gc::rt_clear_tlab();
@@ -4959,7 +4839,6 @@ mod tests {
             let cloned = rt_Array_constructor_v2(0, source, 8, ARRAY_FLAG_PTR);
             assert_eq!(to_rust_string(rt_array_get_fast(cloned, 0)), "clone-me");
 
-            rt_pop_roots(2);
         }
     }
 
@@ -4970,9 +4849,7 @@ mod tests {
             rt_init_gc();
 
             let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut arr);
             let mut value = new_string_from_bytes(b"set-after-gc".as_ptr(), 12);
-            rt_push_root(&mut value);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
@@ -4980,7 +4857,6 @@ mod tests {
             arr = rt_array_set_fast(arr, 3, value);
             assert_eq!(to_rust_string(rt_array_get_fast(arr, 3)), "set-after-gc");
 
-            rt_pop_roots(2);
         }
     }
 
@@ -4991,15 +4867,11 @@ mod tests {
             rt_init_gc();
 
             let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut arr);
             let mut first = new_string_from_bytes(b"first".as_ptr(), 5);
-            rt_push_root(&mut first);
             arr = rt_array_set_fast(arr, 0, first);
 
             let mut items = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut items);
             let mut inserted = new_string_from_bytes(b"splice-gc".as_ptr(), 9);
-            rt_push_root(&mut inserted);
             items = rt_array_set_fast(items, 0, inserted);
 
             gc::rt_clear_tlab();
@@ -5008,7 +4880,6 @@ mod tests {
             arr = rt_array_splice(arr, 1, 0, items);
             assert_eq!(to_rust_string(rt_array_get_fast(arr, 1)), "splice-gc");
 
-            rt_pop_roots(4);
         }
     }
 
@@ -5019,15 +4890,11 @@ mod tests {
             rt_init_gc();
 
             let mut left = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut left);
             let mut left_value = new_string_from_bytes(b"left".as_ptr(), 4);
-            rt_push_root(&mut left_value);
             left = rt_array_set_fast(left, 0, left_value);
 
             let mut right = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut right);
             let mut right_value = new_string_from_bytes(b"right".as_ptr(), 5);
-            rt_push_root(&mut right_value);
             right = rt_array_set_fast(right, 0, right_value);
 
             gc::rt_clear_tlab();
@@ -5037,7 +4904,6 @@ mod tests {
             assert_eq!(to_rust_string(rt_array_get_fast(combined, 0)), "left");
             assert_eq!(to_rust_string(rt_array_get_fast(combined, 1)), "right");
 
-            rt_pop_roots(4);
         }
     }
 
@@ -5048,13 +4914,11 @@ mod tests {
             rt_init_gc();
 
             let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut arr);
             arr = rt_array_set_fast(arr, 0, 10);
             arr = rt_array_set_fast(arr, 1, 20);
             arr = rt_array_set_fast(arr, 2, 30);
 
             let mut sep = new_string_from_bytes(b"::".as_ptr(), 2);
-            rt_push_root(&mut sep);
 
             gc::rt_clear_tlab();
             gc::EDEN_TOP.store(gc::EDEN_END, Ordering::SeqCst);
@@ -5062,7 +4926,6 @@ mod tests {
             let joined = crate::array::rt_array_join(arr, sep);
             assert_eq!(to_rust_string(joined), "10::20::30");
 
-            rt_pop_roots(2);
         }
     }
 
@@ -5073,7 +4936,6 @@ mod tests {
             rt_init_gc();
 
             let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut arr);
 
             gc::minor_gc();
             gc::minor_gc();
@@ -5085,12 +4947,10 @@ mod tests {
             *gc::CARD_TABLE.add(card_idx) = 0;
 
             let mut child = rt_box_int(7);
-            rt_push_root(&mut child);
             assert!(gc::in_young_gen((child - HEAP_OFFSET) as *mut u8));
             rt_array_set_fast(arr, 0, child);
             assert_eq!(*gc::CARD_TABLE.add(card_idx), 1);
 
-            rt_pop_roots(1);
 
             gc::minor_gc();
             let moved_child = rt_array_get_fast(arr, 0);
@@ -5108,7 +4968,6 @@ mod tests {
                 "card should clear once the survivor ages out of young generation"
             );
 
-            rt_pop_roots(1);
         }
     }
 
@@ -5119,7 +4978,6 @@ mod tests {
             rt_init_gc();
 
             let mut arr = rt_Array_new(2, 8);
-            rt_push_root(&mut arr);
 
             gc::minor_gc();
             gc::minor_gc();
@@ -5131,7 +4989,6 @@ mod tests {
             *gc::CARD_TABLE.add(card_idx) = 0;
 
             let mut value = rt_box_int(9);
-            rt_push_root(&mut value);
             rt_array_fill(arr, value);
 
             assert_eq!(
@@ -5140,7 +4997,6 @@ mod tests {
                 "old arrays must dirty their card when fill() writes a young heap value"
             );
 
-            rt_pop_roots(2);
         }
     }
 
@@ -5151,7 +5007,6 @@ mod tests {
             rt_init_gc();
 
             let mut arr = rt_Array_constructor_v2(0, 0, 8, ARRAY_FLAG_PTR);
-            rt_push_root(&mut arr);
 
             gc::minor_gc();
             gc::minor_gc();
@@ -5163,7 +5018,6 @@ mod tests {
 
             *gc::CARD_TABLE.add(card_idx) = 0;
             let mut unshift_value = rt_box_int(11);
-            rt_push_root(&mut unshift_value);
             arr = rt_array_unshift(arr, unshift_value);
 
             assert_eq!(
@@ -5174,9 +5028,7 @@ mod tests {
 
             *gc::CARD_TABLE.add(card_idx) = 0;
             let mut items = rt_Array_new(1, 8);
-            rt_push_root(&mut items);
             let mut splice_value = rt_box_int(22);
-            rt_push_root(&mut splice_value);
             rt_array_set_fast(items, 0, splice_value);
             arr = rt_array_splice(arr, 1, 0, items);
 
@@ -5187,7 +5039,6 @@ mod tests {
             );
             assert_eq!(rt_array_get_fast(arr, 1), splice_value);
 
-            rt_pop_roots(4);
         }
     }
 
@@ -5255,7 +5106,6 @@ mod tests {
 
             let arena = gc::rt_arena_create(4096);
             let mut holder = gc::rt_arena_alloc(arena, 201, 8);
-            rt_push_root(&mut holder);
 
             let field = (holder - STACK_OFFSET) as *mut i64;
             let len = (gc::LARGE_OBJECT_THRESHOLD + 1024) as i64;
@@ -5274,7 +5124,6 @@ mod tests {
             let los_count = gc::LOS_COUNT;
             assert_eq!(los_count, 1);
 
-            rt_pop_roots(1);
             gc::rt_arena_destroy(arena);
         }
     }
@@ -5290,7 +5139,6 @@ mod tests {
 
             let arena = gc::rt_arena_create(4096);
             let mut holder = gc::rt_arena_alloc(arena, 202, 16);
-            rt_push_root(&mut holder);
 
             let fields = (holder - STACK_OFFSET) as *mut i64;
             *fields = holder;
@@ -5308,7 +5156,6 @@ mod tests {
                 "minor GC should preserve stack-held young references through cyclic arena objects"
             );
 
-            rt_pop_roots(1);
             gc::rt_arena_destroy(arena);
         }
     }

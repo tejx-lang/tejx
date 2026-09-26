@@ -154,27 +154,49 @@ impl CodeGen {
         stripped
     }
 
-    pub(crate) fn store_ptr(&mut self, ptr: &str, src_val: &str, src_ty: Option<&TejxType>) {
+    pub(crate) fn store_ptr(&mut self, ptr: &str, src_val: &str, src_ty: Option<&TejxType>, retain: bool) {
         let llvm_ty = self
             .ptr_types
             .get(ptr)
             .cloned()
             .unwrap_or_else(|| "i64".to_string());
         let mut val = src_val.to_string();
-        if let Some(ty) = src_ty {
+        
+        let is_gc_managed = if let Some(ty) = src_ty {
             if llvm_ty == "i8" {
                 val = self.emit_value_to_storage(&val, ty);
             }
-        }
+            Self::is_gc_managed(ty)
+        } else {
+            false
+        };
+
         let volatile_kw = if self.volatile_locals && ptr.starts_with('%') {
             " volatile"
         } else {
             ""
         };
-        self.buffer.push_str(&format!(
-            "  store{} {} {}, {}* {}\n",
-            volatile_kw, llvm_ty, val, llvm_ty, ptr
-        ));
+
+        if is_gc_managed && llvm_ty == "i64" {
+            if retain {
+                self.declare_runtime_fn("rt_store_local", "void @rt_store_local(i64*, i64)");
+                self.buffer.push_str(&format!(
+                    "  call void @rt_store_local(i64* {}, i64 {})\n",
+                    ptr, val
+                ));
+            } else {
+                self.declare_runtime_fn("rt_store_local_no_retain", "void @rt_store_local_no_retain(i64*, i64)");
+                self.buffer.push_str(&format!(
+                    "  call void @rt_store_local_no_retain(i64* {}, i64 {})\n",
+                    ptr, val
+                ));
+            }
+        } else {
+            self.buffer.push_str(&format!(
+                "  store{} {} {}, {}* {}\n",
+                volatile_kw, llvm_ty, val, llvm_ty, ptr
+            ));
+        }
     }
 
     pub(crate) fn load_ptr(&mut self, ptr: &str, dest_reg: &str) {
@@ -1092,26 +1114,13 @@ impl CodeGen {
                     val.to_string()
                 };
 
-                let mut temp_root_count = 0;
                 if Self::is_gc_managed(ty) {
-                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-                    self.temp_counter += 1;
-                    let tmp_root = format!("%tmp_root_{}", self.temp_counter);
-                    self.alloca_buffer
-                        .push_str(&format!("  {} = alloca i64\n", tmp_root));
-                    self.emit_line(&format!("store i64 {}, i64* {}", val_to_store, tmp_root));
-                    self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-                    temp_root_count = 1;
                 }
 
                 self.emit_line(&format!(
                     "call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
                     env, cap_idx, val_to_store
                 ));
-                if temp_root_count > 0 {
-                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", temp_root_count));
-                }
                 return;
             }
         }
@@ -1174,7 +1183,7 @@ impl CodeGen {
             } else {
                 val.to_string()
             };
-            self.store_ptr(&ptr, &final_val, Some(&store_ty));
+            self.store_ptr(&ptr, &final_val, Some(&store_ty), true);
         }
     }
 
@@ -1268,7 +1277,6 @@ impl CodeGen {
             "i64 @rt_string_from_c_str_const(i64)",
         );
         if raw_ptr.starts_with("ptrtoint") {
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
 
             self.temp_counter += 1;
             let slot = format!("%boxed_str_slot{}", self.temp_counter);
@@ -1286,7 +1294,6 @@ impl CodeGen {
             ));
             self.entry_init_buffer
                 .push_str(&format!("  store i64 {}, i64* {}\n", boxed, slot));
-            self.num_roots += 1;
             self.boxed_string_cache
                 .insert(raw_ptr.to_string(), slot.clone());
 

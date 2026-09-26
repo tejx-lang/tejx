@@ -88,13 +88,10 @@ pub unsafe extern "C" fn rt_array_get_data_ptr_nocache(id: i64) -> i64 {
 pub unsafe extern "C" fn rt_array_join(arr: i64, sep: i64) -> i64 {
     let mut a = arr;
     let mut s_id = sep;
-    rt_push_root(&mut a);
-    rt_push_root(&mut s_id);
 
     let arr_len = rt_len(a);
     if arr_len == 0 {
         let res = rt_string_from_c_str("\0".as_ptr() as *const _);
-        rt_pop_roots(2);
         return res;
     }
     // Get separator string
@@ -142,13 +139,11 @@ pub unsafe extern "C" fn rt_array_join(arr: i64, sep: i64) -> i64 {
     *out.offset(total_len as isize) = 0;
     let res = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(res, body_ptr, total_len, 1);
-    rt_pop_roots(2);
     res
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_slice(arr: i64, start: i64, end: i64) -> i64 {
     let mut a = arr;
-    rt_push_root(&mut a);
 
     let arr_len = rt_len(a);
     let s = if start < 0 {
@@ -198,7 +193,6 @@ pub unsafe extern "C" fn rt_array_slice(arr: i64, start: i64, end: i64) -> i64 {
 
     if s >= e {
         let res = rt_Array_constructor_v2(0, 0, elem_size, type_flags);
-        rt_pop_roots(1);
         return res;
     }
 
@@ -213,7 +207,6 @@ pub unsafe extern "C" fn rt_array_slice(arr: i64, start: i64, end: i64) -> i64 {
             (new_len * elem_size) as usize,
         );
     }
-    rt_pop_roots(1);
     result
 }
 #[no_mangle]
@@ -385,7 +378,6 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
         new_cap = required;
     }
 
-    rt_push_root(&mut current_id);
     let new_body = gc_allocate((new_cap * elem_size) as usize);
     // RE-RESOLVE after potential GC
     let body_res = (current_id - HEAP_OFFSET) as *mut u8;
@@ -404,7 +396,6 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
         (cap * elem_size) as usize,
     );
     let res = (new_body as i64) + HEAP_OFFSET;
-    rt_pop_roots(1);
     rt_update_array_cache(res, new_body, (*new_header).length as i64, elem_size);
     ARRAY_FORWARD_ACTIVE.store(true, Ordering::Release);
     ARRAY_FORWARD.lock().unwrap().insert(current_id, res);
@@ -421,8 +412,6 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
     if (current_id as u64) < (HEAP_OFFSET as u64) {
         return 0;
     }
-    rt_push_root(&mut current_id);
-    rt_push_root(&mut current_val);
 
     let body = (current_id - HEAP_OFFSET) as *mut u8;
     let header = rt_get_header(body);
@@ -444,7 +433,6 @@ pub unsafe extern "C" fn rt_array_push(id: i64, val: i64) -> i64 {
     (*new_header).length = (len + 1) as u32;
     rt_update_array_cache(current_id, new_body, (len + 1) as i64, elem_size);
 
-    rt_pop_roots(2);
     current_id
 }
 #[no_mangle]
@@ -525,12 +513,9 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         }
 
         let mut value = val;
-        rt_push_root(&mut id);
-        rt_push_root(&mut value);
         let new_len = index + 1;
         id = rt_array_ensure_capacity(id, new_len);
         if (id as u64) < (HEAP_OFFSET as u64) {
-            rt_pop_roots(2);
             return id;
         }
         body = (id - HEAP_OFFSET) as *mut u8;
@@ -548,7 +533,6 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
         if id >= HEAP_OFFSET {
             rt_update_array_cache(id, body, new_len, elem_size);
         }
-        rt_pop_roots(2);
     }
     id
 }
@@ -610,12 +594,9 @@ pub unsafe extern "C" fn rt_array_set_traced(
         }
 
         let mut value = val;
-        rt_push_root(&mut id);
-        rt_push_root(&mut value);
         let new_len = index + 1;
         id = rt_array_ensure_capacity(id, new_len);
         if (id as u64) < (HEAP_OFFSET as u64) {
-            rt_pop_roots(2);
             return id;
         }
         body = (id - HEAP_OFFSET) as *mut u8;
@@ -633,7 +614,6 @@ pub unsafe extern "C" fn rt_array_set_traced(
         if id >= HEAP_OFFSET {
             rt_update_array_cache(id, body, new_len, elem_size);
         }
-        rt_pop_roots(2);
     }
     id
 }
@@ -675,12 +655,9 @@ pub unsafe extern "C" fn rt_array_shift(id: i64) -> i64 {
 pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
     let mut current_id = id;
     let mut current_val = val;
-    rt_push_root(&mut current_id);
-    rt_push_root(&mut current_val);
 
     current_id = rt_resolve_array_id(current_id);
     if (current_id as u64) < (HEAP_OFFSET as u64) {
-        rt_pop_roots(2);
         return 0;
     }
     let body = (current_id - HEAP_OFFSET) as *mut u8;
@@ -715,7 +692,6 @@ pub unsafe extern "C" fn rt_array_unshift(id: i64, val: i64) -> i64 {
 
     (*new_header).length = (len + 1) as u32;
     rt_update_array_cache(current_id, new_body, len + 1, elem_size);
-    rt_pop_roots(2);
     current_id
 }
 #[no_mangle]
@@ -727,10 +703,7 @@ pub unsafe extern "C" fn rt_array_splice(
 ) -> i64 {
     let mut current_arr = arr;
     let mut current_items = items_arr;
-    rt_push_root(&mut current_arr);
-    rt_push_root(&mut current_items);
     if (current_arr as u64) < (HEAP_OFFSET as u64) {
-        rt_pop_roots(2);
         return 0;
     }
     let body = (current_arr - HEAP_OFFSET) as *mut u8;
@@ -803,7 +776,6 @@ pub unsafe extern "C" fn rt_array_splice(
     (*header).length = (len + delta) as u32;
     rt_update_array_cache(current_arr, new_body, len + delta, elem_size);
 
-    rt_pop_roots(2);
     current_arr
 }
 #[no_mangle]
@@ -828,8 +800,6 @@ pub unsafe extern "C" fn rt_array_indexOf(id: i64, val: i64) -> i64 {
 pub unsafe extern "C" fn rt_array_concat(id1: i64, id2: i64) -> i64 {
     let mut left = id1;
     let mut right = id2;
-    rt_push_root(&mut left);
-    rt_push_root(&mut right);
 
     let len1 = rt_len(left);
     let len2 = rt_len(right);
@@ -873,7 +843,6 @@ pub unsafe extern "C" fn rt_array_concat(id1: i64, id2: i64) -> i64 {
             (len2 * elem_size) as usize,
         );
     }
-    rt_pop_roots(2);
     return obj;
 }
 #[no_mangle]
@@ -953,7 +922,6 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     flags: i64,
 ) -> i64 {
     let mut source = size_or_arr;
-    rt_push_root(&mut source);
 
     let size = if source >= STACK_OFFSET {
         rt_len(source)
@@ -1011,7 +979,6 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
 
     let id = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(id, body_ptr, size, actual_elem_size);
-    rt_pop_roots(1);
     id
 }
 #[no_mangle]

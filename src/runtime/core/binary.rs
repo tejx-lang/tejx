@@ -36,7 +36,6 @@ pub unsafe fn bytes_from_int_array(arr: i64) -> Option<Vec<u8>> {
 #[no_mangle]
 pub unsafe extern "C" fn rt_bytes_from_string(s: i64) -> i64 {
     let mut source = s;
-    rt_push_root(&mut source);
     if let Some((_, len)) = get_str_parts(source) {
         let arr = rt_Array_new(len, 4);
         if len > 0 {
@@ -49,10 +48,8 @@ pub unsafe extern "C" fn rt_bytes_from_string(s: i64) -> i64 {
                 rt_update_array_cache(arr, body, len, 4);
             }
         }
-        rt_pop_roots(1);
         return arr;
     }
-    rt_pop_roots(1);
     rt_Array_new(0, 4)
 }
 

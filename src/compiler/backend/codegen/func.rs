@@ -972,7 +972,7 @@ update:\n\
             .push_str("@.fmt_sp = private unnamed_addr constant [2 x i8] c\" \\00\"\n");
 
         self.global_buffer
-            .push_str("%struct.ObjectHeader = type { i64, i16, i16, i32, i32, i32 }\n");
+            .push_str("%struct.ObjectHeader = type { i64, i16, i16, i32, i32, i64 }\n");
 
         // --- Type Registration ---
         let mut type_id = 100; // Start user types from 100
@@ -1289,7 +1289,6 @@ update:\n\
         self.current_arena = None;
         self.current_function_needs_loop_safepoints = Self::function_needs_loop_safepoints(func);
         self.entry_init_buffer.clear();
-        self.num_roots = 0;
         self.current_debug_line = None;
         self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
         self.current_function_has_runtime_frame =
@@ -1342,6 +1341,7 @@ update:\n\
         self.function_param_counts
             .insert(func.name.clone(), func.params.len());
         self.current_function_params = func.params.iter().cloned().collect();
+        self.local_gc_allocas.clear();
 
         self.emit(&format!(
             "define {} @\"{}\"({}) {{\n",
@@ -1455,7 +1455,6 @@ update:\n\
                 let passed_env = format!("%{}", func.params[0]);
                 self.emit_line(&format!("store i64 {}, i64* {}", passed_env, env_alloca));
                 self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
-                self.num_roots += 1;
 
                 self.current_env = Some(passed_env);
             }
@@ -1474,8 +1473,7 @@ update:\n\
                 env_reg, cap_count
             ));
             self.emit_line(&format!("store i64 {}, i64* {}", env_reg, env_alloca));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
-            self.num_roots += 1;
+            self.local_gc_allocas.push(env_alloca.clone());
             self.current_env = Some(env_reg);
         }
 
@@ -1483,7 +1481,7 @@ update:\n\
         for p in &func.params {
             if let Some(reg_name) = self.value_map.get(p).cloned() {
                 let ty = func.variables.get(p).unwrap_or(&TejxType::Void);
-                self.store_ptr(&reg_name, &format!("%{}", p), Some(ty));
+                self.store_ptr(&reg_name, &format!("%{}", p), Some(ty), true);
             }
         }
 
@@ -1503,9 +1501,7 @@ update:\n\
 
         for name in sorted_managed_vars {
             if let Some(ptr_name) = self.value_map.get(&name).cloned() {
-                self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-                self.emit_line(&format!("call void @rt_push_root(i64* {})", ptr_name));
-                self.num_roots += 1;
+                self.local_gc_allocas.push(ptr_name);
             }
         }
 
