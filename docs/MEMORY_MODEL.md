@@ -86,6 +86,11 @@ Major collections operate on old generation using mark/compact behavior:
 - compact the old-generation region
 - sweep large-object-space entries
 
+**GC Triggers & Dynamic Scaling**: The Garbage Collector now automatically scales to host capacity.
+- **Dynamic Triggers**: Default GC collection is triggered when heap usage reaches **60%** of the configured limit, completely bypassing older fixed memory thresholds (like the outdated 512MB hard limit).
+- **Configuration**: Maximum heap limits are controllable via the `--max-old-space-size` runtime parameter.
+- **OOM Protection**: A robust Out of Memory fatal trap protects the runtime when it exhausts the configurable upper threshold, ensuring memory is handled safely at scale.
+
 ### Write Barrier
 
 Old-to-young references are tracked through a card-table write barrier. This prevents minor GCs from missing young objects referenced from old generation.

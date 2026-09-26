@@ -1,0 +1,77 @@
+function parseDecimalInt(text: string): int {
+    let digits = "0123456789";
+    let normalized = text.trim();
+    let result = 0;
+
+    for (let i = 0; i < normalized.length(); i++) {
+        let digit = normalized.substring(i, i + 1);
+        let value = digits.indexOf(digit);
+        if (value < 0) {
+            return 0;
+        }
+        result = (result * 10) + value;
+    }
+
+    return result;
+}
+
+export class URL {
+    raw: string;
+    scheme: string;
+    host: string;
+    port: string;
+    hostHeader: string;
+    resource: string;
+
+    constructor(url: string) {
+        this.raw = url;
+        this.scheme = "";
+        this.host = "";
+        this.port = "";
+        this.hostHeader = "";
+        this.resource = "/";
+
+        let schemeSeparator = url.indexOf("://");
+        if (schemeSeparator < 0) {
+            throw new Error("URL must include a scheme");
+        }
+
+        this.scheme = url.substring(0, schemeSeparator).toLowerCase();
+
+        let remainder = url.substring(schemeSeparator + 3, url.length());
+        let pathStart = remainder.indexOf("/");
+        let authority = remainder;
+        let resource = "/";
+        if (pathStart >= 0) {
+            authority = remainder.substring(0, pathStart);
+            resource = remainder.substring(pathStart, remainder.length());
+        }
+
+        if (authority == "") {
+            throw new Error("URL host is required");
+        }
+
+        this.host = authority;
+        this.port = "";
+        let portSeparator = authority.indexOf(":");
+        if (portSeparator >= 0) {
+            this.host = authority.substring(0, portSeparator);
+            this.port = authority.substring(portSeparator + 1, authority.length());
+        }
+
+        if (this.host == "") {
+            throw new Error("URL host is required");
+        }
+
+        if (this.port == "") {
+            this.port = this.scheme == "https" ? "443" : "80";
+        }
+
+        this.hostHeader = this.host;
+        if ((this.scheme == "http" && this.port != "80") || (this.scheme == "https" && this.port != "443")) {
+            this.hostHeader = this.host + ":" + this.port;
+        }
+
+        this.resource = resource == "" ? "/" : resource;
+    }
+}

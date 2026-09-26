@@ -63,7 +63,7 @@ Common primitives include:
 Typical usage:
 
 ```tx
-import { Thread } from "std:thread";
+import { Thread, spawn } from "std:thread";
 
 function worker(n: int): void {
     print(n);
@@ -72,7 +72,15 @@ function worker(n: int): void {
 let t = new Thread<int>(worker, 42);
 t.start();
 t.join();
+
+// Thread-Per-Connection Example natively used by HttpServer
+spawn(() => {
+    // Highly concurrent background operation
+    print("Background worker");
+});
 ```
+
+The TejX `HttpServer` inside `std:http` is built entirely on a powerful **thread-per-connection** model. When a socket connects, the native `spawn()` method creates a lightweight dedicated OS thread to handle the request efficiently, achieving significant parallelism across CPU cores out of the box.
 
 Use native threads when you want real parallel execution across cores.
 

@@ -1,5 +1,8 @@
 import std:json;
+import std:net;
+import std:thread;
 import "./client.tx";
+import "./server.tx";
 
 function requestOption(options: any, key: string): any {
     if (options == None) {
@@ -35,23 +38,7 @@ function requestBodyKind(body: any): int {
     return 1;
 }
 
-export class HttpRequest {
-    method: string;
-    body: any;
-    headers: Headers;
-    insecureTls: bool;
-    timeoutMs: int;
-    bodyKind: int;
 
-    constructor(method: string, body: any, headers: any, insecureTls: bool, timeoutMs: int) {
-        this.method = method.toUpperCase();
-        this.body = body;
-        this.headers = new Headers(headers);
-        this.insecureTls = insecureTls;
-        this.timeoutMs = normalizedTimeout(timeoutMs);
-        this.bodyKind = requestBodyKind(body);
-    }
-}
 
 function httpClientFor(url: string, insecureTls: bool): HttpClient {
     if (url.startsWith("https://")) {
@@ -92,7 +79,7 @@ export class Request {
         return request;
     }
 
-    send(): HttpResponse {
+    send(): Response {
         let client: HttpClient = httpClientFor(this.url, this.insecureTls);
         let headers = this.headers.copy();
         let bodyText = this.bodyText(headers);
@@ -121,15 +108,7 @@ export class Request {
             return;
         }
 
-        if (options instanceof HttpRequest) {
-            let request: HttpRequest = options as HttpRequest;
-            this.method = request.method.toUpperCase();
-            this.headers = request.headers.copy();
-            this.insecureTls = request.insecureTls;
-            this.timeoutMs = normalizedTimeout(request.timeoutMs);
-            this.setBody(request.body);
-            return;
-        }
+
 
         let method: any = requestOption(options, "method");
         if (method != None) {
@@ -187,7 +166,7 @@ export class Request {
     }
 }
 
-export class HttpResponse {
+export class Response {
     httpVersion: string;
     status: int;
     statusText: string;
@@ -224,11 +203,7 @@ export class HttpResponse {
     }
 }
 
-export class Response extends HttpResponse {
-    constructor(response: HttpClientResponse) {
-        super(response);
-    }
-}
+
 
 function requestFromInput(input: any, options: any): Request {
     if (input instanceof Request) {
@@ -245,6 +220,8 @@ function requestFromInput(input: any, options: any): Request {
     throw new Error("fetch expects a string URL or Request");
 }
 
-export function fetch(input: any, options: any = None): HttpResponse {
+export function fetch(input: any, options: any = None): Response {
     return requestFromInput(input, options).send();
 }
+
+
