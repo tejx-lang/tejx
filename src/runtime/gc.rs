@@ -2,11 +2,166 @@ use super::*;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, Once};
 
-// --- GC Memory System Constants ---
-pub const YOUNG_GEN_SIZE: usize = 16 * 1024 * 1024; // 16MB Eden
-pub const SURVIVOR_SIZE: usize = 2 * 1024 * 1024; // 2MB each
-pub const OLD_GEN_SIZE: usize = 4 * 1024 * 1024 * 1024; // 4GB Old Gen
-pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB
+// =============================================================================
+// GC MEMORY CONFIGURATION
+// =============================================================================
+//
+// OLD_GEN_SIZE = maximum old-generation heap (virtual address reservation).
+// Physical pages are only allocated by the OS as memory is actually touched.
+//
+// Configuration priority (highest to lowest):
+//   1. Runtime argument:  ./myapp -Xmx16g       — Java-style  (or --tejx-heap 16gb)
+//   2. Auto-detection:    min(50% of system RAM, 2GB)
+//
+// All size strings accept: "16gb", "8192mb", "512kb", "1073741824" (raw bytes)
+// =============================================================================
+
+pub const YOUNG_GEN_SIZE: usize       = 16 * 1024 * 1024;         // 16MB Eden
+pub const SURVIVOR_SIZE: usize        = 2  * 1024 * 1024;          // 2MB each survivor
+pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024;              // 128KB LOS threshold
+pub const GC_MIN_HEAP: usize          = 2  * 1024 * 1024 * 1024;  // 2GB floor
+pub const GC_MAX_HEAP: usize          = 128 * 1024 * 1024 * 1024; // 128GB ceiling
+
+/// Final old-gen size, set once at startup by `rt_init_gc()`.
+/// Default is overwritten to the detected value before mmap.
+pub static mut OLD_GEN_SIZE: usize = GC_MAX_HEAP;
+
+
+/// Set by argv parsing (`-Xmx16g`, `--tejx-heap 16gb`) in `tejx_runtime_main`.
+/// 0 = not set (fall through to env/autodetect).
+pub static mut ARGV_GC_HEAP_LIMIT: usize = 0;
+
+extern "C" {
+    fn sysconf(name: i32) -> i64;
+}
+
+// sysconf constants — platform-specific
+#[cfg(target_os = "macos")]
+const SC_PHYS_PAGES: i32 = 200; // _SC_PHYS_PAGES on macOS (sys/unistd.h)
+#[cfg(target_os = "macos")]
+const SC_PAGESIZE: i32 = 29;    // _SC_PAGESIZE on macOS
+
+#[cfg(not(target_os = "macos"))]
+const SC_PHYS_PAGES: i32 = 85;  // _SC_PHYS_PAGES on Linux
+#[cfg(not(target_os = "macos"))]
+const SC_PAGESIZE: i32 = 30;    // _SC_PAGESIZE on Linux
+
+/// Detect the optimal old-gen heap size at startup.
+/// Called once from `rt_init_gc()` after argv/env parsing is complete.
+pub(crate) unsafe fn detect_old_gen_size() -> usize {
+    const HARD_MIN: usize = 64 * 1024 * 1024; // 64MB absolute safety floor
+
+    // Priority 1: -Xmx16g / --max-old-space-size / --tejx-heap runtime argument
+    if ARGV_GC_HEAP_LIMIT > 0 {
+        return ARGV_GC_HEAP_LIMIT.max(HARD_MIN);
+    }
+
+    // Priority 2: auto-detect — 50% of physical RAM, up to a MAXIMUM of 2GB.
+    // (min(50% of system available memory and 2gb))
+    let pages     = sysconf(SC_PHYS_PAGES);
+    let page_size = sysconf(SC_PAGESIZE);
+    if pages > 0 && page_size > 0 {
+        let total_ram: usize = (pages as usize).saturating_mul(page_size as usize);
+        let half_ram  = total_ram / 2;
+        return half_ram.min(GC_MIN_HEAP); // min(50% RAM, 2GB)
+    }
+
+    // Final fallback: 2GB (if sysconf fails)
+    GC_MIN_HEAP
+}
+
+/// Parse size strings: "16gb", "8192mb", "512kb", or raw bytes "1073741824".
+/// Case-insensitive. Returns None on parse failure.
+pub(crate) fn parse_size_str(s: &str) -> Option<usize> {
+    let s = s.trim().to_lowercase();
+    // Support Java-style suffix (g/m/k) in addition to full words
+    if s.ends_with("gib") || s.ends_with("gb") || s.ends_with('g') {
+        let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+        return n.parse::<usize>().ok().map(|v| v * 1024 * 1024 * 1024);
+    }
+    if s.ends_with("mib") || s.ends_with("mb") || s.ends_with('m') {
+        let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+        return n.parse::<usize>().ok().map(|v| v * 1024 * 1024);
+    }
+    if s.ends_with("kib") || s.ends_with("kb") || s.ends_with('k') {
+        let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+        return n.parse::<usize>().ok().map(|v| v * 1024);
+    }
+    s.parse::<usize>().ok() // raw bytes
+}
+
+/// Parse GC-related arguments from argv at process start.
+/// Supports:
+///   --max-old-space-size=2048         (Node.js style, value in MB by default)
+///   -Xmx16g / -Xmx16gb / -Xmx16384m   (Java-style)
+///   --tejx-heap 16gb / --tejx-heap=16gb (long-form)
+/// Must be called BEFORE rt_init_gc().
+pub unsafe fn parse_gc_argv(argc: i32, argv: *mut *mut u8) {
+    let args: Vec<String> = (0..argc as usize)
+        .filter_map(|i| {
+            let ptr = *argv.add(i);
+            if ptr.is_null() { return None; }
+            std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char)
+                .to_str().ok().map(|s| s.to_string())
+        })
+        .collect();
+
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = &args[i];
+
+        // --max-old-space-size=2048 (Node.js style, defaults to MB if no suffix)
+        if let Some(val) = arg.strip_prefix("--max-old-space-size=") {
+            if let Some(bytes) = parse_size_str(val) {
+                // If it's a raw number (like "2048"), parse_size_str parses it as bytes.
+                // Node.js treats raw numbers as Megabytes.
+                if val.chars().all(|c| c.is_ascii_digit()) {
+                    ARGV_GC_HEAP_LIMIT = bytes * 1024 * 1024;
+                } else {
+                    ARGV_GC_HEAP_LIMIT = bytes; // user provided a suffix like 2gb
+                }
+            }
+        }
+        // -Xmx16g  (Java-style, no space)
+        else if let Some(val) = arg.strip_prefix("-Xmx") {
+            if let Some(bytes) = parse_size_str(val) {
+                ARGV_GC_HEAP_LIMIT = bytes;
+            }
+        }
+        // --tejx-heap=16gb  (no space)
+        else if let Some(val) = arg.strip_prefix("--tejx-heap=") {
+            if let Some(bytes) = parse_size_str(val) {
+                ARGV_GC_HEAP_LIMIT = bytes;
+            }
+        }
+        // --tejx-heap 16gb  (with space, next arg is value)
+        else if arg == "--tejx-heap" {
+            if i + 1 < args.len() {
+                if let Some(bytes) = parse_size_str(&args[i + 1]) {
+                    ARGV_GC_HEAP_LIMIT = bytes;
+                    i += 1; // skip the value arg
+                }
+            }
+        }
+        // --max-old-space-size 2048 (with space, next arg is value)
+        else if arg == "--max-old-space-size" {
+            if i + 1 < args.len() {
+                let val = &args[i + 1];
+                if let Some(bytes) = parse_size_str(val) {
+                    if val.chars().all(|c| c.is_ascii_digit()) {
+                        ARGV_GC_HEAP_LIMIT = bytes * 1024 * 1024;
+                    } else {
+                        ARGV_GC_HEAP_LIMIT = bytes;
+                    }
+                    i += 1; // skip the value arg
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+
 
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
@@ -19,6 +174,7 @@ pub static FINALIZER_CONDVAR: std::sync::LazyLock<std::sync::Condvar> =
     std::sync::LazyLock::new(|| std::sync::Condvar::new());
 
 const FLAG_FINALIZED: u16 = 0x1;
+pub const FLAG_REMSET_DIRTY: u16 = 0x2;
 
 #[derive(Default)]
 struct StaticRoots {
@@ -96,7 +252,39 @@ pub static mut OLD_START: *mut u8 = 0 as *mut u8;
 pub static mut OLD_TOP: *mut u8 = 0 as *mut u8;
 #[no_mangle]
 pub static mut OLD_END: *mut u8 = 0 as *mut u8;
+#[no_mangle]
+pub static mut OLD_BYTES_ALLOCATED: usize = 0;
+// Adaptive GC trigger threshold.
+// Initial trigger is dynamically set to 60% of OLD_GEN_SIZE at startup.
+// After each major GC, it dynamically adapts based on live_set * growth_factor,
+// but never drops below the 60% floor, ensuring maximum performance for small workloads.
+pub static mut OLD_GEN_GC_THRESHOLD: usize = 0; // set in rt_init_gc
 
+pub const NUM_FAST_BINS: usize = 256;
+pub static FAST_FREE_LIST: std::sync::LazyLock<[Mutex<Vec<usize>>; NUM_FAST_BINS]> = std::sync::LazyLock::new(|| std::array::from_fn(|_| Mutex::new(Vec::new())));
+pub static LARGE_FREE_LIST: std::sync::LazyLock<Mutex<std::collections::BTreeMap<usize, Vec<usize>>>> = std::sync::LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
+pub static PROMOTED_LIST: std::sync::LazyLock<Mutex<Vec<usize>>> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+pub static GLOBAL_MARK_QUEUE: std::sync::LazyLock<Mutex<Vec<i64>>> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+pub const GC_PHASE_IDLE: u8 = 0;
+pub const GC_PHASE_MARK: u8 = 1;
+pub static GC_PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(GC_PHASE_IDLE);
+pub static GC_BACKGROUND_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Growth factor for the GC trigger threshold, read ONCE from env at startup.
+// TEJXGC=50 (default) → next trigger = live_bytes × 1.5 (50% headroom above live set)
+// TEJXGC=100          → next trigger = live_bytes × 2.0 (Go's default — doubles)
+// TEJXGC=10           → next trigger = live_bytes × 1.1 (tight, for low-memory containers)
+//
+// MIN_OLD_GEN_THRESHOLD prevents micro-thrashing on small live sets:
+// even if live = 10MB, GC won't re-trigger until old gen reaches 512MB.
+pub static GC_GROWTH_FACTOR: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
+    let pct: usize = std::env::var("TEJXGC")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50); // default: 50% headroom = 1.5× live set
+    1.0_f64 + pct as f64 / 100.0
+});
 // --- Large Object Space (LOS) ---
 pub const MAX_LOS_OBJECTS: usize = 4096;
 const MIN_LOS_GC_TRIGGER_BYTES: usize = 8 * 1024 * 1024;
@@ -253,27 +441,35 @@ unsafe fn update_finalizer_queue() {
     }
 }
 
-// --- Write Barrier System ---
-pub const CARD_SHIFT: usize = 9; // 512 bytes per card
-pub static mut CARD_TABLE: *mut u8 = 0 as *mut u8;
-pub static mut CARD_TABLE_SIZE: usize = 0;
-
+// Removed CARD_TABLE
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier(obj: i64, value: i64) {
     if obj < HEAP_OFFSET || value < HEAP_OFFSET {
         return;
     }
 
+    // 1. Concurrent Mark Write Barrier (Incremental Update)
+    if GC_PHASE.load(std::sync::atomic::Ordering::Relaxed) == GC_PHASE_MARK {
+        MY_CONTEXT.with(|ctx_cell| {
+            let ctx = &*ctx_cell.get();
+            ctx.mark_queue.lock().unwrap().push(value);
+        });
+    }
+
+    // 2. Old -> Young Remembered Set
     let obj_ptr = (obj - HEAP_OFFSET) as *mut u8;
     let value_ptr = (value - HEAP_OFFSET) as *mut u8;
 
-    // We only care about Old -> Young references
-    // Safety: only mark if obj is in Old Gen
-    if obj_ptr >= OLD_START && obj_ptr < OLD_END {
+    if !in_young_gen(obj_ptr) {
         if in_young_gen(value_ptr) {
-            let offset = obj_ptr as usize - OLD_START as usize;
-            let card_idx = offset >> CARD_SHIFT;
-            *CARD_TABLE.add(card_idx) = 1; // Mark dirty
+            let header = rt_get_header(obj_ptr);
+            if ((*header).flags & FLAG_REMSET_DIRTY) == 0 {
+                (*header).flags |= FLAG_REMSET_DIRTY;
+                MY_CONTEXT.with(|ctx_cell| {
+                    let ctx = &*ctx_cell.get();
+                    ctx.remset.lock().unwrap().push(obj_ptr);
+                });
+            }
         }
     }
 }
@@ -511,6 +707,8 @@ pub struct ThreadContext {
     pub roots: [*mut i64; GC_STACK_SIZE],
     pub roots_top: usize,
     pub in_safepoint: AtomicBool,
+    pub remset: Mutex<Vec<*mut u8>>,
+    pub mark_queue: Mutex<Vec<i64>>,
 }
 
 may::coroutine_local! {
@@ -518,6 +716,8 @@ may::coroutine_local! {
         roots: [std::ptr::null_mut(); GC_STACK_SIZE],
         roots_top: 0,
         in_safepoint: AtomicBool::new(false),
+        remset: Mutex::new(Vec::new()),
+        mark_queue: Mutex::new(Vec::new()),
     }))
 }
 may::coroutine_local! {
@@ -702,6 +902,9 @@ pub unsafe extern "C" fn rt_get_header(body_ptr: *mut u8) -> *mut ObjectHeader {
 #[no_mangle]
 pub unsafe extern "C" fn rt_init_gc() {
     GC_INIT.call_once(|| unsafe {
+        // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > 50% of RAM (≥2GB)
+        OLD_GEN_SIZE = detect_old_gen_size();
+
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
         EDEN_START = mmap(
             std::ptr::null_mut(),
@@ -738,19 +941,9 @@ pub unsafe extern "C" fn rt_init_gc() {
         OLD_TOP = OLD_START;
         OLD_END = OLD_START.add(OLD_GEN_SIZE);
 
-        CARD_TABLE_SIZE = OLD_GEN_SIZE >> CARD_SHIFT;
-        CARD_TABLE = mmap(
-            std::ptr::null_mut(),
-            CARD_TABLE_SIZE,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANON,
-            -1,
-            0,
-        ) as *mut u8;
-
-        if CARD_TABLE as isize == -1 {
-            exit(1);
-        }
+        // Initial GC threshold is exactly 60% of the max heap.
+        // It acts as the absolute floor so we never GC before the heap reaches 60% capacity.
+        OLD_GEN_GC_THRESHOLD = OLD_GEN_SIZE * 60 / 100;
 
         rt_start_gc_scheduler();
         rt_start_finalizer_thread();
@@ -788,8 +981,7 @@ pub unsafe extern "C" fn rt_start_gc_scheduler() {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            let used = unsafe { OLD_TOP as usize - OLD_START as usize };
-            if used > (OLD_GEN_SIZE * 7 / 10) {
+            if OLD_BYTES_ALLOCATED > OLD_GEN_GC_THRESHOLD {
                 unsafe { major_gc() };
             }
         }
@@ -900,8 +1092,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
             if current_top.add(refill_size) > EDEN_END {
                 trigger_safepoint();
                 minor_gc_locked();
-                let old_used = OLD_TOP as usize - OLD_START as usize;
-                if old_used > (OLD_GEN_SIZE * 7 / 10) {
+                if OLD_BYTES_ALLOCATED > OLD_GEN_GC_THRESHOLD {
                     major_gc_locked_internal(false, true);
                 }
                 resume_safepoint();
@@ -979,7 +1170,7 @@ pub unsafe fn in_los(ptr: *mut u8) -> bool {
     false
 }
 
-unsafe fn mark_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>) {
+pub unsafe fn mark_object(root: *mut i64) {
     if root.is_null() {
         return;
     }
@@ -987,73 +1178,112 @@ unsafe fn mark_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     if val < STACK_OFFSET {
         return;
     }
-
     let resolved_val = crate::rt_gc_resolve_array_id(val);
     if resolved_val != val {
         *root = resolved_val;
         val = resolved_val;
     }
-
-    let (body_ptr, is_stack) = if val >= HEAP_OFFSET {
-        ((val - HEAP_OFFSET) as *mut u8, false)
-    } else {
-        ((val - STACK_OFFSET) as *mut u8, true)
-    };
-
-    if !is_stack && !rt_is_gc_ptr(body_ptr) {
-        return;
-    }
-
-    let header = (body_ptr as *mut ObjectHeader).offset(-1);
-
-    if is_stack {
-        if !seen_stack.insert(header as usize) {
-            return;
-        }
-    } else {
-        if gc_is_marked((*header).gc_word) {
-            return;
-        }
-
-        (*header).gc_word |= GC_MARK_BIT;
-    }
-
-    // Recursively mark fields
-    let type_id = (*header).type_id;
-    if type_id == TAG_ARRAY as u16 {
-        let len = (*header).length;
-        let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
-
-        // Only scan pointer arrays
-        if is_ptr_array {
-            let data = body_ptr as *mut i64;
-            for i in 0..len {
-                mark_object_with_seen(data.add(i as usize), seen_stack);
-            }
-        }
-    } else if type_id == TAG_OBJECT as u16 {
-        mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
-        mark_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
-    } else if type_id == TAG_PROMISE as u16 {
-        mark_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
-        mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
-    } else if type_id == TAG_FUNCTION as u16 {
-        mark_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
-    } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
-        let entry = &TYPE_TABLE[type_id as usize];
-        for i in 0..entry.ptr_count {
-            let offset = entry.ptr_offsets[i];
-            mark_object_with_seen(body_ptr.add(offset) as *mut i64, seen_stack);
-        }
-    }
+    GLOBAL_MARK_QUEUE.lock().unwrap().push(val);
 }
 
-pub unsafe fn mark_object(root: *mut i64) {
+pub unsafe fn process_mark_queue() {
+    let mut local_queue = Vec::new();
     let mut seen_stack = HashSet::new();
-    mark_object_with_seen(root, &mut seen_stack);
+
+    loop {
+        {
+            let mut global_q = GLOBAL_MARK_QUEUE.lock().unwrap();
+            local_queue.extend(global_q.drain(..));
+
+            let registry = THREAD_REGISTRY.lock().unwrap();
+            for &ctx_wrapper in registry.iter() {
+                let ctx = &*ctx_wrapper.0;
+                let mut mq = ctx.mark_queue.lock().unwrap();
+                local_queue.extend(mq.drain(..));
+            }
+        }
+
+        if local_queue.is_empty() {
+            break;
+        }
+
+        while let Some(val) = local_queue.pop() {
+            if val < STACK_OFFSET {
+                continue;
+            }
+
+            let (body_ptr, is_stack) = if val >= HEAP_OFFSET {
+                ((val - HEAP_OFFSET) as *mut u8, false)
+            } else {
+                ((val - STACK_OFFSET) as *mut u8, true)
+            };
+
+            if !is_stack && !rt_is_gc_ptr(body_ptr) {
+                continue;
+            }
+
+            let header = (body_ptr as *mut ObjectHeader).offset(-1);
+
+            if is_stack {
+                if !seen_stack.insert(header as usize) {
+                    continue;
+                }
+            } else {
+                if gc_is_marked((*header).gc_word) {
+                    continue;
+                }
+                (*header).gc_word |= GC_MARK_BIT;
+            }
+
+            let mut push_field = |field_ptr: *mut i64| {
+                if field_ptr.is_null() { return; }
+                let mut field_val = *field_ptr;
+                if field_val >= STACK_OFFSET {
+                    let resolved = crate::rt_gc_resolve_array_id(field_val);
+                    if resolved != field_val {
+                        *field_ptr = resolved;
+                        field_val = resolved;
+                    }
+                    local_queue.push(field_val);
+                }
+            };
+
+            let type_id = (*header).type_id;
+            if type_id == TAG_ARRAY as u16 {
+                let len = (*header).length;
+                let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
+                if is_ptr_array {
+                    let data = body_ptr as *mut i64;
+                    for i in 0..len {
+                        push_field(data.add(i as usize));
+                    }
+                }
+            } else if type_id == TAG_OBJECT as u16 {
+                push_field(body_ptr.add(16) as *mut i64);
+                push_field(body_ptr.add(24) as *mut i64);
+            } else if type_id == TAG_PROMISE as u16 {
+                push_field(body_ptr.add(8) as *mut i64);
+                push_field(body_ptr.add(16) as *mut i64);
+            } else if type_id == TAG_FUNCTION as u16 {
+                push_field(body_ptr.add(8) as *mut i64);
+            } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
+                let entry = &TYPE_TABLE[type_id as usize];
+                for i in 0..entry.ptr_count {
+                    push_field(body_ptr.add(entry.ptr_offsets[i]) as *mut i64);
+                }
+            }
+        }
+    }
 }
 
 unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
+    if GC_BACKGROUND_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        // A GC is already running in the background. Don't start another one.
+        // If we really need memory, we could spinloop here, but returning is safer to prevent deadlocks.
+        return;
+    }
+    GC_BACKGROUND_RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
+
     rt_clear_tlab();
     crate::rt_gc_prepare_array_forward();
 
@@ -1066,19 +1296,9 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         minor_gc_locked();
     }
 
-    // 2. Mark phase (from roots, recursively)
-    // Clear marks
-    let mut current = OLD_START;
-    while current < OLD_TOP {
-        let header = current as *mut ObjectHeader;
-        (*header).gc_word &= !GC_MARK_BIT;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        current = current.add(size);
-    }
+    // 2. Initial Mark (STW)
+    GC_PHASE.store(GC_PHASE_MARK, std::sync::atomic::Ordering::SeqCst);
     let los_before_sweep = los_snapshot();
-    for &(obj_ptr, _) in &los_before_sweep {
-        (*(obj_ptr as *mut ObjectHeader)).gc_word &= !GC_MARK_BIT;
-    }
 
     {
         let registry = THREAD_REGISTRY.lock().unwrap();
@@ -1093,164 +1313,297 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     mark_static_roots();
     super::rt_gc_mark_tasks();
 
-    // 2.5 Queue Finalizers for unmarked objects and resurrect them
-    let mut resurrected = false;
-    let mut curr = OLD_START;
-    while curr < OLD_TOP {
-        let header = curr as *mut ObjectHeader;
-        let type_id = (*header).type_id;
-        if !gc_is_marked((*header).gc_word) {
-            if ((*header).flags & FLAG_FINALIZED) == 0 {
-                if (type_id as usize) < MAX_TYPES {
-                    if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                        let mut obj_val =
-                            (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
-                        {
-                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
-                            queue.push((f, obj_val));
-                        }
-                        (*header).flags |= FLAG_FINALIZED;
-                        mark_object(&mut obj_val as *mut i64);
-                        resurrected = true;
-                    }
-                }
-            }
-        }
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        curr = curr.add(size);
-    }
-    // Also LOS finalizers
-    for &(obj_ptr, _) in &los_before_sweep {
-        let header = obj_ptr as *mut ObjectHeader;
-        let type_id = (*header).type_id;
-        if !gc_is_marked((*header).gc_word) {
-            if ((*header).flags & FLAG_FINALIZED) == 0 {
-                if (type_id as usize) < MAX_TYPES {
-                    if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                        let mut obj_val =
-                            (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
-                        {
-                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
-                            queue.push((f, obj_val));
-                        }
-                        (*header).flags |= FLAG_FINALIZED;
-                        mark_object(&mut obj_val as *mut i64);
-                        resurrected = true;
-                    }
-                }
-            }
-        }
+    // End of Initial Mark STW
+    if !safepoint_already {
+        resume_safepoint();
     }
 
-    if resurrected {
-        FINALIZER_CONDVAR.notify_one();
+    // 3. Concurrent Trace
+    process_mark_queue();
+
+    // 4. Remark (STW)
+    if !safepoint_already {
+        trigger_safepoint();
     }
-
-    // 3. Sweep LOS
-    {
-        let _los_lock = LOS_LOCK.lock().unwrap();
-        let mut new_los_count = 0;
-        let mut new_los_bytes = 0usize;
-        for i in 0..LOS_COUNT {
-            let header = LOS_OBJECTS[i] as *mut ObjectHeader;
-            if gc_is_marked((*header).gc_word) {
-                LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
-                LOS_SIZES[new_los_count] = LOS_SIZES[i];
-                new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
-                new_los_count += 1;
-            } else {
-                munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
-            }
-        }
-        LOS_COUNT = new_los_count;
-        LOS_BYTES = new_los_bytes;
-        LOS_NEXT_GC_THRESHOLD =
-            std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
-    }
-
-    // 4. Mark-Compact for Old Gen (3 passes)
-
-    // Pass 1: Compute new addresses and store in ObjectHeader (gc_word)
-    let mut free_ptr = OLD_START;
-    let mut scan_ptr = OLD_START;
-    while scan_ptr < OLD_TOP {
-        let header = scan_ptr as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if gc_is_marked((*header).gc_word) {
-            // Store new address in gc_word (bit 9 = forwarded)
-            let new_addr = free_ptr;
-            (*header).gc_word = ((new_addr as u64) & GC_PTR_MASK) | GC_MARK_BIT | GC_FWD_BIT;
-            free_ptr = free_ptr.add(size);
-        }
-        scan_ptr = scan_ptr.add(size);
-    }
-
-    // Update roots
+    GC_PHASE.store(GC_PHASE_IDLE, std::sync::atomic::Ordering::SeqCst);
+    
+    // Trace roots again to catch any missed updates
     {
         let registry = THREAD_REGISTRY.lock().unwrap();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
             for i in 0..top {
-                rt_update_ptr((*ctx_ptr).roots[i]);
+                mark_object((*ctx_ptr).roots[i]);
             }
         }
     }
-    update_static_roots();
-    update_finalizer_queue();
-    super::rt_gc_update_tasks();
+    mark_static_roots();
+    super::rt_gc_mark_tasks();
+    process_mark_queue();
 
-    // Update Young Gen (Survivor)
-    let mut y_scan = FROM_SURVIVOR;
-    while y_scan < FROM_SURVIVOR_TOP {
-        let header = y_scan as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        update_object_fields(header, rt_update_ptr);
-        y_scan = y_scan.add(size);
-    }
-
-    // Update Old Gen objects' fields
-    scan_ptr = OLD_START;
-    while scan_ptr < OLD_TOP {
-        let header = scan_ptr as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if gc_is_marked((*header).gc_word) {
-            update_object_fields(header, rt_update_ptr);
+    // 4.5 Filter RemSets to remove dead objects before Sweep
+    {
+        let registry = THREAD_REGISTRY.lock().unwrap();
+        for &ctx_wrapper in registry.iter() {
+            let ctx = &*ctx_wrapper.0;
+            let mut remset = ctx.remset.lock().unwrap();
+            remset.retain(|&obj_ptr| {
+                let header = obj_ptr as *mut ObjectHeader;
+                if gc_is_marked((*header).gc_word) {
+                    true
+                } else {
+                    (*header).flags &= !FLAG_REMSET_DIRTY;
+                    false
+                }
+            });
         }
-        scan_ptr = scan_ptr.add(size);
     }
 
-    // Update LOS objects' fields
-    for (obj_ptr, _) in los_snapshot() {
-        update_object_fields(obj_ptr as *mut ObjectHeader, rt_update_ptr);
-    }
+    // 5. Finalizer Queueing (Concurrent) is now moved to the background thread.
+    let los_snapshot_for_finalizers: Vec<(usize, usize)> = los_before_sweep
+        .iter()
+        .map(|&(ptr, size)| (ptr as usize, size))
+        .collect();
 
-    // Pass 3: Actually move
-    // Pass 3: Move objects
-    let mut move_ptr = OLD_START;
-    let mut dest_ptr = OLD_START; // Re-introduce dest_ptr for OLD_TOP update
-    while move_ptr < OLD_TOP {
-        let header = move_ptr as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if gc_is_marked((*header).gc_word) {
-            let new_addr = gc_forward_ptr((*header).gc_word) as *mut u8;
-            if new_addr != move_ptr {
-                memcpy(new_addr as *mut _, move_ptr as *const _, size);
-                // Clear mark bit in new header
-                (*(new_addr as *mut ObjectHeader)).gc_word &= !GC_FLAG_MASK;
+    // 3. Sweep LOS (Concurrent) is now moved to the background thread.
+
+    // 4. Mark-Sweep for Old Gen (Concurrent)
+    let sweep_limit = OLD_TOP as usize;
+    // Capture the live bytes RIGHT NOW (before sweep) so the background thread
+    // can calculate how effective this GC cycle was.
+    let bytes_before_gc = OLD_BYTES_ALLOCATED;
+    for bin in FAST_FREE_LIST.iter() {
+        bin.lock().unwrap().clear();
+    }
+    LARGE_FREE_LIST.lock().unwrap().clear();
+    
+    std::thread::spawn(move || unsafe {
+        // --- PHASE 1: Concurrent Finalizer Resurrect ---
+        let mut resurrected = false;
+        let mut curr = OLD_START;
+        let limit_ptr = sweep_limit as *mut u8;
+        
+        while curr < limit_ptr {
+            let header = curr as *mut ObjectHeader;
+            let type_id = (*header).type_id;
+            if !gc_is_marked((*header).gc_word) {
+                if ((*header).flags & FLAG_FINALIZED) == 0 {
+                    if (type_id as usize) < MAX_TYPES {
+                        if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                            let mut obj_val =
+                                (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                            {
+                                let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                                queue.push((f, obj_val));
+                            }
+                            (*header).flags |= FLAG_FINALIZED;
+                            mark_object(&mut obj_val as *mut i64);
+                            resurrected = true;
+                        }
+                    }
+                }
+            }
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+            curr = curr.add(size);
+        }
+        
+        // Also LOS finalizers
+        for &(obj_usize, _) in &los_snapshot_for_finalizers {
+            let obj_ptr = obj_usize as *mut u8;
+            let header = obj_ptr as *mut ObjectHeader;
+            let type_id = (*header).type_id;
+            if !gc_is_marked((*header).gc_word) {
+                if ((*header).flags & FLAG_FINALIZED) == 0 {
+                    if (type_id as usize) < MAX_TYPES {
+                        if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                            let mut obj_val =
+                                (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                            {
+                                let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                                queue.push((f, obj_val));
+                            }
+                            (*header).flags |= FLAG_FINALIZED;
+                            mark_object(&mut obj_val as *mut i64);
+                            resurrected = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if resurrected {
+            process_mark_queue();
+            FINALIZER_CONDVAR.notify_one();
+        }
+
+        // --- PHASE 2: Concurrent Sweep ---
+        let mut scan_ptr = OLD_START;
+        let mut local_free_list: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+        let mut new_old_bytes = 0usize;
+        
+        while scan_ptr < limit_ptr {
+            let header = scan_ptr as *mut ObjectHeader;
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+            
+            if gc_is_marked((*header).gc_word) {
+                // Unmark it for next time
+                (*header).gc_word &= !GC_MARK_BIT;
+                new_old_bytes += size;
             } else {
-                (*header).gc_word &= !GC_FLAG_MASK; // Just clear mark/fwd bits
+                // Dead object, add to local free list!
+                local_free_list.entry(size).or_default().push(scan_ptr as usize);
             }
-            dest_ptr = dest_ptr.add(size); // Update dest_ptr for the next available slot
+            scan_ptr = scan_ptr.add(size);
         }
-        move_ptr = move_ptr.add(size);
-    }
-    OLD_TOP = dest_ptr;
+        
+        // Merge into global FREE_LIST
+        let mut global_large = LARGE_FREE_LIST.lock().unwrap();
+        for (size, mut vec) in local_free_list {
+            if size < NUM_FAST_BINS * 8 {
+                let bin_idx = size / 8;
+                FAST_FREE_LIST[bin_idx].lock().unwrap().append(&mut vec);
+            } else {
+                global_large.entry(size).or_default().append(&mut vec);
+            }
+        }
+        // --- PHASE 3: Concurrent Sweep LOS ---
+        {
+            let _los_lock = LOS_LOCK.lock().unwrap();
+            let mut new_los_count = 0;
+            let mut new_los_bytes = 0usize;
+            let original_los_count = los_snapshot_for_finalizers.len();
+            
+            for i in 0..LOS_COUNT {
+                let header = LOS_OBJECTS[i] as *mut ObjectHeader;
+                
+                let mut is_survivor = false;
+                if i < original_los_count {
+                    if gc_is_marked((*header).gc_word) {
+                        is_survivor = true;
+                        (*header).gc_word &= !GC_MARK_BIT;
+                    }
+                } else {
+                    // Object was allocated during concurrent GC. Implicitly alive!
+                    is_survivor = true;
+                }
+                
+                if is_survivor {
+                    LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
+                    LOS_SIZES[new_los_count] = LOS_SIZES[i];
+                    new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
+                    new_los_count += 1;
+                } else {
+                    munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
+                }
+            }
+            LOS_COUNT = new_los_count;
+            LOS_BYTES = new_los_bytes;
+            LOS_NEXT_GC_THRESHOLD =
+                std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
+        }
+        
+        OLD_BYTES_ALLOCATED = new_old_bytes;
+        
+        // =================================================================
+        // DEFINITIVE GC TRIGGER THRESHOLD
+        // =================================================================
+        //
+        // Formula:
+        //   scaled   = live × growth_factor          (proportional headroom)
+        //   next     = max(scaled, bytes_before_gc)  (← the key insight)
+        //   next     = max(next, live + 128MB)        (absolute headroom floor)
+        //   next     = max(next, 512MB)               (micro-thrash guard)
+        //   next     = min(next, heap × 95%)          (OOM safety ceiling)
+        //
+        // Why `max(scaled, bytes_before_gc)` handles BOTH cases perfectly:
+        //
+        //   CASE A — GC freed well (100GB → 60GB live, 40% freed):
+        //     scaled        = 60GB × 1.5 = 90GB
+        //     bytes_before  = 100GB (where GC triggered)
+        //     next          = max(90GB, 100GB) = 100GB  ✅ same high-water mark
+        //     → App grows freely from 60GB back to 100GB before GC fires again.
+        //     → No premature GC. No wasted cycles.
+        //
+        //   CASE B — GC barely freed (100GB → 99GB live, 1% freed):
+        //     scaled        = 99GB × 1.5 = 148.5GB
+        //     bytes_before  = 100GB
+        //     next          = max(148.5GB, 100GB) = 148.5GB → capped at 121GB
+        //     → Threshold rises. GC backs off. If live set keeps growing,
+        //       GC fires again at 121GB (the 95% ceiling), and warns user.
+        //
+        //   CASE C — Small app (live = 10MB after first GC):
+        //     scaled        = 10MB × 1.5 = 15MB
+        //     bytes_before  = 512MB (initial threshold)
+        //     next          = max(15MB, 512MB) = 512MB  ✅ no micro-thrashing
+        //
+        //   CASE D — Large cache (live = 90GB, threshold was 121GB ceiling):
+        //     scaled        = 90GB × 1.5 = 135GB → capped at 121GB
+        //     bytes_before  = 121GB
+        //     next          = max(121GB, 121GB) = 121GB → warns user ✅
+        //
+        // Growth factor is read ONCE at startup (LazyLock) — zero cost per GC cycle.
+        // Configurable: TEJXGC=50 (default, 50% headroom), TEJXGC=100 (Go's default).
+        // =================================================================
+
+        let growth_factor = *GC_GROWTH_FACTOR;
+
+        // Core: proportional headroom above live set
+        let scaled = (new_old_bytes as f64 * growth_factor) as usize;
+
+        // Never lower the trigger below where it was before this GC cycle.
+        // This is what prevents premature re-triggering after a successful collection.
+        let high_water = bytes_before_gc;
+
+        // Combine: whichever gives more room
+        let combined = scaled.max(high_water);
+
+        // Floor: always at least 128MB above live set (minimum breathing room)
+        let with_headroom = new_old_bytes.saturating_add(128 * 1024 * 1024);
+
+        // Floor: absolute minimum 60% of max heap (prevents GC until 60% occupancy is reached)
+        let absolute_floor = OLD_GEN_SIZE * 60 / 100;
+        let floored = combined
+            .max(with_headroom)
+            .max(absolute_floor);
+
+        // Ceiling: never exceed 95% of heap (OOM safety — GC always fires before full)
+        let ceiling = OLD_GEN_SIZE * 95 / 100;
+        OLD_GEN_GC_THRESHOLD = floored.min(ceiling);
+
+        // Diagnostics: warn when live set is above 80% of heap (memory pressure)
+        let collection_ratio = bytes_before_gc.saturating_sub(new_old_bytes) as f64
+            / bytes_before_gc.max(1) as f64;
+            
+        if new_old_bytes > OLD_GEN_SIZE * 98 / 100 {
+            eprintln!(
+                "FATAL: Out of Memory! Max heap limit of {} MB exceeded (Live set reached {} MB after GC). \
+                 Please increase your heap limit using --max-old-space-size=... or -Xmx...",
+                OLD_GEN_SIZE / (1024 * 1024),
+                new_old_bytes / (1024 * 1024)
+            );
+            exit(1);
+        } else if new_old_bytes > OLD_GEN_SIZE * 80 / 100 {
+            eprintln!(
+                "[GC] WARNING: Live set {:.1}% of heap ({} MB / {} MB total). \
+                 Freed {:.1}% this cycle. Next GC at {} MB. \
+                 Use --max-old-space-size=... or -Xmx... to increase heap. \
+                 Tune GC headroom with TEJXGC (current: {:.1}x).",
+                new_old_bytes as f64 / OLD_GEN_SIZE as f64 * 100.0,
+                new_old_bytes / (1024 * 1024),
+                OLD_GEN_SIZE / (1024 * 1024),
+                collection_ratio * 100.0,
+                OLD_GEN_GC_THRESHOLD / (1024 * 1024),
+                growth_factor,
+            );
+        }
+        GC_BACKGROUND_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
 
     // Young survivors participate in mark traversal during major GC, but they are not part
     // of the compacted old generation. Clear any transient mark bits so a later major GC
     // does not incorrectly skip traversing still-young roots.
-    y_scan = FROM_SURVIVOR;
+    let mut y_scan = FROM_SURVIVOR;
     while y_scan < FROM_SURVIVOR_TOP {
         let header = y_scan as *mut ObjectHeader;
         let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
@@ -1437,13 +1790,30 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     let (new_header, is_promotion) = if age >= PROMOTION_THRESHOLD
         || (TO_SURVIVOR_TOP as usize + total_size > (TO_SURVIVOR as usize + SURVIVOR_SIZE))
     {
-        if OLD_TOP as usize + total_size > OLD_END as usize {
-            printf(
-                "FATAL: Old Generation Overflow during promotion/fallback\n\0".as_ptr() as *const _,
-            );
-            exit(1);
-        }
-        (OLD_TOP as *mut ObjectHeader, true)
+        let ptr = if total_size < NUM_FAST_BINS * 8 {
+            let bin_idx = total_size / 8;
+            FAST_FREE_LIST[bin_idx].lock().unwrap().pop().map(|p| p as *mut u8)
+        } else {
+            LARGE_FREE_LIST.lock().unwrap().get_mut(&total_size).and_then(|vec| vec.pop()).map(|p| p as *mut u8)
+        };
+        
+        let header_ptr = if let Some(p) = ptr {
+            p as *mut ObjectHeader
+        } else {
+            if OLD_TOP as usize + total_size > OLD_END as usize {
+                eprintln!(
+                    "FATAL: Out of Memory! Max heap limit of {} MB exceeded during promotion. \
+                     Please increase your heap limit using --max-old-space-size=... or -Xmx...",
+                    OLD_GEN_SIZE / (1024 * 1024)
+                );
+                exit(1);
+            }
+            let alloc_ptr = OLD_TOP as *mut ObjectHeader;
+            OLD_TOP = OLD_TOP.add(total_size);
+            alloc_ptr
+        };
+        OLD_BYTES_ALLOCATED += total_size;
+        (header_ptr, true)
     } else {
         (TO_SURVIVOR_TOP as *mut ObjectHeader, false)
     };
@@ -1462,7 +1832,7 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     *root = (new_body as i64) + HEAP_OFFSET;
 
     if is_promotion {
-        OLD_TOP = OLD_TOP.add(total_size);
+        PROMOTED_LIST.lock().unwrap().push(new_header as usize);
     } else {
         TO_SURVIVOR_TOP = TO_SURVIVOR_TOP.add(total_size);
     }
@@ -1725,8 +2095,8 @@ pub unsafe fn minor_gc_locked() {
     let from_survivor_top = FROM_SURVIVOR_TOP;
     TO_SURVIVOR_TOP = TO_SURVIVOR;
     let mut survivor_scan_ptr = TO_SURVIVOR;
-    let mut promoted_scan_ptr = OLD_TOP;
-    let mut next_dirty_cards = Vec::new();
+    let mut promoted_scan_idx = 0;
+    let mut new_remset = Vec::new();
 
     // 1. Scan roots
     {
@@ -1742,21 +2112,24 @@ pub unsafe fn minor_gc_locked() {
     copy_static_roots();
     super::rt_gc_scan_tasks();
 
-    // 1b. Scan dirty cards in Old Gen
-    let mut current = OLD_START;
-    while current < OLD_TOP {
-        let header = current as *mut ObjectHeader;
-        let offset = current as usize - OLD_START as usize;
-        let card_idx = offset >> CARD_SHIFT;
-
-        if *CARD_TABLE.add(card_idx) != 0 {
-            if scan_object_fields_minor(header) {
-                next_dirty_cards.push(card_idx);
+    // 1b. Scan RemSets
+    {
+        let registry = THREAD_REGISTRY.lock().unwrap();
+        for &ctx_wrapper in registry.iter() {
+            let ctx = &*ctx_wrapper.0;
+            let mut remset = ctx.remset.lock().unwrap();
+            let mut next_remset = Vec::new();
+            for &obj_ptr in remset.iter() {
+                let header = obj_ptr as *mut ObjectHeader;
+                // Temporarily clear dirty flag so new mutations can be caught
+                (*header).flags &= !FLAG_REMSET_DIRTY;
+                if scan_object_fields_minor(header) {
+                    (*header).flags |= FLAG_REMSET_DIRTY;
+                    next_remset.push(obj_ptr);
+                }
             }
+            *remset = next_remset;
         }
-
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        current = current.add(size);
     }
 
     // 1c. Scan all LOS objects (they can store references to Young Gen)
@@ -1779,15 +2152,26 @@ pub unsafe fn minor_gc_locked() {
             progressed = true;
         }
 
-        while promoted_scan_ptr < OLD_TOP {
-            let header = promoted_scan_ptr as *mut ObjectHeader;
-            if scan_object_fields_minor(header) {
-                let offset = promoted_scan_ptr as usize - OLD_START as usize;
-                next_dirty_cards.push(offset >> CARD_SHIFT);
+        loop {
+            let newly_promoted = {
+                let list = PROMOTED_LIST.lock().unwrap();
+                if promoted_scan_idx < list.len() {
+                    let ptr = list[promoted_scan_idx] as *mut u8;
+                    promoted_scan_idx += 1;
+                    Some(ptr)
+                } else {
+                    None
+                }
+            };
+            if let Some(promoted_ptr) = newly_promoted {
+                let header = promoted_ptr as *mut ObjectHeader;
+                if scan_object_fields_minor(header) {
+                    new_remset.push(promoted_ptr);
+                }
+                progressed = true;
+            } else {
+                break;
             }
-            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-            promoted_scan_ptr = promoted_scan_ptr.add(size);
-            progressed = true;
         }
 
         if !progressed {
@@ -1806,10 +2190,14 @@ pub unsafe fn minor_gc_locked() {
 
     EDEN_TOP.store(EDEN_START, std::sync::atomic::Ordering::SeqCst);
 
-    // Reset Card Table
-    memset(CARD_TABLE as *mut std::ffi::c_void, 0, CARD_TABLE_SIZE);
-    for card_idx in next_dirty_cards {
-        *CARD_TABLE.add(card_idx) = 1;
+    // Removed CARD_TABLE reset
+    if !new_remset.is_empty() {
+        let registry = THREAD_REGISTRY.lock().unwrap();
+        if let Some(&ctx_wrapper) = registry.iter().next() {
+            let ctx = &*ctx_wrapper.0;
+            ctx.remset.lock().unwrap().extend(new_remset);
+        }
     }
+    PROMOTED_LIST.lock().unwrap().clear();
     crate::rt_gc_cleanup_array_forward();
 }

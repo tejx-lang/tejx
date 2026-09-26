@@ -45,6 +45,7 @@ impl Parser {
         Program { statements }
     }
 
+
     fn push_parse_error(&mut self, message: impl Into<String>, line: usize, col: usize) {
         self.push_parse_error_with_hint(
             message,

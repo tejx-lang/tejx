@@ -1,0 +1,39 @@
+import { collect } from "std:gc";
+import { nowMs } from "std:time";
+
+function memorySpikeBenchmark(): void {
+    print("--- Memory & CPU Spike Benchmark ---");
+    let startTime = nowMs();
+    let maxPause = 0;
+    
+    let lastTime = nowMs();
+    
+    let junk: string[] = [];
+    let totalAllocated = 0;
+    
+    for (let i = 0; i < 500000; i++) {
+        // Allocate memory
+        junk.push("tejx-allocation-" + i + "-data-" + (i * 2));
+        
+        if (junk.length() > 5000) {
+            junk = []; // Drop reference, making 5000 strings garbage
+            totalAllocated += 5000;
+        }
+        
+        let currentTime = nowMs();
+        let loopTime = currentTime - lastTime;
+        if (loopTime > maxPause) {
+            maxPause = loopTime;
+        }
+        lastTime = currentTime;
+    }
+    
+    let endTime = nowMs();
+    print("Total Execution Time (ms): " + (endTime - startTime));
+    print("Max STW Pause (ms): " + maxPause);
+    print("Total objects allocated & discarded: " + totalAllocated);
+}
+
+function main(): void {
+    memorySpikeBenchmark();
+}

@@ -1261,8 +1261,7 @@ update:\n\
             self.buffer.push('\n');
             self.buffer
                 .push_str(&format!("declare i32 @{}(i32, i8**)\n", TEJX_RUNTIME_MAIN));
-            self.buffer
-                .push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
+            self.buffer.push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
             self.buffer.push_str("entry:\n");
             self.buffer.push_str(&format!(
                 "  %call = call i32 @{}(i32 %argc, i8** %argv)\n",

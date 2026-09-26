@@ -25,7 +25,7 @@ pub use thread::*;
 #[path = "../gc.rs"]
 pub mod gc;
 pub use gc::{
-    gc_allocate, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
+    gc_allocate, parse_gc_argv, rt_add_static_root, rt_get_header, rt_get_static_root, rt_init_gc,
     rt_is_gc_body_ptr_exact, rt_is_gc_ptr, rt_pin_static_root, rt_pop_roots, rt_push_root,
     rt_register_thread, rt_register_type, rt_release_static_root, rt_set_static_root,
     rt_unregister_thread, rt_write_barrier, ObjectHeader, MAX_TYPES,
@@ -2885,8 +2885,12 @@ extern "C" {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tejx_runtime_main(_argc: i32, _argv: *mut *mut u8) -> i32 {
+pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32 {
     install_runtime_panic_hook();
+
+    // Parse GC/heap arguments FIRST — before rt_init_gc uses them.
+    // Supports: -Xmx16g, --tejx-heap 16gb, --tejx-heap=16gb
+    parse_gc_argv(argc, argv);
 
     // Configure the may M:P:N virtual thread scheduler BEFORE any GC or
     // coroutine activity. Workers = all available CPU cores; stack starts
