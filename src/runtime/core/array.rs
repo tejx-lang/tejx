@@ -495,6 +495,7 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
     header = rt_get_header(body);
     flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
+        eprintln!("RuntimeError: Cannot set element in a constant array. Flags: {}", flags);
         rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
 
@@ -586,7 +587,10 @@ pub unsafe extern "C" fn rt_array_set_traced(
 
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
         runtime_set_current_location(file_ptr, line);
-        rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
+        eprintln!("RuntimeError: Cannot set element in a constant array. Flags: {}", flags);
+        rt_throw_runtime_error(
+            format!("RuntimeError: Cannot set element in a constant array. Flags: {}", flags).as_str(),
+        );
     }
 
     let len = (*header).length as i64;

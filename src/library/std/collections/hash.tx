@@ -126,8 +126,8 @@ export class Map<K, V> {
         if (target <= 0 || this.storeCapacity >= target) return;
 
         if (this.storeCapacity == 0) {
-            this.keysStore = rt_array_new<K>(target, sizeof(keySample));
-            this.valuesStore = rt_array_new<V>(target, sizeof(valueSample));
+            this.keysStore = rt_array_new<K>(target, 8);
+            this.valuesStore = rt_array_new<V>(target, 8);
             this.hashStore = rt_array_new<int>(target, 4);
             this.liveStore = rt_array_new<bool>(target, 1);
             this.storeCapacity = target;
@@ -174,8 +174,8 @@ export class Map<K, V> {
         }
 
         let nextCapacity = this.targetStoreCapacity(this.liveCount);
-        let nextKeys = rt_array_new<K>(nextCapacity, sizeof(this.keysStore[firstLive]));
-        let nextValues = rt_array_new<V>(nextCapacity, sizeof(this.valuesStore[firstLive]));
+        let nextKeys = rt_array_new<K>(nextCapacity, 8);
+        let nextValues = rt_array_new<V>(nextCapacity, 8);
         let nextHashes = rt_array_new<int>(nextCapacity, 4);
         let nextLive = rt_array_new<bool>(nextCapacity, 1);
         let nextIndex = 0;

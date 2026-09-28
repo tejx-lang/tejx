@@ -1,6 +1,7 @@
 import std:net;
 import std:thread;
 import std:json;
+import std:time;
 
 export function parseDecimalIntServer(text: string): int {
     let digits = "0123456789";
@@ -81,10 +82,11 @@ export class ServerResponse {
         this.body = "";
         this.stream = stream;
         this.sent = false;
-        
-        // Default headers
-        this.headers.set("Content-Type", "text/plain");
+
+        // Default headers — optimized for performance & correctness
+        this.headers.set("Content-Type", "text/plain; charset=utf-8");
         this.headers.set("Connection", "close");
+        this.headers.set("X-Powered-By", "TejX");
     }
 
     setStatus(code: int): ServerResponse {
@@ -106,14 +108,40 @@ export class ServerResponse {
 
     json(data: any): void {
         if (this.sent) return;
-        this.headers.set("Content-Type", "application/json");
+        this.headers.set("Content-Type", "application/json; charset=utf-8");
         this.body = json.stringify(data);
         this.headers.set("Content-Length", String(this.body.length()));
         this.flush();
     }
 
+    private statusText(code: int): string {
+        if (code == 200) return "OK";
+        if (code == 201) return "Created";
+        if (code == 204) return "No Content";
+        if (code == 301) return "Moved Permanently";
+        if (code == 302) return "Found";
+        if (code == 304) return "Not Modified";
+        if (code == 400) return "Bad Request";
+        if (code == 401) return "Unauthorized";
+        if (code == 403) return "Forbidden";
+        if (code == 404) return "Not Found";
+        if (code == 405) return "Method Not Allowed";
+        if (code == 409) return "Conflict";
+        if (code == 422) return "Unprocessable Entity";
+        if (code == 429) return "Too Many Requests";
+        if (code == 500) return "Internal Server Error";
+        if (code == 502) return "Bad Gateway";
+        if (code == 503) return "Service Unavailable";
+        return "Unknown";
+    }
+
     private flush(): void {
-        let text = "HTTP/1.1 " + String(this.status) + " OK\r\n";
+        let text = "HTTP/1.1 " + String(this.status) + " " + this.statusText(this.status) + "\r\n";
+        
+        if (this.headers.get("Content-Length") == None) {
+            this.headers.set("Content-Length", String(this.body.length()));
+        }
+
         let keys = this.headers.keys();
         for (let i = 0; i < keys.length(); i++) {
             let key = keys[i];
@@ -143,13 +171,18 @@ export class Route {
 export class HttpServer {
     private listener: Optional<TcpListener>;
     private routes: Route[];
+    private activeConns: Atomic;
+    private maxConns: int;
 
     constructor() {
         this.listener = None;
         this.routes = [];
+        this.activeConns = new Atomic(0);
+        // High concurrency limit: 131072 concurrent connections (128k).
+        // Matches Node.js/Go ability to handle 10k+ concurrent connections effortlessly.
+        this.maxConns = 131072;
     }
 
-    // Methods
     get(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
         this.routes.push(new Route("GET", path, handler));
     }
@@ -162,10 +195,10 @@ export class HttpServer {
         this.routes.push(new Route("PUT", path, handler));
     }
 
-    delete(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+    delete_(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
         this.routes.push(new Route("DELETE", path, handler));
     }
-    
+
     patch(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
         this.routes.push(new Route("PATCH", path, handler));
     }
@@ -173,34 +206,54 @@ export class HttpServer {
     listen(port: int, callback: () => void): void {
         let listener: TcpListener = net.listen("0.0.0.0:" + String(port));
         this.listener = listener;
+
         callback();
 
         while (true) {
-            let client = listener.accept();
-            this.dispatchConnection(client);
+            try {
+                let client: Optional<TcpStream> = None;
+                try {
+                    client = listener.tryAccept();
+                } catch (e) {
+                    continue;
+                }
+                if (client == None) {
+                    continue;
+                }
+                let conn = client as TcpStream;
+
+                // Semaphore: if at capacity, reject immediately with 503 so we
+                // never spawn more coroutines than the scheduler can handle.
+                if (this.activeConns.load() >= this.maxConns) {
+                    conn.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    conn.close();
+                    continue;
+                }
+
+                this.activeConns.increment();
+                spawn(() => {
+                    try {
+                        this.handleConnection(conn);
+                    } catch (e) {
+                        // ignore per-connection errors
+                    } finally {
+                        this.activeConns.decrement();
+                    }
+                });
+            } catch (err) {
+                // outer loop protection: ensure listen loop never terminates
+            }
         }
     }
 
-    private dispatchConnection(client: TcpStream): void {
-        spawn(() => {
-            this.handleConnection(client);
-        });
-    }
 
-    private readHttpRequest(client: TcpStream): string {
-        let rawRequest = "";
+    private readHttpRequest(client: TcpStream, buffer: string): any {
+        let rawRequest = buffer;
         let keepReading = true;
         let contentLength = -1;
         let headerEndIndex = -1;
         
         while (keepReading) {
-            let chunk = client.read(2048);
-            if (chunk == "") {
-                break;
-            }
-            
-            rawRequest = rawRequest + chunk;
-            
             if (headerEndIndex < 0) {
                 headerEndIndex = rawRequest.indexOf("\r\n\r\n");
             }
@@ -224,40 +277,93 @@ export class HttpServer {
                 let bodyLength = rawRequest.length() - (headerEndIndex + 4);
                 if (bodyLength >= contentLength) {
                     keepReading = false;
+                    break;
                 }
             }
+
+            let chunk = client.read(2048);
+            if (chunk == "") {
+                keepReading = false;
+                break;
+            }
+            rawRequest = rawRequest + chunk;
         }
-        return rawRequest;
+
+        let totalLength = (headerEndIndex >= 0) ? (headerEndIndex + 4 + (contentLength > 0 ? contentLength : 0)) : rawRequest.length();
+        let requestStr = rawRequest;
+        let remainingStr = "";
+        
+        if (totalLength < rawRequest.length()) {
+            requestStr = rawRequest.substring(0, totalLength);
+            remainingStr = rawRequest.substring(totalLength, rawRequest.length());
+        }
+
+        return {
+            "request": requestStr,
+            "remaining": remainingStr
+        };
     }
 
     private handleConnection(client: TcpStream): void {
-        let rawRequest = this.readHttpRequest(client);
-        if (rawRequest.trim() == "") {
-            client.close();
-            return;
-        }
+        try {
+            let buffer = "";
 
-        let req = new ServerRequest(rawRequest);
-        let res = new ServerResponse(client);
+            while (true) {
+                let requestResult: any = this.readHttpRequest(client, buffer);
+                let rawRequest: string = requestResult.request as string;
+                buffer = requestResult.remaining as string;
 
-        let handled = false;
-        for (let i = 0; i < this.routes.length(); i++) {
-            let route = this.routes[i];
-            if (route.method == req.method && (route.path == req.path || route.path == "*")) {
-                route.handler(req, res);
-                handled = true;
-                break;
+                if (rawRequest.trim() == "") {
+                    break;
+                }
+
+                let req = new ServerRequest(rawRequest);
+                let res = new ServerResponse(client);
+
+                let keepAlive = true;
+                let connHeader = req.getHeader("connection");
+                if (connHeader != None) {
+                    if ((connHeader as string).toLowerCase().indexOf("close") >= 0) {
+                        keepAlive = false;
+                    }
+                }
+                
+                if (keepAlive) {
+                    res.headers.set("Connection", "keep-alive");
+                } else {
+                    res.headers.set("Connection", "close");
+                }
+
+                let handled = false;
+                for (let i = 0; i < this.routes.length(); i++) {
+                    let route = this.routes[i];
+                    if (route.method == req.method && (route.path == req.path || route.path == "*")) {
+                        try {
+                            route.handler(req, res);
+                        } catch (e) {
+                            if (!res.sent) {
+                                res.setStatus(500).json({ "error": "Internal Server Error" });
+                            }
+                        }
+                        handled = true;
+                        break;
+                    }
+                }
+
+                if (!handled) {
+                    res.setStatus(404).json({ "error": "Not Found" });
+                }
+
+                if (!res.sent) {
+                    res.send("");
+                }
+                
+                if (!keepAlive) {
+                    break;
+                }
             }
+        } finally {
+            client.close();
         }
-
-        if (!handled) {
-            res.setStatus(404).json({ "error": "Not Found" });
-        }
-
-        if (!res.sent) {
-            res.send(""); // Auto close if user forgot
-        }
-
-        client.close();
     }
 }

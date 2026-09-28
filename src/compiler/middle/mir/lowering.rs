@@ -1087,7 +1087,14 @@ impl MIRLowering {
 
     fn is_heap_ref_type(&self, ty: &TejxType) -> bool {
         match ty {
-            TejxType::String | TejxType::DynamicArray(_) | TejxType::Object(_) | TejxType::Any => {
+            TejxType::String
+            | TejxType::DynamicArray(_)
+            | TejxType::FixedArray(_, _)
+            | TejxType::Slice(_)
+            | TejxType::Optional(_)
+            | TejxType::Function(_, _)
+            | TejxType::Object(_)
+            | TejxType::Any => {
                 true
             }
             TejxType::Class(name, _) => {

@@ -36,9 +36,7 @@ impl CodeGen {
     }
 
     fn function_needs_loop_safepoints(func: &MIRFunction) -> bool {
-        func.variables
-            .values()
-            .any(Self::type_needs_loop_safepoints)
+        true
     }
 
     fn function_tracks_runtime_location(function_name: &str) -> bool {
@@ -290,6 +288,10 @@ impl CodeGen {
 
         while i < check_vars.len() {
             let current_var = check_vars[i].clone();
+            if func.params.contains(&current_var) {
+                return true;
+            }
+            
             for block in &func.blocks {
                 for instr in &block.instructions {
                     match instr {
@@ -979,11 +981,12 @@ update:\n\
         let mut init_type_buffer = String::new();
         init_type_buffer.push_str("define void @rt_init_types() {\n");
 
-        let class_defs: Vec<(String, Vec<(String, TejxType)>)> = self
+        let mut class_defs: Vec<(String, Vec<(String, TejxType)>)> = self
             .class_fields
             .iter()
             .map(|(class_name, fields)| (class_name.clone(), fields.clone()))
             .collect();
+        class_defs.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (class_name, fields) in class_defs {
             let id = type_id;
@@ -1342,6 +1345,7 @@ update:\n\
             .insert(func.name.clone(), func.params.len());
         self.current_function_params = func.params.iter().cloned().collect();
 
+        let func_start_marker = self.buffer.len();
         self.emit(&format!(
             "define {} @\"{}\"({}) {{\n",
             ret_llvm_ty, func.name, params_str
@@ -1456,7 +1460,7 @@ update:\n\
                 self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
                 self.num_roots += 1;
 
-                self.current_env = Some(passed_env);
+                self.current_env = Some(env_alloca);
             }
         } else if has_captures {
             self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");
@@ -1475,7 +1479,7 @@ update:\n\
             self.emit_line(&format!("store i64 {}, i64* {}", env_reg, env_alloca));
             self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
             self.num_roots += 1;
-            self.current_env = Some(env_reg);
+            self.current_env = Some(env_alloca);
         }
 
         // 4. Store parameters into their allocas
@@ -1511,7 +1515,7 @@ update:\n\
         // Sync parameters to environment if captured
         for p in &func.params {
             if let Some(cap_idx) = self.get_captured_index(p) {
-                if let Some(env) = self.current_env.clone() {
+                if let Some(env) = self.emit_get_current_env() {
                     self.declare_runtime_fn(
                         "rt_array_set_fast",
                         "i64 @rt_array_set_fast(i64, i64, i64)",
@@ -1580,6 +1584,7 @@ update:\n\
             self.emit_line("call void @rt_safepoint_poll()");
             self.emit_line(&format!("br label %{}", func.blocks[0].name));
         } else {
+            self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");
             if self.current_function_has_runtime_frame {
                 self.emit_line("call void @rt_leave_frame()");
             }
@@ -1674,6 +1679,21 @@ update:\n\
         if !self.alloca_buffer.is_empty() {
             self.buffer.insert_str(entry_marker, &self.alloca_buffer);
             self.alloca_buffer.clear();
+        }
+
+        if self.buffer[func_start_marker..].contains("__TEJX_NUM_ROOTS_PLACEHOLDER__") {
+            let replacement = if self.num_roots > 0 {
+                self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                format!("call void @rt_pop_roots(i64 {})", self.num_roots)
+            } else {
+                "; no frame roots to pop".to_string()
+            };
+            let updated = self.buffer[func_start_marker..].replace(
+                "call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)",
+                &replacement,
+            );
+            self.buffer.truncate(func_start_marker);
+            self.buffer.push_str(&updated);
         }
     }
 }

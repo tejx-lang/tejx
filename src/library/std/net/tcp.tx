@@ -21,6 +21,9 @@ extern function rt_net_lookup_all(host: string): string[];
 extern function rt_net_listen(addr: string): int64;
 extern function rt_net_close(stream: int64): int;
 extern function rt_net_close_listener(listener: int64): int;
+// Atomic-swap close: safe to call concurrently with the GC finalizer.
+extern function rt_net_close_stream_obj(_this: TcpStream): int;
+extern function rt_net_close_listener_obj(_this: TcpListener): int;
 
 function _net_connect_stream(addr: string): Optional<TcpStream> {
     let id = rt_net_connect(addr);
@@ -159,9 +162,9 @@ export class TcpStream {
     }
 
     close(): void {
-        if (!this.isOpen()) return;
-        _net_close_stream(this.id);
-        this.id = 0;
+        // Use the atomic-swap close so this is safe to call concurrently with
+        // the GC finalizer (only one side will see a non-zero id and free the box).
+        rt_net_close_stream_obj(this);
     }
 }
 
@@ -178,11 +181,8 @@ export class TcpListener {
 
     tryAccept(): Optional<TcpStream> {
         let sid = rt_net_accept(this.id);
-        if (sid == 0) {
+        if (sid <= 0) {
             return None;
-        }
-        if (sid < 0) {
-            throw new Error("Accept failed");
         }
         return new TcpStream(sid);
     }
@@ -200,8 +200,6 @@ export class TcpListener {
     }
 
     close(): void {
-        if (!this.isOpen()) return;
-        _net_close_listener(this.id);
-        this.id = 0;
+        rt_net_close_listener_obj(this);
     }
 }

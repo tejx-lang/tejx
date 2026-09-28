@@ -673,6 +673,17 @@ impl CodeGen {
         }
     }
 
+    pub(crate) fn emit_get_current_env(&mut self) -> Option<String> {
+        if let Some(alloca) = self.current_env.clone() {
+            self.temp_counter += 1;
+            let env_reg = format!("%env_reloaded_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i64, i64* {}", env_reg, alloca));
+            Some(env_reg)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn resolve_value(&mut self, val: &MIRValue) -> String {
         match val {
             MIRValue::Constant { value, ty } => {
@@ -730,6 +741,47 @@ impl CodeGen {
                         "i64 @rt_array_set_fast(i64, i64, i64)",
                     );
 
+                    // A lambda expression can run repeatedly (for example in a server accept
+                    // loop), so it must receive a new environment on every evaluation. Reusing
+                    // the parent's environment makes concurrently-running closures overwrite
+                    // each other's captured values.
+                    self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");
+                    self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
+                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+
+                    let capture_count = self.captured_vars.len();
+                    self.temp_counter += 1;
+                    let fresh_env = format!("%closure_env{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_array_new(i64 {}, i64 8)",
+                        fresh_env, capture_count
+                    ));
+
+                    // rt_closure_from_ptr allocates, so root the snapshot until it has been
+                    // attached to the new closure.
+                    self.temp_counter += 1;
+                    let env_root = format!("%closure_env_root{}", self.temp_counter);
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca i64\n", env_root));
+                    self.emit_line(&format!("store i64 {}, i64* {}", fresh_env, env_root));
+                    self.emit_line(&format!("call void @rt_push_root(i64* {})", env_root));
+
+                    if let Some(parent_env) = self.emit_get_current_env() {
+                        for index in 0..capture_count {
+                            self.temp_counter += 1;
+                            let captured_value = format!("%closure_capture{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
+                                captured_value, parent_env, index
+                            ));
+                            self.emit_line(&format!(
+                                "call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                                fresh_env, index, captured_value
+                            ));
+                        }
+                    }
+
                     self.temp_counter += 1;
                     let closure_id = format!("%closure{}", self.temp_counter);
                     self.emit_line(&format!(
@@ -737,28 +789,14 @@ impl CodeGen {
                         closure_id, fn_ptr
                     ));
 
-                    // Set env (slot 1) — rt_closure_from_ptr already sets fn_ptr at slot 0
-                    let env_to_pass = if let Some(env) = self.current_env.clone() {
-                        env
-                    } else {
-                        // Create a fresh empty environment (array) if the parent doesn't have one
-                        self.declare_runtime_fn(
-                            "rt_Array_new_fixed",
-                            "i64 @rt_Array_new_fixed(i64, i64)",
-                        );
-                        self.temp_counter += 1;
-                        let fresh_env = format!("%fresh_env{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_Array_new_fixed(i64 0, i64 8)",
-                            fresh_env
-                        ));
-                        fresh_env
-                    };
+                    // Set env (slot 1) — rt_closure_from_ptr already sets fn_ptr at slot 0.
+                    let env_to_pass = fresh_env;
 
                     self.emit_line(&format!(
                         "call i64 @rt_array_set_fast(i64 {}, i64 1, i64 {})",
                         closure_id, env_to_pass
                     ));
+                    self.emit_line("call void @rt_pop_roots(i64 1)");
 
                     return closure_id;
                 }
@@ -831,9 +869,10 @@ impl CodeGen {
                     }
                     return tmp;
                 }
+
                 if name == "__env" {
-                    if let Some(env) = &self.current_env {
-                        return env.clone();
+                    if let Some(env) = self.emit_get_current_env() {
+                        return env;
                     }
                     return "0".to_string();
                 }
@@ -842,7 +881,7 @@ impl CodeGen {
                     return name.to_string();
                 }
                 if let Some(cap_idx) = self.get_captured_index(name) {
-                    if let Some(env) = self.current_env.clone() {
+                    if let Some(env) = self.emit_get_current_env() {
                         self.declare_runtime_fn(
                             "rt_array_get_fast",
                             "i64 @rt_array_get_fast(i64, i64)",
@@ -1071,7 +1110,7 @@ impl CodeGen {
         }
 
         if let Some(cap_idx) = self.get_captured_index(name) {
-            if let Some(env) = self.current_env.clone() {
+            if let Some(env) = self.emit_get_current_env() {
                 self.declare_runtime_fn(
                     "rt_array_set_fast",
                     "i64 @rt_array_set_fast(i64, i64, i64)",

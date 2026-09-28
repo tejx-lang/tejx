@@ -16,16 +16,15 @@ use std::sync::{LazyLock, Mutex, Once};
 // All size strings accept: "16gb", "8192mb", "512kb", "1073741824" (raw bytes)
 // =============================================================================
 
-pub const YOUNG_GEN_SIZE: usize       = 16 * 1024 * 1024;         // 16MB Eden
-pub const SURVIVOR_SIZE: usize        = 2  * 1024 * 1024;          // 2MB each survivor
-pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024;              // 128KB LOS threshold
-pub const GC_MIN_HEAP: usize          = 2  * 1024 * 1024 * 1024;  // 2GB floor
-pub const GC_MAX_HEAP: usize          = 128 * 1024 * 1024 * 1024; // 128GB ceiling
+pub static mut YOUNG_GEN_SIZE: usize = 512 * 1024 * 1024; // 512MB Eden
+pub const SURVIVOR_SIZE: usize = 64 * 1024 * 1024; // 64MB each survivor
+pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB LOS threshold
+pub const GC_MIN_HEAP: usize = 2 * 1024 * 1024 * 1024; // 2GB floor
+pub const GC_MAX_HEAP: usize = 128 * 1024 * 1024 * 1024; // 128GB ceiling
 
 /// Final old-gen size, set once at startup by `rt_init_gc()`.
 /// Default is overwritten to the detected value before mmap.
 pub static mut OLD_GEN_SIZE: usize = GC_MAX_HEAP;
-
 
 /// Set by argv parsing (`-Xmx16g`, `--tejx-heap 16gb`) in `tejx_runtime_main`.
 /// 0 = not set (fall through to env/autodetect).
@@ -39,12 +38,12 @@ extern "C" {
 #[cfg(target_os = "macos")]
 const SC_PHYS_PAGES: i32 = 200; // _SC_PHYS_PAGES on macOS (sys/unistd.h)
 #[cfg(target_os = "macos")]
-const SC_PAGESIZE: i32 = 29;    // _SC_PAGESIZE on macOS
+const SC_PAGESIZE: i32 = 29; // _SC_PAGESIZE on macOS
 
 #[cfg(not(target_os = "macos"))]
-const SC_PHYS_PAGES: i32 = 85;  // _SC_PHYS_PAGES on Linux
+const SC_PHYS_PAGES: i32 = 85; // _SC_PHYS_PAGES on Linux
 #[cfg(not(target_os = "macos"))]
-const SC_PAGESIZE: i32 = 30;    // _SC_PAGESIZE on Linux
+const SC_PAGESIZE: i32 = 30; // _SC_PAGESIZE on Linux
 
 /// Detect the optimal old-gen heap size at startup.
 /// Called once from `rt_init_gc()` after argv/env parsing is complete.
@@ -58,11 +57,11 @@ pub(crate) unsafe fn detect_old_gen_size() -> usize {
 
     // Priority 2: auto-detect — 50% of physical RAM, up to a MAXIMUM of 2GB.
     // (min(50% of system available memory and 2gb))
-    let pages     = sysconf(SC_PHYS_PAGES);
+    let pages = sysconf(SC_PHYS_PAGES);
     let page_size = sysconf(SC_PAGESIZE);
     if pages > 0 && page_size > 0 {
         let total_ram: usize = (pages as usize).saturating_mul(page_size as usize);
-        let half_ram  = total_ram / 2;
+        let half_ram = total_ram / 2;
         return half_ram.min(GC_MIN_HEAP); // min(50% RAM, 2GB)
     }
 
@@ -100,9 +99,13 @@ pub unsafe fn parse_gc_argv(argc: i32, argv: *mut *mut u8) {
     let args: Vec<String> = (0..argc as usize)
         .filter_map(|i| {
             let ptr = *argv.add(i);
-            if ptr.is_null() { return None; }
+            if ptr.is_null() {
+                return None;
+            }
             std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char)
-                .to_str().ok().map(|s| s.to_string())
+                .to_str()
+                .ok()
+                .map(|s| s.to_string())
         })
         .collect();
 
@@ -161,20 +164,19 @@ pub unsafe fn parse_gc_argv(argc: i32, argv: *mut *mut u8) {
     }
 }
 
-
-
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 static GC_INIT: Once = Once::new();
 
-pub static FINALIZER_QUEUE: std::sync::LazyLock<std::sync::Mutex<Vec<(unsafe extern "C" fn(i64), i64)>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+pub static FINALIZER_QUEUE: std::sync::LazyLock<
+    std::sync::Mutex<Vec<(unsafe extern "C" fn(i64), i64)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
 pub static FINALIZER_CONDVAR: std::sync::LazyLock<std::sync::Condvar> =
     std::sync::LazyLock::new(|| std::sync::Condvar::new());
 
-const FLAG_FINALIZED: u16 = 0x1;
-pub const FLAG_REMSET_DIRTY: u16 = 0x2;
+const FLAG_FINALIZED: u32 = 0x1;
+pub const FLAG_REMSET_DIRTY: u32 = 0x2;
 
 #[derive(Default)]
 struct StaticRoots {
@@ -182,8 +184,8 @@ struct StaticRoots {
     free: Vec<usize>,
 }
 
-static STATIC_ROOTS: LazyLock<Mutex<StaticRoots>> =
-    LazyLock::new(|| Mutex::new(StaticRoots::default()));
+static STATIC_ROOTS: LazyLock<std::sync::RwLock<StaticRoots>> =
+    LazyLock::new(|| std::sync::RwLock::new(StaticRoots::default()));
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -193,7 +195,7 @@ pub struct ObjectHeader {
     pub flags: u16,    // Bitmask for internal states
     pub length: u32,   // Active elements (for arrays/strings)
     pub capacity: u32, // Total allocated slots (for arrays/strings)
-    pub padding: u32,  // Ensure 8-byte alignment
+    pub gc_flags: u32, // GC metadata flags (FLAG_REMSET_DIRTY, FLAG_FINALIZED)
 }
 
 const GC_MARK_BIT: u64 = 0x1;
@@ -261,15 +263,21 @@ pub static mut OLD_BYTES_ALLOCATED: usize = 0;
 pub static mut OLD_GEN_GC_THRESHOLD: usize = 0; // set in rt_init_gc
 
 pub const NUM_FAST_BINS: usize = 256;
-pub static FAST_FREE_LIST: std::sync::LazyLock<[Mutex<Vec<usize>>; NUM_FAST_BINS]> = std::sync::LazyLock::new(|| std::array::from_fn(|_| Mutex::new(Vec::new())));
-pub static LARGE_FREE_LIST: std::sync::LazyLock<Mutex<std::collections::BTreeMap<usize, Vec<usize>>>> = std::sync::LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
-pub static PROMOTED_LIST: std::sync::LazyLock<Mutex<Vec<usize>>> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
-pub static GLOBAL_MARK_QUEUE: std::sync::LazyLock<Mutex<Vec<i64>>> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+pub static FAST_FREE_LIST: std::sync::LazyLock<[Mutex<Vec<usize>>; NUM_FAST_BINS]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|_| Mutex::new(Vec::new())));
+pub static LARGE_FREE_LIST: std::sync::LazyLock<
+    Mutex<std::collections::BTreeMap<usize, Vec<usize>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
+pub static PROMOTED_LIST: std::sync::LazyLock<Mutex<Vec<usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+pub static GLOBAL_MARK_QUEUE: std::sync::LazyLock<Mutex<Vec<i64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
 pub const GC_PHASE_IDLE: u8 = 0;
 pub const GC_PHASE_MARK: u8 = 1;
 pub static GC_PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(GC_PHASE_IDLE);
-pub static GC_BACKGROUND_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static GC_BACKGROUND_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // Growth factor for the GC trigger threshold, read ONCE from env at startup.
 // TEJXGC=50 (default) → next trigger = live_bytes × 1.5 (50% headroom above live set)
@@ -314,12 +322,6 @@ pub struct TypeEntry {
 
 #[no_mangle]
 pub static mut TYPE_TABLE: [TypeEntry; MAX_TYPES] = unsafe { std::mem::zeroed() };
-
-
-
-
-
-
 
 #[no_mangle]
 pub unsafe fn rt_update_ptr(ptr: *mut i64) {
@@ -367,7 +369,7 @@ pub unsafe extern "C" fn rt_register_type(
 }
 
 pub unsafe fn rt_add_static_root(val: i64) -> usize {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.write().unwrap();
     if let Some(slot) = roots.free.pop() {
         roots.slots[slot] = Some(val);
         return slot;
@@ -377,7 +379,7 @@ pub unsafe fn rt_add_static_root(val: i64) -> usize {
 }
 
 pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
-    let roots = STATIC_ROOTS.lock().unwrap();
+    let roots = STATIC_ROOTS.read().unwrap();
     roots.slots.get(slot).and_then(|root| *root).unwrap_or(0)
 }
 
@@ -386,16 +388,15 @@ pub unsafe fn rt_pin_static_root(slot: usize, out: *mut i64) {
         return;
     }
 
-    let _gc_lock = GC_LOCK.lock().unwrap();
     {
-        let roots = STATIC_ROOTS.lock().unwrap();
+        let roots = STATIC_ROOTS.read().unwrap();
         *out = roots.slots.get(slot).and_then(|root| *root).unwrap_or(0);
     }
     rt_push_root(out);
 }
 
 pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.write().unwrap();
     if let Some(root) = roots.slots.get_mut(slot) {
         if root.is_some() {
             *root = Some(val);
@@ -404,7 +405,7 @@ pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
 }
 
 pub unsafe fn rt_release_static_root(slot: usize) {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.write().unwrap();
     if let Some(root) = roots.slots.get_mut(slot) {
         if root.take().is_some() {
             roots.free.push(slot);
@@ -413,27 +414,29 @@ pub unsafe fn rt_release_static_root(slot: usize) {
 }
 
 unsafe fn mark_static_roots() {
-    let roots = STATIC_ROOTS.lock().unwrap();
+    let roots = STATIC_ROOTS.read().unwrap();
     for root in roots.slots.iter().flatten() {
         let mut tmp = *root;
         mark_object(&mut tmp);
     }
 }
 
+#[allow(dead_code)]
 unsafe fn update_static_roots() {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.write().unwrap();
     for root in roots.slots.iter_mut().flatten() {
         rt_update_ptr(root as *mut i64);
     }
 }
 
 unsafe fn copy_static_roots() {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.write().unwrap();
     for root in roots.slots.iter_mut().flatten() {
         copy_object(root as *mut i64);
     }
 }
 
+#[allow(dead_code)]
 unsafe fn update_finalizer_queue() {
     let mut queue = FINALIZER_QUEUE.lock().unwrap();
     for (_, obj_val) in queue.iter_mut() {
@@ -463,8 +466,8 @@ pub unsafe extern "C" fn rt_write_barrier(obj: i64, value: i64) {
     if !in_young_gen(obj_ptr) {
         if in_young_gen(value_ptr) {
             let header = rt_get_header(obj_ptr);
-            if ((*header).flags & FLAG_REMSET_DIRTY) == 0 {
-                (*header).flags |= FLAG_REMSET_DIRTY;
+            if ((*header).gc_flags & FLAG_REMSET_DIRTY) == 0 {
+                (*header).gc_flags |= FLAG_REMSET_DIRTY;
                 MY_CONTEXT.with(|ctx_cell| {
                     let ctx = &*ctx_cell.get();
                     ctx.remset.lock().unwrap().push(obj_ptr);
@@ -480,6 +483,12 @@ pub fn in_young_gen(ptr: *mut u8) -> bool {
             || (ptr >= FROM_SURVIVOR && ptr < FROM_SURVIVOR.add(SURVIVOR_SIZE))
             || (ptr >= TO_SURVIVOR && ptr < TO_SURVIVOR.add(SURVIVOR_SIZE))
     }
+}
+
+#[inline(always)]
+pub unsafe fn in_from_space(ptr: *mut u8) -> bool {
+    (ptr >= EDEN_START && ptr < EDEN_END)
+        || (ptr >= FROM_SURVIVOR && ptr < FROM_SURVIVOR.add(SURVIVOR_SIZE))
 }
 
 pub unsafe fn rt_is_los_ptr(ptr: *mut u8) -> bool {
@@ -586,25 +595,24 @@ pub struct Tlab {
     pub end: *mut u8,
 }
 
-may::coroutine_local! {
-    static MY_TLAB: std::cell::Cell<Tlab> = std::cell::Cell::new(Tlab {
-        top: std::ptr::null_mut(),
-        end: std::ptr::null_mut(),
-    })
-}
-
-pub fn with_my_tlab<R, F: FnOnce(&std::cell::Cell<Tlab>) -> R>(f: F) -> R {
-    MY_TLAB.with(f)
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_clear_tlab() {
-    MY_TLAB.with(|t| {
-        t.set(Tlab {
-            top: std::ptr::null_mut(),
-            end: std::ptr::null_mut(),
-        })
-    });
+    let ctx_ptr = current_thread_context();
+    if !ctx_ptr.is_null() {
+        (*ctx_ptr).tlab_top = std::ptr::null_mut();
+        (*ctx_ptr).tlab_end = std::ptr::null_mut();
+    }
+}
+
+pub unsafe fn clear_all_tlabs() {
+    let registry = THREAD_REGISTRY.lock().unwrap();
+    for &ctx_wrapper in registry.iter() {
+        let ctx = ctx_wrapper.0;
+        if !ctx.is_null() {
+            (*ctx).tlab_top = std::ptr::null_mut();
+            (*ctx).tlab_end = std::ptr::null_mut();
+        }
+    }
 }
 
 // --- Arena Manager ---
@@ -681,10 +689,13 @@ pub unsafe extern "C" fn rt_arena_destroy(arena: *mut Arena) {
 }
 
 // --- GC Safepoints & Thread-Local Roots ---
-pub const GC_STACK_SIZE: usize = 1024 * 64;
+// Each virtual thread owns one root stack. 4k slots (32 KiB) comfortably
+// covers generated request handlers while avoiding a 512 KiB allocation per
+// idle connection under high-concurrency servers.
+pub const GC_STACK_SIZE: usize = 1024 * 4;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar};
+use std::sync::Arc;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct ThreadContextPtr(pub *mut ThreadContext);
@@ -697,30 +708,54 @@ pub static THREAD_REGISTRY: std::sync::LazyLock<Mutex<Vec<ThreadContextPtr>>> =
 
 // Global Safepoint flags
 pub static SAFEPOINT_REQUEST: AtomicBool = AtomicBool::new(false);
-pub static SAFEPOINT_ACK: std::sync::LazyLock<Arc<(Mutex<usize>, Condvar)>> =
-    std::sync::LazyLock::new(|| Arc::new((Mutex::new(0), Condvar::new())));
-pub static SAFEPOINT_RESUME: std::sync::LazyLock<Arc<(Mutex<bool>, Condvar)>> =
-    std::sync::LazyLock::new(|| Arc::new((Mutex::new(false), Condvar::new())));
+pub static SAFEPOINT_ACK: std::sync::LazyLock<Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>> =
+    std::sync::LazyLock::new(|| Arc::new((std::sync::Mutex::new(0), std::sync::Condvar::new())));
+pub static SAFEPOINT_RESUME: std::sync::LazyLock<Arc<(std::sync::Mutex<u64>, std::sync::Condvar)>> =
+    std::sync::LazyLock::new(|| Arc::new((std::sync::Mutex::new(0), std::sync::Condvar::new())));
 
 #[repr(C)]
 pub struct ThreadContext {
     pub roots: [*mut i64; GC_STACK_SIZE],
     pub roots_top: usize,
     pub in_safepoint: AtomicBool,
+    pub in_blocking_io: AtomicBool,
     pub remset: Mutex<Vec<*mut u8>>,
     pub mark_queue: Mutex<Vec<i64>>,
+    pub tlab_top: *mut u8,
+    pub tlab_end: *mut u8,
 }
 
-may::coroutine_local! {
-    static MY_CONTEXT: std::cell::UnsafeCell<Box<ThreadContext>> = std::cell::UnsafeCell::new(Box::new(ThreadContext {
-        roots: [std::ptr::null_mut(); GC_STACK_SIZE],
-        roots_top: 0,
-        in_safepoint: AtomicBool::new(false),
-        remset: Mutex::new(Vec::new()),
-        mark_queue: Mutex::new(Vec::new()),
-    }))
+/// Allocate a coroutine's GC context directly in zeroed heap memory.
+///
+/// `roots` is 512 KiB. Initializing it as part of a `Box::new` expression
+/// first places that temporary on the coroutine stack, which makes small
+/// virtual-thread stacks overflow before the program starts. The all-zero
+/// representation is correct for root pointers and `AtomicBool(false)`;
+/// initialize the mutex fields explicitly because they require constructors.
+fn new_thread_context() -> std::cell::UnsafeCell<Box<ThreadContext>> {
+    unsafe {
+        let layout = std::alloc::Layout::new::<ThreadContext>();
+        let raw = std::alloc::alloc_zeroed(layout) as *mut ThreadContext;
+        if raw.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+
+        std::ptr::addr_of_mut!((*raw).roots_top).write(0);
+        std::ptr::addr_of_mut!((*raw).in_safepoint).write(AtomicBool::new(false));
+        std::ptr::addr_of_mut!((*raw).in_blocking_io).write(AtomicBool::new(false));
+        std::ptr::addr_of_mut!((*raw).remset).write(Mutex::new(Vec::new()));
+        std::ptr::addr_of_mut!((*raw).mark_queue).write(Mutex::new(Vec::new()));
+        std::ptr::addr_of_mut!((*raw).tlab_top).write(std::ptr::null_mut());
+        std::ptr::addr_of_mut!((*raw).tlab_end).write(std::ptr::null_mut());
+
+        std::cell::UnsafeCell::new(Box::from_raw(raw))
+    }
 }
-may::coroutine_local! {
+
+thread_local! {
+    static MY_CONTEXT: std::cell::UnsafeCell<Box<ThreadContext>> = new_thread_context()
+}
+thread_local! {
     static THREAD_REGISTRATION: std::cell::RefCell<Option<ThreadRegistrationGuard>> = std::cell::RefCell::new(None)
 }
 
@@ -735,9 +770,12 @@ struct ThreadRegistrationGuard {
 unsafe fn unregister_thread_context(ctx_ptr: *mut ThreadContext) {
     let removed = {
         let mut registry = THREAD_REGISTRY.lock().unwrap();
-        let before = registry.len();
-        registry.retain(|&x| x.0 != ctx_ptr);
-        registry.len() != before
+        if let Some(pos) = registry.iter().position(|entry| entry.0 == ctx_ptr) {
+            registry.swap_remove(pos);
+            true
+        } else {
+            false
+        }
     };
 
     if removed
@@ -760,6 +798,38 @@ impl Drop for ThreadRegistrationGuard {
 }
 
 unsafe fn ensure_thread_registered() {
+    // Install a 2 MB alternate signal stack on this OS thread if not yet done.
+    // This is per-OS-thread (not per-coroutine) so we guard with a std thread_local.
+    // The generator crate's overflow handler calls Backtrace::force_capture()
+    // from within the alt-stack — the default 32 KB overflows; 2 MB is safe.
+    {
+        use std::cell::Cell;
+        thread_local! {
+            static ALT_STACK_INSTALLED: Cell<bool> = Cell::new(false);
+        }
+        ALT_STACK_INSTALLED.with(|installed| {
+            if !installed.get() {
+                installed.set(true);
+                const ALT_STACK_SIZE: usize = 2 * 1024 * 1024;
+                let mem = libc::mmap(
+                    std::ptr::null_mut(),
+                    ALT_STACK_SIZE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANON,
+                    -1,
+                    0,
+                );
+                if !std::ptr::eq(mem, libc::MAP_FAILED) {
+                    let mut ss: libc::stack_t = std::mem::zeroed();
+                    ss.ss_sp = mem;
+                    ss.ss_size = ALT_STACK_SIZE;
+                    ss.ss_flags = 0;
+                    libc::sigaltstack(&ss, std::ptr::null_mut());
+                }
+            }
+        });
+    }
+
     MY_CONTEXT.with(|ctx| {
         let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
         THREAD_REGISTRATION.with(|registration| {
@@ -777,8 +847,20 @@ unsafe fn ensure_thread_registered() {
     });
 }
 
+pub fn is_safepoint_requested() -> bool {
+    SAFEPOINT_REQUEST.load(Ordering::SeqCst)
+}
+
+thread_local! {
+    static CACHED_CTX: std::cell::Cell<*mut ThreadContext> = std::cell::Cell::new(std::ptr::null_mut());
+}
+
 #[inline(always)]
-unsafe fn current_thread_context() -> *mut ThreadContext {
+pub(crate) unsafe fn current_thread_context() -> *mut ThreadContext {
+    let cached = CACHED_CTX.with(|c| c.get());
+    if !cached.is_null() {
+        return cached;
+    }
     let mut ctx_ptr = std::ptr::null_mut();
     MY_CONTEXT.with(|ctx| {
         ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
@@ -795,6 +877,7 @@ unsafe fn current_thread_context() -> *mut ThreadContext {
             *registration = Some(ThreadRegistrationGuard { ctx_ptr });
         });
     });
+    CACHED_CTX.with(|c| c.set(ctx_ptr));
     ctx_ptr
 }
 
@@ -805,17 +888,6 @@ pub unsafe extern "C" fn rt_register_thread() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_unregister_thread() {
-    // If a GC is requested, we MUST acknowledge it before unregistering so the GC doesn't deadlock.
-    // However, we cannot call rt_safepoint_poll_slow() here because this might be called during
-    // coroutine TLS destruction, where blocking on SAFEPOINT_RESUME causes an is_generator() panic.
-    // Instead, we simply notify the GC that we have reached a safepoint (by exiting the registry).
-    if SAFEPOINT_REQUEST.load(Ordering::Acquire) {
-        let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
-        *count += 1;
-        cvar.notify_one();
-    }
-
     THREAD_REGISTRATION.with(|registration| {
         let guard = registration.borrow_mut().take();
         drop(guard);
@@ -824,37 +896,84 @@ pub unsafe extern "C" fn rt_unregister_thread() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_safepoint_poll() {
-    if !SAFEPOINT_REQUEST.load(Ordering::Relaxed) {
+    if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+        rt_safepoint_poll_slow();
         return;
     }
-    rt_safepoint_poll_slow();
+    crate::vthread::vt_preempt_tick();
 }
 
 #[cold]
 unsafe fn rt_safepoint_poll_slow() {
-    if !SAFEPOINT_REQUEST.load(Ordering::Acquire) {
+    if !SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
         return;
     }
 
-    let ctx_ptr = current_thread_context();
-    (*ctx_ptr).in_safepoint.store(true, Ordering::Release);
+    rt_clear_tlab();
 
+    let ctx_ptr = current_thread_context();
+    (*ctx_ptr).in_safepoint.store(true, Ordering::SeqCst);
+
+    // Acknowledge: increment the ack counter so the GC thread can proceed.
     {
         let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
+        let mut count = match lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         *count += 1;
         cvar.notify_one();
     }
 
-    {
-        let (lock, cvar) = &**SAFEPOINT_RESUME;
-        let mut resume = lock.lock().unwrap();
-        while !*resume {
-            resume = cvar.wait(resume).unwrap();
+    // Spin-yield until the GC sets SAFEPOINT_REQUEST back to false.
+    // No OS semaphore, no may primitives — just atomic loads and OS thread yield.
+    loop {
+        if !SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+            break;
         }
+        std::thread::yield_now();
     }
 
-    (*ctx_ptr).in_safepoint.store(false, Ordering::Release);
+    (*ctx_ptr).in_safepoint.store(false, Ordering::SeqCst);
+}
+
+pub struct ThreadIoGuard {
+    ctx_ptr: *mut ThreadContext,
+}
+
+impl ThreadIoGuard {
+    pub fn new() -> Self {
+        unsafe {
+            // Clear TLAB before yielding for I/O, because a GC might run and reset Eden.
+            rt_clear_tlab();
+
+            let ctx_ptr = current_thread_context();
+            (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+
+            // If a GC was requested BEFORE we set in_blocking_io to true,
+            // the GC thread might have already included us in target_count.
+            // We MUST wait for the GC to finish before we actually block in I/O!
+            if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+                (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                rt_safepoint_poll();
+                (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+            }
+
+            Self { ctx_ptr }
+        }
+    }
+}
+
+impl Drop for ThreadIoGuard {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.ctx_ptr)
+                .in_blocking_io
+                .store(false, Ordering::SeqCst);
+            // If a GC was requested while we were blocked, we must wait before resuming!
+            rt_safepoint_poll();
+        }
+    }
 }
 
 const PROT_READ: i32 = 0x01;
@@ -899,11 +1018,114 @@ pub unsafe extern "C" fn rt_get_header(body_ptr: *mut u8) -> *mut ObjectHeader {
     (body_ptr as *mut ObjectHeader).offset(-1)
 }
 
+pub struct GcContextState {
+    pub roots: Vec<usize>,
+}
+
+unsafe impl Send for GcContextState {}
+unsafe impl Sync for GcContextState {}
+
+pub unsafe fn rt_save_gc_context() -> GcContextState {
+    MY_CONTEXT.with(|ctx| {
+        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+        let roots = (&(*ctx_ptr).roots)[0..(*ctx_ptr).roots_top]
+            .iter()
+            .map(|p| *p as usize)
+            .collect();
+        (*ctx_ptr).roots_top = 0;
+        GcContextState { roots }
+    })
+}
+
+pub unsafe fn rt_restore_gc_context(state: GcContextState) {
+    MY_CONTEXT.with(|ctx| {
+        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+        let len = state.roots.len();
+        for (i, val) in state.roots.into_iter().enumerate() {
+            (*ctx_ptr).roots[i] = val as *mut i64;
+        }
+        (*ctx_ptr).roots_top = len;
+    })
+}
+
+extern "C" fn tejx_crash_handler(
+    sig: i32,
+    info: *mut libc::siginfo_t,
+    _ucontext: *mut libc::c_void,
+) {
+    let fault_addr = if !info.is_null() {
+        unsafe { (*info).si_addr }
+    } else {
+        std::ptr::null_mut()
+    };
+    eprintln!(
+        "\n💥 CRASH CAUGHT: signal {} at fault_addr={:p}",
+        sig, fault_addr
+    );
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    unsafe {
+        let uc = _ucontext as *mut libc::ucontext_t;
+        if !uc.is_null() {
+            let mc = (*uc).uc_mcontext;
+            if !mc.is_null() {
+                let regs = &(*mc).__ss;
+                eprintln!(
+                    "  PC={:#x} LR={:#x} SP={:#x}",
+                    regs.__pc, regs.__lr, regs.__sp
+                );
+                eprintln!(
+                    "  x0={:#x} x1={:#x} x2={:#x} x3={:#x}",
+                    regs.__x[0], regs.__x[1], regs.__x[2], regs.__x[3]
+                );
+                eprintln!(
+                    "  x4={:#x} x5={:#x} x6={:#x} x7={:#x}",
+                    regs.__x[4], regs.__x[5], regs.__x[6], regs.__x[7]
+                );
+                eprintln!(
+                    "  x8={:#x} x9={:#x} x10={:#x} x11={:#x}",
+                    regs.__x[8], regs.__x[9], regs.__x[10], regs.__x[11]
+                );
+                eprintln!(
+                    "  x12={:#x} x13={:#x} x14={:#x} x15={:#x}",
+                    regs.__x[12], regs.__x[13], regs.__x[14], regs.__x[15]
+                );
+                eprintln!(
+                    "  x16={:#x} x17={:#x} x18={:#x} x19={:#x}",
+                    regs.__x[16], regs.__x[17], regs.__x[18], regs.__x[19]
+                );
+                eprintln!(
+                    "  x20={:#x} x21={:#x} x22={:#x} x23={:#x}",
+                    regs.__x[20], regs.__x[21], regs.__x[22], regs.__x[23]
+                );
+            }
+        }
+    }
+    let mut bt = [std::ptr::null_mut(); 32];
+    let size = unsafe { libc::backtrace(bt.as_mut_ptr(), 32) };
+    let symbols = unsafe { libc::backtrace_symbols(bt.as_ptr(), size) };
+    if !symbols.is_null() {
+        for i in 0..size {
+            let sym = unsafe { std::ffi::CStr::from_ptr(*symbols.offset(i as isize)) };
+            eprintln!("  [{}] {}", i, sym.to_string_lossy());
+        }
+    }
+    unsafe {
+        libc::_exit(139);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_init_gc() {
     GC_INIT.call_once(|| unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = tejx_crash_handler as usize;
+        sa.sa_flags = libc::SA_SIGINFO;
+        libc::sigaction(libc::SIGSEGV, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut());
+
         // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > 50% of RAM (≥2GB)
-        OLD_GEN_SIZE = detect_old_gen_size();
+        OLD_GEN_SIZE = (detect_old_gen_size() + 0xFFFF) & !0xFFFF;
+        YOUNG_GEN_SIZE = ((OLD_GEN_SIZE / 3) + 0xFFFF) & !0xFFFF;
 
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
         EDEN_START = mmap(
@@ -954,25 +1176,49 @@ pub unsafe extern "C" fn rt_init_gc() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_start_finalizer_thread() {
-    std::thread::spawn(|| {
-        loop {
-            let mut tasks = Vec::new();
-            {
-                let mut queue = FINALIZER_QUEUE.lock().unwrap();
-                while queue.is_empty() {
-                    queue = FINALIZER_CONDVAR.wait(queue).unwrap();
-                }
-                std::mem::swap(&mut tasks, &mut *queue);
+    std::thread::Builder::new()
+        .name("gc-finalizer".to_string())
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            unsafe {
+                rt_register_thread();
             }
-            if !tasks.is_empty() {
-                // Synchronize with GC to prevent reading objects while they are being moved
-                let _gc_lock = GC_LOCK.lock().unwrap();
-                for (f, obj_val) in tasks {
-                    unsafe { f(obj_val); }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                loop {
+                    let mut tasks = Vec::new();
+                    {
+                        let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                        while queue.is_empty() {
+                            unsafe {
+                                let ctx_ptr = current_thread_context();
+                                (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+                            }
+                            queue = FINALIZER_CONDVAR.wait(queue).unwrap();
+                            unsafe {
+                                let ctx_ptr = current_thread_context();
+                                (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                                // After waking up, if a safepoint was requested, poll it WITHOUT holding the mutex!
+                                // Wait, we ARE holding the mutex here because `wait()` re-acquired it!
+                                // It's fine to hold the queue mutex while polling, as GC doesn't run concurrently with this poll.
+                                // Wait! Actually, if we just wake up, we should poll.
+                            }
+                        }
+                        std::mem::swap(&mut tasks, &mut *queue);
+                    }
+                    unsafe {
+                        crate::gc::rt_safepoint_poll();
+                    }
+                    if !tasks.is_empty() {
+                        for (f, obj_val) in tasks {
+                            unsafe {
+                                f(obj_val);
+                            }
+                        }
+                    }
                 }
-            }
-        }
-    });
+            }));
+        })
+        .unwrap();
 }
 
 #[no_mangle]
@@ -997,7 +1243,10 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 
     let header_size = std::mem::size_of::<ObjectHeader>();
     let total_size = (size + header_size + 7) & !7;
-    let _gc_lock = GC_LOCK.lock().unwrap();
+    let _gc_lock = {
+        let _io = crate::ThreadIoGuard::new();
+        GC_LOCK.lock().unwrap()
+    };
 
     let needs_major_gc = {
         let _los_lock = LOS_LOCK.lock().unwrap();
@@ -1046,6 +1295,18 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc_allocate_impl(size)));
+    match result {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("🔥 Panic in gc_allocate: {:?}", e);
+            std::process::abort();
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn gc_allocate_impl(size: usize) -> *mut u8 {
     ensure_thread_registered();
     let header_size = std::mem::size_of::<ObjectHeader>();
     let total_size = size + header_size;
@@ -1059,12 +1320,14 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
         rt_init_gc();
     }
 
+    let ctx_ptr = current_thread_context();
+    let tlab_top = (*ctx_ptr).tlab_top;
+    let tlab_end = (*ctx_ptr).tlab_end;
+
     // Try TLAB allocation
-    let mut tlab = MY_TLAB.with(|t| t.get());
-    if !tlab.top.is_null() && tlab.top.add(aligned_size) <= tlab.end {
-        let p = tlab.top;
-        tlab.top = tlab.top.add(aligned_size);
-        MY_TLAB.with(|t| t.set(tlab));
+    if !tlab_top.is_null() && tlab_top.add(aligned_size) <= tlab_end {
+        let p = tlab_top;
+        (*ctx_ptr).tlab_top = tlab_top.add(aligned_size);
 
         let header = p as *mut ObjectHeader;
         (*header).gc_word = 0;
@@ -1072,6 +1335,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
         (*header).flags = 0;
         (*header).length = 0;
         (*header).capacity = 0;
+        (*header).gc_flags = 0;
         let body_ptr = p.add(header_size);
         memset(body_ptr as *mut _, 0, size);
         return body_ptr;
@@ -1087,32 +1351,37 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
     loop {
         let current_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
         if current_top.add(refill_size) > EDEN_END {
-            let _lock = GC_LOCK.lock().unwrap();
-            let current_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
-            if current_top.add(refill_size) > EDEN_END {
-                trigger_safepoint();
-                minor_gc_locked();
-                if OLD_BYTES_ALLOCATED > OLD_GEN_GC_THRESHOLD {
-                    major_gc_locked_internal(false, true);
-                }
-                resume_safepoint();
-                if EDEN_TOP
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    .add(refill_size)
-                    > EDEN_END
-                {
-                    if refill_size > aligned_size {
-                        // Try one more time without refill
-                        continue;
+            {
+                let _lock = {
+                    let _io = crate::ThreadIoGuard::new();
+                    GC_LOCK.lock().unwrap()
+                };
+                let current_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
+                if current_top.add(refill_size) > EDEN_END {
+                    trigger_safepoint();
+                    minor_gc_locked();
+                    if OLD_BYTES_ALLOCATED > OLD_GEN_GC_THRESHOLD {
+                        major_gc_locked_internal(false, true);
                     }
-                    //printf("FATAL: Out of memory in Eden after minor_gc\n\0".as_ptr() as *const _);
-                    eprintln!(
-                        "FATAL: Out of memory in Eden after minor_gc (refill_size: {})",
-                        refill_size
-                    );
-                    exit(1);
+                    resume_safepoint();
                 }
-                continue;
+            }
+            FINALIZER_CONDVAR.notify_one();
+
+            if EDEN_TOP
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .add(refill_size)
+                > EDEN_END
+            {
+                if refill_size > aligned_size {
+                    // Try one more time without refill
+                    continue;
+                }
+                eprintln!(
+                    "FATAL: Out of memory in Eden after minor_gc (refill_size: {})",
+                    refill_size
+                );
+                exit(1);
             }
             continue;
         }
@@ -1134,15 +1403,15 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 (*header).flags = 0;
                 (*header).length = 0;
                 (*header).capacity = 0;
+                (*header).gc_flags = 0;
                 let body_ptr = current_top.add(header_size);
                 memset(body_ptr as *mut _, 0, size);
                 return body_ptr;
             } else {
                 // Refill TLAB
                 memset(current_top as *mut _, 0, refill_size);
-                tlab.top = current_top.add(aligned_size);
-                tlab.end = current_top.add(refill_size);
-                MY_TLAB.with(|t| t.set(tlab));
+                (*ctx_ptr).tlab_top = current_top.add(aligned_size);
+                (*ctx_ptr).tlab_end = current_top.add(refill_size);
 
                 let header = current_top as *mut ObjectHeader;
                 (*header).gc_word = 0;
@@ -1150,6 +1419,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 (*header).flags = 0;
                 (*header).length = 0;
                 (*header).capacity = 0;
+                (*header).gc_flags = 0;
                 let body_ptr = current_top.add(header_size);
                 memset(body_ptr as *mut _, 0, size);
                 return body_ptr;
@@ -1236,7 +1506,9 @@ pub unsafe fn process_mark_queue() {
             }
 
             let mut push_field = |field_ptr: *mut i64| {
-                if field_ptr.is_null() { return; }
+                if field_ptr.is_null() {
+                    return;
+                }
                 let mut field_val = *field_ptr;
                 if field_val >= STACK_OFFSET {
                     let resolved = crate::rt_gc_resolve_array_id(field_val);
@@ -1284,7 +1556,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     }
     GC_BACKGROUND_RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
 
-    rt_clear_tlab();
+    clear_all_tlabs();
     crate::rt_gc_prepare_array_forward();
 
     if !safepoint_already {
@@ -1312,6 +1584,13 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     }
     mark_static_roots();
     super::rt_gc_mark_tasks();
+    {
+        let queue = FINALIZER_QUEUE.lock().unwrap();
+        for (_, obj_val) in queue.iter() {
+            let mut tmp = *obj_val;
+            mark_object(&mut tmp as *mut i64);
+        }
+    }
 
     // End of Initial Mark STW
     if !safepoint_already {
@@ -1326,7 +1605,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         trigger_safepoint();
     }
     GC_PHASE.store(GC_PHASE_IDLE, std::sync::atomic::Ordering::SeqCst);
-    
+
     // Trace roots again to catch any missed updates
     {
         let registry = THREAD_REGISTRY.lock().unwrap();
@@ -1349,11 +1628,12 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
             let ctx = &*ctx_wrapper.0;
             let mut remset = ctx.remset.lock().unwrap();
             remset.retain(|&obj_ptr| {
-                let header = obj_ptr as *mut ObjectHeader;
+                let body = obj_ptr as *mut u8;
+                let header = rt_get_header(body);
                 if gc_is_marked((*header).gc_word) {
                     true
                 } else {
-                    (*header).flags &= !FLAG_REMSET_DIRTY;
+                    (*header).gc_flags &= !FLAG_REMSET_DIRTY;
                     false
                 }
             });
@@ -1377,27 +1657,28 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         bin.lock().unwrap().clear();
     }
     LARGE_FREE_LIST.lock().unwrap().clear();
-    
+
     std::thread::spawn(move || unsafe {
         // --- PHASE 1: Concurrent Finalizer Resurrect ---
         let mut resurrected = false;
         let mut curr = OLD_START;
         let limit_ptr = sweep_limit as *mut u8;
-        
+
         while curr < limit_ptr {
             let header = curr as *mut ObjectHeader;
             let type_id = (*header).type_id;
             if !gc_is_marked((*header).gc_word) {
-                if ((*header).flags & FLAG_FINALIZED) == 0 {
+                if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
                     if (type_id as usize) < MAX_TYPES {
                         if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                            let mut obj_val =
-                                (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                            let mut obj_val = (curr.add(std::mem::size_of::<ObjectHeader>())
+                                as i64)
+                                + HEAP_OFFSET;
                             {
                                 let mut queue = FINALIZER_QUEUE.lock().unwrap();
                                 queue.push((f, obj_val));
                             }
-                            (*header).flags |= FLAG_FINALIZED;
+                            (*header).gc_flags |= FLAG_FINALIZED;
                             mark_object(&mut obj_val as *mut i64);
                             resurrected = true;
                         }
@@ -1407,23 +1688,24 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
             let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
             curr = curr.add(size);
         }
-        
+
         // Also LOS finalizers
         for &(obj_usize, _) in &los_snapshot_for_finalizers {
             let obj_ptr = obj_usize as *mut u8;
             let header = obj_ptr as *mut ObjectHeader;
             let type_id = (*header).type_id;
             if !gc_is_marked((*header).gc_word) {
-                if ((*header).flags & FLAG_FINALIZED) == 0 {
+                if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
                     if (type_id as usize) < MAX_TYPES {
                         if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                            let mut obj_val =
-                                (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                            let mut obj_val = (obj_ptr.add(std::mem::size_of::<ObjectHeader>())
+                                as i64)
+                                + HEAP_OFFSET;
                             {
                                 let mut queue = FINALIZER_QUEUE.lock().unwrap();
                                 queue.push((f, obj_val));
                             }
-                            (*header).flags |= FLAG_FINALIZED;
+                            (*header).gc_flags |= FLAG_FINALIZED;
                             mark_object(&mut obj_val as *mut i64);
                             resurrected = true;
                         }
@@ -1439,24 +1721,28 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
 
         // --- PHASE 2: Concurrent Sweep ---
         let mut scan_ptr = OLD_START;
-        let mut local_free_list: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+        let mut local_free_list: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
         let mut new_old_bytes = 0usize;
-        
+
         while scan_ptr < limit_ptr {
             let header = scan_ptr as *mut ObjectHeader;
             let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-            
+
             if gc_is_marked((*header).gc_word) {
                 // Unmark it for next time
                 (*header).gc_word &= !GC_MARK_BIT;
                 new_old_bytes += size;
             } else {
                 // Dead object, add to local free list!
-                local_free_list.entry(size).or_default().push(scan_ptr as usize);
+                local_free_list
+                    .entry(size)
+                    .or_default()
+                    .push(scan_ptr as usize);
             }
             scan_ptr = scan_ptr.add(size);
         }
-        
+
         // Merge into global FREE_LIST
         let mut global_large = LARGE_FREE_LIST.lock().unwrap();
         for (size, mut vec) in local_free_list {
@@ -1473,10 +1759,10 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
             let mut new_los_count = 0;
             let mut new_los_bytes = 0usize;
             let original_los_count = los_snapshot_for_finalizers.len();
-            
+
             for i in 0..LOS_COUNT {
                 let header = LOS_OBJECTS[i] as *mut ObjectHeader;
-                
+
                 let mut is_survivor = false;
                 if i < original_los_count {
                     if gc_is_marked((*header).gc_word) {
@@ -1487,7 +1773,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
                     // Object was allocated during concurrent GC. Implicitly alive!
                     is_survivor = true;
                 }
-                
+
                 if is_survivor {
                     LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
                     LOS_SIZES[new_los_count] = LOS_SIZES[i];
@@ -1502,9 +1788,9 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
             LOS_NEXT_GC_THRESHOLD =
                 std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
         }
-        
+
         OLD_BYTES_ALLOCATED = new_old_bytes;
-        
+
         // =================================================================
         // DEFINITIVE GC TRIGGER THRESHOLD
         // =================================================================
@@ -1563,18 +1849,16 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
 
         // Floor: absolute minimum 60% of max heap (prevents GC until 60% occupancy is reached)
         let absolute_floor = OLD_GEN_SIZE * 60 / 100;
-        let floored = combined
-            .max(with_headroom)
-            .max(absolute_floor);
+        let floored = combined.max(with_headroom).max(absolute_floor);
 
         // Ceiling: never exceed 95% of heap (OOM safety — GC always fires before full)
         let ceiling = OLD_GEN_SIZE * 95 / 100;
         OLD_GEN_GC_THRESHOLD = floored.min(ceiling);
 
         // Diagnostics: warn when live set is above 80% of heap (memory pressure)
-        let collection_ratio = bytes_before_gc.saturating_sub(new_old_bytes) as f64
-            / bytes_before_gc.max(1) as f64;
-            
+        let collection_ratio =
+            bytes_before_gc.saturating_sub(new_old_bytes) as f64 / bytes_before_gc.max(1) as f64;
+
         if new_old_bytes > OLD_GEN_SIZE * 98 / 100 {
             eprintln!(
                 "FATAL: Out of Memory! Max heap limit of {} MB exceeded (Live set reached {} MB after GC). \
@@ -1619,8 +1903,15 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
 
 #[no_mangle]
 pub unsafe extern "C" fn major_gc() {
-    let _lock = GC_LOCK.lock().unwrap();
-    major_gc_locked_internal(true, false);
+    {
+        let _lock = {
+            let _io = crate::ThreadIoGuard::new();
+            GC_LOCK.lock().unwrap()
+        };
+        major_gc_locked_internal(true, false);
+    }
+    crate::vthread::vt_trim_stack_pool();
+    FINALIZER_CONDVAR.notify_one();
 }
 
 unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mut i64)) {
@@ -1747,6 +2038,7 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
         return;
     }
 
+    let orig_val = val;
     let resolved_val = crate::rt_gc_resolve_array_id(val);
     if resolved_val != val {
         *root = resolved_val;
@@ -1754,6 +2046,10 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     }
 
     if val >= STACK_OFFSET && val < HEAP_OFFSET {
+        eprintln!(
+            "[GC ALERT] Root is STACK object: root={:p} val={:#x}",
+            root, val
+        );
         // Stack object: doesn't move, but we MUST scan its fields
         let body = (val - STACK_OFFSET) as *mut u8;
         let header = rt_get_header(body);
@@ -1765,8 +2061,8 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     }
 
     let old_body = (val - HEAP_OFFSET) as *mut u8;
-    if !in_young_gen(old_body) {
-        return; // Not in Young Gen
+    if !in_from_space(old_body) {
+        return; // Not in From-space: already in To-Survivor or Old Gen, do NOT re-copy!
     }
 
     let header = rt_get_header(old_body);
@@ -1792,11 +2088,20 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     {
         let ptr = if total_size < NUM_FAST_BINS * 8 {
             let bin_idx = total_size / 8;
-            FAST_FREE_LIST[bin_idx].lock().unwrap().pop().map(|p| p as *mut u8)
+            FAST_FREE_LIST[bin_idx]
+                .lock()
+                .unwrap()
+                .pop()
+                .map(|p| p as *mut u8)
         } else {
-            LARGE_FREE_LIST.lock().unwrap().get_mut(&total_size).and_then(|vec| vec.pop()).map(|p| p as *mut u8)
+            LARGE_FREE_LIST
+                .lock()
+                .unwrap()
+                .get_mut(&total_size)
+                .and_then(|vec| vec.pop())
+                .map(|p| p as *mut u8)
         };
-        
+
         let header_ptr = if let Some(p) = ptr {
             p as *mut ObjectHeader
         } else {
@@ -1832,6 +2137,7 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     *root = (new_body as i64) + HEAP_OFFSET;
 
     if is_promotion {
+        (*new_header).gc_flags &= !FLAG_REMSET_DIRTY;
         PROMOTED_LIST.lock().unwrap().push(new_header as usize);
     } else {
         TO_SURVIVOR_TOP = TO_SURVIVOR_TOP.add(total_size);
@@ -1987,6 +2293,7 @@ unsafe fn scan_object_fields(header: *mut ObjectHeader) {
 }
 
 #[inline]
+#[allow(dead_code)]
 unsafe fn run_finalizer_for_header(header: *mut ObjectHeader) {
     let type_id = (*header).type_id as usize;
     if type_id >= MAX_TYPES {
@@ -2010,9 +2317,22 @@ unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
         }
 
         if !gc_is_forwarded((*header).gc_word) {
-            let body = scan.add(std::mem::size_of::<ObjectHeader>());
-            if rt_is_gc_ptr(body) {
-                run_finalizer_for_header(header);
+            let type_id = (*header).type_id as usize;
+            if type_id < MAX_TYPES {
+                if let Some(f) = TYPE_TABLE[type_id].finalizer {
+                    if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
+                        (*header).gc_flags |= FLAG_FINALIZED;
+                        // Resurrect object
+                        let mut root: i64 =
+                            ((header as *mut u8).add(std::mem::size_of::<ObjectHeader>()) as i64)
+                                + HEAP_OFFSET;
+                        copy_object(&mut root as *mut i64);
+                        {
+                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                            queue.push((f, root));
+                        }
+                    }
+                }
             }
         }
         scan = scan.add(size);
@@ -2021,50 +2341,95 @@ unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
 
 #[no_mangle]
 pub unsafe extern "C" fn minor_gc() {
-    let _lock = GC_LOCK.lock().unwrap();
-    trigger_safepoint();
-    minor_gc_locked();
-    resume_safepoint();
+    {
+        let _lock = {
+            let _io = crate::ThreadIoGuard::new();
+            GC_LOCK.lock().unwrap()
+        };
+        trigger_safepoint();
+        minor_gc_locked();
+        resume_safepoint();
+    }
+    FINALIZER_CONDVAR.notify_one();
 }
 
 unsafe fn trigger_safepoint() {
+    // No need to reset SAFEPOINT_RESUME — it's an epoch counter now.
+    // Threads wait for the epoch to change, not for a boolean.
     SAFEPOINT_REQUEST.store(true, Ordering::SeqCst);
     {
         let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
-        let expected = { THREAD_REGISTRY.lock().unwrap().len() };
-        // We wait until ALL registered threads have parked themselves
-        // Note: The GC thread itself is NOT in the registry yet when allocating,
-        // unless it's a mutator that just happened to trigger GC.
-        // We need to NOT wait for ourselves if we are registered.
+        let mut count = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *count = 0;
+        let mut wait_loops = 0;
+        loop {
+            // Check if all threads are safe. We must drop the THREAD_REGISTRY
+            // lock before waiting, otherwise threads trying to register/unregister
+            // will deadlock.
+            let all_safe = {
+                let registry = match THREAD_REGISTRY.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                let total = registry.len();
+                let mut safe_count = 0;
 
-        let mut target_count = expected;
-        MY_CONTEXT.with(|ctx| {
-            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-            let registry = THREAD_REGISTRY.lock().unwrap();
-            if registry.contains(&ThreadContextPtr(ctx_ptr)) {
-                target_count -= 1; // Don't wait for ourself
-            }
-        });
+                MY_CONTEXT.with(|ctx| {
+                    let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+                    for &ctx_wrapper in registry.iter() {
+                        let other_ctx_ptr = ctx_wrapper.0;
+                        if other_ctx_ptr == ctx_ptr {
+                            safe_count += 1;
+                        } else if (*other_ctx_ptr).in_blocking_io.load(Ordering::SeqCst) {
+                            safe_count += 1;
+                        } else if (*other_ctx_ptr).in_safepoint.load(Ordering::SeqCst) {
+                            safe_count += 1;
+                        }
+                    }
+                });
 
-        while *count < target_count {
-            println!(
-                "GC Deadlock debug: count = {}, target_count = {}",
-                *count, target_count
-            );
-            let (new_count, timeout_res) = cvar
-                .wait_timeout(count, std::time::Duration::from_secs(1))
-                .unwrap();
-            count = new_count;
-            if timeout_res.timed_out() {
-                println!(
-                    "GC Deadlock timeout! count = {}, target_count = {}",
-                    *count, target_count
-                );
-                // Print registry contents
-                let registry = THREAD_REGISTRY.lock().unwrap();
-                println!("Registry size: {}", registry.len());
+                if safe_count >= total {
+                    true
+                } else {
+                    if wait_loops > 500 {
+                        eprintln!(
+                            "FATAL: GC safepoint timeout! safe_count={}, total={}",
+                            safe_count, total
+                        );
+                        MY_CONTEXT.with(|ctx| {
+                            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+                            for &ctx_wrapper in registry.iter() {
+                                let other_ctx_ptr = ctx_wrapper.0;
+                                if other_ctx_ptr != ctx_ptr {
+                                    eprintln!(
+                                        "  Thread {:p}: in_blocking_io={}, in_safepoint={}",
+                                        other_ctx_ptr,
+                                        (*other_ctx_ptr).in_blocking_io.load(Ordering::SeqCst),
+                                        (*other_ctx_ptr).in_safepoint.load(Ordering::SeqCst)
+                                    );
+                                }
+                            }
+                        });
+                        std::process::abort();
+                    }
+                    false
+                }
+                // registry lock is dropped here
+            };
+
+            if all_safe {
+                break;
             }
+
+            let result = cvar.wait_timeout(count, std::time::Duration::from_millis(10));
+            count = match result {
+                Ok((g, _)) => g,
+                Err(e) => e.into_inner().0,
+            };
+            wait_loops += 1;
         }
     }
 }
@@ -2072,25 +2437,31 @@ unsafe fn trigger_safepoint() {
 unsafe fn resume_safepoint() {
     SAFEPOINT_REQUEST.store(false, Ordering::SeqCst);
     {
+        // Increment the epoch to wake all waiting threads.
+        // Each thread captured the epoch before entering safepoint,
+        // so they'll see the new value and exit their wait loop.
         let (lock, cvar) = &**SAFEPOINT_RESUME;
-        let mut resume = lock.lock().unwrap();
-        *resume = true;
+        let mut epoch = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *epoch += 1;
         cvar.notify_all();
     }
-    // Reset for next GC
+    // Reset ACK counter for next GC
     {
         let (lock, _) = &**SAFEPOINT_ACK;
-        *lock.lock().unwrap() = 0;
-    }
-    {
-        let (lock, _) = &**SAFEPOINT_RESUME;
-        *lock.lock().unwrap() = false;
+        let mut l = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *l = 0;
     }
 }
 
 pub unsafe fn minor_gc_locked() {
     crate::rt_gc_prepare_array_forward();
-    rt_clear_tlab();
+    clear_all_tlabs();
     let eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
     let from_survivor_top = FROM_SURVIVOR_TOP;
     TO_SURVIVOR_TOP = TO_SURVIVOR;
@@ -2111,6 +2482,12 @@ pub unsafe fn minor_gc_locked() {
     }
     copy_static_roots();
     super::rt_gc_scan_tasks();
+    {
+        let mut queue = FINALIZER_QUEUE.lock().unwrap();
+        for (_, obj_val) in queue.iter_mut() {
+            copy_object(obj_val as *mut i64);
+        }
+    }
 
     // 1b. Scan RemSets
     {
@@ -2120,11 +2497,12 @@ pub unsafe fn minor_gc_locked() {
             let mut remset = ctx.remset.lock().unwrap();
             let mut next_remset = Vec::new();
             for &obj_ptr in remset.iter() {
-                let header = obj_ptr as *mut ObjectHeader;
+                let body = obj_ptr as *mut u8;
+                let header = rt_get_header(body);
                 // Temporarily clear dirty flag so new mutations can be caught
-                (*header).flags &= !FLAG_REMSET_DIRTY;
+                (*header).gc_flags &= !FLAG_REMSET_DIRTY;
                 if scan_object_fields_minor(header) {
-                    (*header).flags |= FLAG_REMSET_DIRTY;
+                    (*header).gc_flags |= FLAG_REMSET_DIRTY;
                     next_remset.push(obj_ptr);
                 }
             }
@@ -2166,6 +2544,7 @@ pub unsafe fn minor_gc_locked() {
             if let Some(promoted_ptr) = newly_promoted {
                 let header = promoted_ptr as *mut ObjectHeader;
                 if scan_object_fields_minor(header) {
+                    (*header).gc_flags |= FLAG_REMSET_DIRTY;
                     new_remset.push(promoted_ptr);
                 }
                 progressed = true;
@@ -2178,9 +2557,6 @@ pub unsafe fn minor_gc_locked() {
             break;
         }
     }
-
-    run_young_finalizers_in_region(EDEN_START, eden_top);
-    run_young_finalizers_in_region(FROM_SURVIVOR, from_survivor_top);
 
     // Swap survivors
     let temp = FROM_SURVIVOR;

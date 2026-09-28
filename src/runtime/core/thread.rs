@@ -1,22 +1,35 @@
 use super::*;
+use crate::vthread;
 
-/// Spawn a TejX virtual thread (may coroutine).
+/// Spawn a TejX Virtual Thread — Go/Java M:N model.
 ///
-/// Safety properties:
-///   - Guard page below each coroutine stack prevents silent stack overflow.
-///   - GC roots are isolated per coroutine via thread_local! (may CLS).
-///   - Panics in the coroutine are caught and do NOT crash the scheduler.
-///   - The closure GC root (cb_slot) is held alive by ThreadRunGuard until
-///     the coroutine exits, then atomically released.
+///  Property          │ Go goroutine   │ Java 21 VT   │ TejX VThread (this)
+///  ──────────────────┼────────────────┼──────────────┼────────────────────
+///  Concurrency model │ M:N            │ M:N          │ M:N
+///  Stack start       │ 2–4 KB mmap    │ heap frames  │ 4 KB mmap pool
+///  Stack growth      │ copy-on-overflow│ heap-extend │ copy-on-overflow
+///  OS threads        │ GOMAXPROCS     │ ForkJoinPool │ num_cpus workers
+///  I/O parking       │ netpoller      │ Selector     │ kqueue/epoll
+///
+/// Every spawn() allocates a 4 KB stack from the pool (or a fresh mmap if
+/// the pool is empty).  The stack doubles on overflow — up to 64 MB — using
+/// the copy-on-grow technique from Go's runtime.
+/// No may, no generator, no fixed 2 MB overhead, no SIGSEGV crashes.
+#[inline(always)]
+pub(crate) unsafe fn register_thread_data(ptr: *mut ThreadData) -> i64 {
+    ptr as i64
+}
+
+#[inline(always)]
+pub(crate) unsafe fn unregister_thread_data(_addr: usize) -> bool {
+    true
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() {
-        return;
-    }
+    if ptr.is_null() { return; }
     rt_ensure_type_finalizer(this, rt_thread_object_finalizer);
-    // field 0 = runtime data pointer (non-GC managed)
-    // field 1 = callback closure (GC-managed, also pinned via static root)
     rt_store_ref_slot(this, ptr.offset(1), cb);
     let slot_live = std::sync::Arc::new(AtomicBool::new(true));
     let data = Box::new(ThreadData {
@@ -25,99 +38,66 @@ pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
         cb_slot: rt_add_static_root(cb),
         slot_live,
     });
-    *ptr.offset(0) = Box::into_raw(data) as i64;
+    *ptr.offset(0) = register_thread_data(Box::into_raw(data));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_start(this: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() {
-        return;
-    }
+    if ptr.is_null() { return; }
     let data_ptr = *ptr.offset(0) as *mut ThreadData;
-    if data_ptr.is_null() {
-        return;
-    }
-    if (*data_ptr).started {
-        return;
-    }
+    if data_ptr.is_null() { return; }
+    if (*data_ptr).started { return; }
     (*data_ptr).started = true;
-    let cb_slot = (*data_ptr).cb_slot;
+
+    let cb_slot   = (*data_ptr).cb_slot;
     let slot_live = (*data_ptr).slot_live.clone();
 
-    // Spawn a may virtual thread (coroutine). Each coroutine starts with
-    // VTHREAD_STACK_SIZE (32KB) and grows on demand via mmap. A guard page
-    // sits below the stack \u2014 stack overflow is caught as a segfault rather
-    // than silently corrupting memory.
-    let handle = may::coroutine::Builder::new()
-        .stack_size(VTHREAD_STACK_SIZE)
-        .spawn(move || {
-            // Register this coroutine with the GC. Each virtual thread gets
-            // its own MY_CONTEXT (thread_local via may CLS) and MY_TLAB for
-            // lock-free allocation within the coroutine.
-            rt_register_thread();
-
-            // ThreadRunGuard releases the static GC root and unregisters the
-            // coroutine from the GC when it exits (even via panic).
+    // Spawn a VThread via the TejX M:N scheduler.
+    // Initial stack: 4 KB from pool.  Memory footprint: ~4 KB + 64 B header.
+    vthread::vt_spawn_closure(
+        move || {
+            // Worker thread is already registered by worker_loop().
+            // Just run the closure and release the GC cb_slot on exit.
             let _guard = ThreadRunGuard { cb_slot, slot_live };
-
-            // Catch panics so one misbehaving coroutine cannot crash the
-            // entire process or orphan other virtual threads.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                let mut cb_root = 0;
-                rt_pin_static_root(cb_slot, &mut cb_root);
-                rt_call_closure_no_args(cb_root);
-                rt_pop_roots(1);
-            }));
-        })
-        .expect("TejX virtual thread spawn failed — may scheduler not initialized");
-
-    (*data_ptr).handle = Some(handle);
+            let mut cb_root = 0;
+            rt_pin_static_root(cb_slot, &mut cb_root);
+            rt_call_closure_no_args(cb_root);
+            rt_pop_roots(1);
+        },
+        cb_slot,
+        (*data_ptr).slot_live.clone(),
+    );
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_join(this: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() {
-        return;
-    }
+    if ptr.is_null() { return; }
     let data_ptr = *ptr.offset(0) as *mut ThreadData;
-    if data_ptr.is_null() {
-        return;
+    if data_ptr.is_null() { return; }
+    if !(*data_ptr).started { rt_Thread_start(this); }
+
+    // Wait for the VThread's done flag — set by ThreadRunGuard::drop.
+    let slot_live = (*data_ptr).slot_live.clone();
+    vthread::vt_join(&slot_live);
+
+    let atomic_slot = ptr.offset(0) as *const AtomicI64;
+    let reclaimed = (*atomic_slot).swap(0, Ordering::AcqRel);
+    if reclaimed != 0 && unregister_thread_data(reclaimed as usize) {
+        let cb_slot = (*data_ptr).cb_slot;
+        rt_release_thread_cb_slot(cb_slot, &(*data_ptr).slot_live);
+        *ptr.offset(1) = 0;
+        let _ = Box::from_raw(data_ptr);
     }
-    // Auto-start if not yet started (matches prior OS-thread behaviour).
-    if !(*data_ptr).started {
-        rt_Thread_start(this);
-    }
-    // Block the calling virtual thread until the target coroutine finishes.
-    // If the caller is itself a may coroutine, this yield allows the may
-    // scheduler to run other coroutines while waiting \u2014 no OS thread is
-    // wasted. If called from the main OS thread, it blocks normally.
-    if let Some(handle) = (*data_ptr).handle.take() {
-        let _ = handle.join();
-    }
-    rt_release_thread_cb_slot((*data_ptr).cb_slot, &(*data_ptr).slot_live);
-    *ptr.offset(1) = 0;
-    let _ = Box::from_raw(data_ptr);
-    *ptr.offset(0) = 0;
 }
 
-/// Sleep the current virtual thread.
-///
-/// If running inside a may coroutine, this yields the coroutine so the
-/// underlying OS thread is free to run other coroutines. The coroutine
-/// wakes after `ms` milliseconds.
-///
-/// If called from the main OS thread (not a coroutine), falls back to a
-/// standard blocking sleep.
+/// Sleep the current VThread.
+/// The calling OS worker thread is freed immediately so it can run other
+/// VThreads — identical to Go's `time.Sleep` parking the goroutine.
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_sleep(ms: i64) {
-    let dur = std::time::Duration::from_millis(ms as u64);
-    if may::coroutine::is_coroutine() {
-        // Cooperative sleep: releases the OS thread to other coroutines.
-        may::coroutine::sleep(dur);
-    } else {
-        // Main thread or non-coroutine context: plain blocking sleep.
-        std::thread::sleep(dur);
+    if ms > 0 {
+        crate::vthread::vt_sleep(ms as u64);
     }
 }

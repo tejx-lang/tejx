@@ -1,6 +1,8 @@
 import std:collections;
 import std:net;
 import std:url;
+import std:binary;
+import std:time;
 
 function parseDecimalInt(text: string): int {
     let digits = "0123456789";
@@ -309,17 +311,8 @@ function resolvedPort(parsedUrl: URL): int {
 }
 
 function readRawResponse(stream: TcpStream): string {
-    let rawResponse = "";
-    let keepReading = true;
-    while (keepReading) {
-        let chunk = stream.receive(4096);
-        if (chunk == "") {
-            keepReading = false;
-        } else {
-            rawResponse = rawResponse + chunk;
-        }
-    }
-    return rawResponse;
+    let bytes = stream.readAllBytes();
+    return binary.toString(bytes);
 }
 
 
@@ -342,20 +335,24 @@ class HttpClient {
     }
 
     private connect(parsedUrl: URL, port: int): TcpStream {
-        let maybeStream: Optional<TcpStream> = None;
-        if (parsedUrl.scheme == "https") {
-            maybeStream = this.insecureTls
-                ? net.connectTlsInsecure(parsedUrl.host, port)
-                : net.connectTls(parsedUrl.host, port);
-        } else {
-            maybeStream = net.connectHost(parsedUrl.host, port);
+        let maxRetries = 200; // 2 seconds total retry
+        for (let i = 0; i < maxRetries; i++) {
+            let maybeStream: Optional<TcpStream> = None;
+            if (parsedUrl.scheme == "https") {
+                maybeStream = this.insecureTls
+                    ? net.connectTlsInsecure(parsedUrl.host, port)
+                    : net.connectTls(parsedUrl.host, port);
+            } else {
+                maybeStream = net.connectHost(parsedUrl.host, port);
+            }
+
+            if (maybeStream != None) {
+                return maybeStream as TcpStream;
+            }
+            sleep(10);
         }
 
-        if (maybeStream == None) {
-            throw new Error("Failed to connect to " + parsedUrl.host + ":" + parsedUrl.port);
-        }
-
-        return maybeStream as TcpStream;
+        throw new Error("Failed to connect to " + parsedUrl.host + ":" + String(port) + " after retries");
     }
 
     request(method: string, url: string, body: string, headers: Headers, timeoutMs: int): HttpClientResponse {
