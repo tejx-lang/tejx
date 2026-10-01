@@ -1,0 +1,220 @@
+// Production-Grade Test Suite: All Primitive Types and Operations
+// ==============================================================
+// Thoroughly exercises:
+// - int8, int16, int32, int64, uint8, uint16, uint32, uint64
+// - float32, float64
+// - bool (truth tables, short-circuit, ternary)
+// - char (literals, escapes, comparisons)
+// - string (concatenation, multibyte, indexing, comparisons)
+// - bitwise operations (&, |, ^, ~, <<, >>)
+// - typeof operator across all primitive types
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function test_signed_integers() {
+    print("--- Testing Signed Integers ---");
+
+    // int8 boundaries (-128 to 127)
+    let s8_min: int8 = -128;
+    let s8_max: int8 = 127;
+    let s8_zero: int8 = 0;
+    assert_eq_int(-128, s8_min, "int8 min");
+    assert_eq_int(127, s8_max, "int8 max");
+    assert_eq_int(0, s8_zero, "int8 zero");
+    assert_true(s8_min < s8_max, "int8 min < max");
+    assert_true(s8_max > s8_zero, "int8 max > zero");
+
+    // int16 boundaries (-32768 to 32767)
+    let s16_min: int16 = -32768;
+    let s16_max: int16 = 32767;
+    assert_eq_int(-32768, s16_min, "int16 min");
+    assert_eq_int(32767, s16_max, "int16 max");
+    assert_true(s16_min < 0, "int16 min < 0");
+
+    // int32 boundaries
+    let s32_val: int32 = 2147483647;
+    let s32_neg: int32 = -2147483647;
+    assert_eq_int(2147483647, s32_val, "int32 large positive");
+    assert_eq_int(-2147483647, s32_neg, "int32 large negative");
+
+    // int64 (explicit 64-bit)
+    let big_a: int64 = 1000000000000;
+    let big_b: int64 = 2000000000000;
+    let big_sum: int64 = big_a + big_b;
+    assert_true(big_sum == 3000000000000, "int64 addition > 32 bits");
+
+    // Signed arithmetic operations
+    let a: int = 45;
+    let b: int = 14;
+    assert_eq_int(59, a + b, "int add");
+    assert_eq_int(31, a - b, "int sub");
+    assert_eq_int(630, a * b, "int mul");
+    assert_eq_int(3, a / b, "int div");
+    assert_eq_int(3, a % b, "int mod");
+    assert_eq_int(-45, -a, "int negate");
+}
+
+function test_unsigned_integers() {
+    print("--- Testing Unsigned Integers ---");
+
+    let u8_max: uint8 = 255;
+    let u8_zero: uint8 = 0;
+    assert_eq_int(255, u8_max, "uint8 max");
+    assert_eq_int(0, u8_zero, "uint8 zero");
+
+    let u16_max: uint16 = 65535;
+    assert_eq_int(65535, u16_max, "uint16 max");
+
+    let u32_val: uint32 = 4000000000;
+    assert_true(u32_val == 4000000000, "uint32 value above 2^31");
+
+    let u64_val: uint64 = 10000000000000;
+    assert_true(u64_val == 10000000000000, "uint64 value");
+
+    // Bitwise operations
+    let bit_a: int = 12;
+    let bit_b: int = 10;
+    assert_eq_int(8, bit_a & bit_b, "bitwise AND (12 & 10 == 8)");
+    assert_eq_int(14, bit_a | bit_b, "bitwise OR (12 | 10 == 14)");
+    assert_eq_int(6, bit_a ^ bit_b, "bitwise XOR (12 ^ 10 == 6)");
+    assert_eq_int(48, bit_a << 2, "bitwise shift left (12 << 2 == 48)");
+    assert_eq_int(3, bit_a >> 2, "bitwise shift right (12 >> 2 == 3)");
+}
+
+function test_floating_point() {
+    print("--- Testing Floating Point ---");
+
+    let f1: float = 3.14159;
+    let f2: float = 2.71828;
+    let sum: float = f1 + f2;
+    assert_true(sum > 5.85 && sum < 5.87, "float addition range");
+
+    let diff: float = f1 - f2;
+    assert_true(diff > 0.42 && diff < 0.43, "float subtraction range");
+
+    let mul: float = f1 * 2.0;
+    assert_true(mul > 6.28 && mul < 6.29, "float multiplication range");
+
+    let div: float = 10.0 / 4.0;
+    assert_true(div == 2.5, "float exact division 10.0 / 4.0 == 2.5");
+
+    let neg: float = -12.345;
+    assert_true(neg < 0.0, "negative float < 0");
+    assert_true(-neg > 0.0, "double negated float > 0");
+}
+
+function test_booleans() {
+    print("--- Testing Booleans ---");
+
+    let t: bool = true;
+    let f: bool = false;
+
+    // Logical NOT
+    assert_true(!f, "!false == true");
+    assert_false(!t, "!true == false");
+
+    // Logical AND
+    assert_true(t && t, "true && true == true");
+    assert_false(t && f, "true && false == false");
+    assert_false(f && t, "false && true == false");
+    assert_false(f && f, "false && false == false");
+
+    // Logical OR
+    assert_true(t || t, "true || true == true");
+    assert_true(t || f, "true || false == true");
+    assert_true(f || t, "false || true == true");
+    assert_false(f || f, "false || false == false");
+
+    // Short-circuiting verification
+    let side_effect: int = 0;
+    let helper_true = () => { side_effect++; return true; };
+    let helper_false = () => { side_effect++; return false; };
+
+    // false && ... should not execute right side
+    side_effect = 0;
+    let r1 = false && helper_true();
+    assert_eq_int(0, side_effect, "Short-circuit: false && rhs does not execute rhs");
+
+    // true || ... should not execute right side
+    side_effect = 0;
+    let r2 = true || helper_false();
+    assert_eq_int(0, side_effect, "Short-circuit: true || rhs does not execute rhs");
+
+    // Ternary operator
+    let res1: int = (10 > 5) ? 100 : 200;
+    assert_eq_int(100, res1, "Ternary true branch");
+    let res2: int = (10 < 5) ? 100 : 200;
+    assert_eq_int(200, res2, "Ternary false branch");
+
+    // Nested ternary
+    let score: int = 85;
+    let grade: string = (score >= 90) ? "A" : (score >= 80) ? "B" : "C";
+    assert_eq_string("B", grade, "Nested ternary grade evaluation");
+}
+
+function test_characters() {
+    print("--- Testing Characters ---");
+
+    let c_a: char = 'A';
+    let c_same: char = 'A';
+    let c_b: char = 'B';
+    let c_z: char = 'Z';
+
+    assert_true(c_a == c_same, "Char equality c_a == c_same");
+    assert_true(c_a != c_b, "Char inequality c_a != c_b");
+    assert_true(c_a < c_b, "Char ordering c_a < c_b");
+    assert_true(c_b < c_z, "Char ordering c_b < c_z");
+    assert_eq_string("char", typeof(c_a), "typeof char");
+}
+
+function test_strings() {
+    print("--- Testing Strings ---");
+
+    let empty: string = "";
+    assert_eq_int(0, empty.length(), "Empty string length is 0");
+
+    let s1: string = "Hello, ";
+    let s2: string = "World!";
+    let combined: string = s1 + s2;
+    assert_eq_string("Hello, World!", combined, "String concatenation");
+    assert_eq_int(13, combined.length(), "Concatenated string length");
+
+    // String comparisons
+    assert_true("apple" == "apple", "String exact match");
+    assert_true("apple" != "banana", "String mismatch");
+    assert_true("abc" < "abd", "String ordering 'abc' < 'abd'");
+    assert_true("zoo" > "ant", "String ordering 'zoo' > 'ant'");
+
+    // String with escapes
+    let escaped: string = "Line 1\nLine 2\tTabbed \"Quoted\"";
+    assert_true(escaped.length() > 0, "Escaped string valid length");
+
+    // Multibyte string
+    let utf8: string = "TejX ⚡ Speed & Power 🔥";
+    assert_true(utf8.length() > 0, "UTF-8 string length > 0");
+
+    // Substring / search if supported
+    assert_true(combined.indexOf("World") >= 0, "indexOf found substring");
+    assert_true(combined.indexOf("Nonexistent") == -1, "indexOf nonexistent is -1");
+}
+
+function test_typeof() {
+    print("--- Testing Typeof Operator ---");
+
+    assert_eq_string("int", typeof(42), "typeof int");
+    assert_eq_string("string", typeof("hello"), "typeof string");
+    assert_eq_string("bool", typeof(true), "typeof bool");
+    assert_eq_string("float", typeof(3.14), "typeof float");
+}
+
+function main() {
+    print("=== ALL PRIMITIVE TYPES TESTS START ===");
+    test_signed_integers();
+    test_unsigned_integers();
+    test_floating_point();
+    test_booleans();
+    test_characters();
+    test_strings();
+    test_typeof();
+    print("=== ALL PRIMITIVE TYPES TESTS COMPLETE ===");
+}

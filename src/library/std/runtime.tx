@@ -1,0 +1,45 @@
+// Standard Runtime introspection and configuration module for TejX
+
+extern function rt_get_default_vthread_stack_size(): int;
+extern function rt_set_default_vthread_stack_size(size: int): void;
+extern function rt_vthread_count(): int64;
+extern function rt_get_cpu_count(): int;
+extern function rt_get_uptime(): float;
+
+export class RuntimeInfo {
+    vthreadStackSize: int;
+    vthreadsSpawned: int64;
+    cpuCount: int;
+    uptime: float;
+
+    constructor(stack: int, vtCount: int64, cpus: int, up: float) {
+        this.vthreadStackSize = stack;
+        this.vthreadsSpawned = vtCount;
+        this.cpuCount = cpus;
+        this.uptime = up;
+    }
+}
+
+/// Returns the current default stack size allocated for virtual threads.
+export function getVThreadStackSize(): int {
+    return rt_get_default_vthread_stack_size();
+}
+
+/// Dynamically updates the default stack size for newly spawned virtual threads.
+export function setVThreadStackSize(sizeBytes: int): void {
+    rt_set_default_vthread_stack_size(sizeBytes);
+}
+
+/// Returns the total count of virtual threads spawned across the lifetime of the process.
+export function getVThreadCount(): int64 {
+    return rt_vthread_count();
+}
+
+/// Returns snapshot of current runtime metrics.
+export function getRuntimeInfo(): RuntimeInfo {
+    let stack = rt_get_default_vthread_stack_size();
+    let count = rt_vthread_count();
+    let cpus = rt_get_cpu_count();
+    let up = rt_get_uptime();
+    return new RuntimeInfo(stack, count, cpus, up);
+}

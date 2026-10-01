@@ -294,7 +294,7 @@ impl Lowering {
                 let is_default = *_is_default;
                 let source_str = source.clone();
 
-                let path = if let Some(mod_name) = source_str.strip_prefix("std:") {
+                let mut path = if let Some(mod_name) = source_str.strip_prefix("std:") {
                     let base = self.stdlib_path.borrow().clone();
                     // Search strictly in lib/std/
                     base.join(STD_DIR).join(format!("{}.tx", mod_name))
@@ -311,6 +311,25 @@ impl Lowering {
                     }
                     p
                 };
+
+                if !path.exists()
+                    && !source_str.starts_with("std:")
+                    && !source_str.starts_with("./")
+                    && !source_str.starts_with("../")
+                {
+                    let clean_source = source_str.trim_matches('"');
+                    let mut sub_p = std::path::PathBuf::from(clean_source);
+                    if !sub_p.to_string_lossy().ends_with(".tx") {
+                        sub_p.set_extension("tx");
+                    }
+                    for inc_dir in self.include_dirs.borrow().iter() {
+                        let candidate = inc_dir.join(&sub_p);
+                        if candidate.exists() {
+                            path = candidate;
+                            break;
+                        }
+                    }
+                }
 
                 if !path.exists() {
                     self.diagnostics.borrow_mut().push(

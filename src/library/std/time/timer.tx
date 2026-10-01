@@ -1,3 +1,4 @@
+import "./internal.tx";
 export class Timeout {
     private handle: int;
 

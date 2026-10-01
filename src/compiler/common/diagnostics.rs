@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Severity {
     Error,
+    Warning,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,20 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(message: String, line: usize, col: usize, file: String) -> Self {
+        Self {
+            message,
+            line,
+            col,
+            length: 1,
+            file,
+            code: String::new(),
+            severity: Severity::Warning,
+            hint: None,
+            label: None,
+        }
+    }
+
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = code.to_string();
         self
@@ -53,6 +68,7 @@ impl Diagnostic {
     pub fn report_with_source(&self, source: Option<&str>) {
         let (sev_color, sev_name) = match self.severity {
             Severity::Error => ("\x1b[31;1m", "error"),
+            Severity::Warning => ("\x1b[33;1m", "warning"),
         };
 
         // Header: error[E0100]: message
@@ -90,16 +106,7 @@ impl Diagnostic {
             let line_num_str = self.line.to_string();
             let pad = " ".repeat(line_num_str.len());
 
-            // Context: show line before if available
-            if self.line >= 2 {
-                let prev_line = lines[self.line - 2];
-                let prev_num = (self.line - 1).to_string();
-                let prev_pad = " ".repeat(line_num_str.len().saturating_sub(prev_num.len()));
-                eprintln!("  \x1b[34m{} |\x1b[0m", pad);
-                eprintln!("  \x1b[34m{}{} |\x1b[0m {}", prev_pad, prev_num, prev_line);
-            } else {
-                eprintln!("  \x1b[34m{} |\x1b[0m", pad);
-            }
+            eprintln!("  \x1b[34m{} |\x1b[0m", pad);
 
             // Error line
             eprintln!("  \x1b[34m{} |\x1b[0m {}", line_num_str, line_content);

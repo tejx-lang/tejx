@@ -1,0 +1,351 @@
+// GC Object Graph Survival Tests
+// ================================
+// Tests that the GC correctly handles complex object reference topologies:
+// - Deep chains
+// - Wide trees
+// - Diamond references
+// - Nested containers (arrays of objects of arrays)
+// - Optional field transitions across GC
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_ne_int } from "../utils.tx";
+import { collect, collectYoung, getHeapUsed } from "std:gc";
+
+// --- Helper Classes ---
+
+class ChainLink {
+    id: int;
+    label: string;
+    next: Optional<ChainLink> = None;
+    constructor(id: int, label: string) {
+        this.id = id;
+        this.label = label;
+    }
+}
+
+class WideBranch {
+    id: int;
+    children: WideBranch[] = [];
+    constructor(id: int) { this.id = id; }
+}
+
+class DiamondNode {
+    name: string;
+    value: int;
+    refA: Optional<DiamondNode> = None;
+    refB: Optional<DiamondNode> = None;
+    constructor(name: string, value: int) {
+        this.name = name;
+        this.value = value;
+    }
+}
+
+class Container {
+    items: Payload[];
+    constructor() { this.items = []; }
+    add(p: Payload): void { this.items.push(p); }
+}
+
+class Payload {
+    id: int;
+    data: string;
+    constructor(id: int, data: string) { this.id = id; this.data = data; }
+}
+
+class Wrapper {
+    inner: Container;
+    tag: string;
+    constructor(tag: string) {
+        this.inner = new Container();
+        this.tag = tag;
+    }
+}
+
+// --- Test 1: Deep Chain Survives GC ---
+function test_deep_chain() {
+    print("--- Graph: Deep Chain (500 links) ---");
+
+    // Build a linked list of 500 nodes
+    let head = new ChainLink(0, "head");
+    let current = head;
+    for (let i = 1; i < 500; i++) {
+        let next = new ChainLink(i, "link-" + i);
+        current.next = next;
+        current = next;
+    }
+
+    // Generate garbage
+    for (let i = 0; i < 5000; i++) {
+        let trash = new ChainLink(i + 10000, "trash");
+    }
+
+    collect();
+
+    // Walk the chain and verify integrity
+    let walker: Optional<ChainLink> = head;
+    let count = 0;
+    while (walker != None) {
+        assert_eq_int(count, walker.id, "Chain link #" + count + " id");
+        walker = walker.next;
+        count++;
+    }
+    assert_eq_int(500, count, "Chain has exactly 500 links after GC");
+}
+
+// --- Test 2: Wide Tree Survives GC ---
+function test_wide_tree() {
+    print("--- Graph: Wide Tree (parent + 200 children) ---");
+
+    let root = new WideBranch(0);
+    for (let i = 1; i <= 200; i++) {
+        root.children.push(new WideBranch(i));
+    }
+
+    // Add grandchildren to first 10 children
+    for (let i = 0; i < 10; i++) {
+        let child = root.children[i];
+        for (let j = 0; j < 20; j++) {
+            child.children.push(new WideBranch(1000 + i * 100 + j));
+        }
+    }
+
+    // Garbage storm
+    for (let i = 0; i < 5000; i++) {
+        let trash = new WideBranch(i + 99999);
+    }
+
+    collect();
+
+    // Verify root
+    assert_eq_int(0, root.id, "Root id intact");
+    assert_eq_int(200, root.children.length(), "Root has 200 children");
+
+    // Verify children
+    for (let i = 0; i < 200; i++) {
+        assert_eq_int(i + 1, root.children[i].id, "Child #" + i + " id");
+    }
+
+    // Verify grandchildren
+    for (let i = 0; i < 10; i++) {
+        let child = root.children[i];
+        assert_eq_int(20, child.children.length(), "Child #" + i + " has 20 grandchildren");
+        for (let j = 0; j < 20; j++) {
+            assert_eq_int(1000 + i * 100 + j, child.children[j].id, "Grandchild (" + i + "," + j + ")");
+        }
+    }
+}
+
+// --- Test 3: Diamond-Shaped References ---
+function test_diamond() {
+    print("--- Graph: Diamond References ---");
+
+    //     A
+    //    / \
+    //   B   C
+    //    \ /
+    //     D
+
+    let d = new DiamondNode("D", 400);
+    let b = new DiamondNode("B", 200);
+    let c = new DiamondNode("C", 300);
+    let a = new DiamondNode("A", 100);
+
+    b.refA = d;
+    c.refA = d;
+    a.refA = b;
+    a.refB = c;
+
+    // Generate garbage
+    for (let i = 0; i < 5000; i++) {
+        let trash = new DiamondNode("trash", i);
+    }
+
+    collect();
+
+    // Verify diamond — extract into locals for narrowing
+    assert_eq_string("A", a.name, "A name");
+    assert_eq_int(100, a.value, "A value");
+
+    let bRef = a.refA;
+    if (bRef != None) {
+        assert_eq_string("B", bRef.name, "B name via A");
+        assert_eq_int(200, bRef.value, "B value via A");
+
+        let dViaB = bRef.refA;
+        if (dViaB != None) {
+            assert_eq_string("D", dViaB.name, "D name via A->B");
+            assert_eq_int(400, dViaB.value, "D value via A->B");
+        } else {
+            assert_true(false, "B->D should exist");
+        }
+    } else {
+        assert_true(false, "A->B should exist");
+    }
+
+    let cRef = a.refB;
+    if (cRef != None) {
+        assert_eq_string("C", cRef.name, "C name via A");
+        assert_eq_int(300, cRef.value, "C value via A");
+
+        let dViaC = cRef.refA;
+        if (dViaC != None) {
+            assert_eq_string("D", dViaC.name, "D name via A->C");
+            assert_eq_int(400, dViaC.value, "D value via A->C");
+        } else {
+            assert_true(false, "C->D should exist");
+        }
+    } else {
+        assert_true(false, "A->C should exist");
+    }
+}
+
+// --- Test 4: Nested Containers (arrays of objects of arrays) ---
+function test_nested_containers() {
+    print("--- Graph: Nested Containers ---");
+
+    let wrappers: Wrapper[] = [];
+    for (let w = 0; w < 20; w++) {
+        let wrapper = new Wrapper("wrapper-" + w);
+        for (let p = 0; p < 50; p++) {
+            wrapper.inner.add(new Payload(w * 100 + p, "data-" + w + "-" + p));
+        }
+        wrappers.push(wrapper);
+    }
+
+    // Garbage
+    for (let i = 0; i < 3000; i++) {
+        let trash = new Wrapper("trash");
+    }
+
+    collect();
+    collectYoung();
+    collect();
+
+    // Verify structure
+    assert_eq_int(20, wrappers.length(), "20 wrappers survived");
+    for (let w = 0; w < 20; w++) {
+        let wrapper = wrappers[w];
+        assert_eq_string("wrapper-" + w, wrapper.tag, "Wrapper tag #" + w);
+        assert_eq_int(50, wrapper.inner.items.length(), "Wrapper #" + w + " has 50 payloads");
+
+        // Spot-check a few payloads
+        let first = wrapper.inner.items[0];
+        assert_eq_int(w * 100, first.id, "Wrapper #" + w + " first payload id");
+        assert_eq_string("data-" + w + "-0", first.data, "Wrapper #" + w + " first payload data");
+
+        let last = wrapper.inner.items[49];
+        assert_eq_int(w * 100 + 49, last.id, "Wrapper #" + w + " last payload id");
+    }
+}
+
+// --- Test 5: Optional field transitions across GC ---
+function test_optional_transitions() {
+    print("--- Graph: Optional Transitions ---");
+
+    let node = new ChainLink(1, "test-optional");
+    assert_true(node.next == None, "Initially None");
+
+    // Set to Some
+    node.next = new ChainLink(2, "child");
+    let child = node.next;
+    if (child != None) {
+        assert_eq_int(2, child.id, "Child id before GC");
+    } else {
+        assert_true(false, "Should have child");
+    }
+
+    collect();
+
+    // Still Some after GC
+    let childAfterGc = node.next;
+    if (childAfterGc != None) {
+        assert_eq_int(2, childAfterGc.id, "Child id after GC");
+        assert_eq_string("child", childAfterGc.label, "Child label after GC");
+
+        // Set child's child, then GC
+        childAfterGc.next = new ChainLink(3, "grandchild");
+        collect();
+
+        let grandchild = childAfterGc.next;
+        if (grandchild != None) {
+            assert_eq_int(3, grandchild.id, "Grandchild id after GC");
+        } else {
+            assert_true(false, "Grandchild should exist after GC");
+        }
+    } else {
+        assert_true(false, "Node.next should survive GC");
+    }
+}
+
+
+// --- Test 6: Array of optional references ---
+function test_array_optionals() {
+    print("--- Graph: Array of Optionals ---");
+
+    let nodes: Optional<ChainLink>[] = [];
+    for (let i = 0; i < 100; i++) {
+        if (i % 2 == 0) {
+            nodes.push(new ChainLink(i, "even-" + i));
+        } else {
+            nodes.push(None);
+        }
+    }
+
+    collect();
+
+    // Verify pattern: even indices are Some, odd are None
+    for (let i = 0; i < 100; i++) {
+        let elem = nodes[i];
+        if (i % 2 == 0) {
+            if (elem != None) {
+                assert_eq_int(i, elem.id, "Even index " + i + " id");
+            } else {
+                assert_true(false, "Even index " + i + " should be Some");
+            }
+        } else {
+            assert_true(elem == None, "Odd index " + i + " is None");
+        }
+    }
+}
+
+// --- Test 7: Object graph built incrementally across GC cycles ---
+function test_incremental_graph_build() {
+    print("--- Graph: Incremental Build Across GC ---");
+
+    let root = new WideBranch(0);
+
+    for (let batch = 0; batch < 10; batch++) {
+        // Add 10 children per batch
+        for (let i = 0; i < 10; i++) {
+            let child = new WideBranch(batch * 10 + i + 1);
+            root.children.push(child);
+        }
+
+        // Generate garbage and collect between batches
+        for (let g = 0; g < 2000; g++) {
+            let trash = new WideBranch(g + 99999);
+        }
+        collect();
+
+        // Verify all children from all batches so far
+        let expectedCount = (batch + 1) * 10;
+        assert_eq_int(expectedCount, root.children.length(), "After batch " + batch + " count");
+    }
+
+    // Final verification
+    assert_eq_int(100, root.children.length(), "Final: 100 children");
+    for (let i = 0; i < 100; i++) {
+        assert_eq_int(i + 1, root.children[i].id, "Final child #" + i);
+    }
+}
+
+function main() {
+    print("=== GC OBJECT GRAPH TESTS START ===");
+    test_deep_chain();
+    test_wide_tree();
+    test_diamond();
+    test_nested_containers();
+    test_optional_transitions();
+    test_array_optionals();
+    test_incremental_graph_build();
+    print("=== GC OBJECT GRAPH TESTS COMPLETE ===");
+}

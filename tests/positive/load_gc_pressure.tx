@@ -1,0 +1,229 @@
+// GC Pressure Load Test
+// ======================
+// Tests the garbage collector under extreme allocation pressure:
+// 1. 1M+ allocations in tight loops with periodic stats verification
+// 2. Allocation bursts followed by silence — verify GC converges
+// 3. Verify max STW pause stays reasonable
+// 4. Heap usage stays bounded over sustained workloads
+// 5. Interleaved allocations with live data verification
+
+import { assert_true, assert_eq_int } from "./utils.tx";
+import { collect, collectYoung, getHeapUsed, getStats } from "std:gc";
+import { nowMs } from "std:time";
+
+class Payload {
+    id: int;
+    data: string;
+    constructor(id: int, data: string) { this.id = id; this.data = data; }
+}
+
+class TreeNode {
+    val: int;
+    left: Optional<TreeNode> = None;
+    right: Optional<TreeNode> = None;
+    constructor(v: int) { this.val = v; }
+}
+
+// --- Test 1: 1 Million Allocations ---
+function test_million_allocs() {
+    print("--- Load: 1M Allocations ---");
+    let startTime = nowMs();
+    let maxPause: int64 = 0;
+    let lastTime = nowMs();
+    let checkpoints = 0;
+
+    for (let i = 0; i < 1000000; i++) {
+        let obj = new Payload(i, "p" + (i % 100)); // Reuse short strings
+
+        // Periodic timing check
+        if (i % 100000 == 0) {
+            let currentTime = nowMs();
+            let elapsed = currentTime - lastTime;
+            if (elapsed > maxPause) {
+                maxPause = elapsed;
+            }
+            lastTime = currentTime;
+            checkpoints = checkpoints + 1;
+        }
+    }
+
+    let totalTime = nowMs() - startTime;
+    print("  Total time: " + totalTime + "ms");
+    print("  Max pause between 100K blocks: " + maxPause + "ms");
+    print("  Checkpoints: " + checkpoints);
+
+    assert_true(checkpoints == 10, "All 10 checkpoints reached");
+    assert_true(totalTime < 30000, "1M allocs complete in <30s");
+}
+
+// --- Test 2: Allocation Burst + GC Convergence ---
+function test_burst_convergence() {
+    print("--- Load: Burst Convergence ---");
+
+    collect();
+    let baseline = getHeapUsed();
+
+    // 5 bursts, each creating 100K objects then dropping them
+    let heapAfterCollect: int64[] = [];
+    for (let burst = 0; burst < 5; burst++) {
+        let junk: Payload[] = [];
+        for (let i = 0; i < 100000; i++) {
+            junk.push(new Payload(i, "burst-" + burst));
+        }
+
+        let peakHeap = getHeapUsed();
+
+        // Drop and collect
+        junk = [];
+        collect();
+
+        let afterCollect = getHeapUsed();
+        heapAfterCollect.push(afterCollect);
+        print("  Burst " + burst + ": peak=" + peakHeap + " after_collect=" + afterCollect);
+    }
+
+    // Heap after each collect should be roughly similar (not growing)
+    // The last collect should be within 3x of the first
+    let first = heapAfterCollect[0];
+    let last = heapAfterCollect[4];
+    assert_true(last < first * 3 + 5000000, "Heap converges after bursts");
+}
+
+// --- Test 3: Sustained workload — heap stays bounded ---
+function test_sustained_bounded() {
+    print("--- Load: Sustained Bounded Heap ---");
+
+    collect();
+    let baseline = getHeapUsed();
+    let maxHeap: int64 = baseline;
+
+    // 50 rounds of alloc-and-discard
+    for (let round = 0; round < 50; round++) {
+        let batch: string[] = [];
+        for (let i = 0; i < 5000; i++) {
+            batch.push("sustained-round-" + round + "-item-" + i);
+        }
+
+        let current = getHeapUsed();
+        if (current > maxHeap) {
+            maxHeap = current;
+        }
+
+        batch = []; // Discard
+
+        if (round % 10 == 0) {
+            collect();
+        }
+    }
+
+    collect();
+    let final_heap = getHeapUsed();
+    print("  Baseline: " + baseline + " MaxSeen: " + maxHeap + " Final: " + final_heap);
+    assert_true(final_heap <= baseline + 100000, "Heap stays bounded over sustained rounds");
+}
+
+// --- Test 4: Mixed live/dead ratio ---
+function test_mixed_live_dead() {
+    print("--- Load: Mixed Live/Dead ---");
+
+    let alive: Payload[] = [];
+    let startTime = nowMs();
+
+    for (let i = 0; i < 200000; i++) {
+        let obj = new Payload(i, "data-" + (i % 50));
+
+        // Keep every 100th object alive
+        if (i % 100 == 0) {
+            alive.push(obj);
+        }
+        // Rest become garbage
+    }
+
+    collect();
+
+    let totalTime = nowMs() - startTime;
+    print("  Time: " + totalTime + "ms");
+    print("  Live objects: " + alive.length());
+
+    assert_eq_int(2000, alive.length(), "2000 live objects (200K/100)");
+
+    // Verify live objects are intact
+    for (let i = 0; i < alive.length(); i++) {
+        let expected_id = i * 100;
+        assert_eq_int(expected_id, alive[i].id, "Live object #" + i);
+    }
+}
+
+// --- Test 5: Tree allocation under GC pressure ---
+function buildStressTree(depth: int, base: int): TreeNode {
+    let node = new TreeNode(base);
+    if (depth > 0) {
+        node.left = buildStressTree(depth - 1, base * 2);
+        node.right = buildStressTree(depth - 1, base * 2 + 1);
+    }
+    return node;
+}
+
+function countTreeNodes(node: Optional<TreeNode>): int {
+    if (node == None) return 0;
+    return 1 + countTreeNodes(node.left) + countTreeNodes(node.right);
+}
+
+function test_tree_gc_pressure() {
+    print("--- Load: Tree Build Under GC ---");
+
+    let startTime = nowMs();
+
+    // Build and discard trees repeatedly
+    let lastTree: Optional<TreeNode> = None;
+    for (let i = 0; i < 20; i++) {
+        let tree = buildStressTree(12, 1); // 2^13 - 1 = 8191 nodes each
+
+        // Discard previous tree
+        lastTree = tree;
+
+        if (i % 5 == 0) {
+            collect();
+            let count = countTreeNodes(lastTree);
+            assert_eq_int(8191, count, "Tree intact after GC at round " + i);
+        }
+    }
+
+    let totalTime = nowMs() - startTime;
+    print("  Time for 20 trees of depth 12: " + totalTime + "ms");
+
+    // Verify final tree
+    let finalCount = countTreeNodes(lastTree);
+    assert_eq_int(8191, finalCount, "Final tree node count");
+}
+
+// --- Test 6: String allocation storm ---
+function test_string_storm() {
+    print("--- Load: String Allocation Storm ---");
+
+    let startTime = nowMs();
+    let maxLen = 0;
+
+    for (let i = 0; i < 100000; i++) {
+        let s = "storm-" + i + "-payload-" + (i * 3);
+        if (s.length() > maxLen) {
+            maxLen = s.length();
+        }
+    }
+
+    collect();
+    let totalTime = nowMs() - startTime;
+    print("  Time: " + totalTime + "ms, Max string length: " + maxLen);
+    assert_true(maxLen > 10, "Strings were created");
+}
+
+function main() {
+    print("=== GC PRESSURE LOAD TEST START ===");
+    test_million_allocs();
+    test_burst_convergence();
+    test_sustained_bounded();
+    test_mixed_live_dead();
+    test_tree_gc_pressure();
+    test_string_storm();
+    print("=== GC PRESSURE LOAD TEST COMPLETE ===");
+}

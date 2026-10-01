@@ -1,0 +1,10 @@
+extern function rt_net_lookup(host: string): Optional<string>;
+extern function rt_net_lookup_all(host: string): string[];
+
+export function _net_lookup_host(host: string): Optional<string> {
+    return rt_net_lookup(host);
+}
+
+export function _net_lookup_all_hosts(host: string): string[] {
+    return rt_net_lookup_all(host);
+}

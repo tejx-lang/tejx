@@ -1,5 +1,6 @@
 import "./net/internal.tx";
 import "./net/tcp.tx";
+import "./dns.tx";
 
 export namespace net {
     export function connect(addr: string): Optional<TcpStream> {

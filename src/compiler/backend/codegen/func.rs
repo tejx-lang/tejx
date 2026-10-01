@@ -36,7 +36,21 @@ impl CodeGen {
     }
 
     fn function_needs_loop_safepoints(func: &MIRFunction) -> bool {
-        true
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                match inst {
+                    MIRInstruction::Call { callee, .. } => {
+                        if !Self::known_non_throwing_call_target(callee) {
+                            return true;
+                        }
+                    }
+                    MIRInstruction::IndirectCall { .. }
+                    | MIRInstruction::TrySetup { .. } => return true,
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     fn function_tracks_runtime_location(function_name: &str) -> bool {
@@ -767,10 +781,11 @@ impl CodeGen {
         if let Some(pos) = self.captured_vars.iter().position(|c| c == name) {
             return Some(pos);
         }
-        // Handle MIR mangling suffixes like _123
         for (i, cap) in self.captured_vars.iter().enumerate() {
             if name.starts_with(cap)
-                && (name.len() == cap.len() || name[cap.len()..].starts_with('_'))
+                && (name.len() == cap.len()
+                    || name[cap.len()..].starts_with('_')
+                    || name[cap.len()..].starts_with('$'))
             {
                 return Some(i);
             }
@@ -1055,11 +1070,13 @@ update:\n\
             }
 
             let display_name = if class_name.starts_with("__objshape_") {
-                "object"
+                "struct".to_string()
+            } else if let Some(disp) = self.class_display_names.get(&class_name) {
+                disp.clone()
             } else {
-                class_name.as_str()
+                class_name.clone()
             };
-            let type_name_ptr = self.emit_string_constant(display_name);
+            let type_name_ptr = self.emit_string_constant(&display_name);
 
             let field_offsets_arr_name = format!("@type_{}_field_offsets", id);
             if !field_offsets.is_empty() {
@@ -1144,6 +1161,16 @@ update:\n\
                 field_kinds_ptr,
                 field_names_ptr
             ));
+        }
+        if let Some(vt_stack) = self.vt_stack_size {
+            init_type_buffer.push_str(&format!(
+                "  call void @rt_set_default_vthread_stack_size(i64 {})\n",
+                vt_stack
+            ));
+            self.declare_runtime_fn(
+                "rt_set_default_vthread_stack_size",
+                "void @rt_set_default_vthread_stack_size(i64)",
+            );
         }
         init_type_buffer.push_str("  ret void\n}\n");
         self.buffer.push_str(&init_type_buffer);
@@ -1242,7 +1269,7 @@ update:\n\
         }
 
         // Exception handling runtime functions
-        self.declare_runtime_fn("_setjmp", "i32 @_setjmp(i8*) returns_twice");
+        self.declare_runtime_fn("tejx_setjmp", "i32 @tejx_setjmp(i8*) returns_twice");
         self.declare_runtime_fn(
             TEJX_PUSH_HANDLER,
             &format!("void @{}(i8*)", TEJX_PUSH_HANDLER),
@@ -1615,7 +1642,7 @@ update:\n\
                     self.temp_counter += 1;
                     let handler_res = format!("%handler_res{}", self.temp_counter);
                     self.emit_line(&format!(
-                        "{} = call i32 @_setjmp(i8* {}) returns_twice",
+                        "{} = call i32 @tejx_setjmp(i8* {}) returns_twice",
                         handler_res, jmpbuf_ptr
                     ));
                     // If setjmp returned 0, register the handler and continue

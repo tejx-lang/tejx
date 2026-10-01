@@ -55,25 +55,33 @@ fn report_diagnostics(
     primary_source: &str,
 ) {
     let count = diagnostics.len();
-    let suffix = if count == 1 { "" } else { "s" };
-    eprintln!("{} failed with {} error{}:", stage, count, suffix);
-    for diag in diagnostics {
-        let loaded_source = if diag.file.is_empty() || diag.file == "<inferred>" {
-            None
-        } else if diag.file == primary_file {
+    let max_display = 10;
+    for diag in diagnostics.iter().take(max_display) {
+        let mut d = diag.clone();
+        if d.file.is_empty() || d.file == "<inferred>" {
+            d.file = primary_file.to_string();
+        }
+        let loaded_source = if d.file == primary_file {
             None
         } else {
-            fs::read_to_string(&diag.file).ok()
+            fs::read_to_string(&d.file).ok()
         };
         let source = if let Some(source) = loaded_source.as_deref() {
             Some(source)
-        } else if diag.file == primary_file || diag.file.is_empty() || diag.file == "<inferred>" {
-            Some(primary_source)
         } else {
-            None
+            Some(primary_source)
         };
-        diag.report_with_source(source);
+        d.report_with_source(source);
     }
+    if count > max_display {
+        eprintln!(
+            "  \x1b[33m...\x1b[0m and {} more error{} omitted",
+            count - max_display,
+            if count - max_display == 1 { "" } else { "s" }
+        );
+    }
+    let suffix = if count == 1 { "" } else { "s" };
+    eprintln!("\x1b[31;1merror\x1b[0m: {} failed with {} error{}", stage.to_lowercase(), count, suffix);
 }
 
 fn apply_inferred_function_return_annotation(
@@ -280,15 +288,56 @@ fn main() {
 
     let mut emit_mir = false;
     let mut emit_llvm = false;
+    let mut emit_asm = false;
+    let mut emit_ast = false;
+    let mut emit_tokens = false;
     let mut compile_only = false;
+    let mut check_only = false;
+    let mut run_after_compile = false;
+    let mut run_args = Vec::new();
     let mut unsafe_arrays = false;
+    let mut opt_level = "-O3".to_string();
+    let mut debug_symbols = false;
+    let mut _warnings_as_errors = false;
+    let mut verbose = false;
     let mut output_name = None;
     let mut cli_stdlib_path: Option<String> = None;
     let mut cli_runtime_path: Option<String> = None;
+    let mut cli_vt_stack: Option<usize> = None;
+    let mut cli_include_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut cli_lib_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut cli_libs: Vec<String> = Vec::new();
+    let mut cli_target: Option<String> = None;
+    let mut show_stats = false;
+    let mut _wall = false;
+    let mut _wextra = false;
+
+    let total_timer = std::time::Instant::now();
+
+    fn parse_cli_size(s: &str) -> Option<usize> {
+        let s = s.trim().to_lowercase();
+        if s.ends_with("gib") || s.ends_with("gb") || s.ends_with('g') {
+            let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+            return n.parse::<usize>().ok().map(|v| v * 1024 * 1024 * 1024);
+        }
+        if s.ends_with("mib") || s.ends_with("mb") || s.ends_with('m') {
+            let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+            return n.parse::<usize>().ok().map(|v| v * 1024 * 1024);
+        }
+        if s.ends_with("kib") || s.ends_with("kb") || s.ends_with('k') {
+            let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+            return n.parse::<usize>().ok().map(|v| v * 1024);
+        }
+        s.parse::<usize>().ok()
+    }
 
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
+        if arg == "--" {
+            run_args.extend(args[i + 1..].iter().cloned());
+            break;
+        }
         match arg.as_str() {
             "-h" | "--help" => {
                 print_help();
@@ -297,6 +346,44 @@ fn main() {
             "-v" | "--version" => {
                 print_version();
                 return;
+            }
+            "--check" | "-check" => {
+                check_only = true;
+            }
+            "-r" | "--run" => {
+                run_after_compile = true;
+            }
+            "-S" | "--emit-asm" => {
+                emit_asm = true;
+            }
+            "-O0" => opt_level = "-O0".to_string(),
+            "-O1" => opt_level = "-O1".to_string(),
+            "-O2" => opt_level = "-O2".to_string(),
+            "-O3" => opt_level = "-O3".to_string(),
+            "-Os" => opt_level = "-Os".to_string(),
+            "-g" | "--debug" => {
+                debug_symbols = true;
+            }
+            "-Wall" => {
+                _wall = true;
+            }
+            "-Wextra" => {
+                _wextra = true;
+            }
+            "-Werror" => {
+                _warnings_as_errors = true;
+            }
+            "--stats" | "--time-report" => {
+                show_stats = true;
+            }
+            "--verbose" => {
+                verbose = true;
+            }
+            "--emit-ast" => {
+                emit_ast = true;
+            }
+            "--emit-tokens" => {
+                emit_tokens = true;
             }
             "--disable-async" => {}
             "--unsafe-arrays" => {
@@ -338,6 +425,106 @@ fn main() {
                     process::exit(1);
                 }
             }
+            "--vt-stack" | "--vthread-stack" | "-Xss" => {
+                if i + 1 < args.len() {
+                    let val = &args[i + 1];
+                    if let Some(bytes) = parse_cli_size(val) {
+                        cli_vt_stack = Some(bytes.max(2048));
+                    } else {
+                        eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                        process::exit(1);
+                    }
+                    i += 1;
+                } else {
+                    eprintln!("Error: {} requires a size argument (e.g. 2k, 4k, 64k)", arg);
+                    process::exit(1);
+                }
+            }
+            "-I" => {
+                if i + 1 < args.len() {
+                    cli_include_dirs.push(std::path::PathBuf::from(&args[i + 1]));
+                    i += 1;
+                } else {
+                    eprintln!("Error: -I requires a directory argument");
+                    process::exit(1);
+                }
+            }
+            "-L" => {
+                if i + 1 < args.len() {
+                    cli_lib_dirs.push(std::path::PathBuf::from(&args[i + 1]));
+                    i += 1;
+                } else {
+                    eprintln!("Error: -L requires a directory argument");
+                    process::exit(1);
+                }
+            }
+            "-l" => {
+                if i + 1 < args.len() {
+                    cli_libs.push(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: -l requires a library name argument");
+                    process::exit(1);
+                }
+            }
+            "--target" => {
+                if i + 1 < args.len() {
+                    cli_target = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --target requires a target triple argument");
+                    process::exit(1);
+                }
+            }
+
+            _ if arg.starts_with("--vt-stack=") => {
+                let val = &arg["--vt-stack=".len()..];
+                if let Some(bytes) = parse_cli_size(val) {
+                    cli_vt_stack = Some(bytes.max(2048));
+                } else {
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    process::exit(1);
+                }
+            }
+            _ if arg.starts_with("--vthread-stack=") => {
+                let val = &arg["--vthread-stack=".len()..];
+                if let Some(bytes) = parse_cli_size(val) {
+                    cli_vt_stack = Some(bytes.max(2048));
+                } else {
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    process::exit(1);
+                }
+            }
+            _ if arg.starts_with("-Xss=") => {
+                let val = &arg["-Xss=".len()..];
+                if let Some(bytes) = parse_cli_size(val) {
+                    cli_vt_stack = Some(bytes.max(2048));
+                } else {
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    process::exit(1);
+                }
+            }
+            _ if arg.starts_with("-Xss") && arg.len() > 4 => {
+                let val = &arg[4..];
+                if let Some(bytes) = parse_cli_size(val) {
+                    cli_vt_stack = Some(bytes.max(2048));
+                } else {
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    process::exit(1);
+                }
+            }
+            _ if arg.starts_with("-I") && arg.len() > 2 => {
+                cli_include_dirs.push(std::path::PathBuf::from(&arg[2..]));
+            }
+            _ if arg.starts_with("-L") && arg.len() > 2 => {
+                cli_lib_dirs.push(std::path::PathBuf::from(&arg[2..]));
+            }
+            _ if arg.starts_with("-l") && arg.len() > 2 => {
+                cli_libs.push(arg[2..].to_string());
+            }
+            _ if arg.starts_with("--target=") => {
+                cli_target = Some(arg["--target=".len()..].to_string());
+            }
 
             _ if arg.starts_with("-") => {
                 eprintln!(
@@ -367,12 +554,19 @@ fn main() {
         process::exit(1);
     });
 
+    let t_start_frontend = std::time::Instant::now();
     let mut lexer = Lexer::new(&contents, &filename);
     let tokens = lexer.tokenize();
 
     if !lexer.errors.is_empty() {
         report_diagnostics("Lexing", &lexer.errors, &filename, &contents);
         process::exit(1);
+    }
+
+    if emit_tokens {
+        for token in &tokens {
+            println!("{:?}", token);
+        }
     }
 
     let mut parser = Parser::new(tokens, &filename);
@@ -384,6 +578,12 @@ fn main() {
         process::exit(1);
     }
 
+    let t_frontend = t_start_frontend.elapsed();
+
+    if emit_ast {
+        println!("{:#?}", program);
+    }
+
     // Resolve stdlib path using centralized paths module
     let stdlib_resolved = crate::common::paths::resolve_stdlib_path(cli_stdlib_path.as_deref());
     let _runtime_resolved = crate::common::paths::resolve_runtime_path(cli_runtime_path.as_deref());
@@ -391,10 +591,12 @@ fn main() {
     let mut lowering = Lowering::new();
 
     *lowering.stdlib_path.borrow_mut() = stdlib_resolved;
+    *lowering.include_dirs.borrow_mut() = cli_include_dirs.clone();
     *lowering.filename.borrow_mut() = filename.clone();
     let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
 
     // Resolve imports before type checking
+    let t_start_imports = std::time::Instant::now();
     let mut processed_files = std::collections::HashSet::new();
     let mut import_stack = Vec::new();
     let mut initial_file_path = None;
@@ -424,7 +626,9 @@ fn main() {
             process::exit(1);
         }
     }
+    let t_imports = t_start_imports.elapsed();
 
+    let t_start_typecheck = std::time::Instant::now();
     let mut type_checker = TypeChecker::new();
 
     type_checker.set_import_access(lowering.import_access.borrow().clone());
@@ -436,6 +640,23 @@ fn main() {
         report_diagnostics("Type checking", &unique, &filename, &contents);
         process::exit(1);
     }
+    let t_typecheck = t_start_typecheck.elapsed();
+
+    if check_only {
+        if show_stats {
+            eprintln!("\n=== Compilation Statistics (Check Only) ===");
+            eprintln!("  Frontend (Lex & Parse):     {:>8.2?}", t_frontend);
+            eprintln!("  Import Resolution:          {:>8.2?}", t_imports);
+            eprintln!("  Semantic Analysis / Types:  {:>8.2?}", t_typecheck);
+            eprintln!("  --------------------------------------");
+            eprintln!("  Total Time:                 {:>8.2?}", total_timer.elapsed());
+            eprintln!("==========================================\n");
+        }
+        if verbose {
+            eprintln!("Check finished successfully: 0 errors.");
+        }
+        process::exit(0);
+    }
 
     apply_inferred_return_types_to_program(
         &mut merged_program,
@@ -444,6 +665,7 @@ fn main() {
         &type_checker,
     );
 
+    let t_start_lowering = std::time::Instant::now();
     lowering.lambda_inferred_types = type_checker.lambda_inferred_types;
     lowering.lambda_inferred_returns = type_checker.lambda_inferred_returns;
     lowering.call_instantiations = type_checker.call_instantiations;
@@ -478,6 +700,7 @@ fn main() {
         mir_optimizer.optimize(&mut mir_func);
         mir_functions.push(mir_func);
     }
+    let t_lowering = t_start_lowering.elapsed();
 
     if emit_mir {
         for mir_func in &mir_functions {
@@ -493,6 +716,7 @@ fn main() {
         }
     }
 
+    let t_start_codegen = std::time::Instant::now();
     let mut codegen = CodeGen::new();
     codegen.unsafe_arrays = unsafe_arrays;
     codegen.source_file = filename.clone();
@@ -500,8 +724,11 @@ fn main() {
     codegen.class_methods = lowering_result.class_methods;
     codegen.class_parents = lowering_result.class_parents;
     codegen.function_display_names = lowering_result.function_display_names;
+    codegen.class_display_names = lowering_result.class_display_names;
+    codegen.vt_stack_size = cli_vt_stack;
     let llvm_code =
         codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars_by_function);
+    let t_codegen = t_start_codegen.elapsed();
 
     if emit_llvm {
         eprintln!("{}", llvm_code);
@@ -521,7 +748,21 @@ fn main() {
         process::exit(1);
     });
 
+    let t_start_link = std::time::Instant::now();
     let mut linker = Linker::new(Path::new(&output_name));
+    linker.set_opt_level(&opt_level);
+    linker.set_debug(debug_symbols);
+    linker.set_emit_asm(emit_asm);
+    linker.set_verbose(verbose);
+    if let Some(ref target) = cli_target {
+        linker.set_target(target);
+    }
+    for dir in &cli_lib_dirs {
+        linker.add_lib_dir(dir);
+    }
+    for lib in &cli_libs {
+        linker.add_lib(lib);
+    }
     linker.add_object(Path::new(&temp_ll_file));
 
     // Use the resolved runtime path
@@ -538,9 +779,6 @@ fn main() {
     }
 
     if compile_only {
-        // Just rename temp_ll_file to something like .o if we were doing object generation
-        // But here we emit .ll and the linker converts to .o and then links.
-        // If compile_only is set, we'll stop after generating the object file.
         linker.set_compile_only(true);
     }
 
@@ -554,30 +792,102 @@ fn main() {
             process::exit(1);
         }
     }
+    let t_link = t_start_link.elapsed();
+
+    if show_stats {
+        eprintln!("\n=== Compilation Statistics ===");
+        eprintln!("  Frontend (Lex & Parse):     {:>8.2?}", t_frontend);
+        eprintln!("  Import Resolution:          {:>8.2?}", t_imports);
+        eprintln!("  Semantic Analysis / Types:  {:>8.2?}", t_typecheck);
+        eprintln!("  Lowering & Optimization:    {:>8.2?}", t_lowering);
+        eprintln!("  LLVM Code Generation:       {:>8.2?}", t_codegen);
+        eprintln!("  Assembly & Linking:         {:>8.2?}", t_link);
+        eprintln!("  --------------------------------------");
+        eprintln!("  Total Build Time:           {:>8.2?}", total_timer.elapsed());
+        eprintln!("==============================\n");
+    }
+
+    if run_after_compile {
+        let binary_path = if output_name.starts_with('/') || output_name.starts_with('.') {
+            output_name.clone()
+        } else {
+            format!("./{}", output_name)
+        };
+        let mut child = process::Command::new(&binary_path);
+        if let Some(vt_bytes) = cli_vt_stack {
+            child.env("TEJX_VT_STACK", vt_bytes.to_string());
+        }
+        child.args(&run_args);
+        match child.status() {
+            Ok(status) => {
+                process::exit(status.code().unwrap_or(0));
+            }
+            Err(e) => {
+                eprintln!("Error executing binary {}: {}", binary_path, e);
+                process::exit(1);
+            }
+        }
+    }
 }
 
 fn print_help() {
-    println!("tejxc - TejX Compiler");
-    println!("Usage: tejxc [options] <input_files>");
+    println!("tejxc - The TejX Production Compiler");
+    println!("Usage: tejxc [options] <file.tx> [-- <run_args>...]");
     println!();
-    println!("Options:");
-    println!("  -h, --help              Show this help message");
-    println!("  -v, --version           Show version information");
-    println!("  -o, --output <file>     Specify output file name");
-    println!("  -c, --compile           Compile only; do not link");
-    println!("  --disable-async         Disable async/await features");
-    println!("  --emit-mir              Print MIR to stderr");
+    println!("Actions:");
+    println!("  --check                 Perform syntax and type checking only without code generation");
+    println!("  -r, --run               Compile and immediately execute the output program");
+    println!("  -c, --compile           Compile to object file (.o); do not link");
+    println!("  -S, --emit-asm          Emit assembly (.s); do not assemble or link");
+    println!();
+    println!("Optimization & Diagnostics:");
+    println!("  -O0, -O1, -O2, -O3, -Os Code optimization level (default: -O3)");
+    println!("  -g, --debug             Generate debug symbols for lldb/gdb");
+    println!("  -Wall, -Wextra          Enable compiler diagnostic warnings");
+    println!("  -Werror                 Treat warnings as errors");
+    println!("  --stats, --time-report  Show compilation stage timings and statistics");
+    println!("  --verbose               Show verbose compilation steps and linker commands");
+    println!();
+    println!("Intermediate Representations:");
+    println!("  --emit-tokens           Print lexer token stream");
+    println!("  --emit-ast              Print abstract syntax tree");
+    println!("  --emit-mir              Print Mid-level IR (MIR) to stderr");
     println!("  --emit-llvm             Print LLVM IR to stderr");
-    println!("  --stdlib-path <path>    Path to standard library (lib/ directory)");
-    println!("  --runtime-path <path>   Path to runtime library (tejx_rt.a)");
+    println!();
+    println!("Include & Link Paths:");
+    println!("  -I <dir>                Add directory to module search path");
+    println!("  -L <dir>                Add directory to library search path");
+    println!("  -l <lib>                Link with library <lib>");
+    println!("  --target <triple>       Set cross-compilation target triple");
+    println!();
+    println!("Runtime & Virtual Threads:");
+    println!("  --vt-stack <size>       Default virtual thread stack size (e.g. 2k, 4k, 64k, default: 2k)");
+    println!("  -Xss <size>             Alias for --vt-stack (e.g. -Xss2k, -Xss64k)");
+    println!("  --stdlib-path <path>    Override standard library path");
+    println!("  --runtime-path <path>   Override runtime archive path (tejx_rt.a)");
+    println!();
+    println!("General:");
+    println!("  -o, --output <file>     Specify output binary/object name");
+    println!("  -v, --version           Print compiler version and target information");
+    println!("  -h, --help              Print this help menu");
     println!();
     println!("Examples:");
-    println!("  tejxc main.tx                        Compile and link main.tx");
-    println!("  tejxc -o myapp main.tx util.tx       Compile and link multiple files");
-    println!("  tejxc -c main.tx                     Compile main.tx to object file");
-    println!("  tejxc main.o helper.o -o myapp       Link existing object files");
+    println!("  tejxc main.tx                         # Compile to executable");
+    println!("  tejxc -r main.tx -- arg1 arg2         # Compile and run with args");
+    println!("  tejxc --stats -O3 main.tx             # Compile with stage timing stats");
+    println!("  tejxc -I ./modules -l m main.tx       # Include modules and link libm");
+    println!("  tejxc --vt-stack 4k -r server.tx      # Run with 4 KB virtual thread stacks");
 }
 
 fn print_version() {
-    println!("tejxc version {}", crate::common::version::VERSION);
+    println!("tejxc {} ({})", crate::common::version::VERSION, std::env::consts::ARCH);
+    println!("LLVM backend: clang/cc toolchain");
+    println!("Host: {}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    println!();
+    println!("Environment Variables:");
+    println!("  TEJX_VT_STACK=<size>   Default virtual thread stack size (e.g. 2k, 4k)");
+    println!("  TEJX_MAIN_STACK=<size> Main thread stack size (default: 1m)");
+    println!("  TEJXGC=<pct>           GC growth factor headroom % (default: 50)");
+    println!("  TEJX_HEAP=<size>       Heap limit (e.g. 4gb, 512mb, default: 50% RAM)");
+    println!("  CC=<compiler>          Override C compiler (default: cc/clang)");
 }

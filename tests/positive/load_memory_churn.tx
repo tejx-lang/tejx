@@ -1,0 +1,303 @@
+// Memory Churn Load Test
+// =======================
+// Rapid create/discard cycles for objects, strings, and arrays.
+// Growing and shrinking data structures repeatedly.
+// Verifies no OOM occurs and GC keeps heap bounded.
+
+import { assert_eq_int, assert_true, assert_eq_string } from "./utils.tx";
+import { collect, getHeapUsed, getStats } from "std:gc";
+import { nowMs } from "std:time";
+
+class Item {
+    id: int;
+    name: string;
+    tags: string[];
+    constructor(id: int, name: string) {
+        this.id = id;
+        this.name = name;
+        this.tags = [];
+    }
+    addTag(t: string): void { this.tags.push(t); }
+}
+
+class Node {
+    val: int;
+    next: Optional<Node> = None;
+    constructor(v: int) { this.val = v; }
+}
+
+// --- Test 1: Rapid Object Create/Discard ---
+function test_rapid_object_churn() {
+    print("--- Churn: Rapid Object Create/Discard ---");
+    let start = nowMs();
+
+    collect();
+    let baseline = getHeapUsed();
+
+    for (let round = 0; round < 100; round++) {
+        let batch: Item[] = [];
+        for (let i = 0; i < 1000; i++) {
+            let item = new Item(round * 1000 + i, "item-" + i);
+            item.addTag("tag-a");
+            item.addTag("tag-b");
+            batch.push(item);
+        }
+        // Discard entire batch
+        batch = [];
+    }
+    // Total: 100K objects created and discarded
+
+    collect();
+    let afterChurn = getHeapUsed();
+    let elapsed = nowMs() - start;
+
+    print("  Baseline: " + baseline + ", After churn: " + afterChurn);
+    print("  Time: " + elapsed + "ms (100K objects)");
+    assert_true(afterChurn < baseline + 5000000, "Object churn didn't leak");
+}
+
+// --- Test 2: String Concatenation Churn ---
+function test_string_concat_churn() {
+    print("--- Churn: String Concatenation ---");
+    let start = nowMs();
+
+    collect();
+    let baseline = getHeapUsed();
+
+    for (let round = 0; round < 200; round++) {
+        let s = "";
+        for (let i = 0; i < 100; i++) {
+            s = s + "X";
+        }
+        // s is now 100 chars, then discarded
+        // Each concat creates intermediate strings = lots of garbage
+    }
+    // Total: 200 * 100 = 20K intermediate strings
+
+    collect();
+    let afterChurn = getHeapUsed();
+    let elapsed = nowMs() - start;
+
+    print("  Baseline: " + baseline + ", After string churn: " + afterChurn);
+    print("  Time: " + elapsed + "ms");
+    assert_true(afterChurn < baseline + 3000000, "String churn didn't leak");
+}
+
+// --- Test 3: Array Grow/Shrink Cycles ---
+function test_array_grow_shrink() {
+    print("--- Churn: Array Grow/Shrink ---");
+    let start = nowMs();
+
+    let arr: int[] = [];
+
+    for (let cycle = 0; cycle < 50; cycle++) {
+        // Grow to 10000
+        for (let i = 0; i < 10000; i++) {
+            arr.push(i);
+        }
+        assert_eq_int(10000, arr.length(), "Grown to 10K at cycle " + cycle);
+
+        // Shrink back to 0
+        for (let i = 0; i < 10000; i++) {
+            arr.pop();
+        }
+        assert_eq_int(0, arr.length(), "Shrunk to 0 at cycle " + cycle);
+
+        if (cycle % 10 == 0) {
+            collect();
+        }
+    }
+
+    let elapsed = nowMs() - start;
+    print("  Time: " + elapsed + "ms (50 cycles of 10K grow/shrink)");
+}
+
+// --- Test 4: Linked List Build/Destroy Churn ---
+function test_linked_list_churn() {
+    print("--- Churn: Linked List Build/Destroy ---");
+    let start = nowMs();
+
+    collect();
+    let baseline = getHeapUsed();
+
+    for (let round = 0; round < 50; round++) {
+        // Build a list of 2000 nodes
+        let head: Optional<Node> = None;
+        for (let i = 0; i < 2000; i++) {
+            let n = new Node(i);
+            n.next = head;
+            head = n;
+        }
+
+        // Walk and verify
+        let count = 0;
+        let walker: Optional<Node> = head;
+        while (walker != None) {
+            count = count + 1;
+            walker = walker.next;
+        }
+        assert_eq_int(2000, count, "List has 2000 nodes at round " + round);
+
+        // Destroy
+        head = None;
+
+        if (round % 10 == 0) {
+            collect();
+        }
+    }
+
+    collect();
+    let afterChurn = getHeapUsed();
+    let elapsed = nowMs() - start;
+
+    print("  Baseline: " + baseline + ", After list churn: " + afterChurn);
+    print("  Time: " + elapsed + "ms (50 rounds of 2K-node lists)");
+    assert_true(afterChurn < baseline + 5000000, "List churn didn't leak");
+}
+
+// --- Test 5: Mixed Data Structure Churn ---
+function test_mixed_churn() {
+    print("--- Churn: Mixed Data Structures ---");
+    let start = nowMs();
+
+    collect();
+    let baseline = getHeapUsed();
+
+    for (let round = 0; round < 30; round++) {
+        // Objects with arrays
+        let items: Item[] = [];
+        for (let i = 0; i < 500; i++) {
+            let item = new Item(i, "mixed-" + i);
+            for (let t = 0; t < 5; t++) {
+                item.addTag("tag-" + t);
+            }
+            items.push(item);
+        }
+
+        // String building
+        let strings: string[] = [];
+        for (let i = 0; i < 500; i++) {
+            strings.push("str-" + round + "-" + i + "-data");
+        }
+
+        // Integer arrays
+        let nums: int[] = [];
+        for (let i = 0; i < 1000; i++) {
+            nums.push(i * round);
+        }
+
+        // Nested arrays
+        let matrix: int[][] = [];
+        for (let r = 0; r < 10; r++) {
+            let row: int[] = [];
+            for (let c = 0; c < 10; c++) {
+                row.push(r * 10 + c);
+            }
+            matrix.push(row);
+        }
+
+        // Discard everything
+        items = [];
+        strings = [];
+        nums = [];
+        matrix = [];
+
+        if (round % 5 == 0) {
+            collect();
+        }
+    }
+
+    collect();
+    let afterChurn = getHeapUsed();
+    let elapsed = nowMs() - start;
+
+    print("  Baseline: " + baseline + ", After mixed churn: " + afterChurn);
+    print("  Time: " + elapsed + "ms");
+    assert_true(afterChurn < baseline + 5000000, "Mixed churn didn't leak");
+}
+
+// --- Test 6: Accumulated Live Data Under Churn ---
+function test_accumulated_under_churn() {
+    print("--- Churn: Accumulated Live Under Churn ---");
+    let start = nowMs();
+
+    let live: Item[] = [];
+
+    for (let round = 0; round < 100; round++) {
+        // Keep one item per round (live data grows slowly)
+        live.push(new Item(round, "keeper-" + round));
+
+        // Generate 500 garbage items per round
+        for (let i = 0; i < 500; i++) {
+            let trash = new Item(i + 99999, "trash");
+            trash.addTag("disposable");
+        }
+
+        if (round % 20 == 0) {
+            collect();
+            // Verify all live items
+            for (let j = 0; j <= round; j++) {
+                assert_eq_int(j, live[j].id, "Live item #" + j + " at round " + round);
+            }
+        }
+    }
+
+    collect();
+
+    // Final verification
+    assert_eq_int(100, live.length(), "100 live items accumulated");
+    for (let i = 0; i < 100; i++) {
+        assert_eq_int(i, live[i].id, "Final live item #" + i);
+        assert_eq_string("keeper-" + i, live[i].name, "Final live item name #" + i);
+    }
+
+    let elapsed = nowMs() - start;
+    print("  Time: " + elapsed + "ms (100 rounds, 50K garbage objects)");
+}
+
+// --- Test 7: GC Stats Stability Under Churn ---
+function test_gc_stats_stability() {
+    print("--- Churn: GC Stats Stability ---");
+
+    let heapValues: int64[] = [];
+
+    for (let sample = 0; sample < 20; sample++) {
+        // Create and discard garbage
+        let junk: string[] = [];
+        for (let i = 0; i < 5000; i++) {
+            junk.push("stability-check-" + sample + "-" + i);
+        }
+        junk = [];
+        collect();
+
+        let stats = getStats();
+        heapValues.push(stats.heapUsed);
+
+        assert_true(stats.heapUsed >= 0, "heapUsed >= 0 at sample " + sample);
+        assert_true(stats.heapTotal > 0, "heapTotal > 0 at sample " + sample);
+        assert_true(stats.threshold > 0, "threshold > 0 at sample " + sample);
+    }
+
+    // Verify heap values are not monotonically increasing (GC is reclaiming)
+    let increasing = 0;
+    for (let i = 1; i < heapValues.length(); i++) {
+        if (heapValues[i] > heapValues[i - 1]) {
+            increasing = increasing + 1;
+        }
+    }
+    // If > 80% are increasing, something is wrong
+    assert_true(increasing < 16, "Heap not monotonically increasing (" + increasing + "/19 increases)");
+    print("  Increasing samples: " + increasing + "/19");
+}
+
+function main() {
+    print("=== MEMORY CHURN LOAD TEST START ===");
+    test_rapid_object_churn();
+    test_string_concat_churn();
+    test_array_grow_shrink();
+    test_linked_list_churn();
+    test_mixed_churn();
+    test_accumulated_under_churn();
+    test_gc_stats_stability();
+    print("=== MEMORY CHURN LOAD TEST COMPLETE ===");
+}

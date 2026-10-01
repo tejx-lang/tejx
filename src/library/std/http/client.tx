@@ -154,7 +154,7 @@ export class Headers {
             return;
         }
 
-        if (rt_is_array(init) || typeof(init) != "object") {
+        if (rt_is_array(init) || (typeof(init) != "object" && typeof(init) != "struct")) {
             return;
         }
 

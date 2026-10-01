@@ -81,7 +81,15 @@ impl Lowering {
         let param_types: Vec<TejxType> = func
             .params
             .iter()
-            .map(|p| TejxType::from_node(&p.type_name))
+            .map(|p| {
+                let mut ty = TejxType::from_node(&p.type_name);
+                if ty == TejxType::Void {
+                    if let Some(def) = &p._default_value {
+                        ty = self.lower_expression(def).get_type().clone();
+                    }
+                }
+                ty
+            })
             .collect();
         let mut ret_type = TejxType::from_node(&func.return_type);
         if false {
@@ -114,7 +122,15 @@ impl Lowering {
         );
         self.user_function_args
             .borrow_mut()
-            .insert(name, func.params.len());
+            .insert(name.clone(), func.params.len());
+        let defaults: Vec<Option<Expression>> = func
+            .params
+            .iter()
+            .map(|p| p._default_value.as_ref().map(|b| (**b).clone()))
+            .collect();
+        self.user_function_param_defaults
+            .borrow_mut()
+            .insert(name.clone(), defaults);
         if func.is_extern {
             self.extern_functions.borrow_mut().insert(func.name.clone());
         }
@@ -538,10 +554,13 @@ impl Lowering {
             .params
             .iter()
             .map(|p| {
-                (
-                    p.name.clone(),
-                    self.resolve_alias_type(&TejxType::from_node(&p.type_name)),
-                )
+                let mut ty = self.resolve_alias_type(&TejxType::from_node(&p.type_name));
+                if ty == TejxType::Void {
+                    if let Some(def) = &p._default_value {
+                        ty = self.lower_expression(def).get_type().clone();
+                    }
+                }
+                (p.name.clone(), ty)
             })
             .collect();
         let mut return_type = self.resolve_alias_type(&TejxType::from_node(&func.return_type));

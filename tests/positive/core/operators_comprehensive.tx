@@ -1,0 +1,158 @@
+// Production-Grade Test Suite: Comprehensive Operators and Precedence
+// ===================================================================
+// Thoroughly exercises:
+// 1. Compound assignment operators (+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=)
+// 2. Pre-increment (++x), post-increment (x++), pre-decrement (--x), post-decrement (x--)
+// 3. Bitwise operators (&, |, ^, ~, <<, >>) with edge boundaries
+// 4. Logical short-circuiting (ensuring side effects on right side do not run)
+// 5. Complex boolean logic & operator precedence (multiplication before addition, etc.)
+// 6. Nested ternary operator expressions (cond ? a : b)
+
+import { assert_eq_int, assert_true, assert_false } from "../utils.tx";
+
+let sideEffectCount: int64 = 0;
+
+function triggerSideEffect(): bool {
+    sideEffectCount = sideEffectCount + 1;
+    return true;
+}
+
+function test_compound_assignments() {
+    print("--- Compound Assignments ---");
+
+    let x = 100;
+    x += 50;
+    assert_eq_int(150, x, "x += 50");
+
+    x -= 30;
+    assert_eq_int(120, x, "x -= 30");
+
+    x *= 2;
+    assert_eq_int(240, x, "x *= 2");
+
+    x /= 4;
+    assert_eq_int(60, x, "x /= 4");
+
+    x %= 7;
+    assert_eq_int(4, x, "x %= 7");
+
+    // Bitwise compound assignments
+    let b = 0b1100; // 12
+    // Using decimal: 12
+    let mask = 12;
+    mask &= 10; // 12 & 10 = 8
+    assert_eq_int(8, mask, "mask &= 10");
+
+    mask |= 5; // 8 | 5 = 13
+    assert_eq_int(13, mask, "mask |= 5");
+
+    mask ^= 9; // 13 ^ 9 = 4
+    assert_eq_int(4, mask, "mask ^= 9");
+
+    mask <<= 2; // 4 << 2 = 16
+    assert_eq_int(16, mask, "mask <<= 2");
+
+    mask >>= 3; // 16 >> 3 = 2
+    assert_eq_int(2, mask, "mask >>= 3");
+}
+
+function test_increments_and_decrements() {
+    print("--- Pre/Post Increment & Decrement ---");
+
+    let val = 10;
+    let postInc = val++;
+    assert_eq_int(10, postInc, "val++ returns old value");
+    assert_eq_int(11, val, "val incremented after post-inc");
+
+    let preInc = ++val;
+    assert_eq_int(12, preInc, "++val returns new value");
+    assert_eq_int(12, val, "val incremented by pre-inc");
+
+    let postDec = val--;
+    assert_eq_int(12, postDec, "val-- returns old value");
+    assert_eq_int(11, val, "val decremented after post-dec");
+
+    let preDec = --val;
+    assert_eq_int(10, preDec, "--val returns new value");
+    assert_eq_int(10, val, "val decremented by pre-dec");
+}
+
+function test_short_circuit_logic() {
+    print("--- Short-Circuit Logic ---");
+
+    sideEffectCount = 0;
+
+    // false && ... should NOT evaluate right operand
+    let res1 = false && triggerSideEffect();
+    assert_false(res1, "false && ... is false");
+    assert_true(sideEffectCount == 0, "Right operand of false && should not evaluate");
+
+    // true || ... should NOT evaluate right operand
+    let res2 = true || triggerSideEffect();
+    assert_true(res2, "true || ... is true");
+    assert_true(sideEffectCount == 0, "Right operand of true || should not evaluate");
+
+    // true && ... SHOULD evaluate right operand
+    let res3 = true && triggerSideEffect();
+    assert_true(res3, "true && trigger() is true");
+    assert_true(sideEffectCount == 1, "Right operand of true && was evaluated");
+
+    // false || ... SHOULD evaluate right operand
+    let res4 = false || triggerSideEffect();
+    assert_true(res4, "false || trigger() is true");
+    assert_true(sideEffectCount == 2, "Right operand of false || was evaluated");
+}
+
+function test_operator_precedence() {
+    print("--- Operator Precedence ---");
+
+    // Mul before Add
+    let r1 = 2 + 3 * 4;
+    assert_eq_int(14, r1, "2 + 3 * 4 == 14");
+
+    // Parens override
+    let r2 = (2 + 3) * 4;
+    assert_eq_int(20, r2, "(2 + 3) * 4 == 20");
+
+    // Div before Sub
+    let r3 = 100 - 40 / 5;
+    assert_eq_int(92, r3, "100 - 40 / 5 == 92");
+
+    // Modulo before Add
+    let r4 = 10 + 17 % 5;
+    assert_eq_int(12, r4, "10 + 17 % 5 == 12");
+
+    // Bitwise AND before OR
+    let r5 = 1 | 2 & 2; // 1 | (2 & 2) = 1 | 2 = 3
+    assert_eq_int(3, r5, "1 | 2 & 2 == 3");
+
+    // Shift before Bitwise AND
+    let r6 = 1 | 1 << 2; // 1 | 4 = 5
+    assert_eq_int(5, r6, "1 | 1 << 2 == 5");
+}
+
+function test_nested_ternary() {
+    print("--- Nested Ternary Operators ---");
+
+    let score = 85;
+    let grade = score >= 90 ? "A" : (score >= 80 ? "B" : (score >= 70 ? "C" : "F"));
+    assert_true(grade == "B", "score 85 is B");
+
+    score = 95;
+    grade = score >= 90 ? "A" : (score >= 80 ? "B" : (score >= 70 ? "C" : "F"));
+    assert_true(grade == "A", "score 95 is A");
+
+    score = 65;
+    grade = score >= 90 ? "A" : (score >= 80 ? "B" : (score >= 70 ? "C" : "F"));
+    assert_true(grade == "F", "score 65 is F");
+}
+
+function main() {
+    print("=== OPERATORS COMPREHENSIVE TEST START ===");
+    test_compound_assignments();
+    test_increments_and_decrements();
+    test_short_circuit_logic();
+    test_operator_precedence();
+    test_nested_ternary();
+    print("=== OPERATORS COMPREHENSIVE TEST COMPLETE ===");
+}

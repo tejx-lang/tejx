@@ -1,5 +1,8 @@
 use super::*;
 use crate::vthread;
+use once_cell::sync::Lazy;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 /// Spawn a TejX Virtual Thread — Go/Java M:N model.
 ///
@@ -15,14 +18,22 @@ use crate::vthread;
 /// the pool is empty).  The stack doubles on overflow — up to 64 MB — using
 /// the copy-on-grow technique from Go's runtime.
 /// No may, no generator, no fixed 2 MB overhead, no SIGSEGV crashes.
-#[inline(always)]
+static LIVE_THREAD_DATA: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
 pub(crate) unsafe fn register_thread_data(ptr: *mut ThreadData) -> i64 {
-    ptr as i64
+    let addr = ptr as usize;
+    if let Ok(mut set) = LIVE_THREAD_DATA.lock() {
+        set.insert(addr);
+    }
+    addr as i64
 }
 
-#[inline(always)]
-pub(crate) unsafe fn unregister_thread_data(_addr: usize) -> bool {
-    true
+pub(crate) unsafe fn unregister_thread_data(addr: usize) -> bool {
+    if let Ok(mut set) = LIVE_THREAD_DATA.lock() {
+        set.remove(&addr)
+    } else {
+        false
+    }
 }
 
 #[no_mangle]
@@ -32,11 +43,13 @@ pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
     rt_ensure_type_finalizer(this, rt_thread_object_finalizer);
     rt_store_ref_slot(this, ptr.offset(1), cb);
     let slot_live = std::sync::Arc::new(AtomicBool::new(true));
+    let cb_released = std::sync::Arc::new(AtomicBool::new(false));
     let data = Box::new(ThreadData {
         handle: None,
         started: false,
         cb_slot: rt_add_static_root(cb),
         slot_live,
+        cb_released,
     });
     *ptr.offset(0) = register_thread_data(Box::into_raw(data));
 }
@@ -50,45 +63,54 @@ pub unsafe extern "C" fn rt_Thread_start(this: i64) {
     if (*data_ptr).started { return; }
     (*data_ptr).started = true;
 
-    let cb_slot   = (*data_ptr).cb_slot;
-    let slot_live = (*data_ptr).slot_live.clone();
+    let cb_slot     = (*data_ptr).cb_slot;
+    let slot_live   = (*data_ptr).slot_live.clone();
+    let cb_released = (*data_ptr).cb_released.clone();
 
     // Spawn a VThread via the TejX M:N scheduler.
-    // Initial stack: 4 KB from pool.  Memory footprint: ~4 KB + 64 B header.
+    // Initial stack: 2 KB from pool.
     vthread::vt_spawn_closure(
         move || {
             // Worker thread is already registered by worker_loop().
-            // Just run the closure and release the GC cb_slot on exit.
-            let _guard = ThreadRunGuard { cb_slot, slot_live };
-            let mut cb_root = 0;
-            rt_pin_static_root(cb_slot, &mut cb_root);
-            rt_call_closure_no_args(cb_root);
-            rt_pop_roots(1);
+            // Just run the closure and release the GC cb_slot on exit exactly once.
+            let _guard = ThreadRunGuard { cb_slot, cb_released };
+            let closure = rt_get_static_root(cb_slot);
+            if closure != 0 {
+                rt_call_closure_no_args(closure);
+            }
         },
         cb_slot,
-        (*data_ptr).slot_live.clone(),
+        slot_live,
     );
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rt_Thread_join(this: i64) {
-    let ptr = rt_obj_ptr(this);
+pub unsafe extern "C" fn rt_Thread_join(mut this: i64) {
+    let mut ptr = rt_obj_ptr(this);
     if ptr.is_null() { return; }
     let data_ptr = *ptr.offset(0) as *mut ThreadData;
     if data_ptr.is_null() { return; }
     if !(*data_ptr).started { rt_Thread_start(this); }
 
-    // Wait for the VThread's done flag — set by ThreadRunGuard::drop.
     let slot_live = (*data_ptr).slot_live.clone();
-    vthread::vt_join(&slot_live);
+    let cb_slot = (*data_ptr).cb_slot;
+    let cb_released = (*data_ptr).cb_released.clone();
 
-    let atomic_slot = ptr.offset(0) as *const AtomicI64;
-    let reclaimed = (*atomic_slot).swap(0, Ordering::AcqRel);
-    if reclaimed != 0 && unregister_thread_data(reclaimed as usize) {
-        let cb_slot = (*data_ptr).cb_slot;
-        rt_release_thread_cb_slot(cb_slot, &(*data_ptr).slot_live);
-        *ptr.offset(1) = 0;
-        let _ = Box::from_raw(data_ptr);
+    // Push `this` as root across `vt_join` so GC doesn't invalidate or relocate `this`
+    rt_push_root(&mut this);
+    vthread::vt_join(&slot_live);
+    rt_pop_roots(1);
+
+    // Re-resolve ptr after GC safepoints in vt_join!
+    ptr = rt_obj_ptr(this);
+    if !ptr.is_null() {
+        let atomic_slot = ptr.offset(0) as *const AtomicI64;
+        let reclaimed = (*atomic_slot).swap(0, Ordering::AcqRel);
+        if reclaimed != 0 && unregister_thread_data(reclaimed as usize) {
+            rt_release_thread_cb_slot(cb_slot, &cb_released);
+            *ptr.offset(1) = 0;
+            let _ = Box::from_raw(reclaimed as *mut ThreadData);
+        }
     }
 }
 

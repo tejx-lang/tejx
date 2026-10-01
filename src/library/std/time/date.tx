@@ -1,3 +1,4 @@
+import "./internal.tx";
 export class Date {
     private timestamp: int64;
 

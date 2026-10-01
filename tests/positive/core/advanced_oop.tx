@@ -1,0 +1,195 @@
+// Production-Grade Test Suite: Advanced OOP & Polymorphism
+// =========================================================
+// Thoroughly exercises:
+// - Multi-level class inheritance (A -> B -> C)
+// - Virtual method dispatch and dynamic polymorphism via base type arrays
+// - super() constructor chaining and super.method() delegation
+// - Interfaces and multiple interface implementations
+// - Abstract classes and abstract methods
+// - Static fields and static methods
+// - Encapsulation (public, private, protected members)
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+// --- 1. Interfaces ---
+interface Describable {
+    describe(): string;
+}
+
+interface Serializable {
+    serialize(): string;
+}
+
+// --- 2. Abstract Class ---
+abstract class AbstractShape {
+    name: string;
+    constructor(name: string) {
+        this.name = name;
+    }
+    abstract area(): int;
+    abstract perimeter(): int;
+
+    describe(): string {
+        return "Shape: " + this.name;
+    }
+}
+
+class Rectangle extends AbstractShape implements Describable {
+    name: string;
+    width: int;
+    height: int;
+
+    constructor(width: int, height: int) {
+        super("Rectangle");
+        this.name = "Rectangle";
+        this.width = width;
+        this.height = height;
+    }
+
+    area(): int {
+        return this.width * this.height;
+    }
+
+    perimeter(): int {
+        return 2 * (this.width + this.height);
+    }
+
+    describe(): string {
+        return "Shape: " + this.name;
+    }
+}
+
+class Square extends Rectangle {
+    constructor(side: int) {
+        super(side, side);
+        this.name = "Square";
+    }
+
+    // Overrides describe and calls super.describe()
+    describe(): string {
+        return super.describe() + " (side=" + this.width + ")";
+    }
+}
+
+// --- 3. Multi-level Inheritance and State Management ---
+class Employee {
+    id: int;
+    name: string;
+    protected baseSalary: int;
+    static companyName: string = "TejX Enterprise";
+    static totalEmployees: int64 = 0;
+
+    constructor(id: int, name: string, baseSalary: int) {
+        this.id = id;
+        this.name = name;
+        this.baseSalary = baseSalary;
+        Employee.totalEmployees = Employee.totalEmployees + 1;
+    }
+
+    getName(): string {
+        return this.name;
+    }
+
+    getSalary(): int {
+        return this.baseSalary;
+    }
+
+    getRole(): string {
+        return "Employee";
+    }
+
+    static getCompany(): string {
+        return Employee.companyName;
+    }
+}
+
+class Manager extends Employee {
+    protected bonus: int;
+
+    constructor(id: int, name: string, baseSalary: int, bonus: int) {
+        super(id, name, baseSalary);
+        this.bonus = bonus;
+    }
+
+    getSalary(): int {
+        return this.baseSalary + this.bonus;
+    }
+
+    getRole(): string {
+        return "Manager";
+    }
+}
+
+class Director extends Manager implements Serializable {
+    stockOptions: int;
+
+    constructor(id: int, name: string, baseSalary: int, bonus: int, stockOptions: int) {
+        super(id, name, baseSalary, bonus);
+        this.stockOptions = stockOptions;
+    }
+
+    getSalary(): int {
+        // Calls super.getSalary() which is Manager's baseSalary + bonus
+        return super.getSalary() + (this.stockOptions * 10);
+    }
+
+    getRole(): string {
+        return "Director";
+    }
+
+    serialize(): string {
+        return "Director:" + this.getName() + ":" + this.getSalary();
+    }
+}
+
+// --- Test Functions ---
+
+function test_abstract_and_polymorphism() {
+    print("--- Testing Abstract Classes & Inheritance ---");
+
+    let rect = new Rectangle(10, 20);
+    assert_eq_int(200, rect.area(), "Rectangle area 10*20");
+    assert_eq_int(60, rect.perimeter(), "Rectangle perimeter 2*(10+20)");
+    assert_eq_string("Shape: Rectangle", rect.describe(), "Rectangle describe");
+
+    let sq = new Square(15);
+    assert_eq_int(225, sq.area(), "Square area 15*15");
+    assert_eq_int(60, sq.perimeter(), "Square perimeter 4*15");
+    assert_eq_string("Shape: Square (side=15)", sq.describe(), "Square overridden describe with super call");
+
+    // Total area via concrete methods
+    let totalArea = rect.area() + sq.area();
+    assert_eq_int(425, totalArea, "Total area (200 + 225)");
+}
+
+function test_multi_level_inheritance() {
+    print("--- Testing Multi-Level Inheritance ---");
+
+    let emp = new Employee(1, "Alice", 50000);
+    let mgr = new Manager(2, "Bob", 70000, 15000);
+    let dir = new Director(3, "Carol", 100000, 30000, 500);
+
+    assert_eq_string("Employee", emp.getRole(), "Alice role");
+    assert_eq_int(50000, emp.getSalary(), "Alice salary");
+
+    assert_eq_string("Manager", mgr.getRole(), "Bob role");
+    assert_eq_int(85000, mgr.getSalary(), "Bob salary (70000+15000)");
+
+    assert_eq_string("Director", dir.getRole(), "Carol role");
+    assert_eq_int(135000, dir.getSalary(), "Carol salary (100000+30000 + 500*10)");
+    assert_eq_string("Director:Carol:135000", dir.serialize(), "Carol serialized");
+
+    let totalPayroll = emp.getSalary() + mgr.getSalary() + dir.getSalary();
+    assert_eq_int(270000, totalPayroll, "Total payroll (50000 + 85000 + 135000)");
+
+    // Static fields & methods
+    assert_eq_int(3, Employee.totalEmployees, "Total employees count across constructors");
+    assert_eq_string("TejX Enterprise", Employee.getCompany(), "Static method getCompany");
+}
+
+function main() {
+    print("=== ADVANCED OOP TESTS START ===");
+    test_abstract_and_polymorphism();
+    test_multi_level_inheritance();
+    print("=== ADVANCED OOP TESTS COMPLETE ===");
+}

@@ -1,0 +1,26 @@
+import { collect, getStats, enable, disable, isEnabled, setGrowthFactor, getGrowthFactor } from "std:gc";
+
+function main(): void {
+    print("--- Testing GC Telemetry and Controls ---\n");
+    let initialEnabled = isEnabled();
+    print("Initial GC enabled: " + initialEnabled + "\n");
+
+    disable();
+    print("After disable(): " + isEnabled() + "\n");
+
+    enable();
+    print("After enable(): " + isEnabled() + "\n");
+
+    print("Initial Growth Factor: " + getGrowthFactor() + "\n");
+    setGrowthFactor(100);
+    print("Updated Growth Factor (100%): " + getGrowthFactor() + "\n");
+
+    setGrowthFactor(50);
+    print("Reset Growth Factor (50%): " + getGrowthFactor() + "\n");
+
+    collect();
+    let stats = getStats();
+    print("Heap Used after collect: " + stats.heapUsed + "\n");
+    print("Heap Total: " + stats.heapTotal + "\n");
+    print("GC Telemetry and Controls PASSED!\n");
+}

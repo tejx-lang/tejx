@@ -2140,6 +2140,152 @@ impl MIRLowering {
                 }
                 last_val
             }
+            HIRExpression::PostfixUpdate {
+                target,
+                op,
+                ty,
+                line,
+            } => {
+                let bin_op = if matches!(op, TokenType::PlusPlus) {
+                    TokenType::Plus
+                } else {
+                    TokenType::Minus
+                };
+                match target.as_ref() {
+                    HIRExpression::Variable { name, ty: var_ty, .. } => {
+                        let unique_name = self.resolve_variable(name);
+                        let old_val = self.new_temp(var_ty.clone());
+                        self.emit(MIRInstruction::Move {
+                            line: *line,
+                            dst: old_val.clone(),
+                            src: MIRValue::Variable {
+                                name: unique_name.clone(),
+                                ty: var_ty.clone(),
+                            },
+                        });
+                        let delta = MIRValue::Constant {
+                            value: "1".to_string(),
+                            ty: var_ty.clone(),
+                        };
+                        let new_val = self.new_temp(var_ty.clone());
+                        self.emit(MIRInstruction::BinaryOp {
+                            line: *line,
+                            dst: new_val.clone(),
+                            left: MIRValue::Variable {
+                                name: old_val.clone(),
+                                ty: var_ty.clone(),
+                            },
+                            op: bin_op,
+                            right: delta,
+                            op_width: var_ty.clone(),
+                        });
+                        self.emit(MIRInstruction::Move {
+                            line: *line,
+                            dst: unique_name,
+                            src: MIRValue::Variable {
+                                name: new_val,
+                                ty: var_ty.clone(),
+                            },
+                        });
+                        MIRValue::Variable {
+                            name: old_val,
+                            ty: var_ty.clone(),
+                        }
+                    }
+                    HIRExpression::MemberAccess {
+                        target: obj_expr,
+                        member,
+                        ty: member_ty,
+                        ..
+                    } => {
+                        let obj_val = self.lower_expression(obj_expr);
+                        let old_val = self.new_temp(member_ty.clone());
+                        self.emit(MIRInstruction::LoadMember {
+                            line: *line,
+                            dst: old_val.clone(),
+                            obj: obj_val.clone(),
+                            member: member.clone(),
+                        });
+                        let delta = MIRValue::Constant {
+                            value: "1".to_string(),
+                            ty: member_ty.clone(),
+                        };
+                        let new_val = self.new_temp(member_ty.clone());
+                        self.emit(MIRInstruction::BinaryOp {
+                            line: *line,
+                            dst: new_val.clone(),
+                            left: MIRValue::Variable {
+                                name: old_val.clone(),
+                                ty: member_ty.clone(),
+                            },
+                            op: bin_op,
+                            right: delta,
+                            op_width: member_ty.clone(),
+                        });
+                        self.emit(MIRInstruction::StoreMember {
+                            line: *line,
+                            obj: obj_val,
+                            member: member.clone(),
+                            src: MIRValue::Variable {
+                                name: new_val,
+                                ty: member_ty.clone(),
+                            },
+                        });
+                        MIRValue::Variable {
+                            name: old_val,
+                            ty: member_ty.clone(),
+                        }
+                    }
+                    HIRExpression::IndexAccess {
+                        target: obj_expr,
+                        index: idx_expr,
+                        ty: elem_ty,
+                        ..
+                    } => {
+                        let obj_val = self.lower_expression(obj_expr);
+                        let idx_val = self.lower_expression(idx_expr);
+                        let old_val = self.new_temp(elem_ty.clone());
+                        self.emit(MIRInstruction::LoadIndex {
+                            line: *line,
+                            dst: old_val.clone(),
+                            obj: obj_val.clone(),
+                            index: idx_val.clone(),
+                            element_ty: elem_ty.clone(),
+                        });
+                        let delta = MIRValue::Constant {
+                            value: "1".to_string(),
+                            ty: elem_ty.clone(),
+                        };
+                        let new_val = self.new_temp(elem_ty.clone());
+                        self.emit(MIRInstruction::BinaryOp {
+                            line: *line,
+                            dst: new_val.clone(),
+                            left: MIRValue::Variable {
+                                name: old_val.clone(),
+                                ty: elem_ty.clone(),
+                            },
+                            op: bin_op,
+                            right: delta,
+                            op_width: elem_ty.clone(),
+                        });
+                        self.emit(MIRInstruction::StoreIndex {
+                            line: *line,
+                            obj: obj_val,
+                            index: idx_val,
+                            src: MIRValue::Variable {
+                                name: new_val,
+                                ty: elem_ty.clone(),
+                            },
+                            element_ty: elem_ty.clone(),
+                        });
+                        MIRValue::Variable {
+                            name: old_val,
+                            ty: elem_ty.clone(),
+                        }
+                    }
+                    _ => self.lower_expression(target),
+                }
+            }
             HIRExpression::NoneLiteral { .. } => MIRValue::Constant {
                 value: "0".to_string(),
                 ty: TejxType::Void,

@@ -347,36 +347,14 @@ impl TypeChecker {
                         None,
                     );
                 } else {
-                    match declared_ty.as_ref().unwrap() {
-                        TejxType::Object(_) => {
-                            self.report_error_detailed(
-                                "Object-typed variables must be initialized at declaration"
-                                    .to_string(),
-                                *line,
-                                *_col,
-                                "E0101",
-                                Some(
-                                    "Provide an object literal or other initializer when declaring this object",
-                                ),
-                            );
-                        }
-                        TejxType::Optional(_) | TejxType::DynamicArray(_) => {}
-                        _ => {
-                            let ty_name = type_annotation.to_string();
-                            self.report_error_detailed(
-                                format!(
-                                    "Variables of type '{}' must be initialized at declaration",
-                                    ty_name
-                                ),
-                                *line,
-                                *_col,
-                                "E0101",
-                                Some(&format!(
-                                    "Provide an initializer (e.g., 'let x: {} = ...') or use Optional<{}> if None is allowed",
-                                    ty_name, ty_name
-                                )),
-                            );
-                        }
+                    if *is_const {
+                        self.report_error_detailed(
+                            "Constants must be initialized at declaration".to_string(),
+                            *line,
+                            *_col,
+                            "E0101",
+                            Some("Provide an initializer (e.g., 'const x = ...')"),
+                        );
                     }
                     let _ = self.define_pattern(
                         pattern,
@@ -585,6 +563,51 @@ impl TypeChecker {
                 self.exit_scope();
                 res
             }
+            Statement::ForOfStmt {
+                variable,
+                iterable,
+                body,
+                _line,
+                _col,
+            } => {
+                let iter_ty = self.check_expression(iterable)?;
+                let element_ty = match &iter_ty {
+                    TejxType::DynamicArray(elem)
+                    | TejxType::FixedArray(elem, _)
+                    | TejxType::Slice(elem) => (**elem).clone(),
+                    TejxType::String => TejxType::Char,
+                    _ => {
+                        self.report_error_detailed(
+                            format!(
+                                "Type '{}' is not iterable in 'for..of' loop",
+                                iter_ty.to_name()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0100",
+                            Some("Expected an array, slice, or string"),
+                        );
+                        TejxType::Any
+                    }
+                };
+
+                self.enter_scope();
+                self.loop_depth += 1;
+
+                let _ = self.define_pattern(
+                    variable,
+                    element_ty.to_name(),
+                    false,
+                    *_line,
+                    *_col,
+                    None,
+                );
+
+                let res = self.check_statement(body);
+                self.loop_depth -= 1;
+                self.exit_scope();
+                res
+            }
             Statement::BreakStmt { _line, _col } => {
                 if self.loop_depth == 0 {
                     self.report_error_detailed(
@@ -697,6 +720,15 @@ impl TypeChecker {
                     }
                     let mut p_ty = p.type_name.to_string();
                     if p_ty.is_empty() {
+                        if let Some(default_val) = &p._default_value {
+                            if let Ok(inferred_def_ty) = self.check_expression(default_val) {
+                                if inferred_def_ty != TejxType::Any {
+                                    p_ty = inferred_def_ty.to_name();
+                                }
+                            }
+                        }
+                    }
+                    if p_ty.is_empty() {
                         self.report_error_detailed(
                             format!("Type annotation required for parameter '{}'", p.name),
                             func._line,
@@ -801,10 +833,21 @@ impl TypeChecker {
                     );
                 }
                 for (idx, param) in func.params.iter().enumerate() {
-                    let param_ty = params
+                    let mut param_ty = params
                         .get(idx)
                         .cloned()
                         .unwrap_or_else(|| "<inferred>".to_string());
+                    if (param_ty == "<inferred>" || param_ty == "any" || param_ty.is_empty())
+                        && param._default_value.is_some()
+                    {
+                        if let Some(default_val) = &param._default_value {
+                            if let Ok(inferred_def_ty) = self.check_expression(default_val) {
+                                if inferred_def_ty != TejxType::Any {
+                                    param_ty = inferred_def_ty.to_name();
+                                }
+                            }
+                        }
+                    }
                     if !func.generic_params.is_empty()
                         && param_ty != "any"
                         && !self.is_valid_type(&TejxType::from_name(&param_ty))
@@ -1278,6 +1321,15 @@ impl TypeChecker {
                     for param in &method.func.params {
                         let mut param_ty = param.type_name.to_string();
                         if param_ty.is_empty() {
+                            if let Some(default_val) = &param._default_value {
+                                if let Ok(inferred_def_ty) = self.check_expression(default_val) {
+                                    if inferred_def_ty != TejxType::Any {
+                                        param_ty = inferred_def_ty.to_name();
+                                    }
+                                }
+                            }
+                        }
+                        if param_ty.is_empty() {
                             self.report_error_detailed(
                                 format!("Type annotation required for parameter '{}'", param.name),
                                 class_decl._line,
@@ -1694,6 +1746,12 @@ impl TypeChecker {
                     };
                     let type_str = format!("function:{}:{}", ret_str, p_str);
 
+                    let min_required = method
+                        .params
+                        .iter()
+                        .filter(|p| p._default_value.is_none() && !p._is_rest)
+                        .count();
+
                     existing_members.insert(
                         m_name.clone(),
                         MemberInfo {
@@ -1702,6 +1760,7 @@ impl TypeChecker {
                             access: AccessLevel::Public,
                             is_readonly: true,
                             generic_params: method.generic_params.clone(),
+                            min_params: Some(min_required),
                         },
                     );
 

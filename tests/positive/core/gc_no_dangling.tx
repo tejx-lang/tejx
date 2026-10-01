@@ -1,0 +1,287 @@
+// GC No-Dangling Tests
+// =====================
+// Verifies the GC never corrupts, zeroes, or moves memory that
+// should remain live. After every GC cycle we re-check all fields,
+// string contents, and array elements to guarantee nothing was
+// touched that shouldn't have been.
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_ne_int, assert_ne_string } from "../utils.tx";
+import { collect, collectYoung } from "std:gc";
+
+// --- Helper Classes ---
+
+class Record {
+    a: int;
+    b: int;
+    c: int;
+    label: string;
+    constructor(a: int, b: int, c: int, label: string) {
+        this.a = a;
+        this.b = b;
+        this.c = c;
+        this.label = label;
+    }
+}
+
+class StringHolder {
+    val: string;
+    constructor(v: string) { this.val = v; }
+}
+
+class Matrix {
+    rows: int[][];
+    dimension: int;
+    constructor(dim: int) {
+        this.dimension = dim;
+        this.rows = [];
+    }
+}
+
+// --- Test 1: Primitive fields unchanged after GC ---
+function test_primitive_fields_intact() {
+    print("--- NoDangling: Primitive Fields ---");
+
+    let records: Record[] = [];
+    for (let i = 0; i < 200; i++) {
+        records.push(new Record(i, i * 3, i * 7 + 11, "rec-" + i));
+    }
+
+    // Snapshot values, trigger GC, verify
+    collect();
+    collectYoung();
+    collect();
+
+    for (let i = 0; i < 200; i++) {
+        let r = records[i];
+        assert_eq_int(i, r.a, "Record #" + i + " field a");
+        assert_eq_int(i * 3, r.b, "Record #" + i + " field b");
+        assert_eq_int(i * 7 + 11, r.c, "Record #" + i + " field c");
+        assert_eq_string("rec-" + i, r.label, "Record #" + i + " label");
+    }
+}
+
+// --- Test 2: String contents byte-identical after GC ---
+function test_string_identity_after_gc() {
+    print("--- NoDangling: String Identity ---");
+
+    let strings: StringHolder[] = [];
+    // Create strings with various patterns
+    strings.push(new StringHolder("")); // Empty string
+    strings.push(new StringHolder("a")); // Single char
+    strings.push(new StringHolder("Hello, World!")); // ASCII
+    strings.push(new StringHolder("  spaces  ")); // Whitespace
+    strings.push(new StringHolder("line1\nline2")); // Newlines
+    strings.push(new StringHolder("null\tbytes")); // Tabs
+
+    // Long string
+    let longStr = "";
+    for (let i = 0; i < 200; i++) {
+        longStr = longStr + "X";
+    }
+    strings.push(new StringHolder(longStr));
+
+    // Concatenated string
+    strings.push(new StringHolder("prefix-" + "middle" + "-suffix"));
+
+    // Generate garbage and collect
+    for (let i = 0; i < 5000; i++) {
+        let trash = "garbage-string-" + i;
+    }
+    collect();
+
+    // Verify every string
+    assert_eq_string("", strings[0].val, "Empty string survived");
+    assert_eq_string("a", strings[1].val, "Single char survived");
+    assert_eq_string("Hello, World!", strings[2].val, "ASCII string survived");
+    assert_eq_string("  spaces  ", strings[3].val, "Whitespace string survived");
+    assert_eq_string("line1\nline2", strings[4].val, "Newline string survived");
+    assert_eq_string("null\tbytes", strings[5].val, "Tab string survived");
+    assert_eq_int(200, strings[6].val.length(), "Long string length preserved");
+    assert_eq_string("prefix-middle-suffix", strings[7].val, "Concatenated string survived");
+}
+
+// --- Test 3: Array elements position-correct after GC ---
+function test_array_elements_position() {
+    print("--- NoDangling: Array Element Positions ---");
+
+    // Integer array
+    let ints: int[] = [];
+    for (let i = 0; i < 1000; i++) {
+        ints.push(i * i); // i^2 so values are distinct
+    }
+
+    // String array
+    let strs: string[] = [];
+    for (let i = 0; i < 100; i++) {
+        strs.push("elem-" + i + "-data");
+    }
+
+    // Object array
+    let objs: Record[] = [];
+    for (let i = 0; i < 100; i++) {
+        objs.push(new Record(i, i + 1, i + 2, "obj-" + i));
+    }
+
+    // Heavy garbage + collection
+    for (let i = 0; i < 10000; i++) {
+        let trash = new Record(i, i, i, "trash");
+    }
+    collect();
+
+    // Verify int array
+    assert_eq_int(1000, ints.length(), "Int array length");
+    for (let i = 0; i < 1000; i++) {
+        assert_eq_int(i * i, ints[i], "Int array[" + i + "]");
+    }
+
+    // Verify string array
+    assert_eq_int(100, strs.length(), "String array length");
+    for (let i = 0; i < 100; i++) {
+        assert_eq_string("elem-" + i + "-data", strs[i], "String array[" + i + "]");
+    }
+
+    // Verify object array
+    assert_eq_int(100, objs.length(), "Object array length");
+    for (let i = 0; i < 100; i++) {
+        assert_eq_int(i, objs[i].a, "Obj array[" + i + "].a");
+        assert_eq_int(i + 1, objs[i].b, "Obj array[" + i + "].b");
+        assert_eq_int(i + 2, objs[i].c, "Obj array[" + i + "].c");
+        assert_eq_string("obj-" + i, objs[i].label, "Obj array[" + i + "].label");
+    }
+}
+
+// --- Test 4: Matrix (2D array) integrity ---
+function test_matrix_integrity() {
+    print("--- NoDangling: 2D Matrix Integrity ---");
+
+    let dim = 50;
+    let matrix = new Matrix(dim);
+
+    for (let r = 0; r < dim; r++) {
+        let row: int[] = [];
+        for (let c = 0; c < dim; c++) {
+            row.push(r * dim + c);
+        }
+        matrix.rows.push(row);
+    }
+
+    // Multiple GC cycles
+    for (let cycle = 0; cycle < 3; cycle++) {
+        for (let g = 0; g < 2000; g++) {
+            let trash = "matrix-garbage-" + g;
+        }
+        collect();
+    }
+
+    // Verify
+    assert_eq_int(dim, matrix.dimension, "Matrix dimension");
+    assert_eq_int(dim, matrix.rows.length(), "Matrix row count");
+
+    for (let r = 0; r < dim; r++) {
+        assert_eq_int(dim, matrix.rows[r].length(), "Row " + r + " length");
+        for (let c = 0; c < dim; c++) {
+            assert_eq_int(r * dim + c, matrix.rows[r][c], "Matrix[" + r + "][" + c + "]");
+        }
+    }
+}
+
+// --- Test 5: Interleaved allocation and verification ---
+function test_interleaved_alloc_verify() {
+    print("--- NoDangling: Interleaved Alloc/Verify ---");
+
+    let anchors: Record[] = [];
+
+    for (let round = 0; round < 50; round++) {
+        // Allocate a new anchor
+        anchors.push(new Record(round, round * 2, round * 3, "anchor-" + round));
+
+        // Generate garbage
+        for (let g = 0; g < 500; g++) {
+            let trash = new Record(g + 99999, 0, 0, "interleaved-trash");
+        }
+
+        // Periodic collection
+        if (round % 10 == 0) {
+            collect();
+        }
+
+        // Verify ALL existing anchors
+        for (let j = 0; j <= round; j++) {
+            assert_eq_int(j, anchors[j].a, "Anchor #" + j + " after round " + round);
+            assert_eq_int(j * 2, anchors[j].b, "Anchor #" + j + " .b after round " + round);
+        }
+    }
+
+    assert_eq_int(50, anchors.length(), "All 50 anchors survived");
+}
+
+// --- Test 6: Field overwrite doesn't corrupt neighbors ---
+function test_field_overwrite_isolation() {
+    print("--- NoDangling: Field Overwrite Isolation ---");
+
+    let a = new Record(10, 20, 30, "alpha");
+    let b = new Record(40, 50, 60, "beta");
+    let c = new Record(70, 80, 90, "gamma");
+
+    // Mutate b fields — a and c should be untouched
+    b.a = 999;
+    b.b = 888;
+    b.c = 777;
+    b.label = "mutated-beta";
+
+    collect();
+
+    // Verify a untouched
+    assert_eq_int(10, a.a, "a.a untouched");
+    assert_eq_int(20, a.b, "a.b untouched");
+    assert_eq_int(30, a.c, "a.c untouched");
+    assert_eq_string("alpha", a.label, "a.label untouched");
+
+    // Verify b mutated correctly
+    assert_eq_int(999, b.a, "b.a mutated");
+    assert_eq_int(888, b.b, "b.b mutated");
+    assert_eq_int(777, b.c, "b.c mutated");
+    assert_eq_string("mutated-beta", b.label, "b.label mutated");
+
+    // Verify c untouched
+    assert_eq_int(70, c.a, "c.a untouched");
+    assert_eq_int(80, c.b, "c.b untouched");
+    assert_eq_int(90, c.c, "c.c untouched");
+    assert_eq_string("gamma", c.label, "c.label untouched");
+}
+
+// --- Test 7: Re-assignment doesn't leave ghost data ---
+function test_reassignment_no_ghosts() {
+    print("--- NoDangling: Reassignment No Ghosts ---");
+
+    let holder = new StringHolder("original");
+    collect();
+    assert_eq_string("original", holder.val, "Before reassignment");
+
+    // Reassign multiple times
+    holder.val = "second";
+    collect();
+    assert_eq_string("second", holder.val, "After first reassign");
+    assert_ne_string("original", holder.val, "Not ghost of original");
+
+    holder.val = "third";
+    collect();
+    assert_eq_string("third", holder.val, "After second reassign");
+    assert_ne_string("second", holder.val, "Not ghost of second");
+
+    holder.val = "final-value-that-is-longer-than-previous";
+    collect();
+    assert_eq_string("final-value-that-is-longer-than-previous", holder.val, "Final long reassign");
+}
+
+function main() {
+    print("=== GC NO-DANGLING TESTS START ===");
+    test_primitive_fields_intact();
+    test_string_identity_after_gc();
+    test_array_elements_position();
+    test_matrix_integrity();
+    test_interleaved_alloc_verify();
+    test_field_overwrite_isolation();
+    test_reassignment_no_ghosts();
+    print("=== GC NO-DANGLING TESTS COMPLETE ===");
+}

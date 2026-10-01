@@ -491,7 +491,11 @@ impl Lexer {
         } else {
             self.advance(); // Skip closing quote
         }
-        let token_type = TokenType::String;
+        let token_type = if quote == '\'' && value.chars().count() <= 1 {
+            TokenType::CharLiteral
+        } else {
+            TokenType::String
+        };
         Token::new(token_type, value, start_line, start_col)
     }
 

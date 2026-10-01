@@ -19,6 +19,8 @@ pub struct Lowering {
     lambda_counter: RefCell<usize>,
     user_functions: RefCell<HashMap<String, TejxType>>,
     user_function_args: RefCell<HashMap<String, usize>>,
+    pub user_function_param_defaults: RefCell<HashMap<String, Vec<Option<Expression>>>>,
+    pub constructor_param_defaults: RefCell<HashMap<String, Vec<Option<Expression>>>>,
     extern_functions: RefCell<HashSet<String>>,
     variadic_functions: RefCell<HashMap<String, usize>>,
     lambda_functions: RefCell<Vec<HIRStatement>>,
@@ -40,9 +42,11 @@ pub struct Lowering {
     discovered_function_instantiations:
         RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     type_aliases: RefCell<HashMap<String, TejxType>>,
+    pub enum_members: RefCell<HashMap<String, i64>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
     pub filename: RefCell<String>,
     pub stdlib_path: RefCell<std::path::PathBuf>,
+    pub include_dirs: RefCell<Vec<std::path::PathBuf>>,
     pub import_access: RefCell<HashMap<String, HashSet<String>>>,
     module_export_cache: RefCell<HashMap<std::path::PathBuf, HashSet<String>>>,
     module_default_export_cache: RefCell<HashMap<std::path::PathBuf, bool>>,
@@ -57,6 +61,7 @@ pub struct Lowering {
     captured_vars_by_owner: RefCell<HashMap<String, HashSet<String>>>,
     lambda_env_owner: RefCell<HashMap<String, String>>,
     function_display_names: RefCell<HashMap<String, String>>,
+    class_display_names: RefCell<HashMap<String, String>>,
     pending_lambda_display_name: RefCell<Option<String>>,
 }
 
@@ -70,6 +75,7 @@ pub struct LoweringResult {
     pub class_methods: HashMap<String, Vec<String>>,
     pub class_parents: HashMap<String, String>,
     pub function_display_names: HashMap<String, String>,
+    pub class_display_names: HashMap<String, String>,
 }
 
 impl Default for Lowering {
@@ -84,6 +90,8 @@ impl Lowering {
             lambda_counter: RefCell::new(0),
             user_functions: RefCell::new(HashMap::new()),
             user_function_args: RefCell::new(HashMap::new()),
+            user_function_param_defaults: RefCell::new(HashMap::new()),
+            constructor_param_defaults: RefCell::new(HashMap::new()),
             extern_functions: RefCell::new(HashSet::new()),
             variadic_functions: RefCell::new(HashMap::new()),
             lambda_functions: RefCell::new(Vec::new()),
@@ -104,9 +112,11 @@ impl Lowering {
             erased_generic_functions: RefCell::new(HashSet::new()),
             discovered_function_instantiations: RefCell::new(HashMap::new()),
             type_aliases: RefCell::new(HashMap::new()),
+            enum_members: RefCell::new(HashMap::new()),
             diagnostics: RefCell::new(Vec::new()),
             filename: RefCell::new(String::new()),
             stdlib_path: RefCell::new(std::path::PathBuf::from("lib")),
+            include_dirs: RefCell::new(Vec::new()),
             import_access: RefCell::new(HashMap::new()),
             module_export_cache: RefCell::new(HashMap::new()),
             module_default_export_cache: RefCell::new(HashMap::new()),
@@ -121,6 +131,7 @@ impl Lowering {
             captured_vars_by_owner: RefCell::new(HashMap::new()),
             lambda_env_owner: RefCell::new(HashMap::new()),
             function_display_names: RefCell::new(HashMap::new()),
+            class_display_names: RefCell::new(HashMap::new()),
             pending_lambda_display_name: RefCell::new(None),
         }
     }
@@ -518,6 +529,11 @@ impl Lowering {
 
                 let mut substitutions = HashMap::new();
                 let mangled_name = self.monomorphized_name(&base_name, &concrete_args);
+                let display_args: Vec<String> = concrete_args.iter().map(|t| t.to_name()).collect();
+                let display_name = format!("{}<{}>", base_name, display_args.join(", "));
+                self.class_display_names
+                    .borrow_mut()
+                    .insert(mangled_name.clone(), display_name);
                 for (param, arg_type) in class_decl.generic_params.iter().zip(concrete_args.iter())
                 {
                     substitutions.insert(param.name.clone(), arg_type.to_type_node());
@@ -960,6 +976,7 @@ impl Lowering {
             class_methods: self.class_methods.borrow().clone(),
             class_parents: self.class_parents.borrow().clone(),
             function_display_names: self.function_display_names.borrow().clone(),
+            class_display_names: self.class_display_names.borrow().clone(),
         }
     }
 }

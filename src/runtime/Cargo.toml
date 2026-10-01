@@ -8,7 +8,7 @@ crate-type = ["staticlib"]
 path = "core/lib.rs"
 
 [dependencies]
-corosensei = "0.3.4"
+corosensei = { version = "0.3.4", default-features = false, features = ["default-stack"] }
 crossbeam-deque = "0.8.8"
 hmac      = "0.12.1"
 libc      = "0.2.183"

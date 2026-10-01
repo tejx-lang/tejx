@@ -16,7 +16,7 @@ function _json_escape_string(str: string): string {
 }
 
 function _json_serialize(val: any, out: string[], seen: any[], indent: string, gap: string): void {
-    if (typeof(val) == "object" && val != None) {
+    if ((typeof(val) == "object" || typeof(val) == "struct") && val != None) {
         if (typeof(val["toJSON"]) == "function") {
             val = val.toJSON();
         }
@@ -37,7 +37,7 @@ function _json_serialize(val: any, out: string[], seen: any[], indent: string, g
         return;
     }
 
-    if (ty == "object" || rt_is_array(val)) {
+    if (ty == "object" || ty == "struct" || rt_is_array(val)) {
         let seenLen = seen.length();
         for (let i = 0; i < seenLen; i++) {
             if (seen[i] == val) {
@@ -77,7 +77,7 @@ function _json_serialize(val: any, out: string[], seen: any[], indent: string, g
         return;
     }
 
-    if (ty == "object") {
+    if (ty == "object" || ty == "struct") {
         let keys = Object.keys(val);
         let len = keys.length();
         if (len == 0) {

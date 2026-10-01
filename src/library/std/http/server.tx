@@ -2,6 +2,9 @@ import std:net;
 import std:thread;
 import std:json;
 import std:time;
+import std:collections;
+
+// ── Utility ───────────────────────────────────────────────────────────────────
 
 export function parseDecimalIntServer(text: string): int {
     let digits = "0123456789";
@@ -20,17 +23,132 @@ export function parseDecimalIntServer(text: string): int {
     return result;
 }
 
+// ── PathParams ────────────────────────────────────────────────────────────────
+
+/// Holds extracted path parameters (e.g. /user/:id → params.get("id") = "42").
+export class PathParams {
+    private params: Map<string, string>;
+
+    constructor() {
+        this.params = new Map<string, string>();
+    }
+
+    set(key: string, value: string): void {
+        this.params.set(key, value);
+    }
+
+    get(key: string): Optional<string> {
+        return this.params.get(key);
+    }
+
+    has(key: string): bool {
+        return this.params.has(key);
+    }
+
+    all(): Map<string, string> {
+        return this.params.clone();
+    }
+}
+
+// ── Internal Route Matching ───────────────────────────────────────────────────
+
+/// Checks if a request path matches a route pattern and extracts path parameters.
+/// Returns the populated PathParams on match, or None on mismatch.
+/// Supports:
+///   - Exact:       "/user/list" matches "/user/list"
+///   - Params:      "/user/:id"  matches "/user/42" → {id: "42"}
+///   - Wildcard:    "*"          matches everything
+///   - Suffix wild: "/files/*"   matches "/files/any/path/here"
+function _matchRoute(pattern: string, requestPath: string): Optional<PathParams> {
+    // Universal wildcard
+    if (pattern == "*") {
+        return new PathParams();
+    }
+
+    // Strip query string from request path for matching
+    let path = requestPath;
+    let queryIdx = path.indexOf("?");
+    if (queryIdx >= 0) {
+        path = path.substring(0, queryIdx);
+    }
+
+    // Exact match
+    if (pattern == path) {
+        return new PathParams();
+    }
+
+    // Suffix wildcard: "/files/*" matches "/files/anything"
+    if (pattern.endsWith("/*")) {
+        let prefix = pattern.substring(0, pattern.length() - 2);
+        if (path == prefix || path.startsWith(prefix + "/")) {
+            return new PathParams();
+        }
+        return None;
+    }
+
+    // Parametric match: split on "/" and check each segment
+    let patternParts = pattern.split("/");
+    let pathParts = path.split("/");
+
+    if (patternParts.length() != pathParts.length()) {
+        return None;
+    }
+
+    let params = new PathParams();
+    for (let i = 0; i < patternParts.length(); i++) {
+        let pp = patternParts[i];
+        let rp = pathParts[i];
+        if (pp.startsWith(":")) {
+            // Named parameter — extract it
+            let paramName = pp.substring(1, pp.length());
+            params.set(paramName, rp);
+        } else if (pp != rp) {
+            return None;
+        }
+    }
+    return params;
+}
+
+/// Parses the query string portion of a URL into a Map.
+function _parseQueryString(rawPath: string): Map<string, string> {
+    let map = new Map<string, string>();
+    let idx = rawPath.indexOf("?");
+    if (idx < 0) return map;
+    let qs = rawPath.substring(idx + 1, rawPath.length());
+    let pairs = qs.split("&");
+    for (let i = 0; i < pairs.length(); i++) {
+        let pair = pairs[i];
+        let sep = pair.indexOf("=");
+        if (sep > 0) {
+            let key = pair.substring(0, sep);
+            let value = pair.substring(sep + 1, pair.length());
+            map.set(key, value);
+        } else if (pair.length() > 0) {
+            map.set(pair, "");
+        }
+    }
+    return map;
+}
+
+// ── ServerRequest ─────────────────────────────────────────────────────────────
+
 export class ServerRequest {
     method: string;
     path: string;
+    rawPath: string;              // Full path including query string
     headers: Map<string, string>;
     body: string;
+    params: PathParams;           // Path parameters extracted by route matching
+    query: Map<string, string>;   // Query string parameters
 
     constructor(rawRequest: string) {
         this.method = "GET";
         this.path = "/";
+        this.rawPath = "/";
         this.headers = new Map<string, string>();
         this.body = "";
+        this.params = new PathParams();
+        this.query = new Map<string, string>();
 
         let headerEnd = rawRequest.indexOf("\r\n\r\n");
         if (headerEnd < 0) return;
@@ -43,9 +161,18 @@ export class ServerRequest {
 
         let parts = lines[0].split(" ");
         if (parts.length() >= 1) this.method = parts[0].toUpperCase();
-        if (parts.length() >= 2) this.path = parts[1];
+        if (parts.length() >= 2) {
+            this.rawPath = parts[1];
+            let qIdx = this.rawPath.indexOf("?");
+            if (qIdx >= 0) {
+                this.path = this.rawPath.substring(0, qIdx);
+                this.query = _parseQueryString(this.rawPath);
+            } else {
+                this.path = this.rawPath;
+            }
+        }
 
-        // Parse headers
+        // Parse headers (lowercase keys for case-insensitive lookup)
         for (let i = 1; i < lines.length(); i++) {
             let line = lines[i];
             let sep = line.indexOf(":");
@@ -69,6 +196,8 @@ export class ServerRequest {
     }
 }
 
+// ── ServerResponse ────────────────────────────────────────────────────────────
+
 export class ServerResponse {
     status: int;
     headers: Map<string, string>;
@@ -83,7 +212,7 @@ export class ServerResponse {
         this.stream = stream;
         this.sent = false;
 
-        // Default headers — optimized for performance & correctness
+        // Default headers
         this.headers.set("Content-Type", "text/plain; charset=utf-8");
         this.headers.set("Connection", "close");
         this.headers.set("X-Powered-By", "TejX");
@@ -99,6 +228,21 @@ export class ServerResponse {
         return this;
     }
 
+    /// Configures CORS headers to allow cross-origin requests.
+    cors(origin: string): ServerResponse {
+        this.headers.set("Access-Control-Allow-Origin", origin);
+        this.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+        this.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+        this.headers.set("Access-Control-Max-Age", "86400");
+        return this;
+    }
+
+    /// Configures CORS headers allowing all origins (*)
+    corsAll(): ServerResponse {
+        return this.cors("*");
+    }
+
+    /// Sends a string body response.
     send(body: string): void {
         if (this.sent) return;
         this.body = body;
@@ -106,11 +250,48 @@ export class ServerResponse {
         this.flush();
     }
 
+    /// Sends a JSON-serialized response.
     json(data: any): void {
         if (this.sent) return;
         this.headers.set("Content-Type", "application/json; charset=utf-8");
         this.body = json.stringify(data);
         this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends a plain-text response.
+    text(body: string): void {
+        if (this.sent) return;
+        this.headers.set("Content-Type", "text/plain; charset=utf-8");
+        this.body = body;
+        this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends an HTML response.
+    html(body: string): void {
+        if (this.sent) return;
+        this.headers.set("Content-Type", "text/html; charset=utf-8");
+        this.body = body;
+        this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends a redirect response (default 302 Found).
+    redirect(location: string): void {
+        if (this.sent) return;
+        this.status = 302;
+        this.headers.set("Location", location);
+        this.headers.set("Content-Length", "0");
+        this.flush();
+    }
+
+    /// Sends a redirect with a specific status code (301, 302, etc.).
+    redirectWithCode(location: string, code: int): void {
+        if (this.sent) return;
+        this.status = code;
+        this.headers.set("Location", location);
+        this.headers.set("Content-Length", "0");
         this.flush();
     }
 
@@ -137,7 +318,7 @@ export class ServerResponse {
 
     private flush(): void {
         let text = "HTTP/1.1 " + String(this.status) + " " + this.statusText(this.status) + "\r\n";
-        
+
         if (this.headers.get("Content-Length") == None) {
             this.headers.set("Content-Length", String(this.body.length()));
         }
@@ -156,6 +337,8 @@ export class ServerResponse {
     }
 }
 
+// ── Route ─────────────────────────────────────────────────────────────────────
+
 export class Route {
     method: string;
     path: string;
@@ -168,19 +351,22 @@ export class Route {
     }
 }
 
+// ── HttpServer ────────────────────────────────────────────────────────────────
+
 export class HttpServer {
     private listener: Optional<TcpListener>;
     private routes: Route[];
     private activeConns: Atomic;
     private maxConns: int;
+    private corsOrigin: Optional<string>;
 
     constructor() {
         this.listener = None;
         this.routes = [];
         this.activeConns = new Atomic(0);
-        // High concurrency limit: 131072 concurrent connections (128k).
-        // Matches Node.js/Go ability to handle 10k+ concurrent connections effortlessly.
+        // 128k concurrent connections — matches Node.js/Go high-concurrency defaults.
         this.maxConns = 131072;
+        this.corsOrigin = None;
     }
 
     get(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
@@ -203,12 +389,41 @@ export class HttpServer {
         this.routes.push(new Route("PATCH", path, handler));
     }
 
-    listen(port: int, callback: () => void): void {
-        let listener: TcpListener = net.listen("0.0.0.0:" + String(port));
-        this.listener = listener;
+    options(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("OPTIONS", path, handler));
+    }
 
-        callback();
+    head(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("HEAD", path, handler));
+    }
 
+    /// Enables CORS for all routes. Automatically handles OPTIONS preflight.
+    enableCors(origin: string): void {
+        this.corsOrigin = origin;
+        // Auto-register OPTIONS handler for CORS preflight on all paths
+        this.routes.push(new Route("OPTIONS", "*", (req: ServerRequest, res: ServerResponse) => {
+            res.cors(origin).setStatus(204).send("");
+        }));
+    }
+
+    /// Enables CORS for all origins (*).
+    enableCorsAll(): void {
+        this.enableCors("*");
+    }
+
+    /// Registers the same handler for multiple HTTP methods.
+    route(methods: string[], path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        for (let i = 0; i < methods.length(); i++) {
+            this.routes.push(new Route(methods[i].toUpperCase(), path, handler));
+        }
+    }
+
+    /// Registers a handler for ALL HTTP methods on a path.
+    all(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.route(["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"], path, handler);
+    }
+
+    private runAcceptLoop(listener: TcpListener): void {
         while (true) {
             try {
                 let client: Optional<TcpStream> = None;
@@ -222,8 +437,7 @@ export class HttpServer {
                 }
                 let conn = client as TcpStream;
 
-                // Semaphore: if at capacity, reject immediately with 503 so we
-                // never spawn more coroutines than the scheduler can handle.
+                // Backpressure: reject with 503 if over connection limit
                 if (this.activeConns.load() >= this.maxConns) {
                     conn.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     conn.close();
@@ -235,29 +449,40 @@ export class HttpServer {
                     try {
                         this.handleConnection(conn);
                     } catch (e) {
-                        // ignore per-connection errors
+                        // Swallow per-connection errors — never crash the accept loop
                     } finally {
                         this.activeConns.decrement();
                     }
                 });
             } catch (err) {
-                // outer loop protection: ensure listen loop never terminates
+                // Outer loop protection: the accept loop must never terminate
             }
         }
     }
 
+    /// Starts listening on the given port. `callback` is called once the server is bound.
+    /// Throws if the port is already in use (EADDRINUSE) with a descriptive error message.
+    listen(port: int, callback: () => void): void {
+        let addr = "0.0.0.0:" + String(port);
+        let listener: TcpListener = net.listen(addr);
+        this.listener = listener;
+
+        callback();
+
+        this.runAcceptLoop(listener);
+    }
 
     private readHttpRequest(client: TcpStream, buffer: string): any {
         let rawRequest = buffer;
         let keepReading = true;
         let contentLength = -1;
         let headerEndIndex = -1;
-        
+
         while (keepReading) {
             if (headerEndIndex < 0) {
                 headerEndIndex = rawRequest.indexOf("\r\n\r\n");
             }
-            
+
             if (headerEndIndex >= 0) {
                 if (contentLength < 0) {
                     let headersString = rawRequest.substring(0, headerEndIndex);
@@ -273,7 +498,7 @@ export class HttpServer {
                         contentLength = 0;
                     }
                 }
-                
+
                 let bodyLength = rawRequest.length() - (headerEndIndex + 4);
                 if (bodyLength >= contentLength) {
                     keepReading = false;
@@ -289,10 +514,12 @@ export class HttpServer {
             rawRequest = rawRequest + chunk;
         }
 
-        let totalLength = (headerEndIndex >= 0) ? (headerEndIndex + 4 + (contentLength > 0 ? contentLength : 0)) : rawRequest.length();
+        let totalLength = (headerEndIndex >= 0)
+            ? (headerEndIndex + 4 + (contentLength > 0 ? contentLength : 0))
+            : rawRequest.length();
         let requestStr = rawRequest;
         let remainingStr = "";
-        
+
         if (totalLength < rawRequest.length()) {
             requestStr = rawRequest.substring(0, totalLength);
             remainingStr = rawRequest.substring(totalLength, rawRequest.length());
@@ -320,6 +547,11 @@ export class HttpServer {
                 let req = new ServerRequest(rawRequest);
                 let res = new ServerResponse(client);
 
+                // Apply global CORS headers if enabled
+                if (this.corsOrigin != None) {
+                    res.cors(this.corsOrigin as string);
+                }
+
                 let keepAlive = true;
                 let connHeader = req.getHeader("connection");
                 if (connHeader != None) {
@@ -327,7 +559,7 @@ export class HttpServer {
                         keepAlive = false;
                     }
                 }
-                
+
                 if (keepAlive) {
                     res.headers.set("Connection", "keep-alive");
                 } else {
@@ -337,27 +569,34 @@ export class HttpServer {
                 let handled = false;
                 for (let i = 0; i < this.routes.length(); i++) {
                     let route = this.routes[i];
-                    if (route.method == req.method && (route.path == req.path || route.path == "*")) {
-                        try {
-                            route.handler(req, res);
-                        } catch (e) {
-                            if (!res.sent) {
-                                res.setStatus(500).json({ "error": "Internal Server Error" });
-                            }
+                    // Match HTTP method (wildcard "*" matches all)
+                    if (route.method != req.method && route.method != "*") continue;
+                    // Match path with parameter extraction
+                    let matchResult = _matchRoute(route.path, req.path);
+                    if (matchResult == None) continue;
+
+                    // Inject extracted path params into request before calling handler
+                    req.params = matchResult as PathParams;
+
+                    try {
+                        route.handler(req, res);
+                    } catch (e) {
+                        if (!res.sent) {
+                            res.setStatus(500).json({ "error": "Internal Server Error" });
                         }
-                        handled = true;
-                        break;
                     }
+                    handled = true;
+                    break;
                 }
 
                 if (!handled) {
-                    res.setStatus(404).json({ "error": "Not Found" });
+                    res.setStatus(404).json({ "error": "Not Found", "path": req.path });
                 }
 
                 if (!res.sent) {
                     res.send("");
                 }
-                
+
                 if (!keepAlive) {
                     break;
                 }

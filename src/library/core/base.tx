@@ -197,10 +197,9 @@ export function __tejx_promise_spawn(task: () => any): Promise<any> {
 //      so other coroutines can run — zero CPU waste.
 //   3. Each idx is captured by value per closure — no race conditions on
 //      the results array since each thread writes a unique index.
-function __tejx_promise_all_factory(idx: int, task: any, results: any[]): () => void {
+function __tejx_promise_all_factory(idx: int, task: () => any, results: any[]): () => void {
     return () => {
-        let fn = task as () => any;
-        let res: any = fn();
+        let res: any = task();
         results[idx] = res;
     };
 }
@@ -214,7 +213,8 @@ export function __tejx_promise_all(tasks: any[]): any[] {
 
     let threads: Thread[] = [];
     for (let i = 0; i < n; i++) {
-        threads.push(Thread.spawn(__tejx_promise_all_factory(i, tasks[i], results)));
+        let t: () => any = tasks[i];
+        threads.push(Thread.spawn(__tejx_promise_all_factory(i, t, results)));
     }
     for (let i = 0; i < threads.length(); i++) {
         threads[i].join();
@@ -225,11 +225,10 @@ export function __tejx_promise_all(tasks: any[]): any[] {
     return results;
 }
 
-function __tejx_promise_settled_factory(idx: int, task: any, results: PromiseResult<any>[]): () => void {
+function __tejx_promise_settled_factory(idx: int, task: () => any, results: PromiseResult<any>[]): () => void {
     return () => {
         try {
-            let fn = task as () => any;
-            let res: any = fn();
+            let res: any = task();
             results[idx] = new PromiseResult<any>("fulfilled", res, None);
         } catch (e) {
             results[idx] = new PromiseResult<any>("rejected", None, e);
@@ -422,7 +421,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         return res + "]";
     }
 
-    if (rt_str_equals(ty, "object")) {
+    if (rt_str_equals(ty, "object") || rt_str_equals(ty, "struct")) {
         for (let i: int = 0; i < seen.length(); i++) {
             if (seen[i] == v) return "[Circular]";
         }

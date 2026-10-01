@@ -259,6 +259,7 @@ pub enum Expression {
     UnaryExpr {
         op: TokenType,
         right: Box<Expression>,
+        is_postfix: bool,
         _line: usize,
         _col: usize,
     },

@@ -1,3 +1,4 @@
+
 extern function rt_String_charCodeAt(s: string, index: int): int;
 
 export class MapEntry<K, V> {
@@ -541,6 +542,49 @@ export class Map<K, V> {
     isEmpty(): bool {
         return this.liveCount == 0;
     }
+
+    /// Copies all key-value pairs from other into this map.
+    /// Existing keys are overwritten with other's values.
+    merge(other: Map<K, V>): void {
+        other.forEach((value: V, key: K) => {
+            this.set(key, value);
+        });
+    }
+
+    /// Alias for merge() — copies all entries from other into this map.
+    update(other: Map<K, V>): void {
+        this.merge(other);
+    }
+
+    /// Returns the value for key if it exists, otherwise inserts defaultValue and returns it.
+    getOrSet(key: K, defaultValue: V): V {
+        if (this.has(key)) {
+            return this.get(key) as V;
+        }
+        this.set(key, defaultValue);
+        return defaultValue;
+    }
+
+    /// Returns all entries as a flat array of [key, value, key, value, ...].
+    toFlatArray(): any[] {
+        let out: any[] = [];
+        for (let i = 0; i < this.storageCount; i++) {
+            if (!this.liveStore[i]) continue;
+            out.push(this.keysStore[i]);
+            out.push(this.valuesStore[i]);
+        }
+        return out;
+    }
+}
+
+export class SetEntry<T> {
+    key: T;
+    value: T;
+
+    constructor(key: T) {
+        this.key = key;
+        this.value = key;
+    }
 }
 
 export class Set<T> {
@@ -586,11 +630,11 @@ export class Set<T> {
         return this.values();
     }
 
-    entries(): any[] {
-        let out: any[] = [];
-        let values = this.values();
-        for (let i = 0; i < values.length(); i++) {
-            out.push({ key: values[i], value: values[i] });
+    entries(): SetEntry<T>[] {
+        let out: SetEntry<T>[] = [];
+        let vals = this.values();
+        for (let i = 0; i < vals.length(); i++) {
+            out.push(new SetEntry<T>(vals[i]));
         }
         return out;
     }
@@ -608,8 +652,62 @@ export class Set<T> {
 
     clone(): Set<T> {
         let out = new Set<T>();
+        out.reserve(this.size());
         this.forEach((value: T) => { out.add(value); });
         return out;
+    }
+
+    /// Returns a new Set containing all elements from both this and other.
+    union(other: Set<T>): Set<T> {
+        let out = this.clone();
+        let vals = other.values();
+        for (let i = 0; i < vals.length(); i++) {
+            out.add(vals[i]);
+        }
+        return out;
+    }
+
+    /// Returns a new Set containing only elements present in both this and other.
+    intersection(other: Set<T>): Set<T> {
+        let out = new Set<T>();
+        let vals = this.values();
+        for (let i = 0; i < vals.length(); i++) {
+            if (other.has(vals[i])) {
+                out.add(vals[i]);
+            }
+        }
+        return out;
+    }
+
+    /// Returns a new Set with elements in this but not in other.
+    difference(other: Set<T>): Set<T> {
+        let out = new Set<T>();
+        let vals = this.values();
+        for (let i = 0; i < vals.length(); i++) {
+            if (!other.has(vals[i])) {
+                out.add(vals[i]);
+            }
+        }
+        return out;
+    }
+
+    /// Returns true if this Set and other contain exactly the same elements.
+    equals(other: Set<T>): bool {
+        if (this.size() != other.size()) return false;
+        let vals = this.values();
+        for (let i = 0; i < vals.length(); i++) {
+            if (!other.has(vals[i])) return false;
+        }
+        return true;
+    }
+
+    /// Returns true if every element in this Set is also in other.
+    isSubsetOf(other: Set<T>): bool {
+        let vals = this.values();
+        for (let i = 0; i < vals.length(); i++) {
+            if (!other.has(vals[i])) return false;
+        }
+        return true;
     }
 
     size(): int {

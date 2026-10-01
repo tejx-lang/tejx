@@ -462,6 +462,7 @@ impl TypeChecker {
                 right,
                 _line,
                 _col,
+                ..
             } => {
                 let right_type = self.check_expression(right)?;
                 match op {
@@ -1482,7 +1483,13 @@ impl TypeChecker {
                         false
                     };
 
-                let callee_type = self.check_expression(callee)?.to_name();
+                let mut callee_type_val = self.check_expression(callee)?;
+                if let Some(alias_sym) = self.lookup(&callee_type_val.to_name()) {
+                    if let Some(aliased) = &alias_sym.aliased_type {
+                        callee_type_val = aliased.clone();
+                    }
+                }
+                let callee_type = callee_type_val.to_name();
                 let callable_callee_type = if optional_member_return {
                     Self::unwrap_optional_type_name_str(&callee_type).unwrap_or(&callee_type)
                 } else {
@@ -1496,7 +1503,13 @@ impl TypeChecker {
 
                 // Always try symbol lookup to fill s_params and is_variadic exactly.
                 if let Some(s) = self.lookup(&callee_str) {
-                    let type_name_str = s.ty.to_name();
+                    let mut actual_ty = s.ty.clone();
+                    if let Some(alias_sym) = self.lookup(&actual_ty.to_name()) {
+                        if let Some(aliased) = &alias_sym.aliased_type {
+                            actual_ty = aliased.clone();
+                        }
+                    }
+                    let type_name_str = actual_ty.to_name();
                     let mut symbol_is_callable = false;
                     if return_type == "<inferred>" && type_name_str.starts_with("function:") {
                         let parts: Vec<&str> = type_name_str.split(':').collect();
@@ -1508,21 +1521,28 @@ impl TypeChecker {
                             return_type = ret;
                         }
                         symbol_is_callable = true;
-                    } else if let TejxType::Function(_, ret) = &s.ty {
+                    } else if let TejxType::Function(fn_params, ret) = &actual_ty {
                         return_type = ret.to_name();
+                        s_params = fn_params.iter().map(|p| p.to_name()).collect();
+                        is_variadic = s.is_variadic;
+                        _signature_found = true;
                         symbol_is_callable = true;
                     } else if return_type == "<inferred>" && type_name_str.contains("=>") {
-                        let (parsed_ret, _, _) = self.parse_signature(type_name_str.clone());
+                        let (parsed_ret, parsed_params, parsed_variadic) =
+                            self.parse_signature(type_name_str.clone());
                         let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
                         if parts.len() >= 2 {
                             return_type = parts[1].to_string();
                         } else {
                             return_type = parsed_ret;
                         }
+                        s_params = parsed_params;
+                        is_variadic = parsed_variadic;
+                        _signature_found = true;
                         symbol_is_callable = true;
                     }
 
-                    if symbol_is_callable {
+                    if symbol_is_callable && !_signature_found {
                         s_params = s.params.iter().map(|p| p.to_name()).collect();
                         is_variadic = s.is_variadic;
                         _signature_found = true;
@@ -2341,6 +2361,18 @@ impl TypeChecker {
                         .lookup(&callee_str)
                         .and_then(|s| s.min_params)
                         .map(|m| m.saturating_sub(param_offset))
+                        .or_else(|| {
+                            if let Some((object, member)) = member_callee {
+                                if let Ok(receiver_ty) = self.check_expression(object) {
+                                    if let Some((_, info)) =
+                                        self.resolve_instance_member_with_owner(&receiver_ty.to_name(), member)
+                                    {
+                                        return info.min_params;
+                                    }
+                                }
+                            }
+                            None
+                        })
                         .unwrap_or(effective_param_count);
 
                     if args.len() < min_required || args.len() > effective_param_count {
@@ -3027,6 +3059,14 @@ impl TypeChecker {
                         _ => false,
                     }
                 };
+                let constructor_min_required = if let Some((_, info)) =
+                    self.resolve_instance_member_with_owner(&class_ty.to_name(), "constructor")
+                {
+                    info.min_params.unwrap_or(expected_arg_types.len())
+                } else {
+                    expected_arg_types.len()
+                };
+
                 if !expected_arg_types.is_empty() {
                     if args.len() > expected_arg_types.len() {
                         self.report_error_detailed(
@@ -3041,14 +3081,19 @@ impl TypeChecker {
                             "E0109",
                             Some(&format!("Provide {} argument(s)", expected_arg_types.len())),
                         );
-                    } else if args.len() < expected_arg_types.len() {
-                        let missing = &expected_arg_types[args.len()..];
+                    } else if args.len() < constructor_min_required {
+                        let missing = &expected_arg_types[args.len()..constructor_min_required];
                         if !missing.iter().all(is_optional_param) {
+                            let expected_msg = if constructor_min_required < expected_arg_types.len() {
+                                format!("{} to {}", constructor_min_required, expected_arg_types.len())
+                            } else {
+                                format!("{}", expected_arg_types.len())
+                            };
                             self.report_error_detailed(
                                 format!(
                                     "Constructor for '{}' expects {} argument(s), but {} were provided",
                                     effective_class_name,
-                                    expected_arg_types.len(),
+                                    expected_msg,
                                     args.len()
                                 ),
                                 *_line,
@@ -3056,7 +3101,7 @@ impl TypeChecker {
                                 "E0109",
                                 Some(&format!(
                                     "Provide {} argument(s)",
-                                    expected_arg_types.len()
+                                    expected_msg
                                 )),
                             );
                         }

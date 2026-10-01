@@ -26,6 +26,7 @@ pub struct MemberInfo {
     pub access: AccessLevel,
     pub is_readonly: bool,
     pub generic_params: Vec<crate::frontend::ast::GenericParam>,
+    pub min_params: Option<usize>,
 }
 
 #[derive(Clone, Debug)]

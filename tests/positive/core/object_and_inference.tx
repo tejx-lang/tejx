@@ -1,0 +1,43 @@
+class Animal {
+    name: string;
+    constructor(name: string) {
+        this.name = name;
+    }
+}
+
+class Dog extends Animal {
+    breed: string;
+    constructor(name: string, breed: string) {
+        super(name);
+        this.breed = breed;
+    }
+}
+
+function printAnyObject(obj: Object) {
+    print("Received object in printAnyObject: valid\n");
+}
+
+function testInference(multiplier = 2) {
+    // Local variable type inference
+    let auto_int = 100;
+    let auto_string = "inferred string";
+    let calculated = auto_int * multiplier;
+
+    print(auto_string + "\n");
+    print("Calculated: " + calculated + "\n");
+}
+
+function main() {
+    let d = new Dog("Buddy", "Golden Retriever");
+    // Object polymorphism: assigning Dog instance to Object
+    let obj: Object = d;
+    printAnyObject(obj);
+
+    // Downcast with 'as'
+    let downcasted_dog = obj as Dog;
+    print("Dog breed: " + downcasted_dog.breed + "\n");
+
+    // Test parameter default inference and local var inference
+    testInference();
+    testInference(5);
+}

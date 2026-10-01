@@ -1896,9 +1896,10 @@ impl CodeGen {
                         };
 
                         if Self::is_gc_managed(&effective_arg_ty)
+                            && !final_reg.starts_with("ptrtoint")
+                            && !casted.starts_with("ptrtoint")
                             && !(final_callee == "rt_string_from_c_str"
-                                && matches!(arg_mir.get_type(), TejxType::String)
-                                && final_reg.starts_with("ptrtoint"))
+                                && matches!(arg_mir.get_type(), TejxType::String))
                         {
                             self.declare_runtime_fn(
                                 "rt_push_root",
@@ -2120,6 +2121,10 @@ impl CodeGen {
                     || final_callee == "rt_print_string_array"
                 {
                     "void".to_string()
+                } else if ret_ty.is_float() || matches!(ret_ty, TejxType::Bool) {
+                    Self::get_llvm_type(&ret_ty).to_string()
+                } else if matches!(ret_ty, TejxType::Void) {
+                    "void".to_string()
                 } else {
                     "i64".to_string()
                 }
@@ -2195,6 +2200,10 @@ impl CodeGen {
             if !dst.is_empty() {
                 if decl_ret == "double" {
                     final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float64, &store_ty);
+                    self.float_ssa_vars.insert(dst.clone(), result_tmp.clone());
+                } else if decl_ret == "float" {
+                    final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float32, &store_ty);
+                    self.float_ssa_vars.insert(dst.clone(), result_tmp.clone());
                 } else if is_runtime_fn && decl_ret == "i64" {
                     let runtime_returns_primitive = matches!(
                         final_callee.as_str(),

@@ -548,10 +548,14 @@ impl Parser {
                         if self.match_token(TokenType::Colon) {
                             type_name = self.parse_type_annotation();
                         }
+                        let mut default_val = None;
+                        if self.match_token(TokenType::Equals) {
+                            default_val = Some(Box::new(self.parse_assignment()));
+                        }
                         params.push(Parameter {
                             name,
                             type_name,
-                            _default_value: None,
+                            _default_value: default_val,
                             _is_rest: false,
                         });
                         if !self.match_token(TokenType::Comma) {
@@ -639,10 +643,14 @@ impl Parser {
                         if self.match_token(TokenType::Colon) {
                             p_type = self.parse_type_annotation();
                         }
+                        let mut default_val = None;
+                        if self.match_token(TokenType::Equals) {
+                            default_val = Some(Box::new(self.parse_assignment()));
+                        }
                         params.push(Parameter {
                             name: p_name,
                             type_name: p_type,
-                            _default_value: None,
+                            _default_value: default_val,
                             _is_rest: false,
                         });
                         if !self.match_token(TokenType::Comma) {
@@ -784,7 +792,7 @@ impl Parser {
                 .clone();
             let mut value = None;
             if self.match_token(TokenType::Equals) {
-                value = Some(Box::new(self.parse_expression()));
+                value = Some(Box::new(self.parse_assignment()));
             }
             members.push(EnumMember {
                 _name: member_name,
@@ -1919,6 +1927,7 @@ impl Parser {
             return Expression::UnaryExpr {
                 op: op_token.token_type,
                 right: Box::new(right),
+                is_postfix: false,
                 _line: op_token.line,
                 _col: op_token.column,
             };
@@ -1930,6 +1939,7 @@ impl Parser {
             expr = Expression::UnaryExpr {
                 op: op_token.token_type,
                 right: Box::new(expr),
+                is_postfix: true,
                 _line: op_token.line,
                 _col: op_token.column,
             };
@@ -2382,10 +2392,15 @@ impl Parser {
                         type_name = self.parse_type_annotation();
                     }
 
+                    let mut default_val = None;
+                    if self.match_token(TokenType::Equals) {
+                        default_val = Some(Box::new(self.parse_assignment()));
+                    }
+
                     params.push(Parameter {
                         name,
                         type_name,
-                        _default_value: None,
+                        _default_value: default_val,
                         _is_rest: is_rest,
                     });
 

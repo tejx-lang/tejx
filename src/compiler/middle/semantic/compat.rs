@@ -63,7 +63,8 @@ impl TypeChecker {
                         return false;
                     }
                 }
-                name_str == "function"
+                name_str == "Object"
+                    || name_str == "function"
                     || name_str == "Iterator"
                     || name_str == "Iterable"
                     || name_str == "None"
@@ -175,6 +176,20 @@ impl TypeChecker {
         let a_name = actual.to_name();
         if e_name == "<inferred>" || a_name == "<inferred>" {
             return true;
+        }
+
+        if let TejxType::Class(name, _) = expected {
+            if name == "Object" {
+                match actual {
+                    TejxType::Class(_, _)
+                    | TejxType::DynamicArray(_)
+                    | TejxType::FixedArray(_, _)
+                    | TejxType::Slice(_)
+                    | TejxType::String
+                    | TejxType::Object(_) => return true,
+                    _ => {}
+                }
+            }
         }
 
         // Generic wildcard: single uppercase letter mapped via Class
@@ -341,15 +356,25 @@ impl TypeChecker {
             }
         }
 
-        // Inheritance check
-        if let (TejxType::Class(expected_name, _), TejxType::Class(actual_name, _)) =
-            (expected, actual)
-        {
+        // Inheritance check & Object universal base class
+        if let TejxType::Class(expected_name, _) = expected {
             let expected_base = self.base_class_name(expected_name);
-            let actual_base = self.base_class_name(actual_name);
-            if expected_base != actual_base && self.is_same_or_subclass(actual_base, expected_base)
-            {
-                return true;
+            if expected_base == "Object" {
+                match actual {
+                    TejxType::Class(_, _)
+                    | TejxType::DynamicArray(_)
+                    | TejxType::FixedArray(_, _)
+                    | TejxType::Slice(_)
+                    | TejxType::String
+                    | TejxType::Object(_) => return true,
+                    _ => {}
+                }
+            }
+            if let TejxType::Class(actual_name, _) = actual {
+                let actual_base = self.base_class_name(actual_name);
+                if expected_base != actual_base && self.is_same_or_subclass(actual_base, expected_base) {
+                    return true;
+                }
             }
         }
 

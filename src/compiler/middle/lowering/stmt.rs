@@ -83,6 +83,24 @@ impl Lowering {
                 self.register_type_alias(name, alias_ty);
                 None
             }
+            Statement::EnumDeclaration(enum_decl) => {
+                let mut current_val = 0i64;
+                for member in &enum_decl._members {
+                    if let Some(val_expr) = &member._value {
+                        if let Expression::NumberLiteral { value, .. } = val_expr.as_ref() {
+                            current_val = *value as i64;
+                        } else if let Expression::UnaryExpr { op: TokenType::Minus, right, .. } = val_expr.as_ref() {
+                            if let Expression::NumberLiteral { value, .. } = right.as_ref() {
+                                current_val = -(*value as i64);
+                            }
+                        }
+                    }
+                    let key = format!("{}_{}", enum_decl.name, member._name);
+                    self.enum_members.borrow_mut().insert(key, current_val);
+                    current_val += 1;
+                }
+                None
+            }
             Statement::ExportDecl { declaration, .. } => {
                 if let Statement::TypeAliasDeclaration {
                     name, _type_def, ..
@@ -168,6 +186,53 @@ impl Lowering {
                             });
                         }
                         TejxType::Optional(_) => {
+                            init = Some(HIRExpression::NoneLiteral { line });
+                        }
+                        TejxType::Bool => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "false".to_string(),
+                                ty: TejxType::Bool,
+                            });
+                        }
+                        TejxType::Int8
+                        | TejxType::UInt8
+                        | TejxType::Int16
+                        | TejxType::UInt16
+                        | TejxType::Int32
+                        | TejxType::UInt32
+                        | TejxType::Int64
+                        | TejxType::UInt64
+                        | TejxType::Int128
+                        | TejxType::UInt128 => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "0".to_string(),
+                                ty: ty.clone(),
+                            });
+                        }
+                        TejxType::Float32 | TejxType::Float64 => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "0.0".to_string(),
+                                ty: ty.clone(),
+                            });
+                        }
+                        TejxType::Char => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "\0".to_string(),
+                                ty: TejxType::Char,
+                            });
+                        }
+                        TejxType::String => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "".to_string(),
+                                ty: TejxType::String,
+                            });
+                        }
+                        TejxType::Class(_, _) | TejxType::Any => {
                             init = Some(HIRExpression::NoneLiteral { line });
                         }
                         _ => {}
@@ -321,6 +386,7 @@ impl Lowering {
                 // }
 
                 if let BindingNode::Identifier(var_name) = variable {
+                    self.enter_scope();
                     let mut stmts = Vec::new();
 
                     // 1. Evaluate iterable once
@@ -405,14 +471,14 @@ impl Lowering {
                         }),
                         ty: elem_ty.clone(),
                     };
+                    let mangled_var = self.define(var_name.clone(), elem_ty.clone());
                     body_stmts.push(HIRStatement::VarDecl {
                         line,
-                        name: var_name.clone(),
+                        name: mangled_var,
                         initializer: Some(val_expr),
                         ty: elem_ty.clone(),
                         _is_const: false,
                     });
-                    self.define(var_name.clone(), elem_ty.clone());
 
                     // User Body
                     if let Some(user_body) = self.lower_statement(body) {
@@ -458,6 +524,8 @@ impl Lowering {
                         increment: Some(inc_stmt),
                         _is_do_while: false,
                     });
+
+                    self._exit_scope();
 
                     Some(HIRStatement::Block {
                         line,

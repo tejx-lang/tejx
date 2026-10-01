@@ -477,6 +477,20 @@ pub unsafe extern "C" fn rt_http_fetch(
     }
 }
 
+thread_local! {
+    static LAST_NET_ERROR: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+}
+
+pub fn set_last_net_error(err: &str) {
+    LAST_NET_ERROR.with(|cell| *cell.borrow_mut() = err.to_string());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_net_last_error() -> i64 {
+    let s = LAST_NET_ERROR.with(|cell| cell.borrow().clone());
+    rt_string_from_owned_string(s)
+}
+
 // ── Listen / Accept ───────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -493,18 +507,29 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
         }
     }
 
-    let Some(addr_str) = i64_to_rust_str(addr_ptr) else { return -1; };
-    let Some(addr) = addr_str.as_str().to_socket_addrs().ok().and_then(|mut iter| iter.next()) else { return -1; };
+    let Some(addr_str) = i64_to_rust_str(addr_ptr) else {
+        set_last_net_error("Invalid address argument");
+        return -1;
+    };
+    let Some(addr) = addr_str.as_str().to_socket_addrs().ok().and_then(|mut iter| iter.next()) else {
+        set_last_net_error(&format!("Invalid socket address: '{}'", addr_str));
+        return -1;
+    };
     
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;
         let domain = if addr.is_ipv4() { libc::AF_INET } else { libc::AF_INET6 };
         let fd = libc::socket(domain, libc::SOCK_STREAM, 0);
-        if fd < 0 { return -1; }
+        if fd < 0 {
+            let err = std::io::Error::last_os_error();
+            set_last_net_error(&format!("Socket creation failed: {}", err));
+            return -1;
+        }
 
         let one: libc::c_int = 1;
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
 
         let res = match addr {
@@ -525,11 +550,22 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
         };
 
         if res < 0 {
+            let err = std::io::Error::last_os_error();
+            let desc = if err.raw_os_error() == Some(libc::EADDRINUSE) {
+                format!("Address already in use: Port {} is already in use by another service (EADDRINUSE)", addr.port())
+            } else if err.raw_os_error() == Some(libc::EACCES) {
+                format!("Permission denied: Cannot bind to port {} (EACCES)", addr.port())
+            } else {
+                format!("Bind failed on {}: {}", addr, err)
+            };
+            set_last_net_error(&desc);
             libc::close(fd);
             return -1;
         }
 
-        if libc::listen(fd, 16384) < 0 {
+        if libc::listen(fd, 65535) < 0 {
+            let err = std::io::Error::last_os_error();
+            set_last_net_error(&format!("Listen failed on {}: {}", addr, err));
             libc::close(fd);
             return -1;
         }

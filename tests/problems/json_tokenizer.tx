@@ -1,0 +1,298 @@
+// JSON Tokenizer — String Processing Pipeline
+// ==============================================
+// A simple JSON-like tokenizer that parses strings character-by-character,
+// testing string operations, conditional logic, array accumulation,
+// and GC pressure from heavy string allocation.
+
+import { collect } from "std:gc";
+
+// --- Token Types ---
+let TK_LBRACE = 0;
+let TK_RBRACE = 1;
+let TK_LBRACKET = 2;
+let TK_RBRACKET = 3;
+let TK_COLON = 4;
+let TK_COMMA = 5;
+let TK_STRING = 6;
+let TK_NUMBER = 7;
+let TK_TRUE = 8;
+let TK_FALSE = 9;
+let TK_NULL = 10;
+let TK_EOF = 11;
+let TK_ERROR = 12;
+
+function tokenTypeName(t: int): string {
+    if (t == 0) return "LBRACE";
+    if (t == 1) return "RBRACE";
+    if (t == 2) return "LBRACKET";
+    if (t == 3) return "RBRACKET";
+    if (t == 4) return "COLON";
+    if (t == 5) return "COMMA";
+    if (t == 6) return "STRING";
+    if (t == 7) return "NUMBER";
+    if (t == 8) return "TRUE";
+    if (t == 9) return "FALSE";
+    if (t == 10) return "NULL";
+    if (t == 11) return "EOF";
+    return "ERROR";
+}
+
+// --- Token ---
+class Token {
+    type: int;
+    value: string;
+    constructor(type: int, value: string) {
+        this.type = type;
+        this.value = value;
+    }
+    describe(): string {
+        return tokenTypeName(this.type) + "(" + this.value + ")";
+    }
+}
+
+// --- Tokenizer ---
+class Tokenizer {
+    input: string;
+    pos: int;
+    tokens: Token[];
+
+    constructor(input: string) {
+        this.input = input;
+        this.pos = 0;
+        this.tokens = [];
+    }
+
+    peek(): string {
+        if (this.pos >= this.input.length()) return "";
+        return this.input.charAt(this.pos);
+    }
+
+    advance(): string {
+        let ch = this.peek();
+        this.pos = this.pos + 1;
+        return ch;
+    }
+
+    skipWhitespace(): void {
+        while (this.pos < this.input.length()) {
+            let ch = this.peek();
+            if (ch == " " || ch == "\n" || ch == "\t" || ch == "\r") {
+                this.pos = this.pos + 1;
+            } else {
+                return;
+            }
+        }
+    }
+
+    readString(): string {
+        // Skip opening quote
+        this.advance();
+        let result = "";
+        while (this.pos < this.input.length()) {
+            let ch = this.advance();
+            if (ch == "\"") {
+                return result;
+            }
+            if (ch == "\\") {
+                let escaped = this.advance();
+                if (escaped == "n") result = result + "\n";
+                else if (escaped == "t") result = result + "\t";
+                else if (escaped == "\\") result = result + "\\";
+                else if (escaped == "\"") result = result + "\"";
+                else result = result + escaped;
+            } else {
+                result = result + ch;
+            }
+        }
+        return result; // Unterminated string
+    }
+
+    readNumber(): string {
+        let result = "";
+        while (this.pos < this.input.length()) {
+            let ch = this.peek();
+            if (ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" ||
+                ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9" ||
+                ch == "." || ch == "-" || ch == "+") {
+                result = result + ch;
+                this.pos = this.pos + 1;
+            } else {
+                return result;
+            }
+        }
+        return result;
+    }
+
+    readWord(): string {
+        let result = "";
+        while (this.pos < this.input.length()) {
+            let ch = this.peek();
+            if (ch >= "a" && ch <= "z") {
+                result = result + ch;
+                this.pos = this.pos + 1;
+            } else {
+                return result;
+            }
+        }
+        return result;
+    }
+
+    tokenize(): Token[] {
+        while (this.pos < this.input.length()) {
+            this.skipWhitespace();
+            if (this.pos >= this.input.length()) break;
+
+            let ch = this.peek();
+
+            if (ch == "{") {
+                this.tokens.push(new Token(TK_LBRACE, "{"));
+                this.advance();
+            } else if (ch == "}") {
+                this.tokens.push(new Token(TK_RBRACE, "}"));
+                this.advance();
+            } else if (ch == "[") {
+                this.tokens.push(new Token(TK_LBRACKET, "["));
+                this.advance();
+            } else if (ch == "]") {
+                this.tokens.push(new Token(TK_RBRACKET, "]"));
+                this.advance();
+            } else if (ch == ":") {
+                this.tokens.push(new Token(TK_COLON, ":"));
+                this.advance();
+            } else if (ch == ",") {
+                this.tokens.push(new Token(TK_COMMA, ","));
+                this.advance();
+            } else if (ch == "\"") {
+                let str = this.readString();
+                this.tokens.push(new Token(TK_STRING, str));
+            } else if (ch == "-" || (ch >= "0" && ch <= "9")) {
+                let num = this.readNumber();
+                this.tokens.push(new Token(TK_NUMBER, num));
+            } else if (ch == "t") {
+                let word = this.readWord();
+                if (word == "true") {
+                    this.tokens.push(new Token(TK_TRUE, "true"));
+                } else {
+                    this.tokens.push(new Token(TK_ERROR, word));
+                }
+            } else if (ch == "f") {
+                let word = this.readWord();
+                if (word == "false") {
+                    this.tokens.push(new Token(TK_FALSE, "false"));
+                } else {
+                    this.tokens.push(new Token(TK_ERROR, word));
+                }
+            } else if (ch == "n") {
+                let word = this.readWord();
+                if (word == "null") {
+                    this.tokens.push(new Token(TK_NULL, "null"));
+                } else {
+                    this.tokens.push(new Token(TK_ERROR, word));
+                }
+            } else {
+                this.tokens.push(new Token(TK_ERROR, ch));
+                this.advance();
+            }
+        }
+
+        this.tokens.push(new Token(TK_EOF, ""));
+        return this.tokens;
+    }
+}
+
+// --- Assertions ---
+function assert(condition: bool, message: string): void {
+    if (!condition) {
+        print("❌ ASSERT FAILED: " + message);
+        throw new Error("AssertionFailed: " + message);
+    } else {
+        print("✅ PASS: " + message);
+    }
+}
+
+function assertToken(token: Token, expectedType: int, expectedValue: string, msg: string): void {
+    assert(token.type == expectedType,
+           msg + " type: expected " + tokenTypeName(expectedType) +
+           " got " + tokenTypeName(token.type));
+    assert(token.value == expectedValue,
+           msg + " value: expected '" + expectedValue + "' got '" + token.value + "'");
+}
+
+function main() {
+    print("=== JSON Tokenizer Test ===");
+
+    // --- Test 1: Simple object ---
+    let t1 = new Tokenizer("{\"name\": \"TejX\", \"version\": 1}");
+    let tokens1 = t1.tokenize();
+
+    assertToken(tokens1[0], TK_LBRACE, "{", "T1 open brace");
+    assertToken(tokens1[1], TK_STRING, "name", "T1 key 'name'");
+    assertToken(tokens1[2], TK_COLON, ":", "T1 colon");
+    assertToken(tokens1[3], TK_STRING, "TejX", "T1 value 'TejX'");
+    assertToken(tokens1[4], TK_COMMA, ",", "T1 comma");
+    assertToken(tokens1[5], TK_STRING, "version", "T1 key 'version'");
+    assertToken(tokens1[6], TK_COLON, ":", "T1 colon 2");
+    assertToken(tokens1[7], TK_NUMBER, "1", "T1 number");
+    assertToken(tokens1[8], TK_RBRACE, "}", "T1 close brace");
+    assertToken(tokens1[9], TK_EOF, "", "T1 EOF");
+
+    // --- Test 2: Array ---
+    let t2 = new Tokenizer("[1, 2, 3, true, false, null]");
+    let tokens2 = t2.tokenize();
+
+    assertToken(tokens2[0], TK_LBRACKET, "[", "T2 open bracket");
+    assertToken(tokens2[1], TK_NUMBER, "1", "T2 num 1");
+    assertToken(tokens2[3], TK_NUMBER, "2", "T2 num 2");
+    assertToken(tokens2[5], TK_NUMBER, "3", "T2 num 3");
+    assertToken(tokens2[7], TK_TRUE, "true", "T2 true");
+    assertToken(tokens2[9], TK_FALSE, "false", "T2 false");
+    assertToken(tokens2[11], TK_NULL, "null", "T2 null");
+    assertToken(tokens2[12], TK_RBRACKET, "]", "T2 close bracket");
+
+    // --- Test 3: Nested object ---
+    let t3 = new Tokenizer("{\"user\": {\"age\": 25, \"active\": true}}");
+    let tokens3 = t3.tokenize();
+
+    assertToken(tokens3[0], TK_LBRACE, "{", "T3 outer open");
+    assertToken(tokens3[1], TK_STRING, "user", "T3 key 'user'");
+    assertToken(tokens3[3], TK_LBRACE, "{", "T3 inner open");
+    assertToken(tokens3[4], TK_STRING, "age", "T3 key 'age'");
+    assertToken(tokens3[6], TK_NUMBER, "25", "T3 number 25");
+
+    // --- Test 4: Empty input ---
+    let t4 = new Tokenizer("");
+    let tokens4 = t4.tokenize();
+    assert(tokens4.length() == 1, "Empty input yields only EOF");
+    assertToken(tokens4[0], TK_EOF, "", "T4 EOF");
+
+    // --- Test 5: Whitespace only ---
+    let t5 = new Tokenizer("   \n\t  ");
+    let tokens5 = t5.tokenize();
+    assert(tokens5.length() == 1, "Whitespace-only yields EOF");
+
+    // --- Test 6: Stress — large JSON-like input ---
+    let largeInput = "{";
+    for (let i = 0; i < 200; i++) {
+        if (i > 0) largeInput = largeInput + ", ";
+        largeInput = largeInput + "\"key" + i + "\": " + i;
+    }
+    largeInput = largeInput + "}";
+
+    let t6 = new Tokenizer(largeInput);
+    let tokens6 = t6.tokenize();
+
+    // 1 LBRACE + 200*(STRING + COLON + NUMBER) + 199*COMMA + 1 RBRACE + 1 EOF
+    // = 1 + 600 + 199 + 1 + 1 = 802
+    let expectedCount = 1 + 200 * 3 + 199 + 1 + 1;
+    assert(tokens6.length() == expectedCount,
+           "Large input token count: expected " + expectedCount + " got " + tokens6.length());
+
+    // Verify a few tokens from the large input
+    assertToken(tokens6[0], TK_LBRACE, "{", "T6 open brace");
+    assertToken(tokens6[1], TK_STRING, "key0", "T6 first key");
+    assertToken(tokens6[3], TK_NUMBER, "0", "T6 first value");
+
+    collect();
+
+    print("=== JSON Tokenizer Test PASSED ===");
+}

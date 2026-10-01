@@ -1,15 +1,86 @@
-extern function minor_gc(): void;
-extern function major_gc(): void;
+// Standard Garbage Collector control and introspection module for TejX
 
-export function collectMinor(): void {
-    minor_gc();
+extern function rt_gc_collect(): void;
+extern function rt_gc_collect_young(): void;
+extern function rt_gc_get_heap_used(): int64;
+extern function rt_gc_get_heap_total(): int64;
+extern function rt_gc_get_old_gen_used(): int64;
+extern function rt_gc_get_los_used(): int64;
+extern function rt_gc_get_threshold(): int64;
+extern function rt_gc_enable(): void;
+extern function rt_gc_disable(): void;
+extern function rt_gc_is_enabled(): bool;
+extern function rt_gc_set_growth_factor(pct: int): void;
+extern function rt_gc_get_growth_factor(): float64;
+
+export class GcStats {
+    heapUsed: int64;
+    heapTotal: int64;
+    oldGenUsed: int64;
+    losUsed: int64;
+    threshold: int64;
+
+    constructor(used: int64, total: int64, old: int64, los: int64, thresh: int64) {
+        this.heapUsed = used;
+        this.heapTotal = total;
+        this.oldGenUsed = old;
+        this.losUsed = los;
+        this.threshold = thresh;
+    }
 }
 
-export function collectFull(): void {
-    major_gc();
-}
-
+/// Triggers a full concurrent mark-sweep major garbage collection.
 export function collect(): void {
-    minor_gc();
-    major_gc();
+    rt_gc_collect();
 }
+
+/// Triggers a minor generational garbage collection.
+export function collectYoung(): void {
+    rt_gc_collect_young();
+}
+
+/// Returns snapshot of current GC and heap memory statistics.
+export function getStats(): GcStats {
+    let used = rt_gc_get_heap_used();
+    let total = rt_gc_get_heap_total();
+    let old = rt_gc_get_old_gen_used();
+    let los = rt_gc_get_los_used();
+    let thresh = rt_gc_get_threshold();
+    return new GcStats(used, total, old, los, thresh);
+}
+
+/// Returns the number of currently used heap bytes (Old Generation + LOS).
+export function getHeapUsed(): int64 {
+    return rt_gc_get_heap_used();
+}
+
+/// Returns the total virtual memory capacity of the heap.
+export function getHeapTotal(): int64 {
+    return rt_gc_get_heap_total();
+}
+
+/// Enables automatic garbage collection triggers.
+export function enable(): void {
+    rt_gc_enable();
+}
+
+/// Disables automatic garbage collection triggers.
+export function disable(): void {
+    rt_gc_disable();
+}
+
+/// Returns true if automatic garbage collection is currently enabled.
+export function isEnabled(): bool {
+    return rt_gc_is_enabled();
+}
+
+/// Sets the GC growth factor percentage (e.g. 50 for 50% headroom, 100 for 100%).
+export function setGrowthFactor(pct: int): void {
+    rt_gc_set_growth_factor(pct);
+}
+
+/// Returns the current GC growth factor as a multiplier (e.g. 1.5).
+export function getGrowthFactor(): float64 {
+    return rt_gc_get_growth_factor();
+}
+

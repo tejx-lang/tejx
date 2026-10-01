@@ -789,8 +789,13 @@ impl CodeGen {
                         closure_id, fn_ptr
                     ));
 
-                    // Set env (slot 1) — rt_closure_from_ptr already sets fn_ptr at slot 0.
-                    let env_to_pass = fresh_env;
+                    // Reload fresh_env from env_root in case rt_closure_from_ptr triggered GC!
+                    self.temp_counter += 1;
+                    let env_to_pass = format!("%closure_env_reloaded{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = load i64, i64* {}",
+                        env_to_pass, env_root
+                    ));
 
                     self.emit_line(&format!(
                         "call i64 @rt_array_set_fast(i64 {}, i64 1, i64 {})",

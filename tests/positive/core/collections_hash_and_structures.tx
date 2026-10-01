@@ -1,0 +1,160 @@
+// Production-Grade Test Suite: Standard Library Collections
+// ========================================================
+// Thoroughly exercises:
+// 1. Map<K, V> (set, get, has, delete, size, collisions, rehash)
+// 2. Set<T> (add, has, delete, size, duplicates)
+// 3. Stack<T> (push, pop, peek, isEmpty, size)
+// 4. Deque<T> (pushBack, pushFront, popBack, popFront, circular buffer)
+// 5. PriorityQueue<T> (min-heap invariant, extractMin)
+// 6. BloomFilter (probabilistic membership, false positive boundaries)
+
+import { Map, Set, Stack, Deque, PriorityQueue, BloomFilter } from "std:collections";
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function test_map() {
+    print("--- Testing Map<string, int> ---");
+
+    let m = new Map<string, int>();
+    assert_eq_int(0, m.size(), "Initial map size is 0");
+    assert_false(m.has("apple"), "Empty map does not have apple");
+
+    // Insert 50 entries to force dynamic resizing/rehashing
+    for (let i = 0; i < 50; i++) {
+        m.set("key-" + i, (i + 1) * 10);
+    }
+    assert_eq_int(50, m.size(), "Map size after 50 inserts");
+
+    // Verify all keys and values
+    for (let i = 0; i < 50; i++) {
+        assert_true(m.has("key-" + i), "Map has key-" + i);
+        let val = m.get("key-" + i);
+        assert_true(val != None, "Value is not None for key-" + i);
+        assert_eq_int((i + 1) * 10, val ?? -1, "Map value for key-" + i);
+    }
+
+    // Overwrite existing keys
+    m.set("key-10", 9999);
+    assert_eq_int(9999, m.get("key-10") ?? -1, "Overwritten value");
+    assert_eq_int(50, m.size(), "Size unchanged on overwrite");
+
+    // Deletion
+    assert_true(m.delete("key-10"), "Delete key-10 returns true");
+    assert_false(m.has("key-10"), "key-10 no longer exists");
+    assert_eq_int(49, m.size(), "Map size decreased to 49");
+    assert_false(m.delete("key-10"), "Deleting again returns false");
+
+    // Clear
+    m.clear();
+    assert_eq_int(0, m.size(), "Map size is 0 after clear");
+    assert_false(m.has("key-0"), "key-0 not found after clear");
+}
+
+function test_set() {
+    print("--- Testing Set<string> ---");
+
+    let s = new Set<string>();
+    assert_eq_int(0, s.size(), "Initial set size is 0");
+
+    s.add("alpha");
+    s.add("beta");
+    s.add("gamma");
+    assert_eq_int(3, s.size(), "Set size is 3");
+
+    // Duplicate add should be no-op
+    s.add("alpha");
+    assert_eq_int(3, s.size(), "Duplicate add doesn't increase size");
+
+    assert_true(s.has("alpha"), "Set has alpha");
+    assert_true(s.has("beta"), "Set has beta");
+    assert_false(s.has("delta"), "Set does not have delta");
+
+    assert_true(s.delete("beta"), "Delete beta");
+    assert_false(s.has("beta"), "beta deleted");
+    assert_eq_int(2, s.size(), "Size is 2 after deletion");
+
+    s.clear();
+    assert_eq_int(0, s.size(), "Size is 0 after clear");
+}
+
+function test_stack() {
+    print("--- Testing Stack<int> ---");
+
+    let st = new Stack<int>();
+    assert_true(st.isEmpty(), "Stack is empty");
+
+    for (let i = 1; i <= 10; i++) {
+        st.push(i);
+    }
+    assert_eq_int(10, st.size(), "Stack size 10");
+    assert_eq_int(10, st.peek(), "Stack peek is 10");
+
+    // LIFO verification
+    for (let i = 10; i >= 1; i--) {
+        assert_eq_int(i, st.pop(), "Popped element in LIFO order");
+    }
+    assert_true(st.isEmpty(), "Stack is empty after popping all");
+}
+
+function test_deque() {
+    print("--- Testing Deque<int> ---");
+
+    let dq = new Deque<int>();
+    assert_true(dq.isEmpty(), "Deque is initially empty");
+
+    // pushBack and pushFront
+    dq.pushBack(10);
+    dq.pushBack(20);
+    dq.pushFront(5);
+    dq.pushFront(1);
+    // Queue is now: 1, 5, 10, 20
+    assert_eq_int(4, dq.size(), "Deque size 4");
+    assert_eq_int(1, dq.popFront(), "popFront 1");
+    assert_eq_int(20, dq.popBack(), "popBack 20");
+    assert_eq_int(5, dq.popFront(), "popFront 5");
+    assert_eq_int(10, dq.popBack(), "popBack 10");
+    assert_true(dq.isEmpty(), "Deque is empty");
+}
+
+function test_priority_queue() {
+    print("--- Testing PriorityQueue<int> ---");
+
+    let pq = new PriorityQueue<int>();
+    pq.insert(40);
+    pq.insert(10);
+    pq.insert(50);
+    pq.insert(20);
+    pq.insert(30);
+
+    assert_eq_int(5, pq.size(), "PQ size 5");
+    assert_eq_int(10, pq.extractMin(), "min 10");
+    assert_eq_int(20, pq.extractMin(), "min 20");
+    assert_eq_int(30, pq.extractMin(), "min 30");
+    assert_eq_int(40, pq.extractMin(), "min 40");
+    assert_eq_int(50, pq.extractMin(), "min 50");
+    assert_true(pq.isEmpty(), "PQ is empty");
+}
+
+function test_bloom_filter() {
+    print("--- Testing BloomFilter ---");
+
+    let bf = new BloomFilter(1000, 3);
+    bf.add("TejX");
+    bf.add("Compiler");
+    bf.add("Language");
+
+    assert_true(bf.contains("TejX"), "BloomFilter contains TejX");
+    assert_true(bf.contains("Compiler"), "BloomFilter contains Compiler");
+    assert_true(bf.contains("Language"), "BloomFilter contains Language");
+    assert_false(bf.contains("NonExistentString123"), "BloomFilter does not contain absent string");
+}
+
+function main() {
+    print("=== COLLECTIONS TESTS START ===");
+    test_map();
+    test_set();
+    test_stack();
+    test_deque();
+    test_priority_queue();
+    test_bloom_filter();
+    print("=== COLLECTIONS TESTS COMPLETE ===");
+}

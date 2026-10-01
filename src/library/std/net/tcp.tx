@@ -19,6 +19,7 @@ extern function rt_net_connect_tls_insecure(host: string, port: int): int64;
 extern function rt_net_lookup(host: string): Optional<string>;
 extern function rt_net_lookup_all(host: string): string[];
 extern function rt_net_listen(addr: string): int64;
+extern function rt_net_last_error(): string;
 extern function rt_net_close(stream: int64): int;
 extern function rt_net_close_listener(listener: int64): int;
 // Atomic-swap close: safe to call concurrently with the GC finalizer.
@@ -56,7 +57,11 @@ function _net_lookup_all_hosts(host: string): string[] {
 function _net_listen_on(addr: string): TcpListener {
     let id = rt_net_listen(addr);
     if (id <= 0) {
-        throw new Error("Listen failed on " + addr);
+        let err = rt_net_last_error();
+        if (err != "") {
+            throw new Error(err);
+        }
+        throw new Error("Failed to listen on " + addr);
     }
     return new TcpListener(id);
 }

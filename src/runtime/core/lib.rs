@@ -1,3 +1,5 @@
+pub mod constants;
+pub use constants::*;
 pub mod binary;
 pub use binary::*;
 pub mod crypto;
@@ -849,10 +851,33 @@ unsafe fn render_runtime_exception_report_with_stack(
     report.push('\n');
 
     if !stack.is_empty() {
-        report.push_str("Stack trace:\n");
+        let full_trace = std::env::var("TEJX_BACKTRACE").map(|v| v == "full" || v == "1").unwrap_or(false);
+        let mut frames_printed = 0;
+        let mut trace_buf = String::new();
         for frame in stack.iter().rev() {
-            report.push_str(&runtime_format_stack_frame(frame));
-            report.push('\n');
+            let function = unsafe { runtime_symbol_name_from_ptr(frame.function_ptr) };
+            if !full_trace {
+                if function.starts_with("rt_")
+                    || function.starts_with("_rt_")
+                    || function.starts_with("__")
+                    || function.starts_with("runtime_")
+                {
+                    continue;
+                }
+            }
+            trace_buf.push_str(&runtime_format_stack_frame(frame));
+            trace_buf.push('\n');
+            frames_printed += 1;
+        }
+        if frames_printed > 0 {
+            report.push_str("Stack trace:\n");
+            report.push_str(&trace_buf);
+        } else {
+            report.push_str("Stack trace:\n");
+            for frame in stack.iter().rev() {
+                report.push_str(&runtime_format_stack_frame(frame));
+                report.push('\n');
+            }
         }
     }
 
@@ -995,6 +1020,7 @@ fn render_runtime_panic_report(info: &PanicHookInfo<'_>) -> String {
 fn install_runtime_panic_hook() {
     RUNTIME_PANIC_HOOK.call_once(|| {
         panic::set_hook(Box::new(|info| {
+            eprintln!("💥 PANIC: {}", info);
             use std::io::Write;
             let report = render_runtime_panic_report(info);
             let _ = std::io::stderr().write_all(report.as_bytes());
@@ -1156,16 +1182,32 @@ static mut GC_ARRAY_FORWARD: Option<HashMap<i64, i64>> = None;
 pub unsafe extern "C" fn rt_gc_prepare_array_forward() {
     let mut map = ARRAY_FORWARD.lock().unwrap();
     if !map.is_empty() {
-        GC_ARRAY_FORWARD = Some(map.clone());
-        map.clear();
+        if let Some(existing) = &mut GC_ARRAY_FORWARD {
+            for (k, v) in map.drain() {
+                existing.insert(k, v);
+            }
+        } else {
+            let drained: HashMap<i64, i64> = map.drain().collect();
+            GC_ARRAY_FORWARD = Some(drained);
+        }
         ARRAY_FORWARD_ACTIVE.store(false, Ordering::Release);
-    } else {
-        GC_ARRAY_FORWARD = None;
     }
 }
 
 pub unsafe fn rt_gc_cleanup_array_forward() {
     GC_ARRAY_FORWARD = None;
+}
+
+pub unsafe fn rt_gc_scan_array_forward_roots() {
+    if let Some(map) = &mut GC_ARRAY_FORWARD {
+        for val in map.values_mut() {
+            crate::gc::copy_object(val as *mut i64);
+        }
+    }
+    let mut pending = ARRAY_FORWARD.lock().unwrap();
+    for val in pending.values_mut() {
+        crate::gc::copy_object(val as *mut i64);
+    }
 }
 
 #[inline]
@@ -2303,12 +2345,19 @@ pub unsafe extern "C" fn rt_exit(code: i64) {
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_getenv(key: i64) -> i64 {
-    if let Some(k) = i64_to_rust_str(key) {
-        if let Ok(val) = std::env::var(&k) {
-            return new_string_from_rust_str(&val);
-        }
+    // Use libc::getenv directly — avoids Rust std::env lock overhead on hot paths.
+    let Some(k) = i64_to_rust_str(key) else {
+        return 0;
+    };
+    let Ok(ckey) = std::ffi::CString::new(k.as_bytes()) else {
+        return 0;
+    };
+    let val_ptr = libc::getenv(ckey.as_ptr());
+    if val_ptr.is_null() {
+        return 0;
     }
-    0
+    let val = std::ffi::CStr::from_ptr(val_ptr).to_string_lossy();
+    new_string_from_rust_str(val.as_ref())
 }
 
 #[no_mangle]
@@ -2407,6 +2456,15 @@ pub unsafe extern "C" fn rt_get_os_arch() -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_cwd() -> i64 {
+    // Use libc::getcwd directly — avoids Rust's std::env overhead and allocation.
+    let mut buf = [0u8; 4096];
+    let ptr = libc::getcwd(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
+    if !ptr.is_null() {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        let s = String::from_utf8_lossy(&buf[..end]).into_owned();
+        return rt_string_from_owned_string(s);
+    }
+    // Fallback to Rust std on error
     let cwd = std::env::current_dir()
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
@@ -2428,9 +2486,259 @@ pub unsafe extern "C" fn rt_get_hostname() -> i64 {
     rt_string_from_optional_string(runtime_hostname())
 }
 
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_cpu_count() -> i64 {
+    // Use POSIX sysconf directly — avoids Rust std::thread overhead.
+    #[cfg(unix)]
+    {
+        let n = libc::sysconf(libc::_SC_NPROCESSORS_ONLN);
+        if n > 0 {
+            return n as i64;
+        }
+    }
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_total_memory() -> i64 {
+    #[cfg(target_os = "macos")]
+    {
+        let mut mem: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        let name = std::ffi::CString::new("hw.memsize").unwrap();
+        if libc::sysctlbyname(
+            name.as_ptr(),
+            &mut mem as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        ) == 0 {
+            return mem as i64;
+        }
+    }
+    #[cfg(unix)]
+    {
+        let pages = libc::sysconf(libc::_SC_PHYS_PAGES);
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
+        if pages > 0 && page_size > 0 {
+            return (pages as i64).saturating_mul(page_size as i64);
+        }
+    }
+    0
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_free_memory() -> i64 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::mem::MaybeUninit;
+        let mut vm_stat = MaybeUninit::<libc::vm_statistics64>::uninit();
+        let mut count = (std::mem::size_of::<libc::vm_statistics64>() / std::mem::size_of::<libc::integer_t>()) as libc::mach_msg_type_number_t;
+        let host_port = libc::mach_host_self();
+        if libc::host_statistics64(
+            host_port,
+            libc::HOST_VM_INFO64,
+            vm_stat.as_mut_ptr() as *mut _,
+            &mut count,
+        ) == 0 {
+            let stat = vm_stat.assume_init();
+            let page_size = libc::sysconf(libc::_SC_PAGESIZE) as u64;
+            return ((stat.free_count as u64 + stat.inactive_count as u64) * page_size) as i64;
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // _SC_AVPHYS_PAGES gives available physical pages on Linux
+        let pages = libc::sysconf(libc::_SC_AVPHYS_PAGES);
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
+        if pages > 0 && page_size > 0 {
+            return (pages as i64).saturating_mul(page_size as i64);
+        }
+    }
     0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_pid() -> i64 {
+    libc::getpid() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_uptime() -> f64 {
+    // Use clock_gettime(CLOCK_MONOTONIC) directly — START_INSTANT is lazily
+    // initialized on first call, so we record the start time via atomics for
+    // accuracy and avoid the once_cell overhead on repeated calls.
+    static START_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static START_NSEC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        START_SECS.store(ts.tv_sec as u64, std::sync::atomic::Ordering::Relaxed);
+        START_NSEC.store(ts.tv_nsec as u64, std::sync::atomic::Ordering::Relaxed);
+    });
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now);
+    let s0 = START_SECS.load(std::sync::atomic::Ordering::Relaxed);
+    let n0 = START_NSEC.load(std::sync::atomic::Ordering::Relaxed);
+    let elapsed_ns = (now.tv_sec as i64 - s0 as i64) * 1_000_000_000
+        + (now.tv_nsec as i64 - n0 as i64);
+    elapsed_ns.max(0) as f64 / 1_000_000_000.0
+}
+
+// =============================================================================
+// PROCESS MANAGEMENT API
+// =============================================================================
+
+/// Executes a shell command synchronously, returning stdout as a TejX string.
+/// On failure (non-zero exit or spawn error) returns an empty string.
+/// `cmd_ptr`  — TejX string: the shell command to run.
+/// Returns stdout as a TejX string.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exec_command(cmd_ptr: i64) -> i64 {
+    let Some(cmd) = i64_to_rust_str(cmd_ptr) else {
+        return rt_string_from_c_str("\0".as_ptr() as *const _);
+    };
+    let _guard = crate::ThreadIoGuard::new();
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .output();
+    match result {
+        Ok(output) => {
+            let mut combined = output.stdout;
+            // If stdout is empty, surface stderr so callers can inspect errors.
+            if combined.is_empty() {
+                combined = output.stderr;
+            }
+            // Strip trailing newline for ergonomics (same as Node.js execSync)
+            while combined.last() == Some(&b'\n') || combined.last() == Some(&b'\r') {
+                combined.pop();
+            }
+            new_string_from_bytes(combined.as_ptr(), combined.len() as i64)
+        }
+        Err(_) => rt_string_from_c_str("\0".as_ptr() as *const _),
+    }
+}
+
+/// Executes a shell command synchronously and returns an array [exit_code, stdout, stderr].
+/// `cmd_ptr` — TejX string: the shell command to run.
+/// Returns a TejX array of 3 elements: [int exitCode, string stdout, string stderr].
+#[no_mangle]
+pub unsafe extern "C" fn rt_exec_command_full(cmd_ptr: i64) -> i64 {
+    let Some(cmd) = i64_to_rust_str(cmd_ptr) else {
+        let arr = rt_Array_new_fixed(3, 8);
+        rt_array_set_fast(arr, 0, -1_i64);
+        let empty = rt_string_from_c_str("\0".as_ptr() as *const _);
+        rt_array_set_fast(arr, 1, empty);
+        rt_array_set_fast(arr, 2, empty);
+        return arr;
+    };
+    let _guard = crate::ThreadIoGuard::new();
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .output();
+    match result {
+        Ok(output) => {
+            let exit_code = output.status.code().unwrap_or(-1) as i64;
+            let mut arr = rt_Array_new_fixed(3, 8);
+            rt_push_root(&mut arr);
+            let mut stdout_str = new_string_from_bytes(output.stdout.as_ptr(), output.stdout.len() as i64);
+            rt_push_root(&mut stdout_str);
+            let mut stderr_str = new_string_from_bytes(output.stderr.as_ptr(), output.stderr.len() as i64);
+            rt_push_root(&mut stderr_str);
+            rt_array_set_fast(arr, 0, exit_code);
+            rt_array_set_fast(arr, 1, stdout_str);
+            rt_array_set_fast(arr, 2, stderr_str);
+            rt_pop_roots(3);
+            arr
+        }
+        Err(e) => {
+            let mut arr = rt_Array_new_fixed(3, 8);
+            rt_push_root(&mut arr);
+            let empty = rt_string_from_c_str("\0".as_ptr() as *const _);
+            let err_msg = format!("spawn error: {}", e);
+            let mut err_str = new_string_from_bytes(err_msg.as_ptr(), err_msg.len() as i64);
+            rt_push_root(&mut err_str);
+            rt_array_set_fast(arr, 0, -1_i64);
+            rt_array_set_fast(arr, 1, empty);
+            rt_array_set_fast(arr, 2, err_str);
+            rt_pop_roots(2);
+            arr
+        }
+    }
+}
+
+/// Spawns a child process asynchronously.
+/// `program_ptr` — TejX string: path to the executable.
+/// `args_ptr`    — TejX array of strings: command-line arguments.
+/// Returns the child PID (> 0) on success, -1 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn rt_spawn_process(program_ptr: i64, args_ptr: i64) -> i64 {
+    let Some(program) = i64_to_rust_str(program_ptr) else { return -1; };
+    let _guard = crate::ThreadIoGuard::new();
+    let mut cmd = std::process::Command::new(&program);
+    // Parse string array of args
+    let arg_count = rt_len(args_ptr);
+    for i in 0..arg_count {
+        let arg_val = rt_array_get_fast(args_ptr, i);
+        if let Some(arg) = i64_to_rust_str(arg_val) {
+            cmd.arg(&arg);
+        }
+    }
+    match cmd.spawn() {
+        Ok(child) => child.id() as i64,
+        Err(_) => -1,
+    }
+}
+
+/// Sends SIGTERM (graceful) or SIGKILL (force) to a process by PID.
+/// `pid`   — target process ID.
+/// `force` — 0 = SIGTERM (graceful), non-zero = SIGKILL (immediate).
+/// Returns 0 on success, -1 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn rt_kill_pid(pid: i64, force: i64) -> i64 {
+    if pid <= 0 { return -1; }
+    #[cfg(unix)]
+    {
+        let sig = if force != 0 { libc::SIGKILL } else { libc::SIGTERM };
+        let ret = libc::kill(pid as libc::pid_t, sig);
+        if ret == 0 { 0 } else { -1 }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: use TerminateProcess
+        -1
+    }
+}
+
+/// Waits for a child process by PID and returns its exit code.
+/// This is a blocking call.  Use only from a vthread or OS thread (not the main accept loop).
+/// `pid` — child process ID returned by rt_spawn_process.
+/// Returns the exit code (0–255), -1 if the wait failed, or -2 if killed by signal.
+#[no_mangle]
+pub unsafe extern "C" fn rt_wait_pid(pid: i64) -> i64 {
+    if pid <= 0 { return -1; }
+    let _guard = crate::ThreadIoGuard::new();
+    #[cfg(unix)]
+    {
+        let mut status: libc::c_int = 0;
+        let ret = libc::waitpid(pid as libc::pid_t, &mut status, 0);
+        if ret < 0 { return -1; }
+        if libc::WIFEXITED(status) {
+            libc::WEXITSTATUS(status) as i64
+        } else if libc::WIFSIGNALED(status) {
+            -2
+        } else {
+            -1
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        -1
+    }
 }
 
 #[no_mangle]
@@ -2446,7 +2754,7 @@ pub unsafe extern "C" fn rt_time_now() -> f64 {
 pub unsafe extern "C" fn rt_sleep(ms: i64) {
     let actual_ms = rt_to_number(ms) as i64;
     if actual_ms > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(actual_ms as u64));
+        crate::vthread::vt_sleep(actual_ms as u64);
     }
 }
 
@@ -2900,16 +3208,9 @@ extern "C" {
     fn rt_init_types();
 }
 
-extern "C" fn on_exit_handler() {
-    eprintln!("🔥 ATEXIT CALLED in TejX Runtime!");
-    let bt = std::backtrace::Backtrace::capture();
-    eprintln!("Exit Backtrace:\n{:?}", bt);
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32 {
     install_runtime_panic_hook();
-    libc::atexit(on_exit_handler);
 
     // Raise the open-file limit to the process hard cap before anything else.
     // Without this, macOS defaults to 256 fds which causes EMFILE at ~200
@@ -2951,10 +3252,12 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
         rt_register_thread();
         
         let slot_live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        crate::vthread::vt_spawn_closure(
+        let main_stack = crate::vthread::get_main_vt_stack_size();
+        crate::vthread::vt_spawn_closure_with_stack(
             || tejx_main(),
             0,
-            slot_live.clone()
+            slot_live.clone(),
+            main_stack,
         );
         crate::vthread::vt_join(&slot_live);
         
@@ -3205,7 +3508,7 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
     let mut c = closure;
     rt_push_root(&mut c);
 
-    let is_raw_ptr = (c as u64) < (HEAP_OFFSET as u64) && c != 0;
+    let is_raw_ptr = (c as u64) < (STACK_OFFSET as u64) && c != 0;
     let ptr_val = if !is_raw_ptr {
         rt_get_closure_ptr(c)
     } else {
@@ -3217,13 +3520,13 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
         0
     };
 
-    // Ensure ptr_val is unboxed if it's a heap object
+    // Ensure ptr_val is unboxed if it's a boxed int
     let mut raw_func_ptr = ptr_val;
-    if raw_func_ptr >= HEAP_OFFSET {
-        let body = (raw_func_ptr - HEAP_OFFSET) as *mut u8;
-        let h = rt_get_header(body);
+    let ptr = rt_obj_ptr(raw_func_ptr);
+    if !ptr.is_null() {
+        let h = rt_get_header(ptr as *mut u8);
         if (*h).type_id == TAG_INT as u16 {
-            raw_func_ptr = *(body as *mut i64);
+            raw_func_ptr = *ptr;
         }
     }
 
@@ -3234,25 +3537,18 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
 
     let result = if is_raw_ptr {
         // Raw function pointers explicitly have NO env argument.
-        let func: unsafe extern "C" fn() -> i64 = std::mem::transmute::<
+        let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute::<
             *const (),
-            unsafe extern "C" fn() -> i64,
+            unsafe extern "C" fn(i64, i64, i64, i64) -> i64,
         >(raw_func_ptr as *const ());
-        func()
-    } else if env == 0 {
-        // Closure created from raw pointer: no env parameter
-        let func: unsafe extern "C" fn() -> i64 = std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn() -> i64,
-        >(raw_func_ptr as *const ());
-        func()
+        func(0, 0, 0, 0)
     } else {
-        // Heap closures expect at least an env argument.
-        let func: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute::<
+        // Heap closures expect env as first argument followed by 4 padded user args.
+        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 = std::mem::transmute::<
             *const (),
-            unsafe extern "C" fn(i64) -> i64,
+            unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64,
         >(raw_func_ptr as *const ());
-        func(env)
+        func(env, 0, 0, 0, 0)
     };
 
     rt_pop_roots(1);
@@ -3313,18 +3609,6 @@ pub unsafe extern "C" fn rt_atomic_new(val: i64) -> i64 {
 
 // --- Mutex Operations ---
 
-struct HeldMutexGuard {
-    guard: std::sync::MutexGuard<'static, ()>,
-    _mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
-}
-
-// Thread-local map of held mutex guards (one entry per locked Mutex object).
-// std::thread_local! works on both OS threads and our VThread worker threads.
-std::thread_local! {
-    static HELD_MUTEX_GUARDS: std::cell::RefCell<std::collections::HashMap<usize, HeldMutexGuard>> =
-        std::cell::RefCell::new(std::collections::HashMap::new())
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn f_any_lock(m: i64) {
     rt_Mutex_acquire(m);
@@ -3341,15 +3625,16 @@ struct ThreadData {
     started: bool,
     cb_slot: usize,
     slot_live: std::sync::Arc<AtomicBool>,
+    cb_released: std::sync::Arc<AtomicBool>,
 }
 
 struct ThreadRunGuard {
     cb_slot: usize,
-    slot_live: std::sync::Arc<AtomicBool>,
+    cb_released: std::sync::Arc<AtomicBool>,
 }
 
-unsafe fn rt_release_thread_cb_slot(cb_slot: usize, slot_live: &AtomicBool) {
-    if slot_live.swap(false, Ordering::SeqCst) {
+unsafe fn rt_release_thread_cb_slot(cb_slot: usize, cb_released: &AtomicBool) {
+    if cb_released.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
         rt_release_static_root(cb_slot);
     }
 }
@@ -3357,11 +3642,7 @@ unsafe fn rt_release_thread_cb_slot(cb_slot: usize, slot_live: &AtomicBool) {
 impl Drop for ThreadRunGuard {
     fn drop(&mut self) {
         unsafe {
-            rt_release_thread_cb_slot(self.cb_slot, &self.slot_live);
-            // NOTE: do NOT call rt_unregister_thread() here.
-            // VThread closures run on persistent OS worker threads that stay
-            // registered for the full lifetime of the scheduler.
-            // rt_unregister_thread() is called once when the worker_loop exits.
+            rt_release_thread_cb_slot(self.cb_slot, &self.cb_released);
         }
     }
 }
@@ -3371,12 +3652,6 @@ impl Drop for ThreadRunGuard {
 // Map aliases removed.
 
 // --- Condition Variables ---
-
-use std::sync::Condvar;
-
-struct ConditionData {
-    condvar: Condvar,
-}
 
 unsafe extern "C" fn rt_atomic_object_finalizer(obj: i64) {
     let ptr = rt_obj_ptr(obj);
@@ -3397,11 +3672,12 @@ unsafe extern "C" fn rt_mutex_object_finalizer(obj: i64) {
     if ptr.is_null() {
         return;
     }
-    let mutex_ptr = *ptr.offset(0) as *mut std::sync::Arc<std::sync::Mutex<()>>;
-    if mutex_ptr.is_null() {
+    let atomic_slot = ptr.offset(0) as *const AtomicI64;
+    let reclaimed = (*atomic_slot).swap(0, Ordering::AcqRel);
+    if reclaimed == 0 || !mutex::unregister_mutex_data(reclaimed as usize) {
         return;
     }
-    *ptr.offset(0) = 0;
+    let mutex_ptr = reclaimed as *mut std::sync::Arc<crate::mutex::TejxMutex>;
     let _ = Box::from_raw(mutex_ptr);
 }
 
@@ -3410,11 +3686,12 @@ unsafe extern "C" fn rt_condition_object_finalizer(obj: i64) {
     if ptr.is_null() {
         return;
     }
-    let data_ptr = *ptr.offset(0) as *mut std::sync::Arc<ConditionData>;
-    if data_ptr.is_null() {
+    let atomic_slot = ptr.offset(0) as *const AtomicI64;
+    let reclaimed = (*atomic_slot).swap(0, Ordering::AcqRel);
+    if reclaimed == 0 || !condition::unregister_condition_data(reclaimed as usize) {
         return;
     }
-    *ptr.offset(0) = 0;
+    let data_ptr = reclaimed as *mut std::sync::Arc<crate::condition::ConditionData>;
     let _ = Box::from_raw(data_ptr);
 }
 
@@ -3433,17 +3710,14 @@ unsafe extern "C" fn rt_thread_object_finalizer(obj: i64) {
     let mut data = Box::from_raw(data_ptr);
     if !data.started {
         // Never started: safe to release the GC root immediately.
-        rt_release_thread_cb_slot(data.cb_slot, &data.slot_live);
+        rt_release_thread_cb_slot(data.cb_slot, &data.cb_released);
     } else {
-        // slot_live is set to false by ThreadRunGuard::drop when the
-        // virtual thread exits — so !slot_live means the coroutine finished.
-        // may::JoinHandle has no is_finished(); we rely on the atomic flag.
+        // slot_live is set to false when the virtual thread exits.
         let finished = !data.slot_live.load(Ordering::Acquire);
         if finished {
-            rt_release_thread_cb_slot(data.cb_slot, &data.slot_live);
+            rt_release_thread_cb_slot(data.cb_slot, &data.cb_released);
         }
-        // Drop the JoinHandle without blocking — if not finished, the
-        // virtual thread still holds the static root via ThreadRunGuard.
+        // Drop the JoinHandle without blocking
         let _ = data.handle.take();
     }
 }
@@ -3690,9 +3964,31 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
         } else if tag == TAG_FUNCTION {
             return rt_string_from_c_str("function\0".as_ptr() as *const _);
         } else if tag == TAG_ARRAY {
-            return rt_string_from_c_str("array\0".as_ptr() as *const _);
+            let flags = (*header).flags;
+            let elem_kind = (flags as i64) & ARRAY_FLAG_KIND_MASK;
+            let is_ptr = (flags & (ARRAY_FLAG_PTR as u16)) != 0;
+            let elem_size = (flags as usize) & 0xFF;
+            // Return typed array strings matching static typeof format
+            if is_ptr {
+                return rt_string_from_c_str("string[]\0".as_ptr() as *const _);
+            } else if elem_kind == ARRAY_FLAG_KIND_BOOL {
+                return rt_string_from_c_str("bool[]\0".as_ptr() as *const _);
+            } else if elem_kind == ARRAY_FLAG_KIND_FLOAT {
+                if elem_size <= 4 {
+                    return rt_string_from_c_str("float[]\0".as_ptr() as *const _);
+                } else {
+                    return rt_string_from_c_str("float64[]\0".as_ptr() as *const _);
+                }
+            } else if elem_kind == ARRAY_FLAG_KIND_CHAR {
+                return rt_string_from_c_str("char[]\0".as_ptr() as *const _);
+            } else if elem_size <= 4 {
+                return rt_string_from_c_str("int[]\0".as_ptr() as *const _);
+            } else {
+                return rt_string_from_c_str("int64[]\0".as_ptr() as *const _);
+            }
         } else if tag == TAG_OBJECT {
-            return rt_string_from_c_str("object\0".as_ptr() as *const _);
+            // Anonymous object/struct literal — return "struct"
+            return rt_string_from_c_str("struct\0".as_ptr() as *const _);
         } else if tag == TAG_BOOLEAN {
             return rt_string_from_c_str("bool\0".as_ptr() as *const _);
         } else if tag == TAG_FLOAT {
@@ -3702,9 +3998,12 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
         } else if tag == TAG_CHAR {
             return rt_string_from_c_str("char\0".as_ptr() as *const _);
         } else if tag == TAG_PROMISE {
-            return rt_string_from_c_str("object\0".as_ptr() as *const _);
+            return rt_string_from_c_str("Promise\0".as_ptr() as *const _);
+        } else if tag >= 0 && (tag as usize) < MAX_TYPES && !TYPE_NAME_PTRS[tag as usize].is_null() {
+            // Named class/struct — return registered type name (e.g. "MyClass", "Map<K,V>")
+            return rt_string_from_c_str(TYPE_NAME_PTRS[tag as usize]);
         } else {
-            return rt_string_from_c_str("object\0".as_ptr() as *const _);
+            return rt_string_from_c_str("struct\0".as_ptr() as *const _);
         }
     }
 }
@@ -3911,8 +4210,166 @@ pub unsafe extern "C" fn tejx_push_handler(jmpbuf: *mut u8) {
     });
 }
 
+use std::arch::global_asm;
+
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+global_asm!(
+    ".globl _tejx_setjmp",
+    ".balign 4",
+    "_tejx_setjmp:",
+    "stp x19, x20, [x0, #0]",
+    "stp x21, x22, [x0, #16]",
+    "stp x23, x24, [x0, #32]",
+    "stp x25, x26, [x0, #48]",
+    "stp x27, x28, [x0, #64]",
+    "stp x29, x30, [x0, #80]",
+    "mov x1, sp",
+    "str x1, [x0, #96]",
+    "stp d8, d9, [x0, #112]",
+    "stp d10, d11, [x0, #128]",
+    "stp d12, d13, [x0, #144]",
+    "stp d14, d15, [x0, #160]",
+    "mov w0, #0",
+    "ret",
+
+    ".globl _tejx_longjmp",
+    ".balign 4",
+    "_tejx_longjmp:",
+    "ldp x19, x20, [x0, #0]",
+    "ldp x21, x22, [x0, #16]",
+    "ldp x23, x24, [x0, #32]",
+    "ldp x25, x26, [x0, #48]",
+    "ldp x27, x28, [x0, #64]",
+    "ldp x29, x30, [x0, #80]",
+    "ldr x2, [x0, #96]",
+    "mov sp, x2",
+    "ldp d8, d9, [x0, #112]",
+    "ldp d10, d11, [x0, #128]",
+    "ldp d12, d13, [x0, #144]",
+    "ldp d14, d15, [x0, #160]",
+    "cmp w1, #0",
+    "csinc w0, w1, wzr, ne",
+    "ret",
+);
+
+#[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
+global_asm!(
+    ".globl tejx_setjmp",
+    ".type tejx_setjmp, %function",
+    ".balign 4",
+    "tejx_setjmp:",
+    "stp x19, x20, [x0, #0]",
+    "stp x21, x22, [x0, #16]",
+    "stp x23, x24, [x0, #32]",
+    "stp x25, x26, [x0, #48]",
+    "stp x27, x28, [x0, #64]",
+    "stp x29, x30, [x0, #80]",
+    "mov x1, sp",
+    "str x1, [x0, #96]",
+    "stp d8, d9, [x0, #112]",
+    "stp d10, d11, [x0, #128]",
+    "stp d12, d13, [x0, #144]",
+    "stp d14, d15, [x0, #160]",
+    "mov w0, #0",
+    "ret",
+
+    ".globl tejx_longjmp",
+    ".type tejx_longjmp, %function",
+    ".balign 4",
+    "tejx_longjmp:",
+    "ldp x19, x20, [x0, #0]",
+    "ldp x21, x22, [x0, #16]",
+    "ldp x23, x24, [x0, #32]",
+    "ldp x25, x26, [x0, #48]",
+    "ldp x27, x28, [x0, #64]",
+    "ldp x29, x30, [x0, #80]",
+    "ldr x2, [x0, #96]",
+    "mov sp, x2",
+    "ldp d8, d9, [x0, #112]",
+    "ldp d10, d11, [x0, #128]",
+    "ldp d12, d13, [x0, #144]",
+    "ldp d14, d15, [x0, #160]",
+    "cmp w1, #0",
+    "csinc w0, w1, wzr, ne",
+    "ret",
+);
+
+#[cfg(all(target_arch = "x86_64", target_vendor = "apple"))]
+global_asm!(
+    ".globl _tejx_setjmp",
+    "_tejx_setjmp:",
+    "movq (%rsp), %rdx",
+    "movq %rbx, (%rdi)",
+    "movq %rsp, 8(%rdi)",
+    "movq %rbp, 16(%rdi)",
+    "movq %r12, 24(%rdi)",
+    "movq %r13, 32(%rdi)",
+    "movq %r14, 40(%rdi)",
+    "movq %r15, 48(%rdi)",
+    "movq %rdx, 56(%rdi)",
+    "xorl %eax, %eax",
+    "ret",
+
+    ".globl _tejx_longjmp",
+    "_tejx_longjmp:",
+    "movl %esi, %eax",
+    "testl %eax, %eax",
+    "jnz 1f",
+    "movl $1, %eax",
+    "1:",
+    "movq (%rdi), %rbx",
+    "movq 8(%rdi), %rsp",
+    "movq 16(%rdi), %rbp",
+    "movq 24(%rdi), %r12",
+    "movq 32(%rdi), %r13",
+    "movq 40(%rdi), %r14",
+    "movq 48(%rdi), %r15",
+    "jmp *56(%rdi)",
+);
+
+#[cfg(all(target_arch = "x86_64", not(target_vendor = "apple")))]
+global_asm!(
+    ".globl tejx_setjmp",
+    ".type tejx_setjmp, @function",
+    "tejx_setjmp:",
+    "movq (%rsp), %rdx",
+    "movq %rbx, (%rdi)",
+    "movq %rsp, 8(%rdi)",
+    "movq %rbp, 16(%rdi)",
+    "movq %r12, 24(%rdi)",
+    "movq %r13, 32(%rdi)",
+    "movq %r14, 40(%rdi)",
+    "movq %r15, 48(%rdi)",
+    "movq %rdx, 56(%rdi)",
+    "xorl %eax, %eax",
+    "ret",
+
+    ".globl tejx_longjmp",
+    ".type tejx_longjmp, @function",
+    "tejx_longjmp:",
+    "movl %esi, %eax",
+    "testl %eax, %eax",
+    "jnz 1f",
+    "movl $1, %eax",
+    "1:",
+    "movq (%rdi), %rbx",
+    "movq 8(%rdi), %rsp",
+    "movq 16(%rdi), %rbp",
+    "movq 24(%rdi), %r12",
+    "movq 32(%rdi), %r13",
+    "movq 40(%rdi), %r14",
+    "movq 48(%rdi), %r15",
+    "jmp *56(%rdi)",
+);
+
 extern "C" {
-    fn _longjmp(env: *mut i8, val: i32);
+    pub fn tejx_setjmp(env: *mut u8) -> i32;
+    pub fn tejx_longjmp(env: *mut u8, val: i32) -> !;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_get_tejx_setjmp() -> *const () {
+    tejx_setjmp as *const ()
 }
 
 #[no_mangle]
@@ -3935,7 +4392,7 @@ pub unsafe extern "C" fn tejx_throw(exception: i64) {
             (*ctx_ptr).roots_top = h.roots_top;
         });
         crate::runtime_restore_call_stack(h.frame_depth);
-        _longjmp(h.jmpbuf as *mut i8, 1);
+        tejx_longjmp(h.jmpbuf as *mut u8, 1);
     } else {
         log_exception("UnhandledException", exception);
         exit(1);

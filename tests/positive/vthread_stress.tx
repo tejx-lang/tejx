@@ -1,0 +1,37 @@
+import { SharedQueue, Mutex } from "std:thread";
+
+function make_worker(id: int, q: SharedQueue<int>, m: Mutex): () => void {
+    return () => {
+        Thread.sleep(1);
+        m.lock();
+        q.enqueue(id);
+        m.unlock();
+    };
+}
+
+function main(): void {
+    print("Starting VThread Stress Test with 200 threads...");
+    let q = new SharedQueue<int>();
+    let m = new Mutex();
+    let threads: Thread[] = [];
+
+    for (let i = 0; i < 200; i++) {
+        let task = make_worker(i, q, m);
+        let t = Thread.spawn(() => {
+            task();
+        });
+        threads.push(t);
+    }
+
+    for (let i = 0; i < 200; i++) {
+        threads[i].join();
+    }
+
+    let count = 0;
+    while (!q.isEmpty()) {
+        q.dequeue();
+        count++;
+    }
+
+    print("Finished VThread Stress Test! Total items processed:", count);
+}

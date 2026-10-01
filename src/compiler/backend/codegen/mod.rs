@@ -44,6 +44,7 @@ pub struct CodeGen {
     closure_adapters: HashMap<String, String>,
     pub object_shape_names: HashMap<String, String>,
     pub function_display_names: HashMap<String, String>,
+    pub class_display_names: HashMap<String, String>,
     current_arena: Option<String>,
     current_function_needs_loop_safepoints: bool,
     pub source_file: String,
@@ -53,6 +54,7 @@ pub struct CodeGen {
     extern_mir_functions: HashSet<String>,
     current_function_has_runtime_frame: bool,
     current_function_tracks_location: bool,
+    pub vt_stack_size: Option<usize>,
 }
 
 impl Default for CodeGen {
@@ -122,6 +124,9 @@ impl CodeGen {
     }
 
     pub(crate) fn needs_gc_root(name: &str, ty: &TejxType) -> bool {
+        if name.starts_with("g_") {
+            return false;
+        }
         Self::is_gc_managed(ty) || name.starts_with("promise_id_local") || name.starts_with("__p_")
     }
 
@@ -184,6 +189,7 @@ impl CodeGen {
             closure_adapters: HashMap::new(),
             object_shape_names: HashMap::new(),
             function_display_names: HashMap::new(),
+            class_display_names: HashMap::new(),
             current_arena: None,
             current_function_needs_loop_safepoints: false,
             source_file: String::new(),
@@ -193,6 +199,7 @@ impl CodeGen {
             extern_mir_functions: HashSet::new(),
             current_function_has_runtime_frame: false,
             current_function_tracks_location: false,
+            vt_stack_size: None,
         }
     }
 

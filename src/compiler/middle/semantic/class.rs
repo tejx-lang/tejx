@@ -516,6 +516,7 @@ impl TypeChecker {
                             },
                             is_readonly: false,
                             generic_params: Vec::new(),
+                            min_params: None,
                         },
                     );
                 }
@@ -555,6 +556,12 @@ impl TypeChecker {
                     };
                     let parameterized_type = self
                         .parameterize_generics(&full_sig.to_string(), &class_decl.generic_params);
+                    let min_required = method
+                        .func
+                        .params
+                        .iter()
+                        .filter(|p| p._default_value.is_none() && !p._is_rest)
+                        .count();
                     members.insert(
                         method.func.name.clone(),
                         MemberInfo {
@@ -571,6 +578,7 @@ impl TypeChecker {
                             },
                             is_readonly: true, // Methods are readonly
                             generic_params: method.func.generic_params.clone(),
+                            min_params: Some(min_required),
                         },
                     );
                 }
@@ -586,6 +594,7 @@ impl TypeChecker {
                             access: AccessLevel::Public,
                             is_readonly: true, // Default to readonly, setter can clear it
                             generic_params: Vec::new(),
+                            min_params: None,
                         },
                     );
                 }
@@ -604,6 +613,7 @@ impl TypeChecker {
                                 access: AccessLevel::Public,
                                 is_readonly: false,
                                 generic_params: Vec::new(),
+                                min_params: None,
                             },
                         );
                     }
@@ -622,6 +632,11 @@ impl TypeChecker {
                     for p in &param_types {
                         params.push(TejxType::from_name(p));
                     }
+                    let min_required = constructor
+                        .params
+                        .iter()
+                        .filter(|p| p._default_value.is_none() && !p._is_rest)
+                        .count();
                     members.insert(
                         "constructor".to_string(),
                         MemberInfo {
@@ -630,6 +645,7 @@ impl TypeChecker {
                             access: AccessLevel::Public,
                             is_readonly: true,
                             generic_params: Vec::new(),
+                            min_params: Some(min_required),
                         },
                     );
                 }
@@ -730,6 +746,7 @@ impl TypeChecker {
                             access: AccessLevel::Public,
                             is_readonly: true, // Enum members are constants
                             generic_params: Vec::new(),
+                            min_params: None,
                         },
                     );
                 }
@@ -762,6 +779,7 @@ impl TypeChecker {
                             access: AccessLevel::Public,
                             is_readonly: true,
                             generic_params: Vec::new(),
+                            min_params: None,
                         },
                     );
                 }
@@ -882,6 +900,7 @@ impl TypeChecker {
                         access: AccessLevel::Public,
                         is_readonly: false,
                         generic_params: Vec::new(),
+                        min_params: None,
                     },
                 ));
             }

@@ -46,7 +46,18 @@ impl Lowering {
             );
             self.user_function_args
                 .borrow_mut()
-                .insert(mangled, cons.params.len());
+                .insert(mangled.clone(), cons.params.len());
+            let ctor_defaults: Vec<Option<Expression>> = cons
+                .params
+                .iter()
+                .map(|p| p._default_value.as_ref().map(|b| (**b).clone()))
+                .collect();
+            self.constructor_param_defaults
+                .borrow_mut()
+                .insert(class_decl.name.clone(), ctor_defaults.clone());
+            self.user_function_param_defaults
+                .borrow_mut()
+                .insert(mangled.clone(), ctor_defaults);
         }
         let mut methods = Vec::new();
         for method in &class_decl.methods {
@@ -67,9 +78,24 @@ impl Lowering {
             self.user_functions
                 .borrow_mut()
                 .insert(mangled.clone(), ret_type);
+            let total_args = if method.is_static {
+                method.func.params.len()
+            } else {
+                1 + method.func.params.len()
+            };
             self.user_function_args
                 .borrow_mut()
-                .insert(mangled, method.func.params.len());
+                .insert(mangled.clone(), total_args);
+            let mut method_defaults: Vec<Option<Expression>> = Vec::new();
+            if !method.is_static {
+                method_defaults.push(None); // index 0 is 'this'
+            }
+            for p in &method.func.params {
+                method_defaults.push(p._default_value.as_ref().map(|b| (**b).clone()));
+            }
+            self.user_function_param_defaults
+                .borrow_mut()
+                .insert(mangled.clone(), method_defaults);
             if !method.is_static {
                 methods.push(method.func.name.clone());
             }
@@ -93,14 +119,18 @@ impl Lowering {
         let mut s_fields = Vec::new();
         for member in &class_decl._members {
             let ty = self.resolve_alias_type(&TejxType::from_node(&member._type_name));
-            let init = member._initializer.as_ref().map(|e| *e.clone()).unwrap_or(
-                Expression::NumberLiteral {
-                    value: 0.0,
-                    _is_float: false,
-                    _line: 0,
-                    _col: 0,
-                },
-            );
+            let init = if let Some(e) = &member._initializer {
+                *e.clone()
+            } else {
+                match &ty {
+                    TejxType::Bool => Expression::BooleanLiteral { value: false, _line: 0, _col: 0 },
+                    TejxType::String => Expression::StringLiteral { value: "".to_string(), _line: 0, _col: 0 },
+                    TejxType::Float32 | TejxType::Float64 => Expression::NumberLiteral { value: 0.0, _is_float: true, _line: 0, _col: 0 },
+                    TejxType::Optional(_) => Expression::NoneLiteral { _line: 0, _col: 0 },
+                    TejxType::DynamicArray(_) => Expression::ArrayLiteral { elements: vec![], ty: std::cell::RefCell::new(None), _line: 0, _col: 0 },
+                    _ => Expression::NumberLiteral { value: 0.0, _is_float: false, _line: 0, _col: 0 },
+                }
+            };
             if member._is_static {
                 s_fields.push((member._name.clone(), ty, init));
             } else {
@@ -223,7 +253,27 @@ impl Lowering {
                 ));
             }
             let name = format!("f_{}_{}", class_decl.name, func_decl.name);
+            let un_name = format!("{}_{}", class_decl.name, func_decl.name);
             let return_type = self.resolve_alias_type(&TejxType::from_node(&func_decl.return_type));
+
+            let mut func_defaults: Vec<Option<Expression>> = Vec::new();
+            if !is_static {
+                func_defaults.push(None); // index 0 is 'this'
+            }
+            for p in &func_decl.params {
+                func_defaults.push(p._default_value.as_ref().map(|b| (**b).clone()));
+            }
+            self.user_function_param_defaults
+                .borrow_mut()
+                .insert(name.clone(), func_defaults.clone());
+            if func_decl.name != "constructor" {
+                self.user_function_param_defaults
+                    .borrow_mut()
+                    .insert(un_name.clone(), func_defaults);
+                self.user_function_args
+                    .borrow_mut()
+                    .insert(un_name, params.len());
+            }
 
             if !func_decl.generic_params.is_empty() {
                 self.function_generic_params.borrow_mut().insert(

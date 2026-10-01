@@ -32,7 +32,7 @@ function requestBodyKind(body: any): int {
     if (bodyType == "string") {
         return 1;
     }
-    if (bodyType == "object" || rt_is_array(body)) {
+    if (bodyType == "object" || bodyType == "struct" || rt_is_array(body)) {
         return 2;
     }
     return 1;

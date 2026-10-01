@@ -46,6 +46,12 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
+    PostfixUpdate {
+        target: Box<HIRExpression>,
+        op: TokenType,
+        ty: TejxType,
+        line: usize,
+    },
 
     Sequence {
         expressions: Vec<HIRExpression>,
@@ -124,6 +130,7 @@ impl HIRExpression {
             HIRExpression::NoneLiteral { .. } => TejxType::Void, // None is generic
             HIRExpression::SomeExpr { value, .. } => value.get_type(), // Simplified
             HIRExpression::Cast { ty, .. } => ty.clone(),
+            HIRExpression::PostfixUpdate { ty, .. } => ty.clone(),
         }
     }
 
@@ -147,6 +154,7 @@ impl HIRExpression {
             HIRExpression::NoneLiteral { line, .. } => *line,
             HIRExpression::SomeExpr { line, .. } => *line,
             HIRExpression::Cast { line, .. } => *line,
+            HIRExpression::PostfixUpdate { line, .. } => *line,
         }
     }
 }

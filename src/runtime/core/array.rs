@@ -393,9 +393,13 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
 
     let new_header = rt_get_header(new_body);
 
-    // Copy header
-    *new_header = *header_res;
+    // Copy logical fields; do NOT copy gc_word or gc_flags which may have forwarding bits
+    (*new_header).type_id = (*header_res).type_id;
+    (*new_header).flags = (*header_res).flags;
+    (*new_header).length = (*header_res).length;
     (*new_header).capacity = new_cap as u32;
+    (*new_header).gc_word = 0;
+    (*new_header).gc_flags = 0;
 
     // Copy data (direct copy)
     memcpy(

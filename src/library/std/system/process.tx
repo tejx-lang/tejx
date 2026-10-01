@@ -1,4 +1,4 @@
-extern function rt_exit(code: int): void;
+extern function exit(code: int): void;
 extern function rt_getenv(key: string): Optional<string>;
 extern function rt_get_all_env(): string[];
 extern function rt_get_os_type(): string;
@@ -8,9 +8,20 @@ extern function rt_get_home_dir(): Optional<string>;
 extern function rt_get_temp_dir(): string;
 extern function rt_get_hostname(): Optional<string>;
 extern function rt_args(): string[];
+extern function rt_get_cpu_count(): int;
+extern function rt_get_total_memory(): int64;
+extern function rt_get_free_memory(): int64;
+extern function getpid(): int;
+extern function rt_get_uptime(): float;
+// Process management
+extern function rt_exec_command(cmd: string): string;
+extern function rt_exec_command_full(cmd: string): any[];
+extern function rt_spawn_process(program: string, args: string[]): int;
+extern function rt_kill_pid(pid: int, force: int): int;
+extern function rt_wait_pid(pid: int): int;
 
 function _system_exit(code: int): void {
-    rt_exit(code);
+    exit(code);
 }
 
 function _system_get_env(key: string): Optional<string> {
@@ -47,4 +58,56 @@ function _system_get_hostname(): Optional<string> {
 
 function _system_args(): string[] {
     return rt_args();
+}
+
+function _system_get_cpu_count(): int {
+    return rt_get_cpu_count();
+}
+
+function _system_get_total_memory(): int64 {
+    return rt_get_total_memory();
+}
+
+function _system_get_free_memory(): int64 {
+    return rt_get_free_memory();
+}
+
+function _system_get_pid(): int {
+    return getpid();
+}
+
+function _system_get_uptime(): float {
+    return rt_get_uptime();
+}
+
+// ── Process Execution ──────────────────────────────────────────────────────────
+
+/// Executes a shell command synchronously and returns its stdout (trimmed).
+/// If stdout is empty, stderr is returned instead for easy error inspection.
+function _system_exec(cmd: string): string {
+    return rt_exec_command(cmd);
+}
+
+/// Executes a shell command synchronously and returns [exitCode, stdout, stderr].
+function _system_exec_full(cmd: string): any[] {
+    return rt_exec_command_full(cmd);
+}
+
+/// Spawns a child process asynchronously.
+/// Returns the child PID (> 0) on success, -1 on failure.
+function _system_spawn(program: string, args: string[]): int {
+    return rt_spawn_process(program, args);
+}
+
+/// Sends a signal to a process by PID.
+/// force=true sends SIGKILL, false sends SIGTERM.
+/// Returns true on success.
+function _system_kill(pid: int, force: bool = false): bool {
+    return rt_kill_pid(pid, force ? 1 : 0) == 0;
+}
+
+/// Waits for a child process by PID and returns its exit code.
+/// Returns -1 on failure, -2 if killed by signal.
+function _system_wait(pid: int): int {
+    return rt_wait_pid(pid);
 }

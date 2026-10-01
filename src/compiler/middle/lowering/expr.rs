@@ -379,8 +379,23 @@ impl Lowering {
         } else {
             let expected_count_opt = self.user_function_args.borrow().get(&final_callee).copied();
             if let Some(expected_count) = expected_count_opt {
+                let defaults_opt = self
+                    .user_function_param_defaults
+                    .borrow()
+                    .get(&final_callee)
+                    .cloned();
                 while final_args.len() < expected_count {
-                    final_args.push(HIRExpression::NoneLiteral { line });
+                    let idx = final_args.len();
+                    let lowered_arg = if let Some(ref defs) = defaults_opt {
+                        if idx < defs.len() && defs[idx].is_some() {
+                            self.lower_expression(defs[idx].as_ref().unwrap())
+                        } else {
+                            HIRExpression::NoneLiteral { line }
+                        }
+                    } else {
+                        HIRExpression::NoneLiteral { line }
+                    };
+                    final_args.push(lowered_arg);
                 }
             }
         }
@@ -616,7 +631,7 @@ impl Lowering {
             }
             Expression::CharLiteral { value, .. } => HIRExpression::Literal {
                 line,
-                value: value.to_string(), // Keep it as string internally since HIR Literal holds strings
+                value: (*value as u32).to_string(),
                 ty: TejxType::Char,
             },
             Expression::BooleanLiteral { value, .. } => HIRExpression::Literal {
@@ -961,35 +976,49 @@ impl Lowering {
                     }
                 }
             }
-            Expression::UnaryExpr { op, right, .. } => {
+            Expression::UnaryExpr {
+                op,
+                right,
+                is_postfix,
+                ..
+            } => {
                 // ++i, --i, !x, -x
                 match op {
                     TokenType::PlusPlus | TokenType::MinusMinus => {
                         let r_expr = self.lower_expression(right);
                         let ty = r_expr.get_type();
 
-                        let delta = "1".to_string();
-                        let bin_op = if matches!(op, TokenType::PlusPlus) {
-                            TokenType::Plus
-                        } else {
-                            TokenType::Minus
-                        };
-
-                        HIRExpression::Assignment {
-                            line,
-                            target: Box::new(r_expr.clone()),
-                            value: Box::new(HIRExpression::BinaryExpr {
+                        if *is_postfix {
+                            HIRExpression::PostfixUpdate {
+                                target: Box::new(r_expr),
+                                op: *op,
+                                ty,
                                 line,
-                                left: Box::new(r_expr),
-                                op: bin_op,
-                                right: Box::new(HIRExpression::Literal {
+                            }
+                        } else {
+                            let delta = "1".to_string();
+                            let bin_op = if matches!(op, TokenType::PlusPlus) {
+                                TokenType::Plus
+                            } else {
+                                TokenType::Minus
+                            };
+
+                            HIRExpression::Assignment {
+                                line,
+                                target: Box::new(r_expr.clone()),
+                                value: Box::new(HIRExpression::BinaryExpr {
                                     line,
-                                    value: delta,
-                                    ty: TejxType::Int32,
+                                    left: Box::new(r_expr),
+                                    op: bin_op,
+                                    right: Box::new(HIRExpression::Literal {
+                                        line,
+                                        value: delta,
+                                        ty: TejxType::Int32,
+                                    }),
+                                    ty: ty.clone(),
                                 }),
-                                ty: ty.clone(),
-                            }),
-                            ty,
+                                ty,
+                            }
                         }
                     }
                     TokenType::Bang => HIRExpression::Call {
@@ -1078,34 +1107,61 @@ impl Lowering {
                             final_callee = "rt_typeof".to_string();
                             ty = TejxType::String;
                         } else {
-                            // Extract known static type string
-                            let type_str = match &arg_ty {
-                                TejxType::Int8
-                                | TejxType::UInt8
-                                | TejxType::Int16
-                                | TejxType::UInt16
-                                | TejxType::UInt32
-                                | TejxType::Int32
-                                | TejxType::UInt64
-                                | TejxType::Int64
-                                | TejxType::Int128
-                                | TejxType::UInt128 => "int",
-                                TejxType::Float32 | TejxType::Float64 => "float",
-                                TejxType::Bool => "bool",
-                                TejxType::String => "string",
-                                TejxType::Char => "char",
-                                TejxType::FixedArray(_, _)
-                                | TejxType::DynamicArray(_)
-                                | TejxType::Slice(_) => "array",
-                                TejxType::Function(_, _) => "function",
-                                TejxType::Class(_, _) => "object",
-                                TejxType::Object(_) => "object",
-                                TejxType::Void => "None",
-                                _ => "void",
-                            };
+                            // Extract precise static type string
+                            fn type_str_precise(ty: &TejxType, disp_map: &std::collections::HashMap<String, String>) -> String {
+                                match ty {
+                                    TejxType::Int8 => "int8".to_string(),
+                                    TejxType::UInt8 => "uint8".to_string(),
+                                    TejxType::Int16 => "int16".to_string(),
+                                    TejxType::UInt16 => "uint16".to_string(),
+                                    TejxType::Int32 | TejxType::UInt32 => "int".to_string(),
+                                    TejxType::Int64 => "int64".to_string(),
+                                    TejxType::UInt64 => "uint64".to_string(),
+                                    TejxType::Int128 => "int128".to_string(),
+                                    TejxType::UInt128 => "uint128".to_string(),
+                                    TejxType::Float32 => "float".to_string(),
+                                    TejxType::Float64 => "float64".to_string(),
+                                    TejxType::Bool => "bool".to_string(),
+                                    TejxType::String => "string".to_string(),
+                                    TejxType::Char => "char".to_string(),
+                                    TejxType::Function(_, _) => "function".to_string(),
+                                    TejxType::Void => "void".to_string(),
+                                    TejxType::FixedArray(inner, len) => {
+                                        format!("{}[{}]", type_str_precise(inner, disp_map), len)
+                                    }
+                                    TejxType::DynamicArray(inner) => {
+                                        format!("{}[]", type_str_precise(inner, disp_map))
+                                    }
+                                    TejxType::Slice(inner) => {
+                                        format!("{}[]", type_str_precise(inner, disp_map))
+                                    }
+                                    TejxType::Class(name, type_args) if type_args.is_empty() => {
+                                        if let Some(disp) = disp_map.get(name.as_str()) {
+                                            disp.clone()
+                                        } else {
+                                            name.clone()
+                                        }
+                                    }
+                                    TejxType::Class(name, type_args) => {
+                                        let args: Vec<String> = type_args
+                                            .iter()
+                                            .map(|a| type_str_precise(a, disp_map))
+                                            .collect();
+                                        format!("{}<{}>", name, args.join(", "))
+                                    }
+                                    TejxType::Object(_) => "struct".to_string(),
+                                    TejxType::Optional(inner) => {
+                                        format!("Optional<{}>", type_str_precise(inner, disp_map))
+                                    }
+                                    TejxType::Any => "any".to_string(),
+                                    TejxType::Float16 => "float16".to_string(),
+                                }
+                            }
+                            let disp_map = self.class_display_names.borrow();
+                            let type_str = type_str_precise(&arg_ty, &disp_map);
                             return HIRExpression::Literal {
                                 line,
-                                value: type_str.to_string(),
+                                value: type_str,
                                 ty: TejxType::String,
                             };
                         }
@@ -1624,12 +1680,27 @@ impl Lowering {
                         }
                     }
                 } else {
-                    // Non-variadic: pad missing arguments with None for Optional parameters
+                    // Non-variadic: pad missing arguments with default expressions if available, or NoneLiteral
                     let expected_count_opt =
                         self.user_function_args.borrow().get(&final_callee).copied();
                     if let Some(expected_count) = expected_count_opt {
+                        let defaults_opt = self
+                            .user_function_param_defaults
+                            .borrow()
+                            .get(&final_callee)
+                            .cloned();
                         while final_args.len() < expected_count {
-                            final_args.push(HIRExpression::NoneLiteral { line });
+                            let idx = final_args.len();
+                            let lowered_arg = if let Some(ref defs) = defaults_opt {
+                                if idx < defs.len() && defs[idx].is_some() {
+                                    self.lower_expression(defs[idx].as_ref().unwrap())
+                                } else {
+                                    HIRExpression::NoneLiteral { line }
+                                }
+                            } else {
+                                HIRExpression::NoneLiteral { line }
+                            };
+                            final_args.push(lowered_arg);
                         }
                     }
                 }
@@ -2020,8 +2091,37 @@ impl Lowering {
                 }
                 let normalized_class = self.monomorphized_class_name(&class_ty);
 
-                // Variadic check for constructor
                 let cons_unmangled = format!("{}_constructor", normalized_class);
+
+                // Pad default arguments for constructor if fewer arguments provided than expected
+                let ctor_defaults_opt = self
+                    .constructor_param_defaults
+                    .borrow()
+                    .get(&normalized_class)
+                    .cloned()
+                    .or_else(|| {
+                        if let TejxType::Class(ref base, _) = class_ty {
+                            self.constructor_param_defaults
+                                .borrow()
+                                .get(base)
+                                .cloned()
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(ref defs) = ctor_defaults_opt {
+                    while hir_args.len() < defs.len() {
+                        let idx = hir_args.len();
+                        if let Some(ref def_expr) = defs[idx] {
+                            hir_args.push(self.lower_expression(def_expr));
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Variadic check for constructor
                 if let Some(&fixed_count) = self.variadic_functions.borrow().get(&cons_unmangled) {
                     if hir_args.len() >= fixed_count {
                         let (fixed, rest) = hir_args.split_at(fixed_count);
@@ -2219,6 +2319,13 @@ impl Lowering {
         }
 
         let combined = format!("{}_{}", obj_name, member);
+        if let Some(&val) = self.enum_members.borrow().get(&combined) {
+            return HIRExpression::Literal {
+                line,
+                value: val.to_string(),
+                ty: TejxType::Int64,
+            };
+        }
         let f_combined = format!("f_{}", combined);
         let fallback_ty = if matches!(obj_ty, TejxType::Any) {
             TejxType::Any

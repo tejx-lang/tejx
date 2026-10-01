@@ -1,0 +1,73 @@
+// Test comprehensive default values: functions, variables, classes
+
+function add(a: int, b: int = 100): int {
+    return a + b;
+}
+
+function greet_fn(name: string = "Guest", prefix: string = "Hello"): string {
+    return prefix + ", " + name;
+}
+
+class User {
+    name: string = "Anonymous";
+    age: int = 18;
+    active: bool = true;
+    score: float = 95.5;
+
+    constructor(n: string = "DefaultUser", a: int = 25) {
+        this.name = n;
+        this.age = a;
+    }
+
+    getInfo(tag: string = "INFO"): string {
+        return "[" + tag + "] " + this.name + " (" + this.age + ")";
+    }
+}
+
+class UninitTest {
+    v_int: int;
+    v_bool: bool;
+    v_str: string;
+}
+
+function main() {
+    print("Testing function defaults...");
+    let sum1 = add(5);
+    let sum2 = add(5, 20);
+    print(sum1); // 105
+    print(sum2); // 25
+
+    let g1 = greet_fn();
+    let g2 = greet_fn("Praveen");
+    let g3 = greet_fn("Bob", "Hi");
+    print(g1); // Hello, Guest
+    print(g2); // Hello, Praveen
+    print(g3); // Hi, Bob
+
+    print("Testing uninitialized local variables...");
+    let def_i: int;
+    let def_b: bool;
+    let def_s: string;
+    print(def_i); // 0
+    print(def_b); // false
+    print(def_s); // ""
+
+    print("Testing class constructor and method defaults...");
+    let u1 = new User();
+    print(u1.getInfo()); // [INFO] DefaultUser (25)
+    print(u1.getInfo("USER")); // [USER] DefaultUser (25)
+
+    let u2 = new User("Alice");
+    print(u2.getInfo()); // [INFO] Alice (25)
+
+    let u3 = new User("Charlie", 30);
+    print(u3.getInfo()); // [INFO] Charlie (30)
+
+    print("Testing uninitialized class fields...");
+    let un = new UninitTest();
+    print(un.v_int);
+    print(un.v_bool);
+    print(un.v_str);
+
+    print("ALL TESTS PASSED!");
+}
