@@ -21,6 +21,8 @@ pub mod queue;
 pub use queue::*;
 pub mod string;
 pub use string::*;
+pub mod context;
+pub use context::*;
 pub mod vthread;
 pub mod thread;
 pub use thread::*;
@@ -3264,11 +3266,15 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
         rt_unregister_thread();
     });
 
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
     if run_result.is_err() {
-        return 1;
+        std::process::exit(1);
     }
 
-    0
+    std::process::exit(0);
 }
 
 #[no_mangle]

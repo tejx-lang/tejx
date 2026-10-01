@@ -838,14 +838,9 @@ impl Lowering {
                             .get_array_element_type(),
                     ),
                     Expression::MemberAccessExpr { object, member, .. } => {
-                        let obj_ty = self.lower_expression(object).get_type();
-                        match self.resolve_alias_type(&obj_ty) {
-                            TejxType::Object(props) => props
-                                .iter()
-                                .find(|(name, _, _)| name == member)
-                                .map(|(_, _, ty)| ty.clone()),
-                            _ => None,
-                        }
+                        let lowered_obj = self.lower_expression(object);
+                        let lowered_member = self.lower_member_access_with_obj(line, "", lowered_obj, member);
+                        Some(lowered_member.get_type())
                     }
                     _ => None,
                 };

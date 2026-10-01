@@ -6,7 +6,7 @@
 // Virtual Thread & Stack Configuration
 // =============================================================================
 
-/// Default stack size for TejX virtual threads (2 KB).
+/// Default stack size for TejX virtual threads (2 KB, matching Go goroutines).
 pub const DEFAULT_VTHREAD_STACK_SIZE: usize = 2 * 1024;
 
 /// Minimum stack size allowed for any virtual thread (2 KB).

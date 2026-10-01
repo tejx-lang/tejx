@@ -82,8 +82,14 @@ pub fn resolve_runtime_path(explicit: Option<&str>) -> PathBuf {
     }
 
     // Workspace development mode
+    if std::path::Path::new("target/release/libtejx_rt.a").exists() {
+        return PathBuf::from("target/release/libtejx_rt.a");
+    }
     if std::path::Path::new("target/release/tejx_rt.a").exists() {
         return PathBuf::from("target/release/tejx_rt.a");
+    }
+    if std::path::Path::new("target/debug/libtejx_rt.a").exists() {
+        return PathBuf::from("target/debug/libtejx_rt.a");
     }
     if std::path::Path::new("target/debug/tejx_rt.a").exists() {
         return PathBuf::from("target/debug/tejx_rt.a");

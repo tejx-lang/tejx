@@ -862,7 +862,7 @@ impl CodeGen {
             MIRValue::Variable { name, ty } => {
                 if name.starts_with("g_") {
                     self.temp_counter += 1;
-                    let tmp = format!("%t{}", self.temp_counter);
+                    let mut tmp = format!("%t{}", self.temp_counter);
                     if self.is_gc_global(name) {
                         let slot_name = Self::static_root_slot_name(name);
                         self.emit_line(&format!(
@@ -871,6 +871,10 @@ impl CodeGen {
                         ));
                     } else {
                         self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
+                    }
+                    let expected_llvm = Self::get_llvm_type(ty);
+                    if expected_llvm != "i64" && expected_llvm != "void" {
+                        tmp = self.emit_abi_cast(&tmp, &TejxType::Int64, ty);
                     }
                     return tmp;
                 }
@@ -1001,7 +1005,7 @@ impl CodeGen {
                 // Should check globals here properly
                 if name.starts_with("g_") || self.declared_globals.contains(name) {
                     self.temp_counter += 1;
-                    let val_reg = format!("%gval_{}", self.temp_counter);
+                    let mut val_reg = format!("%gval_{}", self.temp_counter);
                     let g_name = Self::canonical_global_name(name);
                     if !self.declared_globals.contains(&g_name) {
                         self.global_buffer
@@ -1016,6 +1020,10 @@ impl CodeGen {
                         ));
                     } else {
                         self.emit_line(&format!("{} = load i64, i64* @{}", val_reg, g_name));
+                    }
+                    let expected_llvm = Self::get_llvm_type(ty);
+                    if expected_llvm != "i64" && expected_llvm != "void" {
+                        val_reg = self.emit_abi_cast(&val_reg, &TejxType::Int64, ty);
                     }
                     return val_reg;
                 }

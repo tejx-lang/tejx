@@ -1636,6 +1636,7 @@ pub unsafe fn process_mark_queue() {
 }
 
 unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
+    eprintln!("*** MAJOR GC TRIGGERED ***");
     if GC_BACKGROUND_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
         // A GC is already running in the background. Don't start another one.
         // If we really need memory, we could spinloop here, but returning is safer to prevent deadlocks.
@@ -2610,6 +2611,7 @@ unsafe fn resume_safepoint() {
 }
 
 pub unsafe fn minor_gc_locked() {
+    eprintln!("*** MINOR GC TRIGGERED ***");
     // minor_gc_locked: called under GC lock, evacuates young gen
     crate::rt_gc_prepare_array_forward();
     clear_all_tlabs();

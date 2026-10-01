@@ -1,10 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use corosensei::{Coroutine, Yielder};
-use corosensei::stack::{Stack, StackPointer, STACK_ALIGNMENT};
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use once_cell::sync::Lazy;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Mutex;
 use std::thread;
 use std::collections::{HashMap, HashSet};
@@ -12,6 +10,7 @@ use mio::{Events, Poll, Registry, Token, Interest};
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr::NonNull;
 use crate::constants::*;
+use crate::context::{init_fiber_stack, tejx_context_switch};
 
 /// Set at startup by runtime CLI arguments (`--vt-stack`, `--vthread-stack`, `-Xss`).
 pub static mut ARGV_VT_STACK_SIZE: usize = 0;
@@ -109,6 +108,18 @@ impl DynamicStack {
     pub fn capacity(&self) -> usize {
         self.layout.size() - STACK_REDZONE_SIZE
     }
+
+    #[inline]
+    pub fn base(&self) -> *mut u8 {
+        // Base is the highest address since stacks grow downwards towards limit
+        (self.ptr.as_ptr() as usize + self.layout.size()) as *mut u8
+    }
+
+    #[inline]
+    pub fn limit(&self) -> *mut u8 {
+        // Limit is the lowest address of the allocated stack buffer including redzone
+        self.ptr.as_ptr()
+    }
 }
 
 impl Drop for DynamicStack {
@@ -116,22 +127,6 @@ impl Drop for DynamicStack {
         unsafe {
             dealloc(self.ptr.as_ptr(), self.layout);
         }
-    }
-}
-
-unsafe impl Stack for DynamicStack {
-    #[inline]
-    fn base(&self) -> StackPointer {
-        // Base is the highest address since stacks grow downwards towards limit
-        let top = self.ptr.as_ptr() as usize + self.layout.size();
-        StackPointer::new(top).expect("valid base stack pointer")
-    }
-
-    #[inline]
-    fn limit(&self) -> StackPointer {
-        // Limit is the lowest address of the allocated stack buffer including redzone
-        let lim = self.ptr.as_ptr() as usize;
-        StackPointer::new(lim).expect("valid limit stack pointer")
     }
 }
 
@@ -143,18 +138,17 @@ pub struct PooledStack {
     inner: Option<DynamicStack>,
 }
 
-unsafe impl Stack for PooledStack {
+impl PooledStack {
     #[inline]
-    fn base(&self) -> StackPointer {
+    pub fn base(&self) -> *mut u8 {
         self.inner.as_ref().unwrap().base()
     }
+
     #[inline]
-    fn limit(&self) -> StackPointer {
+    pub fn limit(&self) -> *mut u8 {
         self.inner.as_ref().unwrap().limit()
     }
-}
 
-impl PooledStack {
     #[inline]
     pub fn check_canary(&self) -> bool {
         self.inner.as_ref().map(|s| s.check_canary()).unwrap_or(true)
@@ -264,10 +258,14 @@ impl YieldReason {
 
 pub struct VThread {
     id: usize,
-    coro: Coroutine<(), YieldReason, (), PooledStack>,
+    _stack: PooledStack,
+    sp: *mut u8,
+    worker_sp: *mut u8,
+    done: bool,
+    entry: Option<Box<dyn FnOnce() + Send + 'static>>,
+    yield_reason: YieldReason,
     gc_state: Arc<Mutex<Option<crate::gc::GcContextState>>>,
     local_state: Option<crate::VThreadLocalState>,
-    yielder_ptr: Arc<AtomicUsize>,
     slot_live: Arc<AtomicBool>,
 }
 
@@ -480,9 +478,11 @@ impl Scheduler {
 }
 
 thread_local! {
-    static LOCAL_WORKER: std::cell::Cell<*const Worker<Box<VThread>>> = std::cell::Cell::new(std::ptr::null());
-    static CURRENT_YIELDER: std::cell::Cell<Option<*const Yielder<(), YieldReason>>> = std::cell::Cell::new(None);
-    static STEAL_RNG: std::cell::Cell<u32> = std::cell::Cell::new(123456789);
+    static LOCAL_WORKER: Cell<*const Worker<Box<VThread>>> = Cell::new(std::ptr::null());
+    static CURRENT_VTHREAD: Cell<*mut VThread> = Cell::new(std::ptr::null_mut());
+    static STEAL_RNG: Cell<u32> = Cell::new(123456789);
+    static PREEMPT_TICK: Cell<u32> = Cell::new(0);
+    static PREEMPT_LAST_MS: Cell<u64> = Cell::new(0);
 }
 
 pub fn vt_init(num_workers: usize) {
@@ -505,6 +505,7 @@ pub fn vt_init(num_workers: usize) {
     for (i, worker) in workers.into_iter().enumerate() {
         thread::Builder::new()
             .name(format!("tejx-worker-{}", i))
+            .stack_size(2 * 1024 * 1024)
             .spawn(move || worker_loop(i, worker))
             .unwrap();
     }
@@ -560,11 +561,73 @@ pub fn vt_deregister_io<S: mio::event::Source>(source: &mut S, token_id: usize) 
     data.parked.remove(&token_id);
 }
 
-#[inline(always)]
-unsafe fn vthread_suspend(yielder: *const Yielder<(), YieldReason>, reason: YieldReason) {
-    (*yielder).suspend(reason);
+#[inline(never)]
+unsafe fn vthread_terminate() -> ! {
+    let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+    if !vt_ptr.is_null() {
+        let vt = &mut *vt_ptr;
+        vt.done = true;
+        let worker_sp = vt.worker_sp;
+        if !worker_sp.is_null() {
+            let mut dummy_sp: *mut u8 = std::ptr::null_mut();
+            tejx_context_switch(&mut dummy_sp, worker_sp);
+        }
+    }
+
+    #[cfg(unix)]
+    libc::pthread_exit(std::ptr::null_mut());
+    #[cfg(not(unix))]
+    std::process::exit(0);
 }
 
+extern "C" fn vthread_entry_trampoline() -> ! {
+    let entry = {
+        let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+        if !vt_ptr.is_null() {
+            let vt = unsafe { &mut *vt_ptr };
+            vt.entry.take()
+        } else {
+            None
+        }
+    };
+
+    if let Some(f) = entry {
+        f();
+    }
+
+    unsafe {
+        vthread_terminate();
+    }
+}
+
+#[inline(always)]
+pub unsafe fn vthread_suspend(reason: YieldReason) {
+    let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+    if vt_ptr.is_null() {
+        return;
+    }
+    let vt = &mut *vt_ptr;
+    vt.yield_reason = reason;
+
+    if !vt._stack.check_canary() {
+        let base = vt._stack.base() as usize;
+        let limit = vt._stack.limit() as usize;
+        let current_sp = vt.sp as usize;
+        let used = base.saturating_sub(current_sp);
+        let cap = vt._stack.inner.as_ref().map(|s| s.capacity()).unwrap_or(0);
+        eprintln!(
+            "STACK OVERFLOW DETECTED: task {} used {} bytes (limit={} cap={} sp={:#x})",
+            vt.id, used, limit, cap, current_sp
+        );
+    }
+
+    let worker_sp = vt.worker_sp;
+    if worker_sp.is_null() {
+        return;
+    }
+
+    tejx_context_switch(&mut vt.sp, worker_sp);
+}
 
 pub fn vt_wait_io(token_id: usize) {
     let shard_idx = token_id % NUM_IO_SHARDS;
@@ -575,9 +638,8 @@ pub fn vt_wait_io(token_id: usize) {
             return;
         }
     }
-    let yielder_ptr = CURRENT_YIELDER.with(|y| y.get());
-    if let Some(ptr) = yielder_ptr {
-        unsafe { vthread_suspend(ptr, YieldReason::io_park(token_id)) };
+    if vt_is_vthread() {
+        unsafe { vthread_suspend(YieldReason::io_park(token_id)) };
     } else {
         unsafe {
             if crate::gc::is_safepoint_requested() {
@@ -586,11 +648,6 @@ pub fn vt_wait_io(token_id: usize) {
         }
         thread::yield_now();
     }
-}
-
-#[inline(always)]
-fn resume_vthread_coro(coro: &mut Coroutine<(), YieldReason, (), PooledStack>) -> corosensei::CoroutineResult<YieldReason, ()> {
-    coro.resume(())
 }
 
 fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
@@ -710,7 +767,7 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
                 }
             }
 
-            if !t.coro.done() {
+            if !t.done {
                 let saved_gc = lock_gc_state(&t.gc_state).take();
                 if let Some(state) = saved_gc {
                     unsafe { crate::gc::rt_restore_gc_context(state); }
@@ -724,50 +781,52 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
                     crate::clear_vthread_local_state();
                 }
 
-                let yptr = t.yielder_ptr.load(Ordering::SeqCst);
-                if yptr != 0 {
-                    CURRENT_YIELDER.with(|y| y.set(Some(yptr as *const _)));
-                }
-
                 PREEMPT_LAST_MS.with(|c| c.set(current_time_ms()));
                 PREEMPT_TICK.with(|c| c.set(0));
 
-                let reason = resume_vthread_coro(&mut t.coro);
+                let vt_raw: *mut VThread = &mut *t;
+                CURRENT_VTHREAD.with(|v| v.set(vt_raw));
 
-                CURRENT_YIELDER.with(|y| y.set(None));
+                unsafe {
+                    tejx_context_switch(&mut (*vt_raw).worker_sp, (*vt_raw).sp);
+                }
 
-                match reason {
-                    corosensei::CoroutineResult::Yield(r) => {
-                        *lock_gc_state(&t.gc_state) = Some(unsafe { crate::gc::rt_save_gc_context() });
-                        t.local_state = Some(crate::save_vthread_local_state());
-                        if r.is_cooperative() {
+                CURRENT_VTHREAD.with(|v| v.set(std::ptr::null_mut()));
+
+                if !t._stack.check_canary() {
+                    eprintln!("STACK OVERFLOW DETECTED: task {} canary corrupted!", t.id);
+                }
+
+                if !t.done {
+                    let r = t.yield_reason;
+                    *lock_gc_state(&t.gc_state) = Some(unsafe { crate::gc::rt_save_gc_context() });
+                    t.local_state = Some(crate::save_vthread_local_state());
+                    if r.is_cooperative() {
+                        SCHEDULER.push_global(t);
+                    } else if let Some(until) = r.as_sleep() {
+                        SCHEDULER.add_timer(until, t);
+                    } else if let Some(token_id) = r.as_io_park() {
+                        let shard_idx = token_id % NUM_IO_SHARDS;
+                        let shard = &SCHEDULER.io_shards[shard_idx];
+                        let mut data = match shard.data.lock() {
+                            Ok(g) => g,
+                            Err(e) => e.into_inner(),
+                        };
+                        if data.ready_tokens.remove(&token_id) {
+                            drop(data);
                             SCHEDULER.push_global(t);
-                        } else if let Some(until) = r.as_sleep() {
-                            SCHEDULER.add_timer(until, t);
-                        } else if let Some(token_id) = r.as_io_park() {
-                            let shard_idx = token_id % NUM_IO_SHARDS;
-                            let shard = &SCHEDULER.io_shards[shard_idx];
-                            let mut data = match shard.data.lock() {
-                                Ok(g) => g,
-                                Err(e) => e.into_inner(),
-                            };
-                            if data.ready_tokens.remove(&token_id) {
-                                drop(data);
-                                SCHEDULER.push_global(t);
-                            } else {
-                                data.parked.insert(token_id, t);
-                            }
+                        } else {
+                            data.parked.insert(token_id, t);
                         }
                     }
-                    corosensei::CoroutineResult::Return(()) => {
-                        *lock_gc_state(&t.gc_state) = None;
-                        t.local_state = None;
-                        crate::clear_vthread_local_state();
-                        unsafe { (*ctx_ptr).roots_top = 0; }
-                        let slot_live = t.slot_live.clone();
-                        drop(t);
-                        slot_live.store(false, Ordering::SeqCst);
-                    }
+                } else {
+                    *lock_gc_state(&t.gc_state) = None;
+                    t.local_state = None;
+                    crate::clear_vthread_local_state();
+                    unsafe { (*ctx_ptr).roots_top = 0; }
+                    let slot_live = t.slot_live.clone();
+                    drop(t);
+                    slot_live.store(false, Ordering::SeqCst);
                 }
             } else {
                 *lock_gc_state(&t.gc_state) = None;
@@ -809,51 +868,30 @@ where
     let gc_state = Arc::new(Mutex::new(None));
     register_vthread_gc(id, gc_state.clone());
 
-    let yielder_ptr_arc = Arc::new(AtomicUsize::new(0));
-    let yielder_ptr_clone = yielder_ptr_arc.clone();
-
     let stack = acquire_stack(stack_size);
-    
-    let coro: Coroutine<(), YieldReason, (), PooledStack> = Coroutine::with_stack(stack, move |yielder: &Yielder<(), YieldReason>, _| {
-        let ptr = yielder as *const _ as usize;
-        yielder_ptr_clone.store(ptr, Ordering::SeqCst);
-        CURRENT_YIELDER.with(|y| y.set(Some(ptr as *const _)));
-        
-        f();
-        
-        CURRENT_YIELDER.with(|y| y.set(None));
-    });
+    let initial_sp = unsafe { init_fiber_stack(stack.base(), vthread_entry_trampoline) };
 
     let vt = Box::new(VThread {
         id,
-        coro,
+        _stack: stack,
+        sp: initial_sp,
+        worker_sp: std::ptr::null_mut(),
+        done: false,
+        entry: Some(Box::new(f)),
+        yield_reason: YieldReason::cooperative(),
         gc_state,
         local_state: None,
-        yielder_ptr: yielder_ptr_arc,
         slot_live,
     });
 
-    let mut to_push = Some(vt);
-    LOCAL_WORKER.with(|w| {
-        let ptr = w.get();
-        if !ptr.is_null() {
-            if let Some(t) = to_push.take() {
-                unsafe { (*ptr).push(t) };
-                SCHEDULER.notify_worker();
-            }
-        }
-    });
-    if let Some(t) = to_push {
-        SCHEDULER.push_global(t);
-    }
+    SCHEDULER.push_global(vt);
 }
 
 #[inline(always)]
 pub fn vt_sleep(ms: u64) {
-    let yielder_ptr = CURRENT_YIELDER.with(|y| y.get());
-    if let Some(ptr) = yielder_ptr {
+    if vt_is_vthread() {
         let until = current_time_ms().saturating_add(ms);
-        unsafe { vthread_suspend(ptr, YieldReason::sleep(until)) };
+        unsafe { vthread_suspend(YieldReason::sleep(until)) };
     } else {
         let _guard = crate::ThreadIoGuard::new();
         std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -881,9 +919,8 @@ pub fn vt_join(slot_live: &Arc<AtomicBool>) {
 
 #[inline(always)]
 pub fn vt_yield() {
-    let yielder_ptr = CURRENT_YIELDER.with(|y| y.get());
-    if let Some(ptr) = yielder_ptr {
-        unsafe { vthread_suspend(ptr, YieldReason::cooperative()) };
+    if vt_is_vthread() {
+        unsafe { vthread_suspend(YieldReason::cooperative()) };
     } else {
         thread::yield_now();
     }
@@ -897,12 +934,7 @@ where
 }
 
 pub fn vt_is_vthread() -> bool {
-    CURRENT_YIELDER.with(|y| y.get().is_some())
-}
-
-thread_local! {
-    static PREEMPT_TICK: std::cell::Cell<u32> = std::cell::Cell::new(0);
-    static PREEMPT_LAST_MS: std::cell::Cell<u64> = std::cell::Cell::new(0);
+    CURRENT_VTHREAD.with(|v| !v.get().is_null())
 }
 
 pub fn vt_preempt_tick() {
@@ -934,27 +966,74 @@ mod tests {
         let stack = DynamicStack::new(4096).expect("allocate 4KB stack");
         assert_eq!(stack.capacity(), 4096);
         assert!(stack.check_canary());
-        assert_eq!(stack.base().get() % STACK_ALIGNMENT, 0);
-        assert_eq!(stack.limit().get() % STACK_ALIGNMENT, 0);
-        assert!(stack.base().get() > stack.limit().get());
-        assert_eq!(stack.base().get() - stack.limit().get(), 4096);
+        assert_eq!(stack.base() as usize % STACK_ALIGNMENT, 0);
+        assert_eq!(stack.limit() as usize % STACK_ALIGNMENT, 0);
+        assert!(stack.base() > stack.limit());
+        assert_eq!(stack.base() as usize - stack.limit() as usize, 4096 + STACK_REDZONE_SIZE);
     }
 
     #[test]
-    fn test_coroutine_with_dynamic_stack() {
+    fn test_native_context_switch_roundtrip() {
+        static mut COMPLETED: bool = false;
+        static mut TEST_WORKER_SP: *mut u8 = std::ptr::null_mut();
+        unsafe { COMPLETED = false; }
         let stack = acquire_stack(4096);
-        let mut coro = Coroutine::with_stack(stack, |yielder, _| {
-            yielder.suspend(YieldReason::cooperative());
-            42
-        });
-        match coro.resume(()) {
-            corosensei::CoroutineResult::Yield(r) if r.is_cooperative() => {}
-            _ => panic!("expected yield"),
+
+        extern "C" fn test_fiber_entry() -> ! {
+            unsafe {
+                COMPLETED = true;
+                let worker_sp = TEST_WORKER_SP;
+                let mut dummy_sp: *mut u8 = std::ptr::null_mut();
+                tejx_context_switch(&mut dummy_sp, worker_sp);
+                unreachable!();
+            }
         }
-        match coro.resume(()) {
-            corosensei::CoroutineResult::Return(val) => assert_eq!(val, 42),
-            _ => panic!("expected return"),
+
+        let initial_sp = unsafe { init_fiber_stack(stack.base(), test_fiber_entry) };
+
+        unsafe {
+            tejx_context_switch(&raw mut TEST_WORKER_SP, initial_sp);
         }
+
+        assert!(unsafe { COMPLETED });
+        assert!(stack.check_canary());
+    }
+
+    #[test]
+    fn test_native_context_switch_yield_and_resume() {
+        static mut STEP: usize = 0;
+        static mut TEST_WORKER_SP: *mut u8 = std::ptr::null_mut();
+        static mut FIBER_SP: *mut u8 = std::ptr::null_mut();
+        unsafe { STEP = 0; }
+        let stack = acquire_stack(4096);
+
+        extern "C" fn test_yield_entry() -> ! {
+            unsafe {
+                STEP = 1;
+                tejx_context_switch(&raw mut FIBER_SP, TEST_WORKER_SP);
+
+                // Resumed!
+                STEP = 2;
+                let mut dummy_sp: *mut u8 = std::ptr::null_mut();
+                tejx_context_switch(&mut dummy_sp, TEST_WORKER_SP);
+                unreachable!();
+            }
+        }
+
+        let initial_sp = unsafe { init_fiber_stack(stack.base(), test_yield_entry) };
+
+        // First switch to fiber
+        unsafe {
+            tejx_context_switch(&raw mut TEST_WORKER_SP, initial_sp);
+        }
+        assert_eq!(unsafe { STEP }, 1);
+
+        // Resume fiber
+        unsafe {
+            tejx_context_switch(&raw mut TEST_WORKER_SP, FIBER_SP);
+        }
+        assert_eq!(unsafe { STEP }, 2);
+        assert!(stack.check_canary());
     }
 
     #[test]

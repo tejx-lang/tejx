@@ -160,6 +160,14 @@ impl CodeGen {
                     self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
                 }
 
+                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
+                let final_val = if let Some(v) = value {
+                    let val_str = self.resolve_value(v);
+                    Some(self.emit_abi_cast(&val_str, v.get_type(), &func.return_type))
+                } else {
+                    None
+                };
+
                 self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");
 
                 if let Some(arena) = self.current_arena.clone() {
@@ -170,10 +178,7 @@ impl CodeGen {
                     self.emit_line("call void @rt_leave_frame()");
                 }
 
-                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
-                if let Some(v) = value {
-                    let val_str = self.resolve_value(v);
-                    let final_val = self.emit_abi_cast(&val_str, v.get_type(), &func.return_type);
+                if let Some(final_val) = final_val {
                     self.emit_line(&format!("ret {} {}", ret_llvm_ty, final_val));
                 } else if ret_llvm_ty == "void" {
                     self.emit_line("ret void");
@@ -2495,6 +2500,7 @@ impl CodeGen {
     }
 
     pub(crate) fn emit_throw(&mut self, value: &MIRValue) {
+        let val = self.resolve_value(value);
         if let Some(arena) = self.current_arena.clone() {
             self.declare_runtime_fn(
                 RT_ARENA_DESTROY,
@@ -2503,7 +2509,6 @@ impl CodeGen {
             self.emit_line(&format!("call void @{}(i64 {})", RT_ARENA_DESTROY, arena));
         }
         self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");
-        let val = self.resolve_value(value);
         self.emit_line(&format!("call void @tejx_throw(i64 {})", val));
         self.emit_line("unreachable");
     }
