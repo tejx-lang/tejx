@@ -1,25 +1,202 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, Once};
 
-// --- GC Memory System Constants ---
-pub const YOUNG_GEN_SIZE: usize = 16 * 1024 * 1024; // 16MB Eden
-pub const SURVIVOR_SIZE: usize = 2 * 1024 * 1024; // 2MB each
-pub const OLD_GEN_SIZE: usize = 4 * 1024 * 1024 * 1024; // 4GB Old Gen
-pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB
+// =============================================================================
+// GC MEMORY CONFIGURATION
+// =============================================================================
+//
+// OLD_GEN_SIZE = maximum old-generation heap (virtual address reservation).
+// Physical pages are only allocated by the OS as memory is actually touched.
+//
+// Configuration priority (highest to lowest):
+//   1. Runtime argument:  ./myapp -Xmx16g       — Java-style  (or --tejx-heap 16gb)
+//   2. Auto-detection:    min(50% of system RAM, 2GB)
+//
+// All size strings accept: "16gb", "8192mb", "512kb", "1073741824" (raw bytes)
+// =============================================================================
+
+use crate::constants::{
+    DEFAULT_ARENA_SIZE, DEFAULT_GC_ROOT_STACK_SIZE, DEFAULT_LOS_GC_TRIGGER_BYTES,
+    DEFAULT_OLD_GEN_SIZE, DEFAULT_SURVIVOR_SIZE, DEFAULT_YOUNG_GEN_SIZE,
+    LARGE_OBJECT_THRESHOLD as CONST_LARGE_OBJECT_THRESHOLD, MAX_HEAP_CEILING, MIN_OLD_GEN_SIZE,
+    NUM_FAST_BINS as CONST_NUM_FAST_BINS,
+};
+
+pub static mut YOUNG_GEN_SIZE: usize = DEFAULT_YOUNG_GEN_SIZE;
+pub static mut SURVIVOR_SIZE: usize = DEFAULT_SURVIVOR_SIZE;
+pub const LARGE_OBJECT_THRESHOLD: usize = CONST_LARGE_OBJECT_THRESHOLD;
+pub const GC_MIN_HEAP: usize = MIN_OLD_GEN_SIZE;
+pub const GC_MAX_HEAP: usize = MAX_HEAP_CEILING;
+
+/// Final old-gen size, set once at startup by `rt_init_gc()`.
+/// Default is overwritten to the detected value before mmap.
+pub static mut OLD_GEN_SIZE: usize = DEFAULT_OLD_GEN_SIZE;
+
+/// Set by argv parsing (`-Xmx16g`, `--tejx-heap 16gb`) in `tejx_runtime_main`.
+/// 0 = not set (fall through to env/autodetect).
+pub static mut ARGV_GC_HEAP_LIMIT: usize = 0;
+
+/// Detect the optimal old-gen heap size at startup.
+/// Called once from `rt_init_gc()` after argv/env parsing is complete.
+pub(crate) unsafe fn detect_old_gen_size() -> usize {
+    // Priority 1: -Xmx16g / --max-old-space-size / --tejx-heap runtime argument
+    if ARGV_GC_HEAP_LIMIT > 0 {
+        return ARGV_GC_HEAP_LIMIT.clamp(MIN_OLD_GEN_SIZE, GC_MAX_HEAP);
+    }
+
+    // Priority 2: TEJX_HEAP environment variable
+    if let Ok(val) = std::env::var("TEJX_HEAP") {
+        if let Some(bytes) = parse_size_str(&val) {
+            return bytes.clamp(MIN_OLD_GEN_SIZE, GC_MAX_HEAP);
+        }
+    }
+
+    // Priority 3: default initial old-gen size (512 MB)
+    DEFAULT_OLD_GEN_SIZE
+}
+
+/// Parse size strings: "16gb", "8192mb", "512kb", or raw bytes "1073741824".
+/// Case-insensitive. Returns None on parse failure.
+pub(crate) fn parse_size_str(s: &str) -> Option<usize> {
+    let s = s.trim().to_lowercase();
+    // Support Java-style suffix (g/m/k) in addition to full words
+    if s.ends_with("gib") || s.ends_with("gb") || s.ends_with('g') {
+        let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+        return n.parse::<usize>().ok().map(|v| v * 1024 * 1024 * 1024);
+    }
+    if s.ends_with("mib") || s.ends_with("mb") || s.ends_with('m') {
+        let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+        return n.parse::<usize>().ok().map(|v| v * 1024 * 1024);
+    }
+    if s.ends_with("kib") || s.ends_with("kb") || s.ends_with('k') {
+        let n = s.trim_end_matches(|c: char| c.is_alphabetic()).trim();
+        return n.parse::<usize>().ok().map(|v| v * 1024);
+    }
+    s.parse::<usize>().ok() // raw bytes
+}
+
+/// Parse GC-related arguments from argv at process start.
+/// Supports:
+///   --max-old-space-size=2048         (Node.js style, value in MB by default)
+///   -Xmx16g / -Xmx16gb / -Xmx16384m   (Java-style)
+///   --tejx-heap 16gb / --tejx-heap=16gb (long-form)
+/// Must be called BEFORE rt_init_gc().
+pub unsafe fn parse_gc_argv(argc: i32, argv: *mut *mut u8) {
+    let args: Vec<String> = (0..argc as usize)
+        .filter_map(|i| {
+            let ptr = *argv.add(i);
+            if ptr.is_null() {
+                return None;
+            }
+            std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char)
+                .to_str()
+                .ok()
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = &args[i];
+
+        // --max-old-space-size=2048 (Node.js style, defaults to MB if no suffix)
+        if let Some(val) = arg.strip_prefix("--max-old-space-size=") {
+            if let Some(bytes) = parse_size_str(val) {
+                // If it's a raw number (like "2048"), parse_size_str parses it as bytes.
+                // Node.js treats raw numbers as Megabytes.
+                if val.chars().all(|c| c.is_ascii_digit()) {
+                    ARGV_GC_HEAP_LIMIT = bytes * 1024 * 1024;
+                } else {
+                    ARGV_GC_HEAP_LIMIT = bytes; // user provided a suffix like 2gb
+                }
+            }
+        }
+        // -Xmx16g  (Java-style, no space)
+        else if let Some(val) = arg.strip_prefix("-Xmx") {
+            if let Some(bytes) = parse_size_str(val) {
+                ARGV_GC_HEAP_LIMIT = bytes;
+            }
+        }
+        // --tejx-heap=16gb  (no space)
+        else if let Some(val) = arg.strip_prefix("--tejx-heap=") {
+            if let Some(bytes) = parse_size_str(val) {
+                ARGV_GC_HEAP_LIMIT = bytes;
+            }
+        }
+        // --tejx-heap 16gb  (with space, next arg is value)
+        else if arg == "--tejx-heap" {
+            if i + 1 < args.len() {
+                if let Some(bytes) = parse_size_str(&args[i + 1]) {
+                    ARGV_GC_HEAP_LIMIT = bytes;
+                    i += 1; // skip the value arg
+                }
+            }
+        }
+        // --max-old-space-size 2048 (with space, next arg is value)
+        else if arg == "--max-old-space-size" {
+            if i + 1 < args.len() {
+                let val = &args[i + 1];
+                if let Some(bytes) = parse_size_str(val) {
+                    if val.chars().all(|c| c.is_ascii_digit()) {
+                        ARGV_GC_HEAP_LIMIT = bytes * 1024 * 1024;
+                    } else {
+                        ARGV_GC_HEAP_LIMIT = bytes;
+                    }
+                    i += 1; // skip the value arg
+                }
+            }
+        }
+        // --vthread-stack=4k or --vt-stack=4k or -Xss=4k or -Xss4k
+        else if let Some(val) = arg.strip_prefix("--vthread-stack=") {
+            if let Some(bytes) = parse_size_str(val) {
+                crate::vthread::ARGV_VT_STACK_SIZE = bytes;
+            }
+        } else if let Some(val) = arg.strip_prefix("--vt-stack=") {
+            if let Some(bytes) = parse_size_str(val) {
+                crate::vthread::ARGV_VT_STACK_SIZE = bytes;
+            }
+        } else if let Some(val) = arg.strip_prefix("-Xss=") {
+            if let Some(bytes) = parse_size_str(val) {
+                crate::vthread::ARGV_VT_STACK_SIZE = bytes;
+            }
+        } else if let Some(val) = arg.strip_prefix("-Xss") {
+            if let Some(bytes) = parse_size_str(val) {
+                crate::vthread::ARGV_VT_STACK_SIZE = bytes;
+            }
+        } else if (arg == "--vthread-stack" || arg == "--vt-stack" || arg == "-Xss") && i + 1 < args.len() {
+            if let Some(bytes) = parse_size_str(&args[i + 1]) {
+                crate::vthread::ARGV_VT_STACK_SIZE = bytes;
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+}
 
 static GC_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 static GC_INIT: Once = Once::new();
 
-#[derive(Default)]
+pub static FINALIZER_QUEUE: std::sync::LazyLock<
+    std::sync::Mutex<Vec<(unsafe extern "C" fn(i64), i64)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+pub static FINALIZER_CONDVAR: std::sync::LazyLock<std::sync::Condvar> =
+    std::sync::LazyLock::new(|| std::sync::Condvar::new());
+
+const FLAG_FINALIZED: u32 = 0x1;
+pub const FLAG_REMSET_DIRTY: u32 = 0x2;
+
 struct StaticRoots {
     slots: Vec<Option<i64>>,
     free: Vec<usize>,
 }
 
-static STATIC_ROOTS: LazyLock<Mutex<StaticRoots>> =
-    LazyLock::new(|| Mutex::new(StaticRoots::default()));
+static STATIC_ROOTS: LazyLock<crate::mutex::SpinMutex<StaticRoots>> = LazyLock::new(|| {
+    let free = Vec::with_capacity(65536);
+    let slots = Vec::with_capacity(65536);
+    crate::mutex::SpinMutex::new(StaticRoots { slots, free })
+});
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -29,7 +206,7 @@ pub struct ObjectHeader {
     pub flags: u16,    // Bitmask for internal states
     pub length: u32,   // Active elements (for arrays/strings)
     pub capacity: u32, // Total allocated slots (for arrays/strings)
-    pub padding: u32,  // Ensure 8-byte alignment
+    pub gc_flags: u32, // GC metadata flags (FLAG_REMSET_DIRTY, FLAG_FINALIZED)
 }
 
 const GC_MARK_BIT: u64 = 0x1;
@@ -88,10 +265,46 @@ pub static mut OLD_START: *mut u8 = 0 as *mut u8;
 pub static mut OLD_TOP: *mut u8 = 0 as *mut u8;
 #[no_mangle]
 pub static mut OLD_END: *mut u8 = 0 as *mut u8;
+#[no_mangle]
+pub static mut OLD_BYTES_ALLOCATED: usize = 0;
+// Adaptive GC trigger threshold.
+// Initial trigger is dynamically set to 60% of OLD_GEN_SIZE at startup.
+// After each major GC, it dynamically adapts based on live_set * growth_factor,
+// but never drops below the 60% floor, ensuring maximum performance for small workloads.
+pub static mut OLD_GEN_GC_THRESHOLD: usize = 0; // set in rt_init_gc
 
+pub const NUM_FAST_BINS: usize = CONST_NUM_FAST_BINS;
+pub static FAST_FREE_LIST: std::sync::LazyLock<[Mutex<Vec<usize>>; NUM_FAST_BINS]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|_| Mutex::new(Vec::new())));
+pub static LARGE_FREE_LIST: std::sync::LazyLock<
+    Mutex<std::collections::BTreeMap<usize, Vec<usize>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
+pub static PROMOTED_LIST: std::sync::LazyLock<Mutex<Vec<usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+pub static GLOBAL_MARK_QUEUE: std::sync::LazyLock<Mutex<Vec<i64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+pub const GC_PHASE_IDLE: u8 = 0;
+pub const GC_PHASE_MARK: u8 = 1;
+pub static GC_PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(GC_PHASE_IDLE);
+pub static GC_BACKGROUND_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+// Growth factor for the GC trigger threshold, initialized from env TEJXGC at startup.
+// TEJXGC=50 (default) → next trigger = live_bytes × 1.5 (50% headroom above live set)
+// TEJXGC=100          → next trigger = live_bytes × 2.0 (Go's default — doubles)
+// TEJXGC=10           → next trigger = live_bytes × 1.1 (tight, for low-memory containers)
+pub static GC_PERCENTAGE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_GC_PERCENTAGE);
+pub static GC_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[inline]
+pub fn get_gc_growth_factor() -> f64 {
+    1.0_f64 + (GC_PERCENTAGE.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0)
+}
 // --- Large Object Space (LOS) ---
 pub const MAX_LOS_OBJECTS: usize = 4096;
-const MIN_LOS_GC_TRIGGER_BYTES: usize = 8 * 1024 * 1024;
+const MIN_LOS_GC_TRIGGER_BYTES: usize = DEFAULT_LOS_GC_TRIGGER_BYTES;
 static LOS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 #[no_mangle]
 pub static mut LOS_OBJECTS: [*mut u8; MAX_LOS_OBJECTS] = [0 as *mut u8; MAX_LOS_OBJECTS];
@@ -119,140 +332,11 @@ pub struct TypeEntry {
 #[no_mangle]
 pub static mut TYPE_TABLE: [TypeEntry; MAX_TYPES] = unsafe { std::mem::zeroed() };
 
-unsafe fn rewrite_timer_objects_after_minor(
-    objects: &Mutex<HashMap<i64, i64>>,
-    clear: unsafe extern "C" fn(i64) -> i64,
-    eden_top: *mut u8,
-    from_survivor_top: *mut u8,
-) {
-    let mut objects = match objects.lock() {
-        Ok(objects) => objects,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if objects.is_empty() {
-        return;
-    }
-
-    let mut updated = HashMap::with_capacity(objects.len());
-    let mut to_clear = Vec::new();
-    for (&obj, &timer_id) in objects.iter() {
-        let body = rt_obj_ptr(obj) as *mut u8;
-        if body.is_null() {
-            if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-            continue;
-        }
-
-        let in_old_eden = body >= EDEN_START && body < eden_top;
-        let in_old_from_survivor = body >= FROM_SURVIVOR && body < from_survivor_top;
-        if in_old_eden || in_old_from_survivor {
-            let header = rt_get_header(body);
-            if gc_is_forwarded((*header).gc_word) {
-                let new_header = gc_forward_ptr((*header).gc_word);
-                let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
-                updated.insert((new_body as i64) + HEAP_OFFSET, timer_id);
-            } else if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-        } else {
-            updated.insert(obj, timer_id);
-        }
-    }
-
-    *objects = updated;
-    drop(objects);
-
-    for timer_id in to_clear {
-        clear(timer_id);
-    }
-}
-
-unsafe fn prune_timer_objects_for_major(
-    objects: &Mutex<HashMap<i64, i64>>,
-    clear: unsafe extern "C" fn(i64) -> i64,
-) {
-    let mut objects = match objects.lock() {
-        Ok(objects) => objects,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if objects.is_empty() {
-        return;
-    }
-
-    let mut updated = HashMap::with_capacity(objects.len());
-    let mut to_clear = Vec::new();
-    for (&obj, &timer_id) in objects.iter() {
-        let body = rt_obj_ptr(obj) as *mut u8;
-        if body.is_null() {
-            if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-            continue;
-        }
-
-        if body >= OLD_START && body < OLD_TOP {
-            let header = rt_get_header(body);
-            if gc_is_marked((*header).gc_word) {
-                updated.insert(obj, timer_id);
-            } else if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-        } else if in_los(body) {
-            let header = rt_get_header(body);
-            if gc_is_marked((*header).gc_word) {
-                updated.insert(obj, timer_id);
-            } else if timer_id > 0 {
-                to_clear.push(timer_id);
-            }
-        } else {
-            updated.insert(obj, timer_id);
-        }
-    }
-
-    *objects = updated;
-    drop(objects);
-
-    for timer_id in to_clear {
-        clear(timer_id);
-    }
-}
-
-unsafe fn rewrite_timer_objects_after_major_compaction(objects: &Mutex<HashMap<i64, i64>>) {
-    let mut objects = match objects.lock() {
-        Ok(objects) => objects,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if objects.is_empty() {
-        return;
-    }
-
-    let mut updated = HashMap::with_capacity(objects.len());
-    for (&obj, &timer_id) in objects.iter() {
-        let body = rt_obj_ptr(obj) as *mut u8;
-        if body.is_null() {
-            continue;
-        }
-
-        if body >= OLD_START && body < OLD_TOP {
-            let header = rt_get_header(body);
-            if gc_is_forwarded((*header).gc_word) {
-                let new_header = gc_forward_ptr((*header).gc_word);
-                let new_body = (new_header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
-                updated.insert((new_body as i64) + HEAP_OFFSET, timer_id);
-            } else {
-                updated.insert(obj, timer_id);
-            }
-        } else {
-            updated.insert(obj, timer_id);
-        }
-    }
-
-    *objects = updated;
-}
-
 #[no_mangle]
 pub unsafe fn rt_update_ptr(ptr: *mut i64) {
+    if ptr.is_null() || (ptr as usize) % 8 != 0 {
+        return;
+    }
     let val = *ptr;
     if val < HEAP_OFFSET {
         return;
@@ -297,7 +381,7 @@ pub unsafe extern "C" fn rt_register_type(
 }
 
 pub unsafe fn rt_add_static_root(val: i64) -> usize {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     if let Some(slot) = roots.free.pop() {
         roots.slots[slot] = Some(val);
         return slot;
@@ -307,7 +391,7 @@ pub unsafe fn rt_add_static_root(val: i64) -> usize {
 }
 
 pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
-    let roots = STATIC_ROOTS.lock().unwrap();
+    let roots = STATIC_ROOTS.lock();
     roots.slots.get(slot).and_then(|root| *root).unwrap_or(0)
 }
 
@@ -316,16 +400,15 @@ pub unsafe fn rt_pin_static_root(slot: usize, out: *mut i64) {
         return;
     }
 
-    let _gc_lock = GC_LOCK.lock().unwrap();
     {
-        let roots = STATIC_ROOTS.lock().unwrap();
+        let roots = STATIC_ROOTS.lock();
         *out = roots.slots.get(slot).and_then(|root| *root).unwrap_or(0);
     }
     rt_push_root(out);
 }
 
 pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     if let Some(root) = roots.slots.get_mut(slot) {
         if root.is_some() {
             *root = Some(val);
@@ -334,7 +417,7 @@ pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
 }
 
 pub unsafe fn rt_release_static_root(slot: usize) {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     if let Some(root) = roots.slots.get_mut(slot) {
         if root.take().is_some() {
             roots.free.push(slot);
@@ -343,48 +426,65 @@ pub unsafe fn rt_release_static_root(slot: usize) {
 }
 
 unsafe fn mark_static_roots() {
-    let roots = STATIC_ROOTS.lock().unwrap();
+    let roots = STATIC_ROOTS.lock();
     for root in roots.slots.iter().flatten() {
         let mut tmp = *root;
         mark_object(&mut tmp);
     }
 }
 
+#[allow(dead_code)]
 unsafe fn update_static_roots() {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     for root in roots.slots.iter_mut().flatten() {
         rt_update_ptr(root as *mut i64);
     }
 }
 
 unsafe fn copy_static_roots() {
-    let mut roots = STATIC_ROOTS.lock().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     for root in roots.slots.iter_mut().flatten() {
         copy_object(root as *mut i64);
     }
 }
 
-// --- Write Barrier System ---
-pub const CARD_SHIFT: usize = 9; // 512 bytes per card
-pub static mut CARD_TABLE: *mut u8 = 0 as *mut u8;
-pub static mut CARD_TABLE_SIZE: usize = 0;
+#[allow(dead_code)]
+unsafe fn update_finalizer_queue() {
+    let mut queue = FINALIZER_QUEUE.lock().unwrap();
+    for (_, obj_val) in queue.iter_mut() {
+        rt_update_ptr(obj_val as *mut i64);
+    }
+}
 
+// Removed CARD_TABLE
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier(obj: i64, value: i64) {
     if obj < HEAP_OFFSET || value < HEAP_OFFSET {
         return;
     }
 
+    // 1. Concurrent Mark Write Barrier (Incremental Update)
+    if GC_PHASE.load(std::sync::atomic::Ordering::Relaxed) == GC_PHASE_MARK {
+        MY_CONTEXT.with(|ctx_cell| {
+            let ctx = &*ctx_cell.get();
+            ctx.mark_queue.lock().unwrap().push(value);
+        });
+    }
+
+    // 2. Old -> Young Remembered Set
     let obj_ptr = (obj - HEAP_OFFSET) as *mut u8;
     let value_ptr = (value - HEAP_OFFSET) as *mut u8;
 
-    // We only care about Old -> Young references
-    // Safety: only mark if obj is in Old Gen
-    if obj_ptr >= OLD_START && obj_ptr < OLD_END {
+    if !in_young_gen(obj_ptr) {
         if in_young_gen(value_ptr) {
-            let offset = obj_ptr as usize - OLD_START as usize;
-            let card_idx = offset >> CARD_SHIFT;
-            *CARD_TABLE.add(card_idx) = 1; // Mark dirty
+            let header = rt_get_header(obj_ptr);
+            if ((*header).gc_flags & FLAG_REMSET_DIRTY) == 0 {
+                (*header).gc_flags |= FLAG_REMSET_DIRTY;
+                MY_CONTEXT.with(|ctx_cell| {
+                    let ctx = &*ctx_cell.get();
+                    ctx.remset.lock().unwrap().push(obj_ptr);
+                });
+            }
         }
     }
 }
@@ -395,6 +495,12 @@ pub fn in_young_gen(ptr: *mut u8) -> bool {
             || (ptr >= FROM_SURVIVOR && ptr < FROM_SURVIVOR.add(SURVIVOR_SIZE))
             || (ptr >= TO_SURVIVOR && ptr < TO_SURVIVOR.add(SURVIVOR_SIZE))
     }
+}
+
+#[inline(always)]
+pub unsafe fn in_from_space(ptr: *mut u8) -> bool {
+    (ptr >= EDEN_START && ptr < EDEN_END)
+        || (ptr >= FROM_SURVIVOR && ptr < FROM_SURVIVOR.add(SURVIVOR_SIZE))
 }
 
 pub unsafe fn rt_is_los_ptr(ptr: *mut u8) -> bool {
@@ -501,25 +607,28 @@ pub struct Tlab {
     pub end: *mut u8,
 }
 
-thread_local! {
-    pub static MY_TLAB: std::cell::Cell<Tlab> = std::cell::Cell::new(Tlab {
-        top: std::ptr::null_mut(),
-        end: std::ptr::null_mut(),
-    });
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_clear_tlab() {
-    MY_TLAB.with(|t| {
-        t.set(Tlab {
-            top: std::ptr::null_mut(),
-            end: std::ptr::null_mut(),
-        })
-    });
+    let ctx_ptr = current_thread_context();
+    if !ctx_ptr.is_null() {
+        (*ctx_ptr).tlab_top = std::ptr::null_mut();
+        (*ctx_ptr).tlab_end = std::ptr::null_mut();
+    }
+}
+
+pub unsafe fn clear_all_tlabs() {
+    let registry = lock_registry();
+    for &ctx_wrapper in registry.iter() {
+        let ctx = ctx_wrapper.0;
+        if !ctx.is_null() {
+            (*ctx).tlab_top = std::ptr::null_mut();
+            (*ctx).tlab_end = std::ptr::null_mut();
+        }
+    }
 }
 
 // --- Arena Manager ---
-pub const ARENA_DEFAULT_SIZE: usize = 512 * 1024 * 1024; // 512MB
+pub const ARENA_DEFAULT_SIZE: usize = DEFAULT_ARENA_SIZE;
 
 #[repr(C)]
 pub struct Arena {
@@ -592,10 +701,13 @@ pub unsafe extern "C" fn rt_arena_destroy(arena: *mut Arena) {
 }
 
 // --- GC Safepoints & Thread-Local Roots ---
-pub const GC_STACK_SIZE: usize = 1024 * 64;
+// Each virtual thread owns one root stack. 4k slots (32 KiB) comfortably
+// covers generated request handlers while avoiding a 512 KiB allocation per
+// idle connection under high-concurrency servers.
+pub const GC_STACK_SIZE: usize = DEFAULT_GC_ROOT_STACK_SIZE;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar};
+use std::sync::Arc;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct ThreadContextPtr(pub *mut ThreadContext);
@@ -606,27 +718,66 @@ unsafe impl Sync for ThreadContextPtr {}
 pub static THREAD_REGISTRY: std::sync::LazyLock<Mutex<Vec<ThreadContextPtr>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
+#[inline]
+pub(crate) fn lock_registry() -> std::sync::MutexGuard<'static, Vec<ThreadContextPtr>> {
+    THREAD_REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // Global Safepoint flags
 pub static SAFEPOINT_REQUEST: AtomicBool = AtomicBool::new(false);
-pub static SAFEPOINT_ACK: std::sync::LazyLock<Arc<(Mutex<usize>, Condvar)>> =
-    std::sync::LazyLock::new(|| Arc::new((Mutex::new(0), Condvar::new())));
-pub static SAFEPOINT_RESUME: std::sync::LazyLock<Arc<(Mutex<bool>, Condvar)>> =
-    std::sync::LazyLock::new(|| Arc::new((Mutex::new(false), Condvar::new())));
+pub static SAFEPOINT_ACK: std::sync::LazyLock<Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>> =
+    std::sync::LazyLock::new(|| Arc::new((std::sync::Mutex::new(0), std::sync::Condvar::new())));
+pub static SAFEPOINT_RESUME: std::sync::LazyLock<Arc<(std::sync::Mutex<u64>, std::sync::Condvar)>> =
+    std::sync::LazyLock::new(|| Arc::new((std::sync::Mutex::new(0), std::sync::Condvar::new())));
 
 #[repr(C)]
 pub struct ThreadContext {
     pub roots: [*mut i64; GC_STACK_SIZE],
     pub roots_top: usize,
     pub in_safepoint: AtomicBool,
+    pub in_blocking_io: AtomicBool,
+    pub remset: Mutex<Vec<*mut u8>>,
+    pub mark_queue: Mutex<Vec<i64>>,
+    pub tlab_top: *mut u8,
+    pub tlab_end: *mut u8,
+}
+
+/// Allocate a coroutine's GC context directly in zeroed heap memory.
+///
+/// `roots` is 512 KiB. Initializing it as part of a `Box::new` expression
+/// first places that temporary on the coroutine stack, which makes small
+/// virtual-thread stacks overflow before the program starts. The all-zero
+/// representation is correct for root pointers and `AtomicBool(false)`;
+/// initialize the mutex fields explicitly because they require constructors.
+fn new_thread_context() -> std::cell::UnsafeCell<Box<ThreadContext>> {
+    unsafe {
+        let layout = std::alloc::Layout::new::<ThreadContext>();
+        let raw = std::alloc::alloc_zeroed(layout) as *mut ThreadContext;
+        if raw.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+
+        std::ptr::addr_of_mut!((*raw).roots_top).write(0);
+        std::ptr::addr_of_mut!((*raw).in_safepoint).write(AtomicBool::new(false));
+        std::ptr::addr_of_mut!((*raw).in_blocking_io).write(AtomicBool::new(false));
+        std::ptr::addr_of_mut!((*raw).remset).write(Mutex::new(Vec::new()));
+        std::ptr::addr_of_mut!((*raw).mark_queue).write(Mutex::new(Vec::new()));
+        std::ptr::addr_of_mut!((*raw).tlab_top).write(std::ptr::null_mut());
+        std::ptr::addr_of_mut!((*raw).tlab_end).write(std::ptr::null_mut());
+
+        std::cell::UnsafeCell::new(Box::from_raw(raw))
+    }
 }
 
 thread_local! {
-    pub static MY_CONTEXT: std::cell::UnsafeCell<Box<ThreadContext>> = std::cell::UnsafeCell::new(Box::new(ThreadContext {
-        roots: [std::ptr::null_mut(); GC_STACK_SIZE],
-        roots_top: 0,
-        in_safepoint: AtomicBool::new(false),
-    }));
-    static THREAD_REGISTRATION: std::cell::RefCell<Option<ThreadRegistrationGuard>> = const { std::cell::RefCell::new(None) };
+    static MY_CONTEXT: std::cell::UnsafeCell<Box<ThreadContext>> = new_thread_context()
+}
+thread_local! {
+    static THREAD_REGISTRATION: std::cell::RefCell<Option<ThreadRegistrationGuard>> = std::cell::RefCell::new(None)
+}
+
+pub fn with_my_context<R, F: FnOnce(&std::cell::UnsafeCell<Box<ThreadContext>>) -> R>(f: F) -> R {
+    MY_CONTEXT.with(f)
 }
 
 struct ThreadRegistrationGuard {
@@ -635,10 +786,13 @@ struct ThreadRegistrationGuard {
 
 unsafe fn unregister_thread_context(ctx_ptr: *mut ThreadContext) {
     let removed = {
-        let mut registry = THREAD_REGISTRY.lock().unwrap();
-        let before = registry.len();
-        registry.retain(|&x| x.0 != ctx_ptr);
-        registry.len() != before
+        let mut registry = lock_registry();
+        if let Some(pos) = registry.iter().position(|entry| entry.0 == ctx_ptr) {
+            registry.swap_remove(pos);
+            true
+        } else {
+            false
+        }
     };
 
     if removed
@@ -646,7 +800,7 @@ unsafe fn unregister_thread_context(ctx_ptr: *mut ThreadContext) {
         && !(*ctx_ptr).in_safepoint.load(Ordering::SeqCst)
     {
         let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
+        let mut count = lock.lock().unwrap_or_else(|e| e.into_inner());
         *count += 1;
         cvar.notify_one();
     }
@@ -661,6 +815,38 @@ impl Drop for ThreadRegistrationGuard {
 }
 
 unsafe fn ensure_thread_registered() {
+    // Install a 2 MB alternate signal stack on this OS thread if not yet done.
+    // This is per-OS-thread (not per-coroutine) so we guard with a std thread_local.
+    // The generator crate's overflow handler calls Backtrace::force_capture()
+    // from within the alt-stack — the default 32 KB overflows; 2 MB is safe.
+    {
+        use std::cell::Cell;
+        thread_local! {
+            static ALT_STACK_INSTALLED: Cell<bool> = Cell::new(false);
+        }
+        ALT_STACK_INSTALLED.with(|installed| {
+            if !installed.get() {
+                installed.set(true);
+                const ALT_STACK_SIZE: usize = 2 * 1024 * 1024;
+                let mem = libc::mmap(
+                    std::ptr::null_mut(),
+                    ALT_STACK_SIZE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANON,
+                    -1,
+                    0,
+                );
+                if !std::ptr::eq(mem, libc::MAP_FAILED) {
+                    let mut ss: libc::stack_t = std::mem::zeroed();
+                    ss.ss_sp = mem;
+                    ss.ss_size = ALT_STACK_SIZE;
+                    ss.ss_flags = 0;
+                    libc::sigaltstack(&ss, std::ptr::null_mut());
+                }
+            }
+        });
+    }
+
     MY_CONTEXT.with(|ctx| {
         let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
         THREAD_REGISTRATION.with(|registration| {
@@ -669,7 +855,7 @@ unsafe fn ensure_thread_registered() {
                 return;
             }
 
-            let mut registry = THREAD_REGISTRY.lock().unwrap();
+            let mut registry = lock_registry();
             if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
                 registry.push(ThreadContextPtr(ctx_ptr));
             }
@@ -678,8 +864,20 @@ unsafe fn ensure_thread_registered() {
     });
 }
 
+pub fn is_safepoint_requested() -> bool {
+    SAFEPOINT_REQUEST.load(Ordering::SeqCst)
+}
+
+thread_local! {
+    static CACHED_CTX: std::cell::Cell<*mut ThreadContext> = std::cell::Cell::new(std::ptr::null_mut());
+}
+
 #[inline(always)]
-unsafe fn current_thread_context() -> *mut ThreadContext {
+pub(crate) unsafe fn current_thread_context() -> *mut ThreadContext {
+    let cached = CACHED_CTX.with(|c| c.get());
+    if !cached.is_null() {
+        return cached;
+    }
     let mut ctx_ptr = std::ptr::null_mut();
     MY_CONTEXT.with(|ctx| {
         ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
@@ -689,13 +887,14 @@ unsafe fn current_thread_context() -> *mut ThreadContext {
                 return;
             }
 
-            let mut registry = THREAD_REGISTRY.lock().unwrap();
+            let mut registry = lock_registry();
             if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
                 registry.push(ThreadContextPtr(ctx_ptr));
             }
             *registration = Some(ThreadRegistrationGuard { ctx_ptr });
         });
     });
+    CACHED_CTX.with(|c| c.set(ctx_ptr));
     ctx_ptr
 }
 
@@ -714,37 +913,95 @@ pub unsafe extern "C" fn rt_unregister_thread() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_safepoint_poll() {
-    if !SAFEPOINT_REQUEST.load(Ordering::Relaxed) {
+    if SAFEPOINT_REQUEST.load(Ordering::Relaxed) {
+        rt_safepoint_poll_slow();
         return;
     }
-    rt_safepoint_poll_slow();
+    crate::vthread::vt_preempt_tick();
 }
 
 #[cold]
-unsafe fn rt_safepoint_poll_slow() {
-    if !SAFEPOINT_REQUEST.load(Ordering::Acquire) {
+pub(crate) unsafe fn rt_safepoint_poll_slow() {
+    if !SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
         return;
     }
 
-    let ctx_ptr = current_thread_context();
-    (*ctx_ptr).in_safepoint.store(true, Ordering::Release);
+    rt_clear_tlab();
 
+    let ctx_ptr = current_thread_context();
+    (*ctx_ptr).in_safepoint.store(true, Ordering::SeqCst);
+
+    // Read current epoch from SAFEPOINT_RESUME before acknowledging
+    let (lock, cvar) = &**SAFEPOINT_RESUME;
+    let mut epoch_guard = match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let current_epoch = *epoch_guard;
+
+    // Acknowledge: increment the ack counter so the GC thread can proceed.
     {
-        let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
+        let (ack_lock, ack_cvar) = &**SAFEPOINT_ACK;
+        let mut count = match ack_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         *count += 1;
-        cvar.notify_one();
+        ack_cvar.notify_one();
     }
 
-    {
-        let (lock, cvar) = &**SAFEPOINT_RESUME;
-        let mut resume = lock.lock().unwrap();
-        while !*resume {
-            resume = cvar.wait(resume).unwrap();
+    // Sleep OS thread on condvar until epoch advances OR SAFEPOINT_REQUEST is cleared.
+    // Eliminates spin-yielding and prevents CPU spikes on all worker threads!
+    while SAFEPOINT_REQUEST.load(Ordering::SeqCst) && *epoch_guard == current_epoch {
+        epoch_guard = match cvar.wait_timeout(epoch_guard, std::time::Duration::from_millis(20)) {
+            Ok((guard, _)) => guard,
+            Err(poisoned) => poisoned.into_inner().0,
+        };
+    }
+    drop(epoch_guard);
+
+    (*ctx_ptr).in_safepoint.store(false, Ordering::SeqCst);
+}
+
+pub struct ThreadIoGuard {
+    ctx_ptr: *mut ThreadContext,
+}
+
+impl ThreadIoGuard {
+    pub fn new() -> Self {
+        unsafe {
+            // Clear TLAB before yielding for I/O, because a GC might run and reset Eden.
+            rt_clear_tlab();
+
+            let ctx_ptr = current_thread_context();
+            (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+
+            // If a GC was requested BEFORE we set in_blocking_io to true,
+            // the GC thread might have already included us in target_count.
+            // We MUST wait for the GC to finish before we actually block in I/O!
+            if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+                (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                rt_safepoint_poll_slow();
+                (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+            }
+
+            Self { ctx_ptr }
         }
     }
+}
 
-    (*ctx_ptr).in_safepoint.store(false, Ordering::Release);
+impl Drop for ThreadIoGuard {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.ctx_ptr)
+                .in_blocking_io
+                .store(false, Ordering::SeqCst);
+            // If a GC was requested while we were blocked, we must wait before resuming!
+            if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+                rt_safepoint_poll_slow();
+            }
+        }
+    }
 }
 
 const PROT_READ: i32 = 0x01;
@@ -754,34 +1011,25 @@ const MAP_ANON: i32 = 0x1000;
 
 #[no_mangle]
 pub unsafe fn rt_push_root(ptr: *mut i64) {
-    let ctx_ptr = current_thread_context();
-    if (*ctx_ptr).roots_top >= GC_STACK_SIZE {
-        eprintln!(
-            "FATAL: GC root stack overflow (top={}, limit={})",
-            (*ctx_ptr).roots_top,
-            GC_STACK_SIZE
-        );
-        exit(1);
+    if ptr.is_null() {
+        return;
     }
-    (*ctx_ptr).roots[(*ctx_ptr).roots_top] = ptr;
-    (*ctx_ptr).roots_top += 1;
+    let ctx_ptr = current_thread_context();
+    let top = (*ctx_ptr).roots_top;
+    if top < GC_STACK_SIZE {
+        (*ctx_ptr).roots[top] = ptr;
+        (*ctx_ptr).roots_top = top + 1;
+    }
 }
 
 #[no_mangle]
 pub unsafe fn rt_pop_roots(count: usize) {
-    MY_CONTEXT.with(|ctx| {
-        let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-        if (*ctx_ptr).roots_top >= count {
-            (*ctx_ptr).roots_top -= count;
-        } else {
-            eprintln!(
-                "FATAL: GC root stack underflow (top={}, pop={})",
-                (*ctx_ptr).roots_top,
-                count
-            );
-            exit(1);
-        }
-    });
+    let ctx_ptr = current_thread_context();
+    if (*ctx_ptr).roots_top >= count {
+        (*ctx_ptr).roots_top -= count;
+    } else {
+        (*ctx_ptr).roots_top = 0;
+    }
 }
 
 #[no_mangle]
@@ -789,9 +1037,179 @@ pub unsafe extern "C" fn rt_get_header(body_ptr: *mut u8) -> *mut ObjectHeader {
     (body_ptr as *mut ObjectHeader).offset(-1)
 }
 
+pub struct GcContextState {
+    pub roots: Vec<usize>,
+}
+
+unsafe impl Send for GcContextState {}
+unsafe impl Sync for GcContextState {}
+
+pub unsafe fn rt_save_gc_context() -> GcContextState {
+    let ctx_ptr = current_thread_context();
+    let top = (*ctx_ptr).roots_top.min(GC_STACK_SIZE);
+    let roots = (&(*ctx_ptr).roots)[0..top]
+        .iter()
+        .map(|p| *p as usize)
+        .collect();
+    (*ctx_ptr).roots_top = 0;
+    GcContextState { roots }
+}
+
+pub unsafe fn rt_restore_gc_context(state: GcContextState) {
+    let ctx_ptr = current_thread_context();
+    let len = state.roots.len().min(GC_STACK_SIZE);
+    for (i, val) in state.roots.into_iter().take(len).enumerate() {
+        (*ctx_ptr).roots[i] = val as *mut i64;
+    }
+    (*ctx_ptr).roots_top = len;
+}
+
+extern "C" fn tejx_crash_handler(
+    sig: i32,
+    info: *mut libc::siginfo_t,
+    _ucontext: *mut libc::c_void,
+) {
+    let fault_addr = if !info.is_null() {
+        unsafe { (*info).si_addr }
+    } else {
+        std::ptr::null_mut()
+    };
+
+    // If this is a page fault (SIGSEGV / SIGBUS), check if it's a growable vthread stack hitting guard pages!
+    if (sig == libc::SIGSEGV || sig == libc::SIGBUS) && !fault_addr.is_null() {
+        if unsafe { crate::vthread::try_grow_stack_at(fault_addr as usize) } {
+            // Stack grew successfully! Transparently resume execution at the faulting instruction.
+            return;
+        }
+    }
+
+    eprintln!(
+        "\n💥 CRASH CAUGHT: signal {} on thread {:?} at fault_addr={:p}",
+        sig, std::thread::current().name().unwrap_or("unnamed"), fault_addr
+    );
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    unsafe {
+        let uc = _ucontext as *mut libc::ucontext_t;
+        if !uc.is_null() {
+            let mc = (*uc).uc_mcontext;
+            if !mc.is_null() {
+                let regs = &(*mc).__ss;
+                eprintln!(
+                    "  PC={:#x} LR={:#x} SP={:#x}",
+                    regs.__pc, regs.__lr, regs.__sp
+                );
+                let mut dlinfo: libc::Dl_info = std::mem::zeroed();
+                if libc::dladdr(regs.__pc as *const libc::c_void, &mut dlinfo) != 0 {
+                    let sym = if !dlinfo.dli_sname.is_null() {
+                        std::ffi::CStr::from_ptr(dlinfo.dli_sname).to_string_lossy().into_owned()
+                    } else {
+                        "<unknown>".to_string()
+                    };
+                    let unslid = 0x100000000 + (regs.__pc.saturating_sub(dlinfo.dli_fbase as u64));
+                    eprintln!("  PC symbol: {} (unslid {:#x})", sym, unslid);
+                }
+                let mut dlinfo_lr: libc::Dl_info = std::mem::zeroed();
+                if libc::dladdr(regs.__lr as *const libc::c_void, &mut dlinfo_lr) != 0 {
+                    let sym = if !dlinfo_lr.dli_sname.is_null() {
+                        std::ffi::CStr::from_ptr(dlinfo_lr.dli_sname).to_string_lossy().into_owned()
+                    } else {
+                        "<unknown>".to_string()
+                    };
+                    let unslid = 0x100000000 + (regs.__lr.saturating_sub(dlinfo_lr.dli_fbase as u64));
+                    eprintln!("  LR symbol: {} (unslid {:#x})", sym, unslid);
+                }
+                eprintln!(
+                    "  x0={:#x} x1={:#x} x2={:#x} x3={:#x}",
+                    regs.__x[0], regs.__x[1], regs.__x[2], regs.__x[3]
+                );
+                eprintln!(
+                    "  x4={:#x} x5={:#x} x6={:#x} x7={:#x}",
+                    regs.__x[4], regs.__x[5], regs.__x[6], regs.__x[7]
+                );
+                eprintln!(
+                    "  x8={:#x} x9={:#x} x10={:#x} x11={:#x}",
+                    regs.__x[8], regs.__x[9], regs.__x[10], regs.__x[11]
+                );
+                eprintln!(
+                    "  x12={:#x} x13={:#x} x14={:#x} x15={:#x}",
+                    regs.__x[12], regs.__x[13], regs.__x[14], regs.__x[15]
+                );
+                eprintln!(
+                    "  x16={:#x} x17={:#x} x18={:#x} x19={:#x}",
+                    regs.__x[16], regs.__x[17], regs.__x[18], regs.__x[19]
+                );
+                eprintln!(
+                    "  x20={:#x} x21={:#x} x22={:#x} x23={:#x}",
+                    regs.__x[20], regs.__x[21], regs.__x[22], regs.__x[23]
+                );
+                eprintln!(
+                    "  x24={:#x} x25={:#x} x26={:#x} x27={:#x}",
+                    regs.__x[24], regs.__x[25], regs.__x[26], regs.__x[27]
+                );
+                eprintln!(
+                    "  x28={:#x} x29(fp)={:#x} x30(lr)={:#x}",
+                    regs.__x[28], regs.__fp, regs.__lr
+                );
+                let sp_ptr = regs.__sp as *const u64;
+                if !sp_ptr.is_null() && (regs.__sp & 7) == 0 {
+                    eprintln!("  Stack dump at SP ({:#x}):", regs.__sp);
+                    for i in 0..32 {
+                        let word = *sp_ptr.add(i);
+                        let mut dl: libc::Dl_info = std::mem::zeroed();
+                        if libc::dladdr(word as *const libc::c_void, &mut dl) != 0 && !dl.dli_fbase.is_null() {
+                            let sym = if !dl.dli_sname.is_null() {
+                                std::ffi::CStr::from_ptr(dl.dli_sname).to_string_lossy().into_owned()
+                            } else {
+                                "<unknown>".to_string()
+                            };
+                            let unslid = 0x100000000 + (word.saturating_sub(dl.dli_fbase as u64));
+                            eprintln!("    [SP + {:3}] = {:#018x} -> {} (unslid {:#x})", i * 8, word, sym, unslid);
+                        } else {
+                            eprintln!("    [SP + {:3}] = {:#018x}", i * 8, word);
+                        }
+                    }
+                }
+                let fp_ptr = regs.__fp as *const u64;
+                if !fp_ptr.is_null() && (regs.__fp & 7) == 0 {
+                    eprintln!("  Frame dump at FP ({:#x}):", regs.__fp);
+                    for i in 0..4 {
+                        let word = *fp_ptr.add(i);
+                        eprintln!("    [FP + {:2}] = {:#018x}", i * 8, word);
+                    }
+                }
+            }
+        }
+    }
+    let mut bt = [std::ptr::null_mut(); 32];
+    let size = unsafe { libc::backtrace(bt.as_mut_ptr(), 32) };
+    let symbols = unsafe { libc::backtrace_symbols(bt.as_ptr(), size) };
+    if !symbols.is_null() {
+        for i in 0..size {
+            let sym = unsafe { std::ffi::CStr::from_ptr(*symbols.offset(i as isize)) };
+            eprintln!("  [{}] {}", i, sym.to_string_lossy());
+        }
+    }
+    unsafe {
+        libc::_exit(139);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_init_gc() {
     GC_INIT.call_once(|| unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = tejx_crash_handler as *const () as usize;
+        sa.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+        libc::sigaction(libc::SIGSEGV, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGTRAP, &sa, std::ptr::null_mut());
+
+        // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > default 512MB
+        OLD_GEN_SIZE = (detect_old_gen_size() + 0xFFFF) & !0xFFFF;
+        YOUNG_GEN_SIZE = crate::constants::DEFAULT_YOUNG_GEN_SIZE;
+        SURVIVOR_SIZE = crate::constants::DEFAULT_SURVIVOR_SIZE;
+
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
         EDEN_START = mmap(
             std::ptr::null_mut(),
@@ -828,24 +1246,65 @@ pub unsafe extern "C" fn rt_init_gc() {
         OLD_TOP = OLD_START;
         OLD_END = OLD_START.add(OLD_GEN_SIZE);
 
-        CARD_TABLE_SIZE = OLD_GEN_SIZE >> CARD_SHIFT;
-        CARD_TABLE = mmap(
-            std::ptr::null_mut(),
-            CARD_TABLE_SIZE,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANON,
-            -1,
-            0,
-        ) as *mut u8;
+        // Initial GC threshold is exactly DEFAULT_GC_TRIGGER_FLOOR_PCT% of the max heap.
+        // It acts as the absolute floor so we never GC before the heap reaches that capacity.
+        OLD_GEN_GC_THRESHOLD = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_FLOOR_PCT / 100;
 
-        if CARD_TABLE as isize == -1 {
-            exit(1);
+        if let Some(val) = std::env::var("TEJXGC").ok().and_then(|v| v.parse::<usize>().ok()) {
+            GC_PERCENTAGE.store(val, std::sync::atomic::Ordering::SeqCst);
         }
 
         rt_start_gc_scheduler();
+        rt_start_finalizer_thread();
     });
 
     ensure_thread_registered();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_start_finalizer_thread() {
+    std::thread::Builder::new()
+        .name("gc-finalizer".to_string())
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            unsafe {
+                rt_register_thread();
+            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                loop {
+                    let task = {
+                        let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                        while queue.is_empty() {
+                            unsafe {
+                                let ctx_ptr = current_thread_context();
+                                (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+                            }
+                            queue = FINALIZER_CONDVAR.wait(queue).unwrap();
+                            unsafe {
+                                let ctx_ptr = current_thread_context();
+                                (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                            }
+                        }
+                        if queue.is_empty() {
+                            None
+                        } else {
+                            Some(queue.remove(0))
+                        }
+                    };
+                    if let Some((f, mut obj_val)) = task {
+                        unsafe {
+                            if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+                                crate::gc::rt_safepoint_poll_slow();
+                            }
+                            rt_push_root(&mut obj_val);
+                            f(obj_val);
+                            rt_pop_roots(1);
+                        }
+                    }
+                }
+            }));
+        })
+        .unwrap();
 }
 
 #[no_mangle]
@@ -854,8 +1313,7 @@ pub unsafe extern "C" fn rt_start_gc_scheduler() {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            let used = unsafe { OLD_TOP as usize - OLD_START as usize };
-            if used > (OLD_GEN_SIZE * 7 / 10) {
+            if OLD_BYTES_ALLOCATED > OLD_GEN_GC_THRESHOLD {
                 unsafe { major_gc() };
             }
         }
@@ -871,12 +1329,16 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 
     let header_size = std::mem::size_of::<ObjectHeader>();
     let total_size = (size + header_size + 7) & !7;
-    let _gc_lock = GC_LOCK.lock().unwrap();
+    let _gc_lock = {
+        let _io = crate::ThreadIoGuard::new();
+        GC_LOCK.lock().unwrap()
+    };
 
     let needs_major_gc = {
         let _los_lock = LOS_LOCK.lock().unwrap();
         LOS_COUNT >= MAX_LOS_OBJECTS
-            || LOS_BYTES.saturating_add(total_size) > LOS_NEXT_GC_THRESHOLD
+            || (GC_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+                && LOS_BYTES.saturating_add(total_size) > LOS_NEXT_GC_THRESHOLD)
     };
 
     if needs_major_gc {
@@ -921,6 +1383,11 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
+    gc_allocate_impl(size)
+}
+
+#[inline(always)]
+unsafe fn gc_allocate_impl(size: usize) -> *mut u8 {
     ensure_thread_registered();
     let header_size = std::mem::size_of::<ObjectHeader>();
     let total_size = size + header_size;
@@ -934,12 +1401,14 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
         rt_init_gc();
     }
 
+    let ctx_ptr = current_thread_context();
+    let tlab_top = (*ctx_ptr).tlab_top;
+    let tlab_end = (*ctx_ptr).tlab_end;
+
     // Try TLAB allocation
-    let mut tlab = MY_TLAB.with(|t| t.get());
-    if !tlab.top.is_null() && tlab.top.add(aligned_size) <= tlab.end {
-        let p = tlab.top;
-        tlab.top = tlab.top.add(aligned_size);
-        MY_TLAB.with(|t| t.set(tlab));
+    if !tlab_top.is_null() && tlab_top.add(aligned_size) <= tlab_end {
+        let p = tlab_top;
+        (*ctx_ptr).tlab_top = tlab_top.add(aligned_size);
 
         let header = p as *mut ObjectHeader;
         (*header).gc_word = 0;
@@ -947,6 +1416,7 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
         (*header).flags = 0;
         (*header).length = 0;
         (*header).capacity = 0;
+        (*header).gc_flags = 0;
         let body_ptr = p.add(header_size);
         memset(body_ptr as *mut _, 0, size);
         return body_ptr;
@@ -962,33 +1432,39 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
     loop {
         let current_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
         if current_top.add(refill_size) > EDEN_END {
-            let _lock = GC_LOCK.lock().unwrap();
-            let current_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
-            if current_top.add(refill_size) > EDEN_END {
-                trigger_safepoint();
-                minor_gc_locked();
-                let old_used = OLD_TOP as usize - OLD_START as usize;
-                if old_used > (OLD_GEN_SIZE * 7 / 10) {
-                    major_gc_locked_internal(false, true);
-                }
-                resume_safepoint();
-                if EDEN_TOP
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    .add(refill_size)
-                    > EDEN_END
-                {
-                    if refill_size > aligned_size {
-                        // Try one more time without refill
-                        continue;
+            {
+                let _lock = {
+                    let _io = crate::ThreadIoGuard::new();
+                    GC_LOCK.lock().unwrap()
+                };
+                let current_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
+                if current_top.add(refill_size) > EDEN_END {
+                    trigger_safepoint();
+                    minor_gc_locked();
+                    if GC_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+                        && OLD_BYTES_ALLOCATED > OLD_GEN_GC_THRESHOLD
+                    {
+                        major_gc_locked_internal(false, true);
                     }
-                    //printf("FATAL: Out of memory in Eden after minor_gc\n\0".as_ptr() as *const _);
-                    eprintln!(
-                        "FATAL: Out of memory in Eden after minor_gc (refill_size: {})",
-                        refill_size
-                    );
-                    exit(1);
+                    resume_safepoint();
                 }
-                continue;
+            }
+            FINALIZER_CONDVAR.notify_one();
+
+            if EDEN_TOP
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .add(refill_size)
+                > EDEN_END
+            {
+                if refill_size > aligned_size {
+                    // Try one more time without refill
+                    continue;
+                }
+                eprintln!(
+                    "FATAL: Out of memory in Eden after minor_gc (refill_size: {})",
+                    refill_size
+                );
+                exit(1);
             }
             continue;
         }
@@ -1010,15 +1486,15 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 (*header).flags = 0;
                 (*header).length = 0;
                 (*header).capacity = 0;
+                (*header).gc_flags = 0;
                 let body_ptr = current_top.add(header_size);
                 memset(body_ptr as *mut _, 0, size);
                 return body_ptr;
             } else {
                 // Refill TLAB
                 memset(current_top as *mut _, 0, refill_size);
-                tlab.top = current_top.add(aligned_size);
-                tlab.end = current_top.add(refill_size);
-                MY_TLAB.with(|t| t.set(tlab));
+                (*ctx_ptr).tlab_top = current_top.add(aligned_size);
+                (*ctx_ptr).tlab_end = current_top.add(refill_size);
 
                 let header = current_top as *mut ObjectHeader;
                 (*header).gc_word = 0;
@@ -1026,11 +1502,11 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
                 (*header).flags = 0;
                 (*header).length = 0;
                 (*header).capacity = 0;
+                (*header).gc_flags = 0;
                 let body_ptr = current_top.add(header_size);
                 memset(body_ptr as *mut _, 0, size);
                 return body_ptr;
             }
-
         }
     }
 }
@@ -1047,74 +1523,126 @@ pub unsafe fn in_los(ptr: *mut u8) -> bool {
     false
 }
 
-unsafe fn mark_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>) {
-    if root.is_null() {
+pub unsafe fn mark_object(root: *mut i64) {
+    if root.is_null() || (root as usize) % 8 != 0 {
         return;
     }
-    let val = *root;
+    let mut val = *root;
     if val < STACK_OFFSET {
         return;
     }
-
-    let (body_ptr, is_stack) = if val >= HEAP_OFFSET {
-        ((val - HEAP_OFFSET) as *mut u8, false)
-    } else {
-        ((val - STACK_OFFSET) as *mut u8, true)
-    };
-
-    if !is_stack && !rt_is_gc_ptr(body_ptr) {
-        return;
+    let resolved_val = crate::rt_gc_resolve_array_id(val);
+    if resolved_val != val {
+        *root = resolved_val;
+        val = resolved_val;
     }
-
-    let header = (body_ptr as *mut ObjectHeader).offset(-1);
-
-    if is_stack {
-        if !seen_stack.insert(header as usize) {
-            return;
-        }
-    } else {
-        if gc_is_marked((*header).gc_word) {
-            return;
-        }
-
-        (*header).gc_word |= GC_MARK_BIT;
-    }
-
-    // Recursively mark fields
-    let type_id = (*header).type_id;
-    if type_id == TAG_ARRAY as u16 {
-        let len = (*header).length;
-        let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
-
-        // Only scan pointer arrays
-        if is_ptr_array {
-            let data = body_ptr as *mut i64;
-            for i in 0..len {
-                mark_object_with_seen(data.add(i as usize), seen_stack);
-            }
-        }
-    } else if type_id == TAG_OBJECT as u16 {
-        mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
-        mark_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
-    } else if type_id == TAG_PROMISE as u16 {
-        mark_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
-        mark_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
-    } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
-        let entry = &TYPE_TABLE[type_id as usize];
-        for i in 0..entry.ptr_count {
-            let offset = entry.ptr_offsets[i];
-            mark_object_with_seen(body_ptr.add(offset) as *mut i64, seen_stack);
-        }
-    }
+    GLOBAL_MARK_QUEUE.lock().unwrap().push(val);
 }
 
-pub unsafe fn mark_object(root: *mut i64) {
-    let mut seen_stack = HashSet::new();
-    mark_object_with_seen(root, &mut seen_stack);
+pub unsafe fn process_mark_queue() {
+    let mut local_queue = Vec::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
+
+    loop {
+        {
+            let mut global_q = GLOBAL_MARK_QUEUE.lock().unwrap();
+            local_queue.extend(global_q.drain(..));
+
+            let registry = THREAD_REGISTRY.lock().unwrap();
+            for &ctx_wrapper in registry.iter() {
+                let ctx = &*ctx_wrapper.0;
+                let mut mq = ctx.mark_queue.lock().unwrap();
+                local_queue.extend(mq.drain(..));
+            }
+        }
+
+        if local_queue.is_empty() {
+            break;
+        }
+
+        while let Some(val) = local_queue.pop() {
+            if val < STACK_OFFSET {
+                continue;
+            }
+
+            let (body_ptr, is_stack) = if val >= HEAP_OFFSET {
+                ((val - HEAP_OFFSET) as *mut u8, false)
+            } else {
+                ((val - STACK_OFFSET) as *mut u8, true)
+            };
+
+            if !is_stack && !rt_is_gc_ptr(body_ptr) {
+                continue;
+            }
+
+            let header = (body_ptr as *mut ObjectHeader).offset(-1);
+
+            if is_stack {
+                let h_addr = header as usize;
+                if seen_stack.contains(&h_addr) {
+                    continue;
+                }
+                seen_stack.push(h_addr);
+            } else {
+                if gc_is_marked((*header).gc_word) {
+                    continue;
+                }
+                (*header).gc_word |= GC_MARK_BIT;
+            }
+
+            let mut push_field = |field_ptr: *mut i64| {
+                if field_ptr.is_null() {
+                    return;
+                }
+                let mut field_val = *field_ptr;
+                if field_val >= STACK_OFFSET {
+                    let resolved = crate::rt_gc_resolve_array_id(field_val);
+                    if resolved != field_val {
+                        *field_ptr = resolved;
+                        field_val = resolved;
+                    }
+                    local_queue.push(field_val);
+                }
+            };
+
+            let type_id = (*header).type_id;
+            if type_id == TAG_ARRAY as u16 {
+                let len = (*header).length;
+                let is_ptr_array = ((*header).flags & (ARRAY_FLAG_PTR as u16)) != 0;
+                if is_ptr_array {
+                    let data = body_ptr as *mut i64;
+                    for i in 0..len {
+                        push_field(data.add(i as usize));
+                    }
+                }
+            } else if type_id == TAG_OBJECT as u16 {
+                push_field(body_ptr.add(16) as *mut i64);
+                push_field(body_ptr.add(24) as *mut i64);
+            } else if type_id == TAG_PROMISE as u16 {
+                push_field(body_ptr.add(8) as *mut i64);
+                push_field(body_ptr.add(16) as *mut i64);
+            } else if type_id == TAG_FUNCTION as u16 {
+                push_field(body_ptr.add(8) as *mut i64);
+            } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
+                let entry = &TYPE_TABLE[type_id as usize];
+                for i in 0..entry.ptr_count {
+                    push_field(body_ptr.add(entry.ptr_offsets[i]) as *mut i64);
+                }
+            }
+        }
+    }
 }
 
 unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
-    rt_clear_tlab();
+    if GC_BACKGROUND_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        // A GC is already running in the background. Don't start another one.
+        // If we really need memory, we could spinloop here, but returning is safer to prevent deadlocks.
+        return;
+    }
+    GC_BACKGROUND_RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    clear_all_tlabs();
+    crate::rt_gc_prepare_array_forward();
 
     if !safepoint_already {
         trigger_safepoint();
@@ -1125,22 +1653,12 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         minor_gc_locked();
     }
 
-    // 2. Mark phase (from roots, recursively)
-    // Clear marks
-    let mut current = OLD_START;
-    while current < OLD_TOP {
-        let header = current as *mut ObjectHeader;
-        (*header).gc_word &= !GC_MARK_BIT;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        current = current.add(size);
-    }
+    // 2. Initial Mark (STW)
+    GC_PHASE.store(GC_PHASE_MARK, std::sync::atomic::Ordering::SeqCst);
     let los_before_sweep = los_snapshot();
-    for &(obj_ptr, _) in &los_before_sweep {
-        (*(obj_ptr as *mut ObjectHeader)).gc_word &= !GC_MARK_BIT;
-    }
 
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
@@ -1150,177 +1668,399 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
         }
     }
     mark_static_roots();
-    super::event_loop::rt_gc_mark_tasks();
-
-    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        prune_timer_objects_for_major(&crate::TIMEOUT_OBJECTS, crate::rt_clearTimeout);
-    }
-    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        prune_timer_objects_for_major(&crate::INTERVAL_OBJECTS, crate::rt_clearInterval);
-    }
-
-    // 2.5 Run Finalizers for unmarked objects
-    let mut curr = OLD_START;
-    while curr < OLD_TOP {
-        let header = curr as *mut ObjectHeader;
-        let type_id = (*header).type_id;
-        if !gc_is_marked((*header).gc_word) {
-            if (type_id as usize) < MAX_TYPES {
-                if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                    let obj_val =
-                        (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
-                    f(obj_val);
-                }
-            }
-        }
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        curr = curr.add(size);
-    }
-    // Also LOS finalizers
-    for &(obj_ptr, _) in &los_before_sweep {
-        let header = obj_ptr as *mut ObjectHeader;
-        let type_id = (*header).type_id;
-        if !gc_is_marked((*header).gc_word) {
-            if (type_id as usize) < MAX_TYPES {
-                if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                    let obj_val = (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64)
-                        + HEAP_OFFSET;
-                    f(obj_val);
-                }
-            }
-        }
-    }
-
-    // 3. Sweep LOS
+    super::rt_gc_mark_tasks();
     {
-        let _los_lock = LOS_LOCK.lock().unwrap();
-        let mut new_los_count = 0;
-        let mut new_los_bytes = 0usize;
-        for i in 0..LOS_COUNT {
-            let header = LOS_OBJECTS[i] as *mut ObjectHeader;
-            if gc_is_marked((*header).gc_word) {
-                LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
-                LOS_SIZES[new_los_count] = LOS_SIZES[i];
-                new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
-                new_los_count += 1;
-            } else {
-                munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
-            }
+        let queue = FINALIZER_QUEUE.lock().unwrap();
+        for (_, obj_val) in queue.iter() {
+            let mut tmp = *obj_val;
+            mark_object(&mut tmp as *mut i64);
         }
-        LOS_COUNT = new_los_count;
-        LOS_BYTES = new_los_bytes;
-        LOS_NEXT_GC_THRESHOLD =
-            std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
     }
 
-    // 4. Mark-Compact for Old Gen (3 passes)
-
-    // Pass 1: Compute new addresses and store in ObjectHeader (gc_word)
-    let mut free_ptr = OLD_START;
-    let mut scan_ptr = OLD_START;
-    while scan_ptr < OLD_TOP {
-        let header = scan_ptr as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if gc_is_marked((*header).gc_word) {
-            // Store new address in gc_word (bit 9 = forwarded)
-            let new_addr = free_ptr;
-            (*header).gc_word = ((new_addr as u64) & GC_PTR_MASK) | GC_MARK_BIT | GC_FWD_BIT;
-            free_ptr = free_ptr.add(size);
-        }
-        scan_ptr = scan_ptr.add(size);
+    // End of Initial Mark STW
+    if !safepoint_already {
+        resume_safepoint();
     }
 
-    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_major_compaction(&crate::TIMEOUT_OBJECTS);
-    }
-    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_major_compaction(&crate::INTERVAL_OBJECTS);
-    }
+    // 3. Concurrent Trace
+    process_mark_queue();
 
-    // Update roots
+    // 4. Remark (STW)
+    if !safepoint_already {
+        trigger_safepoint();
+    }
+    GC_PHASE.store(GC_PHASE_IDLE, std::sync::atomic::Ordering::SeqCst);
+
+    // Trace roots again to catch any missed updates
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
             for i in 0..top {
-                rt_update_ptr((*ctx_ptr).roots[i]);
+                mark_object((*ctx_ptr).roots[i]);
             }
         }
     }
-    update_static_roots();
-    super::event_loop::rt_gc_update_tasks();
+    mark_static_roots();
+    super::rt_gc_mark_tasks();
+    process_mark_queue();
 
-    // Update Young Gen (Survivor)
-    let mut y_scan = FROM_SURVIVOR;
-    while y_scan < FROM_SURVIVOR_TOP {
-        let header = y_scan as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        update_object_fields(header, rt_update_ptr);
-        y_scan = y_scan.add(size);
-    }
-
-    // Update Old Gen objects' fields
-    scan_ptr = OLD_START;
-    while scan_ptr < OLD_TOP {
-        let header = scan_ptr as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if gc_is_marked((*header).gc_word) {
-            update_object_fields(header, rt_update_ptr);
+    // 4.5 Filter RemSets to remove dead objects before Sweep
+    {
+        let registry = lock_registry();
+        for &ctx_wrapper in registry.iter() {
+            let ctx = &*ctx_wrapper.0;
+            let mut remset = ctx.remset.lock().unwrap();
+            remset.retain(|&obj_ptr| {
+                let body = obj_ptr as *mut u8;
+                let header = rt_get_header(body);
+                if gc_is_marked((*header).gc_word) {
+                    true
+                } else {
+                    (*header).gc_flags &= !FLAG_REMSET_DIRTY;
+                    false
+                }
+            });
         }
-        scan_ptr = scan_ptr.add(size);
     }
 
-    // Update LOS objects' fields
-    for (obj_ptr, _) in los_snapshot() {
-        update_object_fields(obj_ptr as *mut ObjectHeader, rt_update_ptr);
-    }
+    // 5. Finalizer Queueing (Concurrent) is now moved to the background thread.
+    let los_snapshot_for_finalizers: Vec<(usize, usize)> = los_before_sweep
+        .iter()
+        .map(|&(ptr, size)| (ptr as usize, size))
+        .collect();
 
-    // Pass 3: Actually move
-    // Pass 3: Move objects
-    let mut move_ptr = OLD_START;
-    let mut dest_ptr = OLD_START; // Re-introduce dest_ptr for OLD_TOP update
-    while move_ptr < OLD_TOP {
-        let header = move_ptr as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        if gc_is_marked((*header).gc_word) {
-            let new_addr = gc_forward_ptr((*header).gc_word) as *mut u8;
-            if new_addr != move_ptr {
-                memcpy(new_addr as *mut _, move_ptr as *const _, size);
-                // Clear mark bit in new header
-                (*(new_addr as *mut ObjectHeader)).gc_word &= !GC_FLAG_MASK;
+    // 3. Sweep LOS (Concurrent) is now moved to the background thread.
+
+    // 4. Mark-Sweep for Old Gen (Concurrent)
+    let sweep_limit = OLD_TOP as usize;
+    // Capture the live bytes RIGHT NOW (before sweep) so the background thread
+    // can calculate how effective this GC cycle was.
+    let bytes_before_gc = OLD_BYTES_ALLOCATED;
+    for bin in FAST_FREE_LIST.iter() {
+        bin.lock().unwrap().clear();
+    }
+    LARGE_FREE_LIST.lock().unwrap().clear();
+
+    // --- PHASE 1: Finalizer Resurrect ---
+        let mut resurrected = false;
+        let mut curr = OLD_START;
+        let limit_ptr = sweep_limit as *mut u8;
+
+        while curr < limit_ptr {
+            let header = curr as *mut ObjectHeader;
+            let type_id = (*header).type_id;
+            if !gc_is_marked((*header).gc_word) {
+                if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
+                    if (type_id as usize) < MAX_TYPES {
+                        if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                            let mut obj_val = (curr.add(std::mem::size_of::<ObjectHeader>())
+                                as i64)
+                                + HEAP_OFFSET;
+                            {
+                                let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                                queue.push((f, obj_val));
+                            }
+                            (*header).gc_flags |= FLAG_FINALIZED;
+                            mark_object(&mut obj_val as *mut i64);
+                            resurrected = true;
+                        }
+                    }
+                }
+            }
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+            curr = curr.add(size);
+        }
+
+        // Also LOS finalizers
+        for &(obj_usize, _) in &los_snapshot_for_finalizers {
+            let obj_ptr = obj_usize as *mut u8;
+            let header = obj_ptr as *mut ObjectHeader;
+            let type_id = (*header).type_id;
+            if !gc_is_marked((*header).gc_word) {
+                if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
+                    if (type_id as usize) < MAX_TYPES {
+                        if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                            let mut obj_val = (obj_ptr.add(std::mem::size_of::<ObjectHeader>())
+                                as i64)
+                                + HEAP_OFFSET;
+                            {
+                                let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                                queue.push((f, obj_val));
+                            }
+                            (*header).gc_flags |= FLAG_FINALIZED;
+                            mark_object(&mut obj_val as *mut i64);
+                            resurrected = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if resurrected {
+            process_mark_queue();
+            FINALIZER_CONDVAR.notify_one();
+        }
+
+        // Clear any transient mark bits on young survivors before resuming mutators.
+        let mut y_scan = FROM_SURVIVOR;
+        while y_scan < FROM_SURVIVOR_TOP {
+            let header = y_scan as *mut ObjectHeader;
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+            (*header).gc_word &= !GC_MARK_BIT;
+            y_scan = y_scan.add(size);
+        }
+
+        if !safepoint_already {
+            // End of STW phase! Mutator threads resume immediately.
+            // Remark and finalizer resurrection are complete.
+            // Sweeping old gen and LOS now proceeds concurrently.
+            resume_safepoint();
+        }
+
+        // --- PHASE 2: Concurrent Sweep ---
+        let mut scan_ptr = OLD_START;
+        let mut local_free_list: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        let mut new_old_bytes = 0usize;
+
+        while scan_ptr < limit_ptr {
+            let header = scan_ptr as *mut ObjectHeader;
+            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+
+            if gc_is_marked((*header).gc_word) {
+                // Unmark it for next time
+                (*header).gc_word &= !GC_MARK_BIT;
+                new_old_bytes += size;
             } else {
-                (*header).gc_word &= !GC_FLAG_MASK; // Just clear mark/fwd bits
+                // Dead object, add to local free list!
+                local_free_list
+                    .entry(size)
+                    .or_default()
+                    .push(scan_ptr as usize);
             }
-            dest_ptr = dest_ptr.add(size); // Update dest_ptr for the next available slot
+            scan_ptr = scan_ptr.add(size);
         }
-        move_ptr = move_ptr.add(size);
-    }
-    OLD_TOP = dest_ptr;
 
-    // Young survivors participate in mark traversal during major GC, but they are not part
-    // of the compacted old generation. Clear any transient mark bits so a later major GC
-    // does not incorrectly skip traversing still-young roots.
-    y_scan = FROM_SURVIVOR;
-    while y_scan < FROM_SURVIVOR_TOP {
-        let header = y_scan as *mut ObjectHeader;
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        (*header).gc_word &= !GC_MARK_BIT;
-        y_scan = y_scan.add(size);
-    }
+        // Merge into global FREE_LIST
+        let mut global_large = LARGE_FREE_LIST.lock().unwrap();
+        for (size, mut vec) in local_free_list {
+            if size < NUM_FAST_BINS * 8 {
+                let bin_idx = size / 8;
+                FAST_FREE_LIST[bin_idx].lock().unwrap().append(&mut vec);
+            } else {
+                global_large.entry(size).or_default().append(&mut vec);
+            }
+        }
+        // --- PHASE 3: Concurrent Sweep LOS ---
+        {
+            let _los_lock = LOS_LOCK.lock().unwrap();
+            let mut new_los_count = 0;
+            let mut new_los_bytes = 0usize;
+            let original_los_count = los_snapshot_for_finalizers.len();
 
-    if !safepoint_already {
-        // Resume threads
-        resume_safepoint();
-    }
+            for i in 0..LOS_COUNT {
+                let header = LOS_OBJECTS[i] as *mut ObjectHeader;
+
+                let mut is_survivor = false;
+                if i < original_los_count {
+                    if gc_is_marked((*header).gc_word) {
+                        is_survivor = true;
+                        (*header).gc_word &= !GC_MARK_BIT;
+                    }
+                } else {
+                    // Object was allocated during concurrent GC. Implicitly alive!
+                    is_survivor = true;
+                }
+
+                if is_survivor {
+                    LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
+                    LOS_SIZES[new_los_count] = LOS_SIZES[i];
+                    new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
+                    new_los_count += 1;
+                } else {
+                    munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
+                }
+            }
+            LOS_COUNT = new_los_count;
+            LOS_BYTES = new_los_bytes;
+            LOS_NEXT_GC_THRESHOLD =
+                std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
+        }
+
+        OLD_BYTES_ALLOCATED = new_old_bytes;
+
+        // =================================================================
+        // DEFINITIVE GC TRIGGER THRESHOLD
+        // =================================================================
+        //
+        // Formula:
+        //   scaled   = live × growth_factor          (proportional headroom)
+        //   next     = max(scaled, bytes_before_gc)  (← the key insight)
+        //   next     = max(next, live + 128MB)        (absolute headroom floor)
+        //   next     = max(next, 512MB)               (micro-thrash guard)
+        //   next     = min(next, heap × 95%)          (OOM safety ceiling)
+        //
+        // Why `max(scaled, bytes_before_gc)` handles BOTH cases perfectly:
+        //
+        //   CASE A — GC freed well (100GB → 60GB live, 40% freed):
+        //     scaled        = 60GB × 1.5 = 90GB
+        //     bytes_before  = 100GB (where GC triggered)
+        //     next          = max(90GB, 100GB) = 100GB  ✅ same high-water mark
+        //     → App grows freely from 60GB back to 100GB before GC fires again.
+        //     → No premature GC. No wasted cycles.
+        //
+        //   CASE B — GC barely freed (100GB → 99GB live, 1% freed):
+        //     scaled        = 99GB × 1.5 = 148.5GB
+        //     bytes_before  = 100GB
+        //     next          = max(148.5GB, 100GB) = 148.5GB → capped at 121GB
+        //     → Threshold rises. GC backs off. If live set keeps growing,
+        //       GC fires again at 121GB (the 95% ceiling), and warns user.
+        //
+        //   CASE C — Small app (live = 10MB after first GC):
+        //     scaled        = 10MB × 1.5 = 15MB
+        //     bytes_before  = 512MB (initial threshold)
+        //     next          = max(15MB, 512MB) = 512MB  ✅ no micro-thrashing
+        //
+        //   CASE D — Large cache (live = 90GB, threshold was 121GB ceiling):
+        //     scaled        = 90GB × 1.5 = 135GB → capped at 121GB
+        //     bytes_before  = 121GB
+        //     next          = max(121GB, 121GB) = 121GB → warns user ✅
+        //
+        // Growth factor is read ONCE at startup (LazyLock) — zero cost per GC cycle.
+        // Configurable: TEJXGC=50 (default, 50% headroom), TEJXGC=100 (Go's default).
+        // =================================================================
+
+        let growth_factor = get_gc_growth_factor();
+
+        // Core: proportional headroom above live set
+        let scaled = (new_old_bytes as f64 * growth_factor) as usize;
+
+        // Never lower the trigger below where it was before this GC cycle.
+        // This is what prevents premature re-triggering after a successful collection.
+        let high_water = bytes_before_gc;
+
+        // Combine: whichever gives more room
+        let combined = scaled.max(high_water);
+
+        // Floor: always at least GC_MIN_HEADROOM_BYTES above live set (minimum breathing room)
+        let with_headroom = new_old_bytes.saturating_add(GC_MIN_HEADROOM_BYTES);
+
+        // Floor: absolute minimum DEFAULT_GC_TRIGGER_FLOOR_PCT% of max heap
+        let absolute_floor = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_FLOOR_PCT / 100;
+        let floored = combined.max(with_headroom).max(absolute_floor);
+
+        // Ceiling: never exceed DEFAULT_GC_TRIGGER_CEIL_PCT% of heap (OOM safety)
+        let ceiling = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_CEIL_PCT / 100;
+        OLD_GEN_GC_THRESHOLD = floored.min(ceiling);
+
+        // Diagnostics: warn when live set is above 80% of heap (memory pressure)
+        let collection_ratio =
+            bytes_before_gc.saturating_sub(new_old_bytes) as f64 / bytes_before_gc.max(1) as f64;
+
+        if new_old_bytes > OLD_GEN_SIZE * 98 / 100 {
+            eprintln!(
+                "FATAL: Out of Memory! Max heap limit of {} MB exceeded (Live set reached {} MB after GC). \
+                 Please increase your heap limit using --max-old-space-size=... or -Xmx...",
+                OLD_GEN_SIZE / (1024 * 1024),
+                new_old_bytes / (1024 * 1024)
+            );
+            exit(1);
+        } else if new_old_bytes > OLD_GEN_SIZE * 80 / 100 {
+            eprintln!(
+                "[GC] WARNING: Live set {:.1}% of heap ({} MB / {} MB total). \
+                 Freed {:.1}% this cycle. Next GC at {} MB. \
+                 Use --max-old-space-size=... or -Xmx... to increase heap. \
+                 Tune GC headroom with TEJXGC (current: {:.1}x).",
+                new_old_bytes as f64 / OLD_GEN_SIZE as f64 * 100.0,
+                new_old_bytes / (1024 * 1024),
+                OLD_GEN_SIZE / (1024 * 1024),
+                collection_ratio * 100.0,
+                OLD_GEN_GC_THRESHOLD / (1024 * 1024),
+                growth_factor,
+            );
+        }
+        crate::rt_gc_cleanup_array_forward();
+        GC_BACKGROUND_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn major_gc() {
-    let _lock = GC_LOCK.lock().unwrap();
-    major_gc_locked_internal(true, false);
+    {
+        let _lock = {
+            let _io = crate::ThreadIoGuard::new();
+            GC_LOCK.lock().unwrap()
+        };
+        major_gc_locked_internal(true, false);
+    }
+    crate::vthread::vt_trim_stack_pool();
+    FINALIZER_CONDVAR.notify_one();
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_collect() {
+    major_gc();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_collect_young() {
+    minor_gc();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_heap_used() -> i64 {
+    (OLD_BYTES_ALLOCATED + LOS_BYTES) as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_heap_total() -> i64 {
+    OLD_GEN_SIZE as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_old_gen_used() -> i64 {
+    OLD_BYTES_ALLOCATED as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_los_used() -> i64 {
+    LOS_BYTES as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_threshold() -> i64 {
+    OLD_GEN_GC_THRESHOLD as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_enable() {
+    GC_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_disable() {
+    GC_ENABLED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_is_enabled() -> bool {
+    GC_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_set_growth_factor(pct: i64) {
+    if pct > 0 {
+        GC_PERCENTAGE.store(pct as usize, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_growth_factor() -> f64 {
+    get_gc_growth_factor()
+}
+
+#[allow(dead_code)]
 unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mut i64)) {
     let type_id = (*header).type_id;
     let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
@@ -1347,6 +2087,8 @@ unsafe fn update_object_fields(header: *mut ObjectHeader, updater: unsafe fn(*mu
     } else if type_id == TAG_PROMISE as u16 {
         updater(body_ptr.add(8) as *mut i64); // value
         updater(body_ptr.add(16) as *mut i64); // callbacks array
+    } else if type_id == TAG_FUNCTION as u16 {
+        updater(body_ptr.add(8) as *mut i64); // closure env
     } else if (type_id as usize) < MAX_TYPES && TYPE_TABLE[type_id as usize].ptr_count > 0 {
         let entry = &TYPE_TABLE[type_id as usize];
         for i in 0..entry.ptr_count {
@@ -1408,7 +2150,7 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
     } else if type_id == TAG_OBJECT as u16 {
         40 // Object layout: [size, capacity, keys_ptr, values_ptr, data_base]
     } else if type_id == TAG_FUNCTION as u16 {
-        32 // Closure layout: [size (8), capacity (8), fn_ptr (8), env_ptr (8)]
+        16 // Closure layout: [fn_ptr (8), env_ptr (8)]
     } else if type_id == TAG_INT as u16
         || type_id == TAG_FLOAT as u16
         || type_id == TAG_CHAR as u16
@@ -1434,29 +2176,42 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
 
 pub const PROMOTION_THRESHOLD: u8 = 2;
 
-unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>) {
-    if root.is_null() {
+unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut Vec<usize>) {
+    if root.is_null() || (root as usize) % 8 != 0 {
         return;
     }
-    let val = *root;
+    let mut val = *root;
     if val < STACK_OFFSET {
         return;
     }
 
+    let _orig_val = val;
+    let resolved_val = crate::rt_gc_resolve_array_id(val);
+    if resolved_val != val {
+        *root = resolved_val;
+        val = resolved_val;
+    }
+
     if val >= STACK_OFFSET && val < HEAP_OFFSET {
+        eprintln!(
+            "[GC ALERT] Root is STACK object: root={:p} val={:#x}",
+            root, val
+        );
         // Stack object: doesn't move, but we MUST scan its fields
         let body = (val - STACK_OFFSET) as *mut u8;
         let header = rt_get_header(body);
-        if !seen_stack.insert(header as usize) {
+        let h_addr = header as usize;
+        if seen_stack.contains(&h_addr) {
             return;
         }
+        seen_stack.push(h_addr);
         scan_object_fields_with_seen(header, seen_stack);
         return;
     }
 
     let old_body = (val - HEAP_OFFSET) as *mut u8;
-    if !in_young_gen(old_body) {
-        return; // Not in Young Gen
+    if !in_from_space(old_body) {
+        return; // Not in From-space: already in To-Survivor or Old Gen, do NOT re-copy!
     }
 
     let header = rt_get_header(old_body);
@@ -1480,13 +2235,39 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     let (new_header, is_promotion) = if age >= PROMOTION_THRESHOLD
         || (TO_SURVIVOR_TOP as usize + total_size > (TO_SURVIVOR as usize + SURVIVOR_SIZE))
     {
-        if OLD_TOP as usize + total_size > OLD_END as usize {
-            printf(
-                "FATAL: Old Generation Overflow during promotion/fallback\n\0".as_ptr() as *const _,
-            );
-            exit(1);
-        }
-        (OLD_TOP as *mut ObjectHeader, true)
+        let ptr = if total_size < NUM_FAST_BINS * 8 {
+            let bin_idx = total_size / 8;
+            FAST_FREE_LIST[bin_idx]
+                .lock()
+                .unwrap()
+                .pop()
+                .map(|p| p as *mut u8)
+        } else {
+            LARGE_FREE_LIST
+                .lock()
+                .unwrap()
+                .get_mut(&total_size)
+                .and_then(|vec| vec.pop())
+                .map(|p| p as *mut u8)
+        };
+
+        let header_ptr = if let Some(p) = ptr {
+            p as *mut ObjectHeader
+        } else {
+            if OLD_TOP as usize + total_size > OLD_END as usize {
+                eprintln!(
+                    "FATAL: Out of Memory! Max heap limit of {} MB exceeded during promotion. \
+                     Please increase your heap limit using --max-old-space-size=... or -Xmx...",
+                    OLD_GEN_SIZE / (1024 * 1024)
+                );
+                exit(1);
+            }
+            let alloc_ptr = OLD_TOP as *mut ObjectHeader;
+            OLD_TOP = OLD_TOP.add(total_size);
+            alloc_ptr
+        };
+        OLD_BYTES_ALLOCATED += total_size;
+        (header_ptr, true)
     } else {
         (TO_SURVIVOR_TOP as *mut ObjectHeader, false)
     };
@@ -1505,21 +2286,22 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
     *root = (new_body as i64) + HEAP_OFFSET;
 
     if is_promotion {
-        OLD_TOP = OLD_TOP.add(total_size);
+        (*new_header).gc_flags &= !FLAG_REMSET_DIRTY;
+        PROMOTED_LIST.lock().unwrap().push(new_header as usize);
     } else {
         TO_SURVIVOR_TOP = TO_SURVIVOR_TOP.add(total_size);
     }
 }
 
 pub unsafe fn copy_object(root: *mut i64) {
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
     copy_object_with_seen(root, &mut seen_stack);
 }
 
 #[inline]
 unsafe fn copy_object_with_seen_and_track_young(
     slot: *mut i64,
-    seen_stack: &mut HashSet<usize>,
+    seen_stack: &mut Vec<usize>,
     has_young_refs: &mut bool,
 ) {
     let val = *slot;
@@ -1545,7 +2327,7 @@ unsafe fn copy_object_with_seen_and_track_young(
     }
 }
 
-unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &mut HashSet<usize>) {
+unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &mut Vec<usize>) {
     let type_id = (*header).type_id;
     let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
 
@@ -1570,7 +2352,7 @@ unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &m
         copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
     } else if type_id == TAG_FUNCTION as u16 {
         // Closure environment root
-        copy_object_with_seen(body_ptr.add(24) as *mut i64, seen_stack);
+        copy_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
     } else if type_id == TAG_PROMISE as u16 {
         copy_object_with_seen(body_ptr.add(8) as *mut i64, seen_stack);
         copy_object_with_seen(body_ptr.add(16) as *mut i64, seen_stack);
@@ -1585,7 +2367,7 @@ unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &m
 
 unsafe fn scan_object_fields_minor_with_seen(
     header: *mut ObjectHeader,
-    seen_stack: &mut HashSet<usize>,
+    seen_stack: &mut Vec<usize>,
 ) -> bool {
     let type_id = (*header).type_id;
     let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
@@ -1619,7 +2401,7 @@ unsafe fn scan_object_fields_minor_with_seen(
     } else if type_id == TAG_FUNCTION as u16 {
         // Closure environment root
         copy_object_with_seen_and_track_young(
-            body_ptr.add(24) as *mut i64,
+            body_ptr.add(8) as *mut i64,
             seen_stack,
             &mut has_young_refs,
         );
@@ -1650,16 +2432,17 @@ unsafe fn scan_object_fields_minor_with_seen(
 }
 
 unsafe fn scan_object_fields_minor(header: *mut ObjectHeader) -> bool {
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
     scan_object_fields_minor_with_seen(header, &mut seen_stack)
 }
 
 unsafe fn scan_object_fields(header: *mut ObjectHeader) {
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
     scan_object_fields_with_seen(header, &mut seen_stack);
 }
 
 #[inline]
+#[allow(dead_code)]
 unsafe fn run_finalizer_for_header(header: *mut ObjectHeader) {
     let type_id = (*header).type_id as usize;
     if type_id >= MAX_TYPES {
@@ -1672,6 +2455,7 @@ unsafe fn run_finalizer_for_header(header: *mut ObjectHeader) {
     }
 }
 
+#[allow(dead_code)]
 unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
     while scan < end {
         let header = scan as *mut ObjectHeader;
@@ -1683,9 +2467,22 @@ unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
         }
 
         if !gc_is_forwarded((*header).gc_word) {
-            let body = scan.add(std::mem::size_of::<ObjectHeader>());
-            if rt_is_gc_ptr(body) {
-                run_finalizer_for_header(header);
+            let type_id = (*header).type_id as usize;
+            if type_id < MAX_TYPES {
+                if let Some(f) = TYPE_TABLE[type_id].finalizer {
+                    if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
+                        (*header).gc_flags |= FLAG_FINALIZED;
+                        // Resurrect object
+                        let mut root: i64 =
+                            ((header as *mut u8).add(std::mem::size_of::<ObjectHeader>()) as i64)
+                                + HEAP_OFFSET;
+                        copy_object(&mut root as *mut i64);
+                        {
+                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                            queue.push((f, root));
+                        }
+                    }
+                }
             }
         }
         scan = scan.add(size);
@@ -1694,34 +2491,95 @@ unsafe fn run_young_finalizers_in_region(mut scan: *mut u8, end: *mut u8) {
 
 #[no_mangle]
 pub unsafe extern "C" fn minor_gc() {
-    let _lock = GC_LOCK.lock().unwrap();
-    trigger_safepoint();
-    minor_gc_locked();
-    resume_safepoint();
+    {
+        let _lock = {
+            let _io = crate::ThreadIoGuard::new();
+            GC_LOCK.lock().unwrap()
+        };
+        trigger_safepoint();
+        minor_gc_locked();
+        resume_safepoint();
+    }
+    FINALIZER_CONDVAR.notify_one();
 }
 
 unsafe fn trigger_safepoint() {
+    // No need to reset SAFEPOINT_RESUME — it's an epoch counter now.
+    // Threads wait for the epoch to change, not for a boolean.
     SAFEPOINT_REQUEST.store(true, Ordering::SeqCst);
     {
         let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
-        let expected = { THREAD_REGISTRY.lock().unwrap().len() };
-        // We wait until ALL registered threads have parked themselves
-        // Note: The GC thread itself is NOT in the registry yet when allocating,
-        // unless it's a mutator that just happened to trigger GC.
-        // We need to NOT wait for ourselves if we are registered.
+        let mut count = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *count = 0;
+        let mut wait_loops = 0;
+        loop {
+            // Check if all threads are safe. We must drop the THREAD_REGISTRY
+            // lock before waiting, otherwise threads trying to register/unregister
+            // will deadlock.
+            let all_safe = {
+                let registry = match THREAD_REGISTRY.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                let total = registry.len();
+                let mut safe_count = 0;
 
-        let mut target_count = expected;
-        MY_CONTEXT.with(|ctx| {
-            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-            let registry = THREAD_REGISTRY.lock().unwrap();
-            if registry.contains(&ThreadContextPtr(ctx_ptr)) {
-                target_count -= 1; // Don't wait for ourself
+                MY_CONTEXT.with(|ctx| {
+                    let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+                    for &ctx_wrapper in registry.iter() {
+                        let other_ctx_ptr = ctx_wrapper.0;
+                        if other_ctx_ptr == ctx_ptr {
+                            safe_count += 1;
+                        } else if (*other_ctx_ptr).in_blocking_io.load(Ordering::SeqCst) {
+                            safe_count += 1;
+                        } else if (*other_ctx_ptr).in_safepoint.load(Ordering::SeqCst) {
+                            safe_count += 1;
+                        }
+                    }
+                });
+
+                if safe_count >= total {
+                    true
+                } else {
+                    if wait_loops > 500 {
+                        eprintln!(
+                            "FATAL: GC safepoint timeout! safe_count={}, total={}",
+                            safe_count, total
+                        );
+                        MY_CONTEXT.with(|ctx| {
+                            let ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
+                            for &ctx_wrapper in registry.iter() {
+                                let other_ctx_ptr = ctx_wrapper.0;
+                                if other_ctx_ptr != ctx_ptr {
+                                    eprintln!(
+                                        "  Thread {:p}: in_blocking_io={}, in_safepoint={}",
+                                        other_ctx_ptr,
+                                        (*other_ctx_ptr).in_blocking_io.load(Ordering::SeqCst),
+                                        (*other_ctx_ptr).in_safepoint.load(Ordering::SeqCst)
+                                    );
+                                }
+                            }
+                        });
+                        std::process::abort();
+                    }
+                    false
+                }
+                // registry lock is dropped here
+            };
+
+            if all_safe {
+                break;
             }
-        });
 
-        while *count < target_count {
-            count = cvar.wait(count).unwrap();
+            let result = cvar.wait_timeout(count, std::time::Duration::from_millis(10));
+            count = match result {
+                Ok((g, _)) => g,
+                Err(e) => e.into_inner().0,
+            };
+            wait_loops += 1;
         }
     }
 }
@@ -1729,52 +2587,42 @@ unsafe fn trigger_safepoint() {
 unsafe fn resume_safepoint() {
     SAFEPOINT_REQUEST.store(false, Ordering::SeqCst);
     {
+        // Increment the epoch to wake all waiting threads.
+        // Each thread captured the epoch before entering safepoint,
+        // so they'll see the new value and exit their wait loop.
         let (lock, cvar) = &**SAFEPOINT_RESUME;
-        let mut resume = lock.lock().unwrap();
-        *resume = true;
+        let mut epoch = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *epoch += 1;
         cvar.notify_all();
     }
-    // Reset for next GC
+    // Reset ACK counter for next GC
     {
         let (lock, _) = &**SAFEPOINT_ACK;
-        *lock.lock().unwrap() = 0;
+        let mut l = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *l = 0;
     }
-    {
-        let (lock, _) = &**SAFEPOINT_RESUME;
-        *lock.lock().unwrap() = false;
-    }
-}
-
-#[inline]
-unsafe fn clear_array_caches() {
-    LAST_ID = 0;
-    LAST_PTR = std::ptr::null_mut();
-    LAST_LEN = 0;
-    LAST_ELEM_SIZE = 0;
-    PREV_ID = 0;
-    PREV_PTR = std::ptr::null_mut();
-    PREV_LEN = 0;
-    PREV2_ID = 0;
-    PREV2_PTR = std::ptr::null_mut();
-    PREV2_LEN = 0;
-    PREV2_ELEM_SIZE = 0;
-    ARRAY_FORWARD.lock().unwrap().clear();
-    ARRAY_FORWARD_ACTIVE.store(false, Ordering::Release);
 }
 
 pub unsafe fn minor_gc_locked() {
-    clear_array_caches();
-    rt_clear_tlab();
-    let eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
-    let from_survivor_top = FROM_SURVIVOR_TOP;
+    // minor_gc_locked: called under GC lock, evacuates young gen
+    crate::rt_gc_prepare_array_forward();
+    clear_all_tlabs();
+    let _eden_top = EDEN_TOP.load(std::sync::atomic::Ordering::SeqCst);
+    let _from_survivor_top = FROM_SURVIVOR_TOP;
     TO_SURVIVOR_TOP = TO_SURVIVOR;
     let mut survivor_scan_ptr = TO_SURVIVOR;
-    let mut promoted_scan_ptr = OLD_TOP;
-    let mut next_dirty_cards = Vec::new();
+    let mut promoted_scan_idx = 0;
+    let mut new_remset = Vec::new();
 
     // 1. Scan roots
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
@@ -1784,23 +2632,34 @@ pub unsafe fn minor_gc_locked() {
         }
     }
     copy_static_roots();
-    super::event_loop::rt_gc_scan_tasks();
-
-    // 1b. Scan dirty cards in Old Gen
-    let mut current = OLD_START;
-    while current < OLD_TOP {
-        let header = current as *mut ObjectHeader;
-        let offset = current as usize - OLD_START as usize;
-        let card_idx = offset >> CARD_SHIFT;
-
-        if *CARD_TABLE.add(card_idx) != 0 {
-            if scan_object_fields_minor(header) {
-                next_dirty_cards.push(card_idx);
-            }
+    super::rt_gc_scan_tasks();
+    {
+        let mut queue = FINALIZER_QUEUE.lock().unwrap();
+        for (_, obj_val) in queue.iter_mut() {
+            copy_object(obj_val as *mut i64);
         }
+    }
+    crate::rt_gc_scan_array_forward_roots();
 
-        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-        current = current.add(size);
+    // 1b. Scan RemSets
+    {
+        let registry = lock_registry();
+        for &ctx_wrapper in registry.iter() {
+            let ctx = &*ctx_wrapper.0;
+            let mut remset = ctx.remset.lock().unwrap();
+            let mut next_remset = Vec::new();
+            for &obj_ptr in remset.iter() {
+                let body = obj_ptr as *mut u8;
+                let header = rt_get_header(body);
+                // Temporarily clear dirty flag so new mutations can be caught
+                (*header).gc_flags &= !FLAG_REMSET_DIRTY;
+                if scan_object_fields_minor(header) {
+                    (*header).gc_flags |= FLAG_REMSET_DIRTY;
+                    next_remset.push(obj_ptr);
+                }
+            }
+            *remset = next_remset;
+        }
     }
 
     // 1c. Scan all LOS objects (they can store references to Young Gen)
@@ -1823,41 +2682,34 @@ pub unsafe fn minor_gc_locked() {
             progressed = true;
         }
 
-        while promoted_scan_ptr < OLD_TOP {
-            let header = promoted_scan_ptr as *mut ObjectHeader;
-            if scan_object_fields_minor(header) {
-                let offset = promoted_scan_ptr as usize - OLD_START as usize;
-                next_dirty_cards.push(offset >> CARD_SHIFT);
+        loop {
+            let newly_promoted = {
+                let list = PROMOTED_LIST.lock().unwrap();
+                if promoted_scan_idx < list.len() {
+                    let ptr = list[promoted_scan_idx] as *mut u8;
+                    promoted_scan_idx += 1;
+                    Some(ptr)
+                } else {
+                    None
+                }
+            };
+            if let Some(promoted_ptr) = newly_promoted {
+                let header = promoted_ptr as *mut ObjectHeader;
+                if scan_object_fields_minor(header) {
+                    (*header).gc_flags |= FLAG_REMSET_DIRTY;
+                    let body_ptr = (promoted_ptr as *mut u8).add(std::mem::size_of::<ObjectHeader>());
+                    new_remset.push(body_ptr);
+                }
+                progressed = true;
+            } else {
+                break;
             }
-            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-            promoted_scan_ptr = promoted_scan_ptr.add(size);
-            progressed = true;
         }
 
         if !progressed {
             break;
         }
     }
-
-    if crate::TIMEOUT_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_minor(
-            &crate::TIMEOUT_OBJECTS,
-            crate::rt_clearTimeout,
-            eden_top,
-            from_survivor_top,
-        );
-    }
-    if crate::INTERVAL_OBJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        rewrite_timer_objects_after_minor(
-            &crate::INTERVAL_OBJECTS,
-            crate::rt_clearInterval,
-            eden_top,
-            from_survivor_top,
-        );
-    }
-
-    run_young_finalizers_in_region(EDEN_START, eden_top);
-    run_young_finalizers_in_region(FROM_SURVIVOR, from_survivor_top);
 
     // Swap survivors
     let temp = FROM_SURVIVOR;
@@ -1867,9 +2719,13 @@ pub unsafe fn minor_gc_locked() {
 
     EDEN_TOP.store(EDEN_START, std::sync::atomic::Ordering::SeqCst);
 
-    // Reset Card Table
-    memset(CARD_TABLE as *mut std::ffi::c_void, 0, CARD_TABLE_SIZE);
-    for card_idx in next_dirty_cards {
-        *CARD_TABLE.add(card_idx) = 1;
+    // Removed CARD_TABLE reset
+    if !new_remset.is_empty() {
+        let registry = lock_registry();
+        if let Some(&ctx_wrapper) = registry.iter().next() {
+            let ctx = &*ctx_wrapper.0;
+            ctx.remset.lock().unwrap().extend(new_remset);
+        }
     }
+    PROMOTED_LIST.lock().unwrap().clear();
 }

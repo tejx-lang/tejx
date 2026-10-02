@@ -810,7 +810,7 @@ fn compile_report(source: String, filename: String, config: Value) -> Result<Val
 
     log_internal("Type checking...");
     let mut type_checker = TypeChecker::new();
-    if type_checker.check(&resolved_program, &filename).is_err() {
+    if type_checker.check(&resolved_program, &filename, None).is_err() {
         let diag = type_checker
             .diagnostics
             .first()
@@ -822,7 +822,7 @@ fn compile_report(source: String, filename: String, config: Value) -> Result<Val
     log_internal("Lowering...");
     let lowering = Lowering::new();
     let base_path = Path::new(&filename).parent().unwrap_or(Path::new("."));
-    let lowering_result = lowering.lower(&resolved_program, base_path);
+    let lowering_result = lowering.lower(&resolved_program, base_path, None);
 
     {
         let diagnostics = lowering.diagnostics.borrow();

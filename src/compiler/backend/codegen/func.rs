@@ -24,9 +24,9 @@ impl CodeGen {
                         | "Promise"
                 )
             }
-            TejxType::Optional(inner)
-            | TejxType::DynamicArray(inner)
-            | TejxType::Slice(inner) => Self::type_needs_loop_safepoints(inner),
+            TejxType::Optional(inner) | TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
+                Self::type_needs_loop_safepoints(inner)
+            }
             TejxType::FixedArray(inner, _) => Self::type_needs_loop_safepoints(inner),
             TejxType::Object(props) => props
                 .iter()
@@ -36,9 +36,7 @@ impl CodeGen {
     }
 
     fn function_needs_loop_safepoints(func: &MIRFunction) -> bool {
-        func.variables
-            .values()
-            .any(Self::type_needs_loop_safepoints)
+        func.variables.values().any(Self::type_needs_loop_safepoints)
     }
 
     fn function_tracks_runtime_location(function_name: &str) -> bool {
@@ -72,8 +70,10 @@ impl CodeGen {
         known_functions: &HashSet<String>,
         extern_functions: &HashSet<String>,
     ) -> bool {
-        func.blocks.iter().flat_map(|bb| bb.instructions.iter()).any(|inst| {
-            match inst {
+        func.blocks
+            .iter()
+            .flat_map(|bb| bb.instructions.iter())
+            .any(|inst| match inst {
                 MIRInstruction::Throw { .. }
                 | MIRInstruction::IndirectCall { .. }
                 | MIRInstruction::LoadMember { .. }
@@ -94,8 +94,7 @@ impl CodeGen {
                 | MIRInstruction::Cast { .. }
                 | MIRInstruction::TrySetup { .. }
                 | MIRInstruction::PopHandler { .. } => false,
-            }
-        })
+            })
     }
 
     fn compute_tracked_runtime_functions(
@@ -128,18 +127,19 @@ impl CodeGen {
                     continue;
                 }
 
-                let propagates_tracked_exception =
-                    func.blocks.iter().flat_map(|bb| bb.instructions.iter()).any(|inst| {
-                        match inst {
-                            MIRInstruction::Call { callee, .. } => {
-                                !Self::known_non_throwing_call_target(callee)
-                                    && (tracked_functions.contains(callee)
+                let propagates_tracked_exception = func
+                    .blocks
+                    .iter()
+                    .flat_map(|bb| bb.instructions.iter())
+                    .any(|inst| match inst {
+                        MIRInstruction::Call { callee, .. } => {
+                            !Self::known_non_throwing_call_target(callee)
+                                && (tracked_functions.contains(callee)
                                     || extern_functions.contains(callee)
                                     || !known_functions.contains(callee))
-                            }
-                            MIRInstruction::IndirectCall { .. } => true,
-                            _ => false,
                         }
+                        MIRInstruction::IndirectCall { .. } => true,
+                        _ => false,
                     });
 
                 if propagates_tracked_exception {
@@ -288,6 +288,10 @@ impl CodeGen {
 
         while i < check_vars.len() {
             let current_var = check_vars[i].clone();
+            if func.params.contains(&current_var) {
+                return true;
+            }
+            
             for block in &func.blocks {
                 for instr in &block.instructions {
                     match instr {
@@ -737,7 +741,10 @@ impl CodeGen {
         for bb in &func.blocks {
             for inst in &bb.instructions {
                 if let MIRInstruction::Call {
-                    callee, args: _, dst, ..
+                    callee,
+                    args: _,
+                    dst,
+                    ..
                 } = inst
                 {
                     if callee == "f_Array_constructor"
@@ -760,10 +767,11 @@ impl CodeGen {
         if let Some(pos) = self.captured_vars.iter().position(|c| c == name) {
             return Some(pos);
         }
-        // Handle MIR mangling suffixes like _123
         for (i, cap) in self.captured_vars.iter().enumerate() {
             if name.starts_with(cap)
-                && (name.len() == cap.len() || name[cap.len()..].starts_with('_'))
+                && (name.len() == cap.len()
+                    || name[cap.len()..].starts_with('_')
+                    || name[cap.len()..].starts_with('$'))
             {
                 return Some(i);
             }
@@ -974,11 +982,12 @@ update:\n\
         let mut init_type_buffer = String::new();
         init_type_buffer.push_str("define void @rt_init_types() {\n");
 
-        let class_defs: Vec<(String, Vec<(String, TejxType)>)> = self
+        let mut class_defs: Vec<(String, Vec<(String, TejxType)>)> = self
             .class_fields
             .iter()
             .map(|(class_name, fields)| (class_name.clone(), fields.clone()))
             .collect();
+        class_defs.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (class_name, fields) in class_defs {
             let id = type_id;
@@ -1047,11 +1056,13 @@ update:\n\
             }
 
             let display_name = if class_name.starts_with("__objshape_") {
-                "object"
+                "struct".to_string()
+            } else if let Some(disp) = self.class_display_names.get(&class_name) {
+                disp.clone()
             } else {
-                class_name.as_str()
+                class_name.clone()
             };
-            let type_name_ptr = self.emit_string_constant(display_name);
+            let type_name_ptr = self.emit_string_constant(&display_name);
 
             let field_offsets_arr_name = format!("@type_{}_field_offsets", id);
             if !field_offsets.is_empty() {
@@ -1137,6 +1148,16 @@ update:\n\
                 field_names_ptr
             ));
         }
+        if let Some(vt_stack) = self.vt_stack_size {
+            init_type_buffer.push_str(&format!(
+                "  call void @rt_set_default_vthread_stack_size(i64 {})\n",
+                vt_stack
+            ));
+            self.declare_runtime_fn(
+                "rt_set_default_vthread_stack_size",
+                "void @rt_set_default_vthread_stack_size(i64)",
+            );
+        }
         init_type_buffer.push_str("  ret void\n}\n");
         self.buffer.push_str(&init_type_buffer);
 
@@ -1187,9 +1208,15 @@ update:\n\
         self.declare_runtime_fn("rt_Arena_create", "i64 @rt_Arena_create()");
         self.declare_runtime_fn("rt_Arena_destroy", "void @rt_Arena_destroy(i64)");
         self.declare_runtime_fn("rt_closure_from_ptr", "i64 @rt_closure_from_ptr(i64)");
-        self.declare_runtime_fn("rt_enter_frame", "void @rt_enter_frame(i64, i64, i64) nounwind");
+        self.declare_runtime_fn(
+            "rt_enter_frame",
+            "void @rt_enter_frame(i64, i64, i64) nounwind",
+        );
         self.declare_runtime_fn("rt_leave_frame", "void @rt_leave_frame() nounwind");
-        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
+        self.declare_runtime_fn(
+            "rt_set_location",
+            "void @rt_set_location(i64, i64) nounwind",
+        );
 
         // Filter functions to remove duplicates, prioritizing non-empty tejx_main
         let mut unique_functions = Vec::new();
@@ -1228,7 +1255,7 @@ update:\n\
         }
 
         // Exception handling runtime functions
-        self.declare_runtime_fn("_setjmp", "i32 @_setjmp(i8*) returns_twice");
+        self.declare_runtime_fn("tejx_setjmp", "i32 @tejx_setjmp(i8*) returns_twice");
         self.declare_runtime_fn(
             TEJX_PUSH_HANDLER,
             &format!("void @{}(i8*)", TEJX_PUSH_HANDLER),
@@ -1250,8 +1277,7 @@ update:\n\
             self.buffer.push('\n');
             self.buffer
                 .push_str(&format!("declare i32 @{}(i32, i8**)\n", TEJX_RUNTIME_MAIN));
-            self.buffer
-                .push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
+            self.buffer.push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
             self.buffer.push_str("entry:\n");
             self.buffer.push_str(&format!(
                 "  %call = call i32 @{}(i32 %argc, i8** %argv)\n",
@@ -1261,7 +1287,10 @@ update:\n\
             self.buffer.push_str("}\n");
         }
 
-        format!("{}{}", self.global_buffer, self.buffer)
+        format!(
+            "{}{}\n!0 = distinct !{{!0, !\"TejxDomain\"}}\n!1 = distinct !{{!1, !0, !\"HeapScope\"}}\n!2 = distinct !{{!2, !0, !\"StackScope\"}}\n!3 = !{{!1}}\n!4 = !{{!2}}\n",
+            self.global_buffer, self.buffer
+        )
     }
 
     pub(crate) fn gen_function_v2(&mut self, func: &MIRFunction) {
@@ -1281,11 +1310,15 @@ update:\n\
         self.num_roots = 0;
         self.current_debug_line = None;
         self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
+        self.current_function_source_file = self
+            .function_source_files
+            .get(&func.name)
+            .cloned()
+            .unwrap_or_else(|| self.source_file.clone());
         self.current_function_has_runtime_frame =
-            !self.source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
-        self.current_function_tracks_location =
-            self.current_function_has_runtime_frame
-                && Self::function_tracks_runtime_location(&func.name);
+            !self.current_function_source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
+        self.current_function_tracks_location = self.current_function_has_runtime_frame
+            && Self::function_tracks_runtime_location(&func.name);
 
         let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
 
@@ -1333,6 +1366,7 @@ update:\n\
             .insert(func.name.clone(), func.params.len());
         self.current_function_params = func.params.iter().cloned().collect();
 
+        let func_start_marker = self.buffer.len();
         self.emit(&format!(
             "define {} @\"{}\"({}) {{\n",
             ret_llvm_ty, func.name, params_str
@@ -1447,7 +1481,7 @@ update:\n\
                 self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
                 self.num_roots += 1;
 
-                self.current_env = Some(passed_env);
+                self.current_env = Some(env_alloca);
             }
         } else if has_captures {
             self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");
@@ -1466,7 +1500,7 @@ update:\n\
             self.emit_line(&format!("store i64 {}, i64* {}", env_reg, env_alloca));
             self.emit_line(&format!("call void @rt_push_root(i64* {})", env_alloca));
             self.num_roots += 1;
-            self.current_env = Some(env_reg);
+            self.current_env = Some(env_alloca);
         }
 
         // 4. Store parameters into their allocas
@@ -1502,7 +1536,7 @@ update:\n\
         // Sync parameters to environment if captured
         for p in &func.params {
             if let Some(cap_idx) = self.get_captured_index(p) {
-                if let Some(env) = self.current_env.clone() {
+                if let Some(env) = self.emit_get_current_env() {
                     self.declare_runtime_fn(
                         "rt_array_set_fast",
                         "i64 @rt_array_set_fast(i64, i64, i64)",
@@ -1541,7 +1575,7 @@ update:\n\
             .unwrap_or(0);
 
         if self.current_function_has_runtime_frame {
-            let source_file = self.source_file.clone();
+            let source_file = self.current_function_source_file.clone();
             let display_name = self
                 .function_display_names
                 .get(&func.name)
@@ -1568,13 +1602,67 @@ update:\n\
 
         // Branch to first block
         if !func.blocks.is_empty() {
-            self.emit_line("call void @rt_safepoint_poll()");
+            if self.num_roots > 0 || self.current_function_needs_loop_safepoints || self.current_function_has_runtime_frame {
+                self.emit_line("call void @rt_safepoint_poll()");
+            }
             self.emit_line(&format!("br label %{}", func.blocks[0].name));
         } else {
+            self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");
             if self.current_function_has_runtime_frame {
                 self.emit_line("call void @rt_leave_frame()");
             }
             self.emit_line("ret i64 0");
+        }
+
+        // Pre-allocate one jmp_buf per distinct exception handler in this function
+        let mut declared_jmpbufs = HashSet::new();
+        for bb in &func.blocks {
+            if let Some(h) = bb.exception_handler {
+                if declared_jmpbufs.insert(h) {
+                    self.alloca_buffer
+                        .push_str(&format!("  %jmpbuf_h{} = alloca [37 x i64]\n", h));
+                }
+            }
+        }
+
+        // Build control flow graph predecessors to detect entrances into exception handlers
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); func.blocks.len()];
+        for (from_idx, b) in func.blocks.iter().enumerate() {
+            let mut has_uncond_term = false;
+            for inst in &b.instructions {
+                match inst {
+                    MIRInstruction::Jump { target, .. } => {
+                        if *target < func.blocks.len() {
+                            preds[*target].push(from_idx);
+                        }
+                        has_uncond_term = true;
+                    }
+                    MIRInstruction::Branch {
+                        true_target,
+                        false_target,
+                        ..
+                    } => {
+                        if *true_target < func.blocks.len() {
+                            preds[*true_target].push(from_idx);
+                        }
+                        if *false_target < func.blocks.len() {
+                            preds[*false_target].push(from_idx);
+                        }
+                    }
+                    MIRInstruction::TrySetup { try_target, .. } => {
+                        if *try_target < func.blocks.len() {
+                            preds[*try_target].push(from_idx);
+                        }
+                    }
+                    MIRInstruction::Return { .. } | MIRInstruction::Throw { .. } => {
+                        has_uncond_term = true;
+                    }
+                    _ => {}
+                }
+            }
+            if !has_uncond_term && from_idx + 1 < func.blocks.len() {
+                preds[from_idx + 1].push(from_idx);
+            }
         }
 
         // Generate blocks with block name resolution
@@ -1584,44 +1672,49 @@ update:\n\
             let mut has_handler = false;
             if let Some(handler_idx) = bb.exception_handler {
                 if handler_idx < func.blocks.len() {
-                    has_handler = true;
-                    let handler_name = &func.blocks[handler_idx].name;
-                    // Allocate jmp_buf on THIS function's stack frame
-                    self.temp_counter += 1;
-                    let jmpbuf = format!("%jmpbuf{}", self.temp_counter);
-                    self.alloca_buffer
-                        .push_str(&format!("  {} = alloca [37 x i64]\n", jmpbuf));
-                    self.temp_counter += 1;
-                    let jmpbuf_ptr = format!("%jmpbuf_ptr{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast [37 x i64]* {} to i8*",
-                        jmpbuf_ptr, jmpbuf
-                    ));
-                    // Call setjmp inline — this is the critical part
-                    self.temp_counter += 1;
-                    let handler_res = format!("%handler_res{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i32 @_setjmp(i8* {}) returns_twice",
-                        handler_res, jmpbuf_ptr
-                    ));
-                    // If setjmp returned 0, register the handler and continue
-                    self.temp_counter += 1;
-                    let is_exception = format!("%is_exception{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ne i32 {}, 0",
-                        is_exception, handler_res
-                    ));
-                    let body_label = format!("{}_body", bb.name);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        is_exception, handler_name, body_label
-                    ));
-                    self.emit(&format!("{}:\n", body_label));
-                    // Push handler AFTER setjmp returned 0 (normal path)
-                    self.emit_line(&format!(
-                        "call void @{}(i8* {})",
-                        TEJX_PUSH_HANDLER, jmpbuf_ptr
-                    ));
+                    // Only set up and push the handler upon entering the protected region
+                    let is_handler_entry = i == 0
+                        || preds[i].is_empty()
+                        || preds[i]
+                            .iter()
+                            .any(|&p| func.blocks[p].exception_handler != Some(handler_idx));
+
+                    if is_handler_entry {
+                        has_handler = true;
+                        let handler_name = &func.blocks[handler_idx].name;
+                        let jmpbuf = format!("%jmpbuf_h{}", handler_idx);
+                        self.temp_counter += 1;
+                        let jmpbuf_ptr = format!("%jmpbuf_ptr{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = bitcast [37 x i64]* {} to i8*",
+                            jmpbuf_ptr, jmpbuf
+                        ));
+                        // Call setjmp inline — this is the critical part
+                        self.temp_counter += 1;
+                        let handler_res = format!("%handler_res{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = call i32 @tejx_setjmp(i8* {}) returns_twice",
+                            handler_res, jmpbuf_ptr
+                        ));
+                        // If setjmp returned 0, register the handler and continue
+                        self.temp_counter += 1;
+                        let is_exception = format!("%is_exception{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = icmp ne i32 {}, 0",
+                            is_exception, handler_res
+                        ));
+                        let body_label = format!("{}_body", bb.name);
+                        self.emit_line(&format!(
+                            "br i1 {}, label %{}, label %{}",
+                            is_exception, handler_name, body_label
+                        ));
+                        self.emit(&format!("{}:\n", body_label));
+                        // Push handler AFTER setjmp returned 0 (normal path)
+                        self.emit_line(&format!(
+                            "call void @{}(i8* {})",
+                            TEJX_PUSH_HANDLER, jmpbuf_ptr
+                        ));
+                    }
                 }
             }
 
@@ -1633,12 +1726,7 @@ update:\n\
             for inst in &bb.instructions {
                 if bb.exception_handler.is_some()
                     && !has_pop_handler
-                    && matches!(
-                        inst,
-                        MIRInstruction::Return { .. }
-                            | MIRInstruction::Jump { .. }
-                            | MIRInstruction::Branch { .. }
-                    )
+                    && matches!(inst, MIRInstruction::Return { .. })
                 {
                     self.emit_line("call void @tejx_pop_handler()");
                 }
@@ -1665,6 +1753,21 @@ update:\n\
         if !self.alloca_buffer.is_empty() {
             self.buffer.insert_str(entry_marker, &self.alloca_buffer);
             self.alloca_buffer.clear();
+        }
+
+        if self.buffer[func_start_marker..].contains("__TEJX_NUM_ROOTS_PLACEHOLDER__") {
+            let replacement = if self.num_roots > 0 {
+                self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+                format!("call void @rt_pop_roots(i64 {})", self.num_roots)
+            } else {
+                "; no frame roots to pop".to_string()
+            };
+            let updated = self.buffer[func_start_marker..].replace(
+                "call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)",
+                &replacement,
+            );
+            self.buffer.truncate(func_start_marker);
+            self.buffer.push_str(&updated);
         }
     }
 }

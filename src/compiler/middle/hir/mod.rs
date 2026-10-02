@@ -46,11 +46,13 @@ pub enum HIRExpression {
         ty: TejxType,
         line: usize,
     },
-    Await {
-        expr: Box<HIRExpression>,
+    PostfixUpdate {
+        target: Box<HIRExpression>,
+        op: TokenType,
         ty: TejxType,
         line: usize,
     },
+
     Sequence {
         expressions: Vec<HIRExpression>,
         ty: TejxType,
@@ -117,7 +119,7 @@ impl HIRExpression {
             HIRExpression::IndirectCall { ty, .. } => ty.clone(),
             HIRExpression::NewExpr { ty, .. } => ty.clone(),
             HIRExpression::Assignment { ty, .. } => ty.clone(),
-            HIRExpression::Await { ty, .. } => ty.clone(),
+
             HIRExpression::OptionalChain { ty, .. } => ty.clone(),
             HIRExpression::IndexAccess { ty, .. } => ty.clone(),
             HIRExpression::MemberAccess { ty, .. } => ty.clone(),
@@ -128,6 +130,7 @@ impl HIRExpression {
             HIRExpression::NoneLiteral { .. } => TejxType::Void, // None is generic
             HIRExpression::SomeExpr { value, .. } => value.get_type(), // Simplified
             HIRExpression::Cast { ty, .. } => ty.clone(),
+            HIRExpression::PostfixUpdate { ty, .. } => ty.clone(),
         }
     }
 
@@ -140,7 +143,7 @@ impl HIRExpression {
             HIRExpression::IndirectCall { line, .. } => *line,
             HIRExpression::NewExpr { line, .. } => *line,
             HIRExpression::Assignment { line, .. } => *line,
-            HIRExpression::Await { line, .. } => *line,
+
             HIRExpression::OptionalChain { line, .. } => *line,
             HIRExpression::IndexAccess { line, .. } => *line,
             HIRExpression::MemberAccess { line, .. } => *line,
@@ -151,6 +154,7 @@ impl HIRExpression {
             HIRExpression::NoneLiteral { line, .. } => *line,
             HIRExpression::SomeExpr { line, .. } => *line,
             HIRExpression::Cast { line, .. } => *line,
+            HIRExpression::PostfixUpdate { line, .. } => *line,
         }
     }
 }
@@ -184,7 +188,6 @@ pub enum HIRStatement {
         _return_type: TejxType,
         body: Box<HIRStatement>, // Should be a Block
         is_extern: bool,
-        async_params: Option<Vec<(String, TejxType)>>,
         line: usize,
     },
     Return {

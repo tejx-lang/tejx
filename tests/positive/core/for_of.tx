@@ -1,0 +1,22 @@
+import { assert_eq_int, assert_eq_string } from "../utils.tx";
+
+function test_for_of() {
+    print("--- Testing For Of ---");
+    let nums = [10, 20, 30, 40, 50];
+    let sum = 0;
+    for (let x of nums) {
+        sum = sum + x;
+    }
+    assert_eq_int(150, sum, "for-of sum over int array");
+
+    let words = ["hello", " ", "world"];
+    let concat = "";
+    for (let w of words) {
+        concat = concat + w;
+    }
+    assert_eq_string("hello world", concat, "for-of concat over string array");
+}
+
+function main() {
+    test_for_of();
+}

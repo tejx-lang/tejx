@@ -1,4 +1,4 @@
-import { Thread, SharedQueue, Mutex } from "std:thread";
+import { SharedQueue, Mutex } from "std:thread";
 
 function main(): void {
   let q = new SharedQueue<int>();

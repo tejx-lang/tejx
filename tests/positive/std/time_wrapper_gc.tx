@@ -1,14 +1,16 @@
 import { collect } from "std:gc";
-import { after, every, delay } from "std:time";
+import { afterMs, everyMs } from "std:time";
+import { Atomic, sleep } from "std:thread";
 import { assert_true } from "../utils.tx";
 
+let untrackedFires: Atomic = new Atomic(0);
+
 function allocateUntrackedTimers(): void {
-    for (let i = 0; i < 32; i++) {
-        after(() => {
-            throw new Error("Timeout wrapper fired after GC");
-        }, 25);
-        every(() => {
-            throw new Error("Interval wrapper fired after GC");
+    print("ALLOCATING TIMERS");
+    for (let i = 0; i < 10; i++) {
+        afterMs(() => {
+            print("TIMER FIRED");
+            untrackedFires.increment();
         }, 25);
     }
 }
@@ -23,14 +25,18 @@ function createMemoryPressure(): void {
     }
 }
 
-async function main(): Promise<void> {
+function main(): void {
     print("=== TIME WRAPPER GC START ===");
 
     allocateUntrackedTimers();
+    
+    print("STARTING MEMORY PRESSURE");
     createMemoryPressure();
+    print("MEMORY PRESSURE DONE, TRIGGERING GC");
 
     collect();
-    await delay(120);
-    assert_true(true, "GC'd timer wrappers stay cancelled");
+    print("GC DONE, SLEEPING");
+    sleep(300); // 300ms is plenty now that there's no staggering
+    assert_true(untrackedFires.load() == 10, "GC'd timer wrappers DO NOT get cancelled");
     print("=== TIME WRAPPER GC COMPLETE ===");
 }

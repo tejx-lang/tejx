@@ -1,0 +1,49 @@
+// Test typeof for struct, array, generic types
+
+class Container<T> {
+    value: T;
+    constructor(v: T) {
+        this.value = v;
+    }
+}
+
+class Pair<K, V> {
+    key: K;
+    val: V;
+    constructor(k: K, v: V) {
+        this.key = k;
+        this.val = v;
+    }
+}
+
+function main() {
+    // 1. Primitive types
+    let a: int = 42;
+    let b: string = "hello";
+    let c: bool = true;
+    let d: float = 3.14;
+    print(typeof(a)); // int
+    print(typeof(b)); // string
+    print(typeof(c)); // bool
+    print(typeof(d)); // float
+
+    // 2. Struct types (anonymous object / struct literals)
+    let s = { x: 10, y: 20 };
+    print(typeof(s)); // struct
+
+    // 3. Array types with element types
+    let int_arr: int[] = [1, 2, 3];
+    let str_arr: string[] = ["a", "b", "c"];
+    print(typeof(int_arr)); // int[]
+    print(typeof(str_arr)); // string[]
+
+    // 4. Generic types with assigned types
+    let c1: Container<int> = new Container<int>(100);
+    let c2: Container<string> = new Container<string>("test");
+    let p: Pair<string, int> = new Pair<string, int>("count", 5);
+    print(typeof(c1)); // Container<int>
+    print(typeof(c2)); // Container<string>
+    print(typeof(p));  // Pair<string, int>
+
+    print("ALL TYPEOF TESTS PASSED!");
+}

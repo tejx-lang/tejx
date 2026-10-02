@@ -34,11 +34,24 @@ function test_string_conversions() {
     print("int to string:", s2);
     assert_eq_string("999", s2, "Int to string conversion");
     
-    // String to Float (parseFloat)
+    // String to Float (Number.Float, Number.Float64)
     let s3: string = "45.67";
-    let f2: float = parseFloat(s3);
+    let f2: float = Number.Float(s3);
     print("string to float:", f2);
-    // Note: Comparing floats directly can be tricky, but for exact literals it might work.
+    let f64_val: float64 = Number.Float64("123.45");
+    assert_true(f64_val > 123.0 && f64_val < 124.0, "Number.Float64 conversion");
+
+    // String to Int (Number.Int, Number.Int8, Number.Int16, Number.Int64, Number.UInt32)
+    let int_val: int = Number.Int("42");
+    assert_eq_int(42, int_val, "Number.Int conversion");
+    let int8_val: int8 = Number.Int8("120");
+    assert_eq_int(120, int8_val as int, "Number.Int8 conversion");
+    let int16_val: int16 = Number.Int16("30000");
+    assert_eq_int(30000, int16_val as int, "Number.Int16 conversion");
+    let int64_val: int64 = Number.Int64("9876543210");
+    assert_true(int64_val > 9000000000, "Number.Int64 conversion");
+    let uint_val: uint32 = Number.UInt32("50000");
+    assert_eq_int(50000, uint_val as int, "Number.UInt32 conversion");
 }
 
 function main() {

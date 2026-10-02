@@ -1,0 +1,238 @@
+// GC No-Leak Tests
+// ==================
+// Verifies that the GC doesn't leave untracked / uncollected memory.
+// After dropping all references and collecting, heap usage must
+// converge back towards baseline within a tolerance.
+
+import { assert_eq_int, assert_true, assert_ne_int } from "../utils.tx";
+import { collect, getHeapUsed, getStats } from "std:gc";
+
+class HeavyObject {
+    id: int;
+    data: string;
+    payload: int[];
+    constructor(id: int) {
+        this.id = id;
+        this.data = "heavy-object-data-" + id + "-padding-for-size";
+        this.payload = [];
+        for (let i = 0; i < 10; i++) {
+            this.payload.push(i * id);
+        }
+    }
+}
+
+class Node {
+    val: int;
+    next: Optional<Node> = None;
+    constructor(v: int) { this.val = v; }
+}
+
+// --- Test 1: Alloc/Drop/Collect — heap converges ---
+function test_heap_convergence() {
+    print("--- NoLeak: Heap Convergence ---");
+
+    collect();
+    let baseline = getHeapUsed();
+    print("  Baseline heap: " + baseline);
+
+    // Allocate and drop 5 rounds
+    for (let round = 0; round < 5; round++) {
+        let objects: HeavyObject[] = [];
+        for (let i = 0; i < 10000; i++) {
+            objects.push(new HeavyObject(i));
+        }
+        // Drop all
+        objects = [];
+        collect();
+
+        let afterRound = getHeapUsed();
+        print("  After round " + round + ": " + afterRound);
+    }
+
+    collect();
+    let final_heap = getHeapUsed();
+    print("  Final heap: " + final_heap);
+
+    // Final heap should be within 2x of baseline (generous but catches true leaks)
+    // The key assertion: it's NOT growing unboundedly
+    assert_true(final_heap < baseline + 5000000, "Heap converged (not leaking unboundedly)");
+}
+
+// --- Test 2: Repeated cycles — heap stays bounded ---
+function test_bounded_heap() {
+    print("--- NoLeak: Bounded Heap ---");
+
+    collect();
+    let initial = getHeapUsed();
+
+    let maxSeen: int64 = initial;
+
+    for (let cycle = 0; cycle < 20; cycle++) {
+        // Create a burst of garbage
+        let junk: string[] = [];
+        for (let i = 0; i < 5000; i++) {
+            junk.push("cycle-" + cycle + "-item-" + i + "-data-payload");
+        }
+
+        let mid = getHeapUsed();
+        if (mid > maxSeen) {
+            maxSeen = mid;
+        }
+
+        // Drop and collect
+        junk = [];
+        collect();
+    }
+
+    let final_heap = getHeapUsed();
+    // After 20 cycles of create/destroy, final should be close to initial
+    // Not growing monotonically = no leak
+    assert_true(final_heap <= maxSeen, "Final heap <= peak — bounded");
+    assert_true((final_heap - initial) < 50000, "Heap growth bounded after 100,000 strings (< 50KB delta)");
+}
+
+// --- Test 3: Large string generation and reclaim ---
+function test_string_reclaim() {
+    print("--- NoLeak: String Reclaim ---");
+
+    collect();
+    let baseline = getHeapUsed();
+
+    // Generate 10000 large strings, discard them
+    for (let i = 0; i < 10000; i++) {
+        let s = "large-string-payload-" + i + "-" + i + "-" + i + "-" + i + "-end";
+    }
+
+    collect();
+    let afterCollect = getHeapUsed();
+    print("  Baseline: " + baseline + ", After string reclaim: " + afterCollect);
+
+    // Should be reasonably close to baseline
+    assert_true(afterCollect < baseline + 2000000, "String memory reclaimed");
+}
+
+// --- Test 4: Array resize — old backing stores collected ---
+function test_array_resize_reclaim() {
+    print("--- NoLeak: Array Resize Reclaim ---");
+
+    collect();
+    let baseline = getHeapUsed();
+
+    let arr: int[] = [];
+
+    // Grow the array through multiple internal resizes
+    for (let i = 0; i < 20000; i++) {
+        arr.push(i);
+    }
+
+    // Shrink it back down
+    for (let i = 0; i < 20000; i++) {
+        arr.pop();
+    }
+    assert_eq_int(0, arr.length(), "Array emptied");
+
+    // The old backing stores should be collectible
+    collect();
+    let afterShrink = getHeapUsed();
+    print("  Baseline: " + baseline + ", After resize+shrink: " + afterShrink);
+}
+
+// --- Test 5: Linked list creation and destruction ---
+function test_linked_list_reclaim() {
+    print("--- NoLeak: Linked List Reclaim ---");
+
+    collect();
+    let baseline = getHeapUsed();
+
+    // Build a linked list of 5000 nodes
+    let head: Optional<Node> = None;
+    for (let i = 0; i < 5000; i++) {
+        let n = new Node(i);
+        n.next = head;
+        head = n;
+    }
+
+    collect();
+    let afterBuild = getHeapUsed();
+    assert_true(afterBuild > baseline, "Heap grew after building list");
+
+    // Drop the entire list and collect
+    head = None;
+    collect();
+    collect();
+
+    let afterDrop = getHeapUsed();
+    print("  Baseline: " + baseline + ", After build: " + afterBuild + ", After drop: " + afterDrop);
+    assert_true(afterDrop < 250000, "List memory was reclaimed");
+}
+
+// --- Test 6: Object replacement — old objects collected ---
+function test_object_replacement() {
+    print("--- NoLeak: Object Replacement ---");
+
+    collect();
+    let baseline = getHeapUsed();
+
+    let holder: HeavyObject = new HeavyObject(0);
+
+    // Replace the object 1000 times — each old instance should be collectible
+    for (let i = 1; i <= 1000; i++) {
+        holder = new HeavyObject(i);
+
+        if (i % 200 == 0) {
+            collect();
+        }
+    }
+
+    collect();
+    let afterReplace = getHeapUsed();
+
+    // Only 1 HeavyObject should be live
+    assert_eq_int(1000, holder.id, "Latest object is alive");
+    print("  Baseline: " + baseline + ", After 1000 replacements: " + afterReplace);
+    // Heap should not have grown by 1000x the object size
+    assert_true(afterReplace < baseline + 5000000, "Old replaced objects were collected");
+}
+
+// --- Test 7: Nested allocation waves ---
+function test_nested_waves() {
+    print("--- NoLeak: Nested Allocation Waves ---");
+
+    collect();
+    let baseline = getHeapUsed();
+
+    for (let wave = 0; wave < 10; wave++) {
+        let outer: HeavyObject[] = [];
+        for (let i = 0; i < 500; i++) {
+            outer.push(new HeavyObject(wave * 1000 + i));
+        }
+
+        // Inner wave — allocate and discard within the outer loop
+        for (let j = 0; j < 500; j++) {
+            let inner = new HeavyObject(j + 99999);
+        }
+
+        // Drop outer references
+        outer = [];
+        if (wave % 3 == 0) {
+            collect();
+        }
+    }
+
+    collect();
+    let final_heap = getHeapUsed();
+    print("  Baseline: " + baseline + ", Final: " + final_heap);
+    assert_true(final_heap < baseline + 5000000, "Nested wave memory reclaimed");
+}
+
+function main() {
+    print("=== GC NO-LEAK TESTS START ===");
+    test_heap_convergence();
+    test_bounded_heap();
+    test_string_reclaim();
+    test_array_resize_reclaim();
+    test_linked_list_reclaim();
+    test_object_replacement();
+    test_nested_waves();
+    print("=== GC NO-LEAK TESTS COMPLETE ===");
+}

@@ -43,9 +43,28 @@ function test_random_bytes(): void {
     assert_eq_int(24, bytes.length(), "randomBytes returns requested length");
 }
 
+function test_crypto_intense(): void {
+    let payloads: any[] = [];
+    for (let i = 0; i < 100; i++) {
+        payloads.push(Thread.spawn(() => {
+            let digest = crypto.sha256(binary.fromString("payload_" + i));
+        }));
+    }
+
+    let results: any[] = [];
+    for (let i = 0; i < 100; i++) {
+        results.push((payloads[i] as Thread).join());
+    }
+
+    assert_true(results.length() == 100, "100 parallel hashes computed");
+}
+
 function main(): void {
+    print("=== CRYPTO TESTS START ===");
     test_sha256();
     test_hmac_sha256();
     test_pbkdf2_sha256();
     test_random_bytes();
+    test_crypto_intense();
+    print("=== CRYPTO TESTS COMPLETE ===");
 }

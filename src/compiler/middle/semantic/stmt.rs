@@ -109,7 +109,9 @@ impl TypeChecker {
     fn statement_guarantees_function_exit(&self, stmt: &Statement) -> bool {
         match stmt {
             Statement::ReturnStmt { .. } | Statement::ThrowStmt { .. } => true,
-            Statement::BlockStmt { statements, .. } => self.block_guarantees_function_exit(statements),
+            Statement::BlockStmt { statements, .. } => {
+                self.block_guarantees_function_exit(statements)
+            }
             Statement::IfStmt {
                 then_branch,
                 else_branch: Some(else_branch),
@@ -119,9 +121,7 @@ impl TypeChecker {
                     && self.statement_guarantees_function_exit(else_branch)
             }
             Statement::WhileStmt {
-                condition,
-                body,
-                ..
+                condition, body, ..
             } => {
                 matches!(
                     condition.as_ref(),
@@ -168,9 +168,7 @@ impl TypeChecker {
         match ty {
             TejxType::Void => false,
             TejxType::Class(name, generics)
-                if name == "Promise"
-                    && generics.len() == 1
-                    && generics[0] == TejxType::Void =>
+                if name == "Promise" && generics.len() == 1 && generics[0] == TejxType::Void =>
             {
                 false
             }
@@ -200,7 +198,7 @@ impl TypeChecker {
                     && has_explicit_type
                     && !self.is_valid_type(declared_ty.as_ref().unwrap())
                 {
-                    self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
+                    self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some(&self.type_suggestion_or_default_hint(&ty_str)));
                 }
                 if let Some(expr) = initializer {
                     let prev_expected = self.current_expected_type.take();
@@ -265,13 +263,13 @@ impl TypeChecker {
                         );
                     }
 
-                if !is_explicit_any
-                    && has_explicit_type
-                    && !self.is_assignment_compatible(
-                        declared_ty.as_ref().unwrap(),
-                        &TejxType::from_name(&init_type),
-                    )
-                {
+                    if !is_explicit_any
+                        && has_explicit_type
+                        && !self.is_assignment_compatible(
+                            declared_ty.as_ref().unwrap(),
+                            &TejxType::from_name(&init_type),
+                        )
+                    {
                         if init_type == "[]" {
                             self.report_error_detailed(
                                 format!(
@@ -349,36 +347,14 @@ impl TypeChecker {
                         None,
                     );
                 } else {
-                    match declared_ty.as_ref().unwrap() {
-                        TejxType::Object(_) => {
-                            self.report_error_detailed(
-                                "Object-typed variables must be initialized at declaration"
-                                    .to_string(),
-                                *line,
-                                *_col,
-                                "E0101",
-                                Some(
-                                    "Provide an object literal or other initializer when declaring this object",
-                                ),
-                            );
-                        }
-                        TejxType::Optional(_) | TejxType::DynamicArray(_) => {}
-                        _ => {
-                            let ty_name = type_annotation.to_string();
-                            self.report_error_detailed(
-                                format!(
-                                    "Variables of type '{}' must be initialized at declaration",
-                                    ty_name
-                                ),
-                                *line,
-                                *_col,
-                                "E0101",
-                                Some(&format!(
-                                    "Provide an initializer (e.g., 'let x: {} = ...') or use Optional<{}> if None is allowed",
-                                    ty_name, ty_name
-                                )),
-                            );
-                        }
+                    if *is_const {
+                        self.report_error_detailed(
+                            "Constants must be initialized at declaration".to_string(),
+                            *line,
+                            *_col,
+                            "E0101",
+                            Some("Provide an initializer (e.g., 'const x = ...')"),
+                        );
                     }
                     let _ = self.define_pattern(
                         pattern,
@@ -587,6 +563,51 @@ impl TypeChecker {
                 self.exit_scope();
                 res
             }
+            Statement::ForOfStmt {
+                variable,
+                iterable,
+                body,
+                _line,
+                _col,
+            } => {
+                let iter_ty = self.check_expression(iterable)?;
+                let element_ty = match &iter_ty {
+                    TejxType::DynamicArray(elem)
+                    | TejxType::FixedArray(elem, _)
+                    | TejxType::Slice(elem) => (**elem).clone(),
+                    TejxType::String => TejxType::Char,
+                    _ => {
+                        self.report_error_detailed(
+                            format!(
+                                "Type '{}' is not iterable in 'for..of' loop",
+                                iter_ty.to_name()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0100",
+                            Some("Expected an array, slice, or string"),
+                        );
+                        TejxType::Any
+                    }
+                };
+
+                self.enter_scope();
+                self.loop_depth += 1;
+
+                let _ = self.define_pattern(
+                    variable,
+                    element_ty.to_name(),
+                    false,
+                    *_line,
+                    *_col,
+                    None,
+                );
+
+                let res = self.check_statement(body);
+                self.loop_depth -= 1;
+                self.exit_scope();
+                res
+            }
             Statement::BreakStmt { _line, _col } => {
                 if self.loop_depth == 0 {
                     self.report_error_detailed(
@@ -660,9 +681,7 @@ impl TypeChecker {
                 } else {
                     self.lookup(&func.name)
                         .and_then(|symbol| self.callable_return_type(&symbol.ty))
-                        .unwrap_or_else(|| {
-                            self.effective_async_return_type(TejxType::Void, func._is_async)
-                        })
+                        .unwrap_or_else(|| self.effective_async_return_type(TejxType::Void, false))
                 };
                 if declared_ret_ty.to_name() != "<inferred>"
                     && func.generic_params.is_empty()
@@ -678,13 +697,11 @@ impl TypeChecker {
                         func._line,
                         func._col,
                         "E0101",
-                        Some(
-                            "Valid return types include primitive types, function types, object types, or user-defined classes",
-                        ),
+                        Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())),
                     );
                 }
                 let effective_ret_ty = if has_explicit_return {
-                    self.effective_async_return_type(declared_ret_ty.clone(), func._is_async)
+                    self.effective_async_return_type(declared_ret_ty.clone(), false)
                 } else {
                     declared_ret_ty.clone()
                 };
@@ -700,6 +717,15 @@ impl TypeChecker {
                         is_variadic = true;
                     }
                     let mut p_ty = p.type_name.to_string();
+                    if p_ty.is_empty() {
+                        if let Some(default_val) = &p._default_value {
+                            if let Ok(inferred_def_ty) = self.check_expression(default_val) {
+                                if inferred_def_ty != TejxType::Any {
+                                    p_ty = inferred_def_ty.to_name();
+                                }
+                            }
+                        }
+                    }
                     if p_ty.is_empty() {
                         self.report_error_detailed(
                             format!("Type annotation required for parameter '{}'", p.name),
@@ -720,9 +746,7 @@ impl TypeChecker {
                             func._line,
                             func._col,
                             "E0101",
-                            Some(
-                                "Valid parameter types include primitive types, function types, object types, or user-defined classes",
-                            ),
+                            Some(&self.type_suggestion_or_default_hint(&p_ty)),
                         );
                     }
                     if func.generic_params.is_empty() && p._is_rest {
@@ -779,7 +803,7 @@ impl TypeChecker {
                 let prev_return = self.current_function_return.take();
                 let prev_async = self.current_function_is_async;
                 self.current_function_return = Some(effective_ret_ty.clone());
-                self.current_function_is_async = func._is_async;
+                self.current_function_is_async = false;
                 self.enter_scope();
                 // Register function-level generic params as valid types
                 for gp in &func.generic_params {
@@ -799,16 +823,25 @@ impl TypeChecker {
                         func._line,
                         func._col,
                         "E0101",
-                        Some(
-                            "Valid return types include primitive types, function types, object types, or user-defined classes",
-                        ),
+                        Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())),
                     );
                 }
                 for (idx, param) in func.params.iter().enumerate() {
-                    let param_ty = params
+                    let mut param_ty = params
                         .get(idx)
                         .cloned()
                         .unwrap_or_else(|| "<inferred>".to_string());
+                    if (param_ty == "<inferred>" || param_ty == "any" || param_ty.is_empty())
+                        && param._default_value.is_some()
+                    {
+                        if let Some(default_val) = &param._default_value {
+                            if let Ok(inferred_def_ty) = self.check_expression(default_val) {
+                                if inferred_def_ty != TejxType::Any {
+                                    param_ty = inferred_def_ty.to_name();
+                                }
+                            }
+                        }
+                    }
                     if !func.generic_params.is_empty()
                         && param_ty != "any"
                         && !self.is_valid_type(&TejxType::from_name(&param_ty))
@@ -818,9 +851,7 @@ impl TypeChecker {
                             func._line,
                             func._col,
                             "E0101",
-                            Some(
-                                "Valid parameter types include primitive types, function types, object types, or user-defined classes",
-                            ),
+                            Some(&self.type_suggestion_or_default_hint(&param_ty)),
                         );
                     }
                     if !func.generic_params.is_empty() && param._is_rest {
@@ -891,6 +922,32 @@ impl TypeChecker {
                             let _ = self.update_function_symbol_return_type(&func.name, inferred);
                         }
                     }
+                }
+                if false {
+                    let actual_ret = if let Some(inferred) = inferred_after_body.clone() {
+                        if inferred.to_name() != "<inferred>" {
+                            inferred
+                        } else {
+                            effective_ret_ty.clone()
+                        }
+                    } else {
+                        effective_ret_ty.clone()
+                    };
+
+                    let inner_type = if let TejxType::Class(name, generics) = &actual_ret {
+                        if name == "Promise" && generics.len() == 1 {
+                            generics[0].clone()
+                        } else {
+                            actual_ret.clone()
+                        }
+                    } else {
+                        actual_ret.clone()
+                    };
+
+                    self.function_instantiations
+                        .entry("__spawn_async".to_string())
+                        .or_default()
+                        .insert(vec![inner_type]);
                 }
                 if !func.is_extern
                     && effective_ret_ty.to_name() != "<inferred>"
@@ -971,9 +1028,10 @@ impl TypeChecker {
                                             "E0111",
                                             Some("Interface members are part of the public contract"),
                                         );
-                                    } else if !self
-                                        .member_signature_matches_strict(&req_info.ty, &impl_info.ty)
-                                    {
+                                    } else if !self.member_signature_matches_strict(
+                                        &req_info.ty,
+                                        &impl_info.ty,
+                                    ) {
                                         self.report_error_detailed(
                                             format!(
                                                 "Class '{}' method '{}' does not match interface '{}'",
@@ -1058,7 +1116,9 @@ impl TypeChecker {
 
                                     let derived_ty = self.function_signature_type(&m.func);
 
-                                    if !self.member_signature_matches_strict(&parent_m.ty, &derived_ty) {
+                                    if !self
+                                        .member_signature_matches_strict(&parent_m.ty, &derived_ty)
+                                    {
                                         self.report_error_detailed(
                                             format!("Method '{}' overrides parent method but signature is incompatible", m.func.name),
                                             m.func._line,
@@ -1156,9 +1216,7 @@ impl TypeChecker {
                             class_decl._line,
                             class_decl._col,
                             "E0101",
-                            Some(
-                                "Valid types include: int, int32, float, float64, string, bool, or user-defined classes",
-                            ),
+                            Some(&self.type_suggestion_or_default_hint(&member_ty_str)),
                         );
                     }
 
@@ -1228,16 +1286,15 @@ impl TypeChecker {
                                 .generic_params
                                 .iter()
                                 .any(|mgp| mgp.name == gp.name)
+                                && type_string_contains(&all_types, &gp.name)
                             {
-                                if type_string_contains(&all_types, &gp.name) {
-                                    self.report_error_detailed(
+                                self.report_error_detailed(
                                         format!("Static method '{}' cannot reference class type parameter '{}'", method.func.name, gp.name),
                                         class_decl._line,
                                         class_decl._col,
                                         "E0122",
                                         Some("Static methods are shared among all instances, and do not belong to a specific generic instantiation"),
                                     );
-                                }
                             }
                         }
                     }
@@ -1253,6 +1310,15 @@ impl TypeChecker {
                     }
                     for param in &method.func.params {
                         let mut param_ty = param.type_name.to_string();
+                        if param_ty.is_empty() {
+                            if let Some(default_val) = &param._default_value {
+                                if let Ok(inferred_def_ty) = self.check_expression(default_val) {
+                                    if inferred_def_ty != TejxType::Any {
+                                        param_ty = inferred_def_ty.to_name();
+                                    }
+                                }
+                            }
+                        }
                         if param_ty.is_empty() {
                             self.report_error_detailed(
                                 format!("Type annotation required for parameter '{}'", param.name),
@@ -1270,7 +1336,7 @@ impl TypeChecker {
                             && !param_ty.is_empty()
                             && !self.is_valid_type(&TejxType::from_name(&param_ty))
                         {
-                            self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
+                            self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some(&self.type_suggestion_or_default_hint(&param_ty)));
                         }
                         self.define(param.name.clone(), param_ty);
                     }
@@ -1285,10 +1351,7 @@ impl TypeChecker {
                             .and_then(|members| members.get(&method.func.name))
                             .and_then(|info| self.callable_return_type(&info.ty))
                             .unwrap_or_else(|| {
-                                self.effective_async_return_type(
-                                    TejxType::Void,
-                                    method.func._is_async,
-                                )
+                                self.effective_async_return_type(TejxType::Void, false)
                             })
                     };
                     if declared_ret_ty.to_name() != "<inferred>"
@@ -1296,15 +1359,15 @@ impl TypeChecker {
                         && declared_ret_ty != TejxType::Void
                         && !self.is_valid_type(&declared_ret_ty)
                     {
-                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
+                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())));
                     }
                     let effective_ret_ty = if has_explicit_return {
-                        self.effective_async_return_type(declared_ret_ty.clone(), method.func._is_async)
+                        self.effective_async_return_type(declared_ret_ty.clone(), false)
                     } else {
                         declared_ret_ty.clone()
                     };
                     self.current_function_return = Some(effective_ret_ty);
-                    self.current_function_is_async = method.func._is_async;
+                    self.current_function_is_async = false;
 
                     let body_result = self.check_statement(&method.func.body);
                     let inferred_after_body = self.current_function_return.clone();
@@ -1364,9 +1427,7 @@ impl TypeChecker {
                                 constructor._line,
                                 constructor._col,
                                 "E0101",
-                                Some(
-                                    "Valid types include: int, int32, float, float64, string, bool, or user-defined classes",
-                                ),
+                                Some(&self.type_suggestion_or_default_hint(&param_ty)),
                             );
                         }
                         self.define(param.name.clone(), param_ty);
@@ -1673,6 +1734,12 @@ impl TypeChecker {
                     };
                     let type_str = format!("function:{}:{}", ret_str, p_str);
 
+                    let min_required = method
+                        .params
+                        .iter()
+                        .filter(|p| p._default_value.is_none() && !p._is_rest)
+                        .count();
+
                     existing_members.insert(
                         m_name.clone(),
                         MemberInfo {
@@ -1681,6 +1748,7 @@ impl TypeChecker {
                             access: AccessLevel::Public,
                             is_readonly: true,
                             generic_params: method.generic_params.clone(),
+                            min_params: Some(min_required),
                         },
                     );
 
@@ -1714,12 +1782,12 @@ impl TypeChecker {
                     };
                     let declared_ret_ty = TejxType::from_name(&ret_ty);
                     let effective_ret_ty = if has_explicit_return {
-                        self.effective_async_return_type(declared_ret_ty.clone(), method._is_async)
+                        self.effective_async_return_type(declared_ret_ty.clone(), false)
                     } else {
                         declared_ret_ty.clone()
                     };
                     self.current_function_return = Some(effective_ret_ty.clone());
-                    self.current_function_is_async = method._is_async;
+                    self.current_function_is_async = false;
 
                     let body_result = self.check_statement(&method.body);
                     let inferred_after_body = self.current_function_return.clone();

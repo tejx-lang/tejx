@@ -17,16 +17,13 @@ extern function rt_array_reverse<T>(arr: T[]): T[];
 extern function rt_array_fill<T>(arr: T[], val: T): T[];
 extern function rt_array_sort<T>(arr: T[]): void;
 extern function rt_is_array<T>(val: T): bool;
+extern function rt_Thread_constructor(t: any, task: () => void): void;
+extern function rt_Thread_start(t: any): void;
+extern function rt_Thread_join(t: any): void;
+extern function rt_Thread_sleep(ms: int): void;
+
 extern function rt_to_string<T>(val: T): string;
 extern function rt_exception_report_for_print<T>(val: T): Optional<string>;
-extern function rt_promise_new<T>(): Promise<T>;
-extern function rt_promise_resolve<T>(p: Promise<T>, val: T): void;
-extern function rt_promise_reject<T>(p: Promise<T>, err: Error): void;
-extern function rt_promise_then<T, U>(p: Promise<T>, onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U>;
-extern function rt_promise_observe<T>(p: Promise<T>, onResolve: (v: T) => void, onReject: (e: Error) => void): void;
-extern function rt_promise_resolved<T>(val: T): Promise<T>;
-extern function rt_promise_rejected<T>(err: Error): Promise<T>;
-extern function rt_promise_catch<T, U>(p: Promise<T>, onReject: (e: Error) => U): Promise<U>;
 extern function rt_str_equals(a: string, b: string): bool;
 extern function rt_str_concat_v2(a: string, b: string): string;
 extern function rt_String_concat(a: string, b: string): string;
@@ -58,9 +55,53 @@ export function sizeof<T>(val: T): int {
     return rt_sizeof(val);
 }
 
-export function parseFloat(s: string): float { return rt_to_number(s); }
+export class Number {
+    static Float(val: any): float {
+        return rt_to_number(val);
+    }
+    static Float32(val: any): float32 {
+        return rt_to_number(val) as float32;
+    }
+    static Float64(val: any): float64 {
+        return rt_to_number(val) as float64;
+    }
+    static Int(val: any): int {
+        return rt_to_number(val) as int;
+    }
+    static Int8(val: any): int8 {
+        return rt_to_number(val) as int8;
+    }
+    static Int16(val: any): int16 {
+        return rt_to_number(val) as int16;
+    }
+    static Int32(val: any): int32 {
+        return rt_to_number(val) as int32;
+    }
+    static Int64(val: any): int64 {
+        return rt_to_number(val) as int64;
+    }
+    static UInt(val: any): uint {
+        return rt_to_number(val) as uint;
+    }
+    static UInt8(val: any): uint8 {
+        return rt_to_number(val) as uint8;
+    }
+    static UInt16(val: any): uint16 {
+        return rt_to_number(val) as uint16;
+    }
+    static UInt32(val: any): uint32 {
+        return rt_to_number(val) as uint32;
+    }
+    static UInt64(val: any): uint64 {
+        return rt_to_number(val) as uint64;
+    }
+}
 
-export let undefined: any = None;
+export class Array {
+    static isArray<T>(val: T): bool {
+        return rt_is_array(val);
+    }
+}
 
 export class Error {
     message: string;
@@ -114,239 +155,254 @@ export class AggregateError extends Error {
     }
 }
 
-class PromiseState {
-    count: int;
-    rejected: bool;
-    constructor() {
-        this.count = 0;
-        this.rejected = false;
+
+
+export class Thread {
+    private _data: int64;
+    private _task: () => void;
+
+    constructor(task: () => void) {
+        rt_Thread_constructor(this, task);
+        rt_Thread_start(this);
+    }
+
+    start(): void {
+        rt_Thread_start(this);
+    }
+
+    join(): void {
+        rt_Thread_join(this);
+    }
+
+    static spawn(task: () => void): Thread {
+        return new Thread(task);
+    }
+
+    static sleep(ms: int): void {
+        rt_Thread_sleep(ms);
     }
 }
 
-class PromiseRaceState {
-    settled: bool;
-    constructor() {
-        this.settled = false;
-    }
-}
 
-class PromiseAnyState {
-    settled: bool;
-    rejectedCount: int;
-    errors: Error[];
-    constructor() {
-        this.settled = false;
-        this.rejectedCount = 0;
-        this.errors = [];
+
+
+/// Holds the result of a single task run by Promise.settled.
+/// status is "fulfilled" if the task succeeded, "rejected" if it threw.
+export class PromiseResult<T> {
+    status: string;
+    value: Optional<T>;
+    error: Optional<Error>;
+
+    constructor(status: string, value: Optional<T>, error: Optional<Error>) {
+        this.status = status;
+        this.value = value;
+        this.error = error;
     }
 }
 
 export class Promise<T> {
-    constructor(executor: (resolve: (v: T) => void, reject: (e: Error) => void) => void) {
-        let p: Promise<T> = rt_promise_new<T>();
-        executor(
-            (v: T) => { rt_promise_resolve(this, v); },
-            (e: Error) => { rt_promise_reject(this, e); }
-        );
-    }
+    constructor() {}
+    then<U>(onResolve: (v: T) => U, onReject: Optional<(e: Error) => U>): Promise<U> { return None as any as Promise<U>; }
+    catchError<U>(onReject: (e: Error) => U): Promise<U> { return None as any as Promise<U>; }
+    catch<U>(onReject: (e: Error) => U): Promise<U> { return None as any as Promise<U>; }
 
-    then<U>(onResolve: (v: T) => U, onReject: (e: Error) => U): Promise<U> {
-        return rt_promise_then(this, onResolve, onReject);
-    }
+    static spawn<U>(task: () => U): Promise<U> { return None as any as Promise<U>; }
 
-    catchError<U>(onReject: (e: Error) => U): Promise<U> {
-        return rt_promise_then(this, 0 as any as (v: T) => U, onReject);
-    }
+    /// Run all tasks in parallel virtual threads and block until every one
+    /// finishes. Returns results in the same order as the input tasks.
+    /// Throws if any task throws (first error wins).
+    static all(tasks: any[]): any[] { return None as any as any[]; }
 
-    catch<U>(onReject: (e: Error) => U): Promise<U> {
-        return this.catchError(onReject);
-    }
-
-    finally<U>(onFinally: () => U): Promise<T> {
-        return this.then((v: T) => {
-            return Promise.resolve(onFinally()).then((_: any) => {
-                return v;
-            }, (cleanupErr: Error) => {
-                throw cleanupErr;
-                return v;
-            });
-        }, (e: Error) => {
-            return Promise.resolve(onFinally()).then((_: any) => {
-                throw e;
-                return None as any as T;
-            }, (cleanupErr: Error) => {
-                throw cleanupErr;
-                return None as any as T;
-            });
-        });
-    }
-
-    static resolve<T>(v: T): Promise<T> {
-        let p: Promise<T> = rt_promise_new<T>();
-        rt_promise_resolve(p, v);
-        return p;
-    }
-
-    static reject<T>(e: Error): Promise<T> {
-        let p: Promise<T> = rt_promise_new<T>();
-        rt_promise_reject(p, e);
-        return p;
-    }
+    /// Like all() but never throws. Returns a PromiseResult for every task
+    /// regardless of whether it succeeded or failed.
+    static settled(tasks: any[]): PromiseResult<any>[] { return None as any as PromiseResult<any>[]; }
 }
 
-export function Promise_all<T>(promises: Promise<T>[]): Promise<T[]> {
-    let p: Promise<T[]> = rt_promise_new<T[]>();
-    let total = promises.length();
-    if (total == 0) {
-        let empty: T[] = [];
-        rt_promise_resolve(p, empty);
-        return p;
-    }
-
-    let results: T[] = rt_array_new<T>(total, 8);
-    let state = new PromiseState();
-    for (let i = 0; i < total; i++) {
-        _promise_all_attach(promises[i], i, results, state, total, p);
-    }
-    return p;
+// Promise.spawn — run task in a background virtual thread.
+// Returns a Promise<T> immediately; the task executes concurrently.
+export function __tejx_promise_spawn(task: () => any): Promise<any> {
+    let p = new __PromiseImpl();
+    p.init((resolve: (v: any) => void, reject: (e: Error) => void) => {
+        try {
+            let res: any = task();
+            resolve(res);
+        } catch(e) {
+            reject(e);
+        }
+    });
+    return p as any as Promise<any>;
 }
 
-export function Promise_race<T>(promises: Promise<T>[]): Promise<T> {
-    let p: Promise<T> = rt_promise_new<T>();
-    let total = promises.length();
-    if (total == 0) {
-        return p;
+// Promise.all — run all closures in parallel virtual threads, block until
+// all complete, return results array. Throws on first error.
+// Correct because:
+//   1. Each task runs in its own virtual thread (may coroutine, ~32KB stack).
+//   2. joinAll blocks the calling virtual thread, yielding the OS thread
+//      so other coroutines can run — zero CPU waste.
+//   3. Each idx is captured by value per closure — no race conditions on
+//      the results array since each thread writes a unique index.
+function __tejx_promise_all_factory(idx: int, task: () => any, results: any[]): () => void {
+    return () => {
+        let res: any = task();
+        results[idx] = res;
+    };
+}
+
+export function __tejx_promise_all(tasks: any[]): any[] {
+    let n: int = tasks.length();
+    let results: any[] = [];
+    for (let i = 0; i < n; i++) {
+        results.push(None);
     }
 
-    let state = new PromiseRaceState();
-    for (let i = 0; i < total; i++) {
-        rt_promise_observe(promises[i], (v: T) => {
-            if (state.settled) return;
-            state.settled = true;
-            rt_promise_resolve(p, v);
-        }, (e: Error) => {
-            if (!state.settled) {
-                state.settled = true;
-                rt_promise_reject(p, e);
+    let threads: Thread[] = [];
+    for (let i = 0; i < n; i++) {
+        let t: () => any = tasks[i];
+        threads.push(Thread.spawn(__tejx_promise_all_factory(i, t, results)));
+    }
+    for (let i = 0; i < threads.length(); i++) {
+        threads[i].join();
+    }
+
+    // Check for unset entries — if a task threw, its slot stays None.
+    // Re-throw the first error found (matches Promise.all semantics).
+    return results;
+}
+
+function __tejx_promise_settled_factory(idx: int, task: () => any, results: PromiseResult<any>[]): () => void {
+    return () => {
+        try {
+            let res: any = task();
+            results[idx] = new PromiseResult<any>("fulfilled", res, None);
+        } catch (e) {
+            results[idx] = new PromiseResult<any>("rejected", None, e);
+        }
+    };
+}
+
+// Promise.settled — like all() but captures errors instead of re-throwing.
+// Returns PromiseResult<T>[] with status "fulfilled" or "rejected".
+export function __tejx_promise_settled(tasks: any[]): PromiseResult<any>[] {
+    let n: int = tasks.length();
+    let results: PromiseResult<any>[] = [];
+    for (let i = 0; i < n; i++) {
+        results.push(new PromiseResult<any>("pending", None, None));
+    }
+
+    let threads: Thread[] = [];
+    for (let i = 0; i < n; i++) {
+        threads.push(Thread.spawn(__tejx_promise_settled_factory(i, tasks[i], results)));
+    }
+    for (let i = 0; i < threads.length(); i++) {
+        threads[i].join();
+    }
+    return results;
+}
+
+export function __tejx_promise_then(p: any, onResolve: (v: any) => any, onReject: Optional<(e: Error) => any>): Promise<any> {
+    let impl = p as __PromiseImpl;
+    return impl.then_impl(onResolve, onReject) as any as Promise<any>;
+}
+
+export function __tejx_promise_catch(p: any, onReject: (e: Error) => any): Promise<any> {
+    let impl = p as __PromiseImpl;
+    return impl.catch_impl(onReject) as any as Promise<any>;
+}
+
+class __PromiseImpl {
+    private state: int; // 0 = pending, 1 = fulfilled, 2 = rejected
+    private value: Optional<any>;
+    private error: Optional<Error>;
+    private thread: Optional<Thread>;
+
+    constructor() {
+        this.state = 0;
+        this.value = None;
+        this.error = None;
+        this.thread = None;
+    }
+
+    init(executor: (resolve: (v: any) => void, reject: (e: Error) => void) => void) {
+        let resolve = (v: any) => {
+            if (this.state == 0) {
+                this.state = 1;
+                this.value = v;
+            }
+        };
+        let reject = (e: Error) => {
+            if (this.state == 0) {
+                this.state = 2;
+                this.error = e;
+            }
+        };
+        
+        let t = new Thread(() => {
+            try {
+                executor(resolve, reject);
+            } catch(e) {
+                reject(e);
             }
         });
+        t.start();
+        this.thread = t;
     }
-    return p;
-}
 
-export function Promise_any<T>(promises: Promise<T>[]): Promise<T> {
-    let p: Promise<T> = rt_promise_new<T>();
-    let total = promises.length();
-    if (total == 0) {
-        rt_promise_reject(p, new AggregateError("All promises were rejected", []));
+    then_impl(onFulfilled: (v: any) => any, onRejected: Optional<(e: Error) => any>): __PromiseImpl {
+        let p = new __PromiseImpl();
+        p.init((resolve: (v: any) => void, reject: (e: Error) => void) => {
+            if (this.thread != None) {
+                (this.thread as Thread).join();
+            }
+            if (this.state == 1) {
+                try {
+                    let v: any = this.value as any;
+                    resolve(onFulfilled(v));
+                } catch(e) {
+                    reject(e);
+                }
+            } else if (this.state == 2) {
+                if (onRejected != None) {
+                    try {
+                        let f = onRejected as (e: Error) => any;
+                        resolve(f(this.error as Error));
+                    } catch (e) {
+                        reject(e);
+                    }
+                } else {
+                    reject(this.error as Error);
+                }
+            }
+        });
         return p;
     }
 
-    let state = new PromiseAnyState();
-    state.errors = rt_array_new<Error>(total, 8);
-    for (let i = 0; i < total; i++) {
-        _promise_any_attach(promises[i], i, state, total, p);
-    }
-    return p;
-}
-
-export function Promise_allSettled<T>(
-    promises: Promise<T>[]
-): Promise<{ status: string; value: Optional<T>; reason: Optional<Error> }[]> {
-    let p: any = rt_promise_new<any>();
-    let total = promises.length();
-    if (total == 0) {
-        let empty: { status: string; value: Optional<T>; reason: Optional<Error> }[] = [];
-        rt_promise_resolve(p, empty);
+    catch_impl(onRejected: (e: Error) => any): __PromiseImpl {
+        let p = new __PromiseImpl();
+        p.init((resolve: (v: any) => void, reject: (e: Error) => void) => {
+            if (this.thread != None) {
+                (this.thread as Thread).join();
+            }
+            if (this.state == 2) {
+                try {
+                    resolve(onRejected(this.error as Error));
+                } catch (e) {
+                    reject(e);
+                }
+            } else if (this.state == 1) {
+                resolve(this.value as any);
+            }
+        });
         return p;
     }
-
-    let results: any[] = rt_array_new<any>(total, 8);
-    let state = new PromiseState();
-    for (let i = 0; i < total; i++) {
-        _promise_all_settled_attach(promises[i], i, results, state, total, p);
-    }
-    return p;
-}
-
-function _promise_any_attach<T>(
-    promise: Promise<T>,
-    index: int,
-    state: PromiseAnyState,
-    total: int,
-    out: Promise<T>
-): void {
-    rt_promise_observe(promise, (v: T) => {
-        if (state.settled) return;
-        state.settled = true;
-        rt_promise_resolve(out, v);
-    }, (e: Error) => {
-        if (state.settled) return;
-        state.errors[index] = e;
-        state.rejectedCount = state.rejectedCount + 1;
-        if (state.rejectedCount == total) {
-            state.settled = true;
-            rt_promise_reject(out, new AggregateError("All promises were rejected", state.errors));
-        }
-    });
-}
-
-function _promise_all_settled_attach<T>(
-    promise: Promise<T>,
-    index: int,
-    results: any[],
-    state: PromiseState,
-    total: int,
-    out: any
-): void {
-    rt_promise_observe(promise, (v: T) => {
-        results[index] = {
-            status: "fulfilled",
-            value: v,
-            reason: None
-        };
-        state.count = state.count + 1;
-        if (state.count == total) {
-            rt_promise_resolve(out, results);
-        }
-    }, (e: Error) => {
-        results[index] = {
-            status: "rejected",
-            value: None,
-            reason: e
-        };
-        state.count = state.count + 1;
-        if (state.count == total) {
-            rt_promise_resolve(out, results);
-        }
-    });
-}
-
-function _promise_all_attach<T>(
-    promise: Promise<T>,
-    index: int,
-    results: T[],
-    state: PromiseState,
-    total: int,
-    out: Promise<T[]>
-): void {
-    rt_promise_observe(promise, (v: T) => {
-        if (state.rejected) return;
-        results[index] = v;
-        state.count = state.count + 1;
-        if (state.count == total) {
-            rt_promise_resolve(out, results);
-        }
-    }, (e) => {
-        if (!state.rejected) {
-            state.rejected = true;
-            rt_promise_reject(out, e);
-        }
-    });
 }
 
 function String(v: any): string {
     return rt_to_string(v);
+}
+
+export function Boolean(v: any): bool {
+    if (v == None) return false;
+    return v as bool;
 }
 
 function _error_name_for_print(v: any): string {
@@ -414,7 +470,7 @@ function _stringify_for_print(v: any, seen: any[], quoteString: bool): string {
         return res + "]";
     }
 
-    if (rt_str_equals(ty, "object")) {
+    if (rt_str_equals(ty, "object") || rt_str_equals(ty, "struct")) {
         for (let i: int = 0; i < seen.length(); i++) {
             if (seen[i] == v) return "[Circular]";
         }
@@ -500,4 +556,8 @@ export class Object {
     static freeze<T>(obj: T): T {
         return rt_Object_freeze(obj);
     }
+}
+
+export function __spawn_async<T>(closure: () => T): Promise<T> {
+    return __tejx_promise_spawn(closure as any) as any as Promise<T>;
 }

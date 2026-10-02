@@ -1,0 +1,317 @@
+// GC Comprehensive Correctness Tests
+// ====================================
+// Deep verification that the garbage collector:
+// 1. Correctly reclaims unreachable objects
+// 2. Preserves all reachable objects across generations
+// 3. Handles enable/disable/collect cycles correctly
+// 4. Maintains data integrity through minor and major collections
+// 5. Growth factor adjustments work correctly
+// 6. Consecutive collects are idempotent
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_int } from "../utils.tx";
+import { collect, collectYoung, getStats, getHeapUsed, enable, disable, isEnabled, setGrowthFactor, getGrowthFactor } from "std:gc";
+
+// --- Helper Classes ---
+
+class Payload {
+    id: int;
+    data: string;
+    value: int;
+    constructor(id: int, data: string) {
+        this.id = id;
+        this.data = data;
+        this.value = id * 7;
+    }
+}
+
+class TreeNode {
+    val: int;
+    left: Optional<TreeNode> = None;
+    right: Optional<TreeNode> = None;
+    constructor(v: int) { this.val = v; }
+}
+
+// --- Test 1: Heap decreases after collecting garbage ---
+function test_heap_reclamation() {
+    print("--- GC: Heap Reclamation ---");
+
+    // Force a clean baseline
+    collect();
+    let baseline = getHeapUsed();
+
+    // Create a large amount of garbage
+    let junk: string[] = [];
+    for (let i = 0; i < 50000; i++) {
+        junk.push("garbage-payload-string-" + i);
+    }
+
+    let afterAlloc = getHeapUsed();
+    assert_true(afterAlloc > baseline, "Heap grew after allocations");
+
+    // Drop references and collect
+    junk = [];
+    collect();
+
+    let afterCollect = getHeapUsed();
+    assert_true(afterCollect < afterAlloc, "Heap shrank after collecting garbage");
+    print("  Baseline: " + baseline + ", After alloc: " + afterAlloc + ", After collect: " + afterCollect);
+}
+
+// --- Test 2: Reachable objects survive collection ---
+function test_reachable_survives() {
+    print("--- GC: Reachable Objects Survive ---");
+
+    let survivors: Payload[] = [];
+    for (let i = 0; i < 100; i++) {
+        survivors.push(new Payload(i, "survivor-" + i));
+    }
+
+    // Generate garbage alongside survivors
+    for (let i = 0; i < 10000; i++) {
+        let trash = new Payload(i + 1000, "trash");
+    }
+
+    // Force collection
+    collect();
+
+    // Verify ALL survivors are intact
+    assert_eq_int(100, survivors.length(), "All 100 survivors present");
+    for (let i = 0; i < 100; i++) {
+        let p = survivors[i];
+        assert_eq_int(i, p.id, "Survivor id #" + i);
+        assert_eq_string("survivor-" + i, p.data, "Survivor data #" + i);
+        assert_eq_int(i * 7, p.value, "Survivor value #" + i);
+    }
+}
+
+// --- Test 3: Multiple consecutive collects are idempotent ---
+function test_collect_idempotency() {
+    print("--- GC: Collect Idempotency ---");
+
+    let anchor = new Payload(42, "anchor-object");
+
+    collect();
+    collect();
+    collect();
+    collectYoung();
+    collectYoung();
+    collect();
+
+    assert_eq_int(42, anchor.id, "Anchor survives multiple collects");
+    assert_eq_string("anchor-object", anchor.data, "Anchor data intact after multi-collect");
+    assert_eq_int(42 * 7, anchor.value, "Anchor value intact");
+}
+
+// --- Test 4: GC disable/enable cycle ---
+function test_gc_disable_enable_cycle() {
+    print("--- GC: Disable/Enable Cycle ---");
+
+    assert_true(isEnabled(), "GC initially enabled");
+
+    disable();
+    assert_false(isEnabled(), "GC disabled");
+
+    // Allocate while disabled
+    let objects: Payload[] = [];
+    for (let i = 0; i < 5000; i++) {
+        objects.push(new Payload(i, "disabled-alloc-" + i));
+    }
+
+    // GC is disabled, objects should all be alive
+    assert_eq_int(5000, objects.length(), "All objects alive while GC disabled");
+
+    enable();
+    assert_true(isEnabled(), "GC re-enabled");
+
+    // Now collect — objects are still referenced so they should survive
+    collect();
+    assert_eq_int(5000, objects.length(), "Objects survive collect after re-enable");
+    assert_eq_int(0, objects[0].id, "First object intact");
+    assert_eq_int(4999, objects[4999].id, "Last object intact");
+
+    // Drop references and collect
+    objects = [];
+    collect();
+    // No crash — garbage collected cleanly
+    print("  Disable/Enable cycle passed");
+}
+
+// --- Test 5: Growth factor changes threshold behavior ---
+function test_growth_factor() {
+    print("--- GC: Growth Factor ---");
+
+    let initialFactor = getGrowthFactor();
+    print("  Initial growth factor: " + initialFactor);
+
+    // Set aggressive growth (low headroom)
+    setGrowthFactor(25);
+    let f25 = getGrowthFactor();
+    assert_true(f25 > 0.0, "Growth factor > 0 after setGrowthFactor(25)");
+    print("  Factor after setGrowthFactor(25): " + f25);
+
+    // Set generous growth
+    setGrowthFactor(200);
+    let f200 = getGrowthFactor();
+    assert_true(f200 > f25, "Higher pct = higher factor");
+    print("  Factor after setGrowthFactor(200): " + f200);
+
+    // Reset to default
+    setGrowthFactor(50);
+    let fDefault = getGrowthFactor();
+    print("  Factor after reset to 50: " + fDefault);
+
+    // Verify GC still works after factor changes
+    let p = new Payload(999, "post-factor-change");
+    collect();
+    assert_eq_int(999, p.id, "Object survives collect after factor change");
+}
+
+// --- Test 6: Minor collection preserves old-gen objects ---
+function test_minor_preserves_old() {
+    print("--- GC: Minor Preserves Old Gen ---");
+
+    // Create objects and promote them to old gen via multiple collections
+    let promoted: Payload[] = [];
+    for (let i = 0; i < 50; i++) {
+        promoted.push(new Payload(i, "promote-me-" + i));
+    }
+
+    // Multiple minor GCs to promote survivors
+    for (let cycle = 0; cycle < 5; cycle++) {
+        collectYoung();
+        // Generate young-gen garbage between minor GCs
+        for (let j = 0; j < 1000; j++) {
+            let trash = new Payload(j, "young-trash");
+        }
+    }
+
+    // Verify promoted objects survived all minor collections
+    assert_eq_int(50, promoted.length(), "All promoted objects survive minors");
+    for (let i = 0; i < 50; i++) {
+        assert_eq_int(i, promoted[i].id, "Promoted #" + i + " id intact");
+        assert_eq_string("promote-me-" + i, promoted[i].data, "Promoted #" + i + " data intact");
+    }
+}
+
+// --- Test 7: Object field mutation across GC ---
+function test_field_mutation_across_gc() {
+    print("--- GC: Field Mutation Across GC ---");
+
+    let obj = new Payload(0, "mutable");
+
+    for (let i = 1; i <= 100; i++) {
+        obj.id = i;
+        obj.data = "mutation-" + i;
+        obj.value = i * 13;
+
+        if (i % 25 == 0) {
+            collect();
+            // Verify current state after GC
+            assert_eq_int(i, obj.id, "Mutated id after GC at iteration " + i);
+            assert_eq_string("mutation-" + i, obj.data, "Mutated data after GC at " + i);
+            assert_eq_int(i * 13, obj.value, "Mutated value after GC at " + i);
+        }
+    }
+}
+
+// --- Test 8: Binary tree construction and GC ---
+function buildTree(depth: int, base: int): TreeNode {
+    let node = new TreeNode(base);
+    if (depth > 0) {
+        node.left = buildTree(depth - 1, base * 2);
+        node.right = buildTree(depth - 1, base * 2 + 1);
+    }
+    return node;
+}
+
+function countNodes(node: Optional<TreeNode>): int {
+    if (node == None) return 0;
+    return 1 + countNodes(node.left) + countNodes(node.right);
+}
+
+function sumTree(node: Optional<TreeNode>): int {
+    if (node == None) return 0;
+    return node.val + sumTree(node.left) + sumTree(node.right);
+}
+
+function test_tree_across_gc() {
+    print("--- GC: Binary Tree Integrity ---");
+
+    let tree = buildTree(10, 1); // 2^11 - 1 = 2047 nodes
+    let countBefore = countNodes(tree);
+    let sumBefore = sumTree(tree);
+
+    assert_eq_int(2047, countBefore, "Tree has 2047 nodes before GC");
+
+    // Generate garbage and collect
+    for (let i = 0; i < 5000; i++) {
+        let trash = new Payload(i, "tree-garbage");
+    }
+    collect();
+
+    let countAfter = countNodes(tree);
+    let sumAfter = sumTree(tree);
+
+    assert_eq_int(countBefore, countAfter, "Tree node count unchanged after GC");
+    assert_eq_int(sumBefore, sumAfter, "Tree sum unchanged after GC");
+}
+
+// --- Test 9: GC stats are consistent ---
+function test_gc_stats_consistency() {
+    print("--- GC: Stats Consistency ---");
+
+    collect();
+    let stats = getStats();
+
+    assert_true(stats.heapUsed >= 0, "heapUsed >= 0");
+    assert_true(stats.heapTotal > 0, "heapTotal > 0");
+    assert_true(stats.heapTotal >= stats.heapUsed, "heapTotal >= heapUsed");
+    assert_true(stats.oldGenUsed >= 0, "oldGenUsed >= 0");
+    assert_true(stats.losUsed >= 0, "losUsed >= 0");
+    assert_true(stats.threshold > 0, "threshold > 0");
+
+    print("  heapUsed=" + stats.heapUsed +
+          " heapTotal=" + stats.heapTotal +
+          " oldGen=" + stats.oldGenUsed +
+          " los=" + stats.losUsed +
+          " threshold=" + stats.threshold);
+}
+
+// --- Test 10: Large allocation via LOS ---
+function test_large_object_space() {
+    print("--- GC: Large Object Space ---");
+
+    // Create large arrays that should go to LOS (> 128KB)
+    let large: int[] = [];
+    for (let i = 0; i < 50000; i++) {
+        large.push(i);
+    }
+
+    let statsBefore = getStats();
+    print("  LOS used before: " + statsBefore.losUsed);
+
+    collect();
+
+    // Large array is still referenced — should survive
+    assert_eq_int(50000, large.length(), "Large array survived GC");
+    assert_eq_int(0, large[0], "Large array first element");
+    assert_eq_int(49999, large[49999], "Large array last element");
+
+    // Spot-check middle
+    assert_eq_int(25000, large[25000], "Large array middle element");
+}
+
+function main() {
+    print("=== GC COMPREHENSIVE TESTS START ===");
+    test_heap_reclamation();
+    test_reachable_survives();
+    test_collect_idempotency();
+    test_gc_disable_enable_cycle();
+    test_growth_factor();
+    test_minor_preserves_old();
+    test_field_mutation_across_gc();
+    test_tree_across_gc();
+    test_gc_stats_consistency();
+    test_large_object_space();
+    print("=== GC COMPREHENSIVE TESTS COMPLETE ===");
+}

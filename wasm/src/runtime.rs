@@ -66,7 +66,7 @@ pub mod stdlib {
 
             // Time
             modules.insert("time".to_string(), HashSet::from([
-                "sleep".to_string(), "delay".to_string(), "now".to_string(),
+                "sleep".to_string(), "now".to_string(),
                 "setTimeout".to_string(), "setInterval".to_string(),
                 "clearTimeout".to_string(), "clearInterval".to_string(),
             ]));
@@ -86,7 +86,7 @@ pub mod stdlib {
 
             // Thread
             modules.insert("thread".to_string(), HashSet::from([
-                "Thread".to_string(), "Mutex".to_string(), "Atomic".to_string(),
+                "Mutex".to_string(), "Atomic".to_string(),
                 "Condition".to_string(), "SharedQueue".to_string(),
                 "spawn".to_string(), "sleep".to_string(),
             ]));

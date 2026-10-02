@@ -1,0 +1,201 @@
+// Task Scheduler — Real-World Production Pattern
+// =================================================
+// A priority task scheduler that queues work items, processes them in
+// priority order, tracks results, and exercises class hierarchies,
+// arrays, closures, string formatting, and GC under realistic workloads.
+
+import { collect, getHeapUsed } from "std:gc";
+
+// --- Task Status Enum (simulated with constants) ---
+let STATUS_PENDING = 0;
+let STATUS_RUNNING = 1;
+let STATUS_DONE = 2;
+let STATUS_FAILED = 3;
+
+function statusName(code: int): string {
+    if (code == 0) return "PENDING";
+    if (code == 1) return "RUNNING";
+    if (code == 2) return "DONE";
+    if (code == 3) return "FAILED";
+    return "UNKNOWN";
+}
+
+// --- Task ---
+class Task {
+    id: int;
+    name: string;
+    priority: int; // Higher = more important
+    status: int;
+    result: string;
+    retries: int;
+    maxRetries: int;
+
+    constructor(id: int, name: string, priority: int) {
+        this.id = id;
+        this.name = name;
+        this.priority = priority;
+        this.status = STATUS_PENDING;
+        this.result = "";
+        this.retries = 0;
+        this.maxRetries = 3;
+    }
+
+    describe(): string {
+        return "Task[" + this.id + ": " + this.name +
+               " prio=" + this.priority +
+               " status=" + statusName(this.status) + "]";
+    }
+}
+
+// --- Scheduler ---
+class Scheduler {
+    queue: Task[];
+    completed: Task[];
+    failed: Task[];
+    totalProcessed: int;
+
+    constructor() {
+        this.queue = [];
+        this.completed = [];
+        this.failed = [];
+        this.totalProcessed = 0;
+    }
+
+    enqueue(task: Task): void {
+        this.queue.push(task);
+    }
+
+    // Sort by priority descending (simple bubble sort for correctness)
+    sortQueue(): void {
+        let n = this.queue.length();
+        for (let i = 0; i < n - 1; i++) {
+            for (let j = 0; j < n - i - 1; j++) {
+                if (this.queue[j].priority < this.queue[j + 1].priority) {
+                    let temp = this.queue[j];
+                    this.queue[j] = this.queue[j + 1];
+                    this.queue[j + 1] = temp;
+                }
+            }
+        }
+    }
+
+    processNext(): bool {
+        if (this.queue.length() == 0) return false;
+
+        this.sortQueue();
+        let task = this.queue[0];
+
+        // Remove from queue (shift by rebuilding)
+        let newQueue: Task[] = [];
+        for (let i = 1; i < this.queue.length(); i++) {
+            newQueue.push(this.queue[i]);
+        }
+        this.queue = newQueue;
+
+        task.status = STATUS_RUNNING;
+
+        // Simulate processing: tasks with id % 7 == 0 fail on first try
+        let success = true;
+        if (task.id % 7 == 0 && task.retries == 0) {
+            success = false;
+        }
+
+        if (success) {
+            task.status = STATUS_DONE;
+            task.result = "Completed:" + task.name;
+            this.completed.push(task);
+        } else {
+            task.retries = task.retries + 1;
+            if (task.retries < task.maxRetries) {
+                task.status = STATUS_PENDING;
+                this.queue.push(task); // Re-enqueue for retry
+            } else {
+                task.status = STATUS_FAILED;
+                task.result = "MaxRetriesExceeded";
+                this.failed.push(task);
+            }
+        }
+
+        this.totalProcessed = this.totalProcessed + 1;
+        return true;
+    }
+
+    processAll(): void {
+        while (this.processNext()) {
+            // keep going
+        }
+    }
+
+    report(): string {
+        return "Scheduler Report: " +
+               "Completed=" + this.completed.length() +
+               " Failed=" + this.failed.length() +
+               " Remaining=" + this.queue.length() +
+               " TotalProcessed=" + this.totalProcessed;
+    }
+}
+
+// --- Assertions ---
+function assert(condition: bool, message: string): void {
+    if (!condition) {
+        print("❌ ASSERT FAILED: " + message);
+        throw new Error("AssertionFailed: " + message);
+    } else {
+        print("✅ PASS: " + message);
+    }
+}
+
+function main() {
+    print("=== Task Scheduler Test ===");
+
+    let scheduler = new Scheduler();
+
+    // Enqueue 100 tasks with varying priorities
+    for (let i = 0; i < 100; i++) {
+        let priority = i % 10; // 0-9
+        scheduler.enqueue(new Task(i, "job-" + i, priority));
+    }
+
+    assert(scheduler.queue.length() == 100, "100 tasks enqueued");
+
+    // Process all
+    scheduler.processAll();
+
+    print(scheduler.report());
+
+    // All tasks should be resolved (completed or failed)
+    assert(scheduler.queue.length() == 0, "Queue is empty after processing");
+    assert(scheduler.completed.length() + scheduler.failed.length() == 100,
+           "All 100 tasks resolved (completed + failed = 100)");
+
+    // Verify completed tasks have results
+    for (let i = 0; i < scheduler.completed.length(); i++) {
+        let task = scheduler.completed[i];
+        assert(task.status == STATUS_DONE, "Completed task status is DONE");
+        assert(task.result.length() > 0, "Completed task has result: " + task.result);
+    }
+
+    // Verify failed tasks
+    for (let i = 0; i < scheduler.failed.length(); i++) {
+        let task = scheduler.failed[i];
+        assert(task.status == STATUS_FAILED, "Failed task status is FAILED");
+    }
+
+    // GC stress: process 500 more tasks to test memory management
+    let scheduler2 = new Scheduler();
+    for (let i = 0; i < 500; i++) {
+        scheduler2.enqueue(new Task(i + 1000, "stress-" + i, i % 5));
+    }
+
+    let heapBefore = getHeapUsed();
+    scheduler2.processAll();
+    collect();
+    let heapAfter = getHeapUsed();
+
+    print("Heap before stress: " + heapBefore + ", after: " + heapAfter);
+    assert(scheduler2.queue.length() == 0, "Stress scheduler queue empty");
+    assert(scheduler2.completed.length() + scheduler2.failed.length() == 500,
+           "All 500 stress tasks resolved");
+
+    print("=== Task Scheduler Test PASSED ===");
+}

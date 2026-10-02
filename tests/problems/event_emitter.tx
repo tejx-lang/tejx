@@ -1,0 +1,222 @@
+// Event Emitter — Observer/Pub-Sub Pattern
+// ==========================================
+// A full event emitter with subscribe/unsubscribe/emit that tests
+// dynamic arrays of closures, string-keyed dispatch, and memory
+// cleanup when listeners are removed.
+
+import { collect, getHeapUsed } from "std:gc";
+import { Map } from "std:collections";
+
+// --- Listener Wrapper ---
+class Listener {
+    id: int;
+    callback: (string) => void;
+    once: bool;
+    constructor(id: int, cb: (string) => void, once: bool) {
+        this.id = id;
+        this.callback = cb;
+        this.once = once;
+    }
+}
+
+// --- Event Emitter ---
+class EventEmitter {
+    listeners: Map<string, Listener[]>;
+    nextId: int;
+    emitCount: int;
+
+    constructor() {
+        this.listeners = new Map();
+        this.nextId = 0;
+        this.emitCount = 0;
+    }
+
+    on(event: string, cb: (string) => void): int {
+        let id = this.nextId;
+        this.nextId = this.nextId + 1;
+        let listener = new Listener(id, cb, false);
+
+        if (!this.listeners.has(event)) {
+            this.listeners.set(event, []);
+        }
+        let list = this.listeners.get(event);
+        list.push(listener);
+        return id;
+    }
+
+    once(event: string, cb: (string) => void): int {
+        let id = this.nextId;
+        this.nextId = this.nextId + 1;
+        let listener = new Listener(id, cb, true);
+
+        if (!this.listeners.has(event)) {
+            this.listeners.set(event, []);
+        }
+        let list = this.listeners.get(event);
+        list.push(listener);
+        return id;
+    }
+
+    off(event: string, listenerId: int): bool {
+        if (!this.listeners.has(event)) return false;
+
+        let list = this.listeners.get(event);
+        let newList: Listener[] = [];
+        let found = false;
+
+        for (let i = 0; i < list.length(); i++) {
+            if (list[i].id == listenerId) {
+                found = true;
+            } else {
+                newList.push(list[i]);
+            }
+        }
+
+        this.listeners.set(event, newList);
+        return found;
+    }
+
+    emit(event: string, data: string): int {
+        if (!this.listeners.has(event)) return 0;
+
+        let list = this.listeners.get(event);
+        let count = 0;
+        let keepList: Listener[] = [];
+
+        for (let i = 0; i < list.length(); i++) {
+            let listener = list[i];
+            listener.callback(data);
+            count = count + 1;
+
+            if (!listener.once) {
+                keepList.push(listener);
+            }
+            // once listeners are NOT re-added
+        }
+
+        this.listeners.set(event, keepList);
+        this.emitCount = this.emitCount + count;
+        return count;
+    }
+
+    listenerCount(event: string): int {
+        if (!this.listeners.has(event)) return 0;
+        return this.listeners.get(event).length();
+    }
+}
+
+// --- Result Collector ---
+class ResultCollector {
+    results: string[];
+    constructor() { this.results = []; }
+    add(msg: string): void { this.results.push(msg); }
+    count(): int { return this.results.length(); }
+    get(index: int): string { return this.results[index]; }
+    clear(): void { this.results = []; }
+}
+
+// --- Assertions ---
+function assert(condition: bool, message: string): void {
+    if (!condition) {
+        print("❌ ASSERT FAILED: " + message);
+        throw new Error("AssertionFailed: " + message);
+    } else {
+        print("✅ PASS: " + message);
+    }
+}
+
+function main() {
+    print("=== Event Emitter Test ===");
+
+    let emitter = new EventEmitter();
+    let collector = new ResultCollector();
+
+    // --- Basic subscribe and emit ---
+    let id1 = emitter.on("click", (data: string) => {
+        collector.add("handler1:" + data);
+    });
+
+    let id2 = emitter.on("click", (data: string) => {
+        collector.add("handler2:" + data);
+    });
+
+    let fired = emitter.emit("click", "button-A");
+    assert(fired == 2, "Two handlers fired on click");
+    assert(collector.count() == 2, "Collector has 2 results");
+    assert(collector.get(0) == "handler1:button-A", "First handler result");
+    assert(collector.get(1) == "handler2:button-A", "Second handler result");
+
+    // --- Unsubscribe ---
+    collector.clear();
+    let removed = emitter.off("click", id1);
+    assert(removed, "Handler 1 removed");
+    assert(emitter.listenerCount("click") == 1, "One listener remains");
+
+    fired = emitter.emit("click", "button-B");
+    assert(fired == 1, "One handler fires after removal");
+    assert(collector.count() == 1, "Collector has 1 result");
+    assert(collector.get(0) == "handler2:button-B", "Remaining handler result");
+
+    // --- Once listener ---
+    collector.clear();
+    let onceId = emitter.once("submit", (data: string) => {
+        collector.add("once:" + data);
+    });
+
+    assert(emitter.listenerCount("submit") == 1, "Once listener registered");
+
+    fired = emitter.emit("submit", "form-data");
+    assert(fired == 1, "Once handler fired");
+    assert(collector.get(0) == "once:form-data", "Once handler result");
+
+    // Emit again — should not fire
+    fired = emitter.emit("submit", "form-data-2");
+    assert(fired == 0, "Once handler not fired second time");
+    assert(emitter.listenerCount("submit") == 0, "No listeners after once consumed");
+
+    // --- Multiple events ---
+    collector.clear();
+    emitter.on("hover", (data: string) => {
+        collector.add("hover:" + data);
+    });
+
+    emitter.on("scroll", (data: string) => {
+        collector.add("scroll:" + data);
+    });
+
+    emitter.emit("hover", "element-X");
+    emitter.emit("scroll", "page-Y");
+    emitter.emit("click", "button-C");
+
+    assert(collector.count() == 3, "3 events fired across 3 event types");
+
+    // --- Emit non-existent event ---
+    fired = emitter.emit("nonexistent", "data");
+    assert(fired == 0, "No handlers for non-existent event");
+
+    // --- Stress test: many listeners ---
+    collector.clear();
+    let emitter2 = new EventEmitter();
+    for (let i = 0; i < 100; i++) {
+        emitter2.on("mass-event", (data: string) => {
+            collector.add("mass:" + data);
+        });
+    }
+
+    assert(emitter2.listenerCount("mass-event") == 100, "100 mass listeners");
+    fired = emitter2.emit("mass-event", "broadcast");
+    assert(fired == 100, "All 100 mass listeners fired");
+    assert(collector.count() == 100, "100 mass results collected");
+
+    // GC cleanup
+    collect();
+
+    // Remove all mass listeners and verify cleanup
+    for (let i = 0; i < 100; i++) {
+        emitter2.off("mass-event", i);
+    }
+    collect();
+
+    print("Total emits: " + emitter.emitCount);
+    print("=== Event Emitter Test PASSED ===");
+}

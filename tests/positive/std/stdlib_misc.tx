@@ -36,12 +36,12 @@ function test_stdlib_wrappers() {
     assert_eq_int(5, clamp(99, 0, 5), "clamp");
     
     let file = "stdlib_misc.txt";
-    if (fs.existsSync(file)) {
-        fs.removeSync(file);
+    if (fs.exists(file)) {
+        fs.remove(file);
     }
-    writeText(file, "std");
+    writeFile(file, "std");
     assert_true(exists(file), "top-level fs exists");
-    assert_eq_string("std", readText(file), "top-level fs readText");
+    assert_eq_string("std", readFile(file), "top-level fs readFile");
     remove(file);
     
     // OS
@@ -50,10 +50,30 @@ function test_stdlib_wrappers() {
     assert_eq_int(runtimeArgs.length(), system.args().length(), "system.args length");
 }
 
+function test_class_math_and_array() {
+    print("--- Math Class & Array / Boolean Utilities ---");
+    assert_true(Array.isArray([1, 2, 3]), "Array.isArray");
+    assert_true(!Array.isArray("string"), "Array.isArray negative");
+    assert_true(Boolean(true), "Boolean(true)");
+    assert_true(!Boolean(None), "Boolean(None)");
+
+    assert_true(Math.PI() > 3.14 && Math.PI() < 3.15, "Math.PI()");
+    assert_true(Math.pi() > 3.14 && Math.pi() < 3.15, "Math.pi()");
+    assert_true(Math.E() > 2.71 && Math.E() < 2.72, "Math.E()");
+    assert_true(Math.TAU() > 6.28 && Math.TAU() < 6.29, "Math.TAU()");
+    assert_eq_int(42, Math.abs(-42), "Math.abs");
+    assert_eq_int(5, Math.sqrt(25), "Math.sqrt");
+    assert_eq_int(100, Math.max(50, 100), "Math.max");
+    assert_eq_int(50, Math.min(50, 100), "Math.min");
+    assert_true(math.PI() > 3.14 && math.PI() < 3.15, "math.PI()");
+}
+
 function main() {
     print("=== STDLIB MISC START ===");
     test_extra_arrays();
     test_extra_strings();
     test_stdlib_wrappers();
+    test_class_math_and_array();
     print("=== STDLIB MISC COMPLETE ===");
 }
+

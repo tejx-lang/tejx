@@ -1,0 +1,157 @@
+import { Date } from "std:time";
+import { sleep } from "std:thread";
+import { assert_true, assert_eq_int } from "../utils.tx";
+
+function heavyTask(id: int): int {
+    sleep(500); // simulate 500ms of work
+    return id * 10;
+}
+
+function heavyTaskThrows(id: int): int {
+    sleep(500);
+    if (id == 2) {
+        throw new Error("Task 2 failed");
+    }
+    return id * 10;
+}
+
+function testSync(): void {
+    let start = Date.now();
+    let r1 = heavyTask(1);
+    let r2 = heavyTask(2);
+    let r3 = heavyTask(3);
+    let end = Date.now();
+    
+    let duration = end - start;
+    print("Sequential execution took: " + String(duration) + " ms");
+    
+    assert_true(r1 == 10, "r1");
+    assert_true(r2 == 20, "r2");
+    assert_true(r3 == 30, "r3");
+    
+    // We expect 3 tasks of 500ms to take at least 1500ms sequentially
+    assert_true(duration >= 1400, "Sequential execution should take ~1500ms");
+}
+
+function testPromiseAll(): void {
+    let start = Date.now();
+    
+    // We run 3 tasks in parallel
+    let results = Promise.all([
+        () => heavyTask(1),
+        () => heavyTask(2),
+        () => heavyTask(3)
+    ]);
+    
+    let end = Date.now();
+    let duration = end - start;
+    
+    print("Promise.all (Parallel) execution took: " + String(duration) + " ms");
+    
+    assert_true(results[0] == 10, "results[0]");
+    assert_true(results[1] == 20, "results[1]");
+    assert_true(results[2] == 30, "results[2]");
+    
+    // Since they run in parallel, it should take roughly 500ms total, definitely less than 1000ms
+    assert_true(duration < 1000, "Parallel execution should take ~500ms");
+}
+
+function testPromiseSettled(): void {
+    let start = Date.now();
+    
+    // We run 3 tasks in parallel, one of them will throw
+    let results = Promise.settled([
+        () => heavyTaskThrows(1),
+        () => heavyTaskThrows(2),
+        () => heavyTaskThrows(3)
+    ]);
+    
+    let end = Date.now();
+    let duration = end - start;
+    
+    print("Promise.settled execution took: " + String(duration) + " ms");
+    
+    assert_true(results[0].status == "fulfilled", "r0 status");
+    assert_true(results[0].value == 10, "r0 value");
+    
+    assert_true(results[1].status == "rejected", "r1 status");
+    assert_true(results[1].error != None, "r1 error exists");
+    
+    assert_true(results[2].status == "fulfilled", "r2 status");
+    assert_true(results[2].value == 30, "r2 value");
+    
+    assert_true(duration < 1000, "Parallel settled should take ~500ms");
+}
+
+function expensive_computation(base: int, iterations: int): int {
+    let result = base;
+    for (let i = 0; i < iterations; i++) {
+        result = (result * 13 + 7) % 100000;
+        if (i % 10000 == 0) {
+            sleep(1); // Yield the virtual thread
+        }
+    }
+    return result;
+}
+
+function make_task(capture: int): () => any {
+    return () => {
+        return expensive_computation(capture, 50000);
+    };
+}
+
+function test_massive_promise_spawn(): void {
+    print("--- Testing Massive Promise.spawn ---");
+    let n = 200; // Spawn 200 virtual threads
+    let tasks: any[] = [];
+    
+    for (let i = 0; i < n; i++) {
+        tasks.push(make_task(i));
+    }
+
+    let results = Promise.all(tasks);
+    assert_eq_int(n, results.length(), "all promises returned");
+    
+    // Verify results
+    let correct = true;
+    for (let i = 0; i < n; i++) {
+        let expected = expensive_computation(i, 50000);
+        if (results[i] != expected) {
+            correct = false;
+            print("Mismatch at index", i, "Expected", expected, "Got", results[i]);
+        }
+    }
+    let correct_val = correct ? 1 : 0;
+    assert_eq_int(1, correct_val, "Massive Promise.all returned correct values");
+}
+
+function test_nested_promises(): void {
+    print("--- Testing Nested Promises ---");
+    let results = Promise.all([
+        () => {
+            sleep(5);
+            let inner = Promise.all([
+                () => { sleep(2); return 10; },
+                () => { sleep(2); return 20; }
+            ]);
+            return inner[0] + inner[1];
+        },
+        () => {
+            sleep(1);
+            return Promise.all([() => 30])[0];
+        }
+    ]);
+
+    assert_eq_int(30, results[0], "Nested Promise.all 1");
+    assert_eq_int(30, results[1], "Nested Promise.spawn");
+}
+
+function main(): void {
+    print("--- Testing Promise Parallelism ---");
+    testSync();
+    testPromiseAll();
+    testPromiseSettled();
+    test_massive_promise_spawn();
+    test_nested_promises();
+    print("--- Promise Parallelism Complete ---");
+}

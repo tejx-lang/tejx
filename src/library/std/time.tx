@@ -6,24 +6,8 @@ export function now(): int64 {
     return _time_now_ms();
 }
 
-export function nowMs(): int64 {
-    return _time_now_ms();
-}
-
 export function elapsed(start: int64): int64 {
     return _time_elapsed(start);
-}
-
-export function sleep(ms: int64): void {
-    _time_sleep(ms);
-}
-
-export async function delay(ms: int64): Promise<void> {
-    return _time_delay(ms);
-}
-
-export async function sleepAsync(ms: int64): Promise<void> {
-    return _time_delay(ms);
 }
 
 export function setTimeout(callback: () => void, ms: int64): int {
@@ -42,10 +26,44 @@ export function clearInterval(id: int): void {
     _time_clear_interval(id);
 }
 
-export function after(callback: () => void, ms: int64): Timeout {
+export function afterMs(callback: () => void, ms: int64): Timeout {
     return new Timeout(callback, ms);
 }
 
-export function every(callback: () => void, ms: int64): Interval {
+export function everyMs(callback: () => void, ms: int64): Interval {
     return new Interval(callback, ms);
+}
+
+export namespace time {
+    export function now(): int64 {
+        return _time_now_ms();
+    }
+
+    export function elapsed(start: int64): int64 {
+        return _time_elapsed(start);
+    }
+
+    export function setTimeout(callback: () => void, ms: int64): int {
+        return _time_set_timeout(callback, ms);
+    }
+
+    export function setInterval(callback: () => void, ms: int64): int {
+        return _time_set_interval(callback, ms);
+    }
+
+    export function clearTimeout(id: int): void {
+        _time_clear_timeout(id);
+    }
+
+    export function clearInterval(id: int): void {
+        _time_clear_interval(id);
+    }
+
+    export function afterMs(callback: () => void, ms: int64): Timeout {
+        return new Timeout(callback, ms);
+    }
+
+    export function everyMs(callback: () => void, ms: int64): Interval {
+        return new Interval(callback, ms);
+    }
 }

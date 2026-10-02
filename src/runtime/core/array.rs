@@ -22,9 +22,7 @@ unsafe fn rt_array_load_scalar(body: *mut u8, index: i64, flags: u16) -> i64 {
     match (elem_kind, elem_size) {
         (ARRAY_FLAG_KIND_FLOAT, 4) => *(slot as *const i32) as i64,
         (ARRAY_FLAG_KIND_FLOAT, 8) => *(slot as *const i64),
-        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => {
-            *(slot as *const u8) as i64
-        }
+        (ARRAY_FLAG_KIND_UNSIGNED, 1) | (ARRAY_FLAG_KIND_BOOL, 1) => *(slot as *const u8) as i64,
         (ARRAY_FLAG_KIND_UNSIGNED, 2) => *(slot as *const u16) as i64,
         (ARRAY_FLAG_KIND_UNSIGNED, 4) => *(slot as *const u32) as i64,
         (ARRAY_FLAG_KIND_UNSIGNED, 8) => *(slot as *const u64) as i64,
@@ -395,9 +393,13 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
 
     let new_header = rt_get_header(new_body);
 
-    // Copy header
-    *new_header = *header_res;
+    // Copy logical fields; do NOT copy gc_word or gc_flags which may have forwarding bits
+    (*new_header).type_id = (*header_res).type_id;
+    (*new_header).flags = (*header_res).flags;
+    (*new_header).length = (*header_res).length;
     (*new_header).capacity = new_cap as u32;
+    (*new_header).gc_word = 0;
+    (*new_header).gc_flags = 0;
 
     // Copy data (direct copy)
     memcpy(
@@ -408,8 +410,12 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
     let res = (new_body as i64) + HEAP_OFFSET;
     rt_pop_roots(1);
     rt_update_array_cache(res, new_body, (*new_header).length as i64, elem_size);
-    ARRAY_FORWARD_ACTIVE.store(true, Ordering::Release);
-    ARRAY_FORWARD.lock().unwrap().insert(current_id, res);
+    // In-header forwarding: set bit 1 (GC_FWD_BIT) so readers resolve lock-free
+    const GC_FWD_BIT: u64 = 0x2;
+    const GC_PTR_MASK: u64 = !(0x3 | (0xFFu64 << 56));
+    std::sync::atomic::fence(Ordering::Release);
+    (*header_res).gc_word = ((new_header as u64) & GC_PTR_MASK) | GC_FWD_BIT;
+
     res
 }
 #[no_mangle]
@@ -485,24 +491,19 @@ pub unsafe extern "C" fn rt_array_set_fast(id: i64, index: i64, val: i64) -> i64
     let mut header: *mut ObjectHeader;
     let mut flags: u16;
 
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        body = LAST_PTR;
-        header = rt_get_header(body);
-        flags = (*header).flags;
-    } else {
-        id = rt_resolve_array_id(id);
-        if id < STACK_OFFSET {
-            rt_throw_array_null_error("writing", index);
-        }
-        body = if id >= HEAP_OFFSET {
-            (id - HEAP_OFFSET) as *mut u8
-        } else {
-            (id - STACK_OFFSET) as *mut u8
-        };
-        header = rt_get_header(body);
-        flags = (*header).flags;
+    id = rt_resolve_array_id(id);
+    if id < STACK_OFFSET {
+        rt_throw_array_null_error("writing", index);
     }
+    body = if id >= HEAP_OFFSET {
+        (id - HEAP_OFFSET) as *mut u8
+    } else {
+        (id - STACK_OFFSET) as *mut u8
+    };
+    header = rt_get_header(body);
+    flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
+        eprintln!("RuntimeError: Cannot set element in a constant array. Flags: {}", flags);
         rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
     }
 
@@ -579,28 +580,25 @@ pub unsafe extern "C" fn rt_array_set_traced(
     let mut header: *mut ObjectHeader;
     let mut flags: u16;
 
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        body = LAST_PTR;
-        header = rt_get_header(body);
-        flags = (*header).flags;
-    } else {
-        id = rt_resolve_array_id(id);
-        if id < STACK_OFFSET {
-            runtime_set_current_location(file_ptr, line);
-            rt_throw_array_null_error("writing", index);
-        }
-        body = if id >= HEAP_OFFSET {
-            (id - HEAP_OFFSET) as *mut u8
-        } else {
-            (id - STACK_OFFSET) as *mut u8
-        };
-        header = rt_get_header(body);
-        flags = (*header).flags;
+    id = rt_resolve_array_id(id);
+    if id < STACK_OFFSET {
+        runtime_set_current_location(file_ptr, line);
+        rt_throw_array_null_error("writing", index);
     }
+    body = if id >= HEAP_OFFSET {
+        (id - HEAP_OFFSET) as *mut u8
+    } else {
+        (id - STACK_OFFSET) as *mut u8
+    };
+    header = rt_get_header(body);
+    flags = (*header).flags;
 
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
         runtime_set_current_location(file_ptr, line);
-        rt_throw_runtime_error("RuntimeError: Cannot set element in a constant array.");
+        eprintln!("RuntimeError: Cannot set element in a constant array. Flags: {}", flags);
+        rt_throw_runtime_error(
+            format!("RuntimeError: Cannot set element in a constant array. Flags: {}", flags).as_str(),
+        );
     }
 
     let len = (*header).length as i64;
@@ -895,14 +893,7 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
     if id < STACK_OFFSET {
         rt_throw_array_null_error("reading", index);
     }
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        if index < 0 || index >= LAST_LEN {
-            return 0;
-        }
-        let body = LAST_PTR;
-        let flags = (*rt_get_header(body)).flags;
-        return rt_array_load_scalar(body, index, flags);
-    }
+    // removed cache logic
 
     let id = rt_resolve_array_id(id);
     if id < STACK_OFFSET {
@@ -921,12 +912,10 @@ pub unsafe extern "C" fn rt_array_get_fast(id: i64, index: i64) -> i64 {
         return 0;
     }
 
-    let elem_size = (flags & 0xFF) as i64;
+    let _elem_size = (flags & 0xFF) as i64;
     let res = rt_array_load_scalar(body, index, flags);
 
-    if id >= HEAP_OFFSET {
-        rt_update_array_cache(id, body, len, elem_size);
-    }
+    // removed cache update
     res
 }
 
@@ -937,14 +926,7 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
         rt_throw_array_null_error("reading", index);
     }
 
-    if id == LAST_ID && !LAST_PTR.is_null() {
-        if index < 0 || index >= LAST_LEN {
-            return 0;
-        }
-        let body = LAST_PTR;
-        let flags = (*rt_get_header(body)).flags;
-        return rt_array_load_scalar(body, index, flags);
-    }
+    // removed cache logic
 
     let resolved = rt_resolve_array_id(id);
     if resolved < STACK_OFFSET {
@@ -965,12 +947,10 @@ pub unsafe extern "C" fn rt_array_get_traced(id: i64, index: i64, file_ptr: i64,
         return 0;
     }
 
-    let elem_size = (flags & 0xFF) as i64;
+    let _elem_size = (flags & 0xFF) as i64;
     let res = rt_array_load_scalar(body, index, flags);
 
-    if resolved >= HEAP_OFFSET {
-        rt_update_array_cache(resolved, body, len, elem_size);
-    }
+    // removed cache update
     res
 }
 #[no_mangle]
@@ -1018,8 +998,8 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     (*header).length = size as u32;
     (*header).capacity = cap as u32;
     // Store elem_size in lower 8 bits of flags
-    (*header).flags = ((flags | inherited_type_flags) as u16 & 0xFF00)
-        | (actual_elem_size as u16 & 0x00FF);
+    (*header).flags =
+        ((flags | inherited_type_flags) as u16 & 0xFF00) | (actual_elem_size as u16 & 0x00FF);
 
     if source >= STACK_OFFSET {
         let src_body = if source >= HEAP_OFFSET {

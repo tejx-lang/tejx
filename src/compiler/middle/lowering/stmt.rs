@@ -83,6 +83,24 @@ impl Lowering {
                 self.register_type_alias(name, alias_ty);
                 None
             }
+            Statement::EnumDeclaration(enum_decl) => {
+                let mut current_val = 0i64;
+                for member in &enum_decl._members {
+                    if let Some(val_expr) = &member._value {
+                        if let Expression::NumberLiteral { value, .. } = val_expr.as_ref() {
+                            current_val = *value as i64;
+                        } else if let Expression::UnaryExpr { op: TokenType::Minus, right, .. } = val_expr.as_ref() {
+                            if let Expression::NumberLiteral { value, .. } = right.as_ref() {
+                                current_val = -(*value as i64);
+                            }
+                        }
+                    }
+                    let key = format!("{}_{}", enum_decl.name, member._name);
+                    self.enum_members.borrow_mut().insert(key, current_val);
+                    current_val += 1;
+                }
+                None
+            }
             Statement::ExportDecl { declaration, .. } => {
                 if let Statement::TypeAliasDeclaration {
                     name, _type_def, ..
@@ -168,6 +186,53 @@ impl Lowering {
                             });
                         }
                         TejxType::Optional(_) => {
+                            init = Some(HIRExpression::NoneLiteral { line });
+                        }
+                        TejxType::Bool => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "false".to_string(),
+                                ty: TejxType::Bool,
+                            });
+                        }
+                        TejxType::Int8
+                        | TejxType::UInt8
+                        | TejxType::Int16
+                        | TejxType::UInt16
+                        | TejxType::Int32
+                        | TejxType::UInt32
+                        | TejxType::Int64
+                        | TejxType::UInt64
+                        | TejxType::Int128
+                        | TejxType::UInt128 => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "0".to_string(),
+                                ty: ty.clone(),
+                            });
+                        }
+                        TejxType::Float32 | TejxType::Float64 => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "0.0".to_string(),
+                                ty: ty.clone(),
+                            });
+                        }
+                        TejxType::Char => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "\0".to_string(),
+                                ty: TejxType::Char,
+                            });
+                        }
+                        TejxType::String => {
+                            init = Some(HIRExpression::Literal {
+                                line,
+                                value: "".to_string(),
+                                ty: TejxType::String,
+                            });
+                        }
+                        TejxType::Class(_, _) | TejxType::Any => {
                             init = Some(HIRExpression::NoneLiteral { line });
                         }
                         _ => {}
@@ -321,6 +386,7 @@ impl Lowering {
                 // }
 
                 if let BindingNode::Identifier(var_name) = variable {
+                    self.enter_scope();
                     let mut stmts = Vec::new();
 
                     // 1. Evaluate iterable once
@@ -405,14 +471,14 @@ impl Lowering {
                         }),
                         ty: elem_ty.clone(),
                     };
+                    let mangled_var = self.define(var_name.clone(), elem_ty.clone());
                     body_stmts.push(HIRStatement::VarDecl {
                         line,
-                        name: var_name.clone(),
+                        name: mangled_var,
                         initializer: Some(val_expr),
                         ty: elem_ty.clone(),
                         _is_const: false,
                     });
-                    self.define(var_name.clone(), elem_ty.clone());
 
                     // User Body
                     if let Some(user_body) = self.lower_statement(body) {
@@ -458,6 +524,8 @@ impl Lowering {
                         increment: Some(inc_stmt),
                         _is_do_while: false,
                     });
+
+                    self._exit_scope();
 
                     Some(HIRStatement::Block {
                         line,
@@ -528,112 +596,12 @@ impl Lowering {
                 })
             }
             Statement::ReturnStmt { value, .. } => {
+                let ret_ty = self.return_type_stack.borrow().last().cloned();
+                let prev_expected = self.current_expected_type.borrow_mut().take();
+                *self.current_expected_type.borrow_mut() = ret_ty;
                 let val = value.as_ref().map(|e| self.lower_expression(e));
-                if self.current_async_promise_id.borrow().is_some() {
-                    let mut stmts = Vec::new();
-
-                    // Prevent double evaluation of function calls or complex expressions
-                    let is_pure = val.as_ref().is_none_or(|v| {
-                        matches!(
-                            v,
-                            HIRExpression::Variable { .. } | HIRExpression::Literal { .. }
-                        )
-                    });
-
-                    let promise_inner = |ty: &TejxType| -> Option<TejxType> {
-                        match ty {
-                            TejxType::Class(name, generics)
-                                if name == "Promise" && !generics.is_empty() =>
-                            {
-                                Some(generics[0].clone())
-                            }
-                            TejxType::Class(name, _)
-                                if name.starts_with("Promise<") && name.ends_with('>') =>
-                            {
-                                Some(TejxType::from_name(&name[8..name.len() - 1]))
-                            }
-                            _ => None,
-                        }
-                    };
-
-                    let val = val.map(|v| {
-                        if let Some(inner) = promise_inner(&v.get_type()) {
-                            HIRExpression::Await {
-                                line,
-                                expr: Box::new(v),
-                                ty: inner,
-                            }
-                        } else {
-                            v
-                        }
-                    });
-
-                    let eval_val = if !is_pure && val.is_some() {
-                        let mut counter = self.lambda_counter.borrow_mut();
-                        let id = *counter;
-                        *counter += 1;
-                        drop(counter);
-                        let temp_name = format!("__async_ret_{}", id);
-                        let ty = val.as_ref().unwrap().get_type();
-                        let decl = HIRStatement::VarDecl {
-                            name: temp_name.clone(),
-                            initializer: val.clone(),
-                            ty: ty.clone(),
-                            _is_const: true,
-                            line,
-                        };
-                        stmts.push(decl);
-                        Some(HIRExpression::Variable {
-                            name: temp_name,
-                            ty,
-                            line,
-                        })
-                    } else {
-                        val.clone()
-                    };
-
-                    let return_expr =
-                        if let Some(target_ty) = self.current_return_type.borrow().as_ref() {
-                            if val.is_some()
-                                && *target_ty != TejxType::Int64
-                                && *target_ty != TejxType::Void
-                            {
-                                let mut counter = self.lambda_counter.borrow_mut();
-                                let id = *counter;
-                                *counter += 1;
-                                drop(counter);
-                                let temp_name = format!("__async_unbox_{}", id);
-                                let decl = HIRStatement::VarDecl {
-                                    name: temp_name.clone(),
-                                    initializer: eval_val.clone(),
-                                    ty: target_ty.clone(),
-                                    _is_const: true,
-                                    line,
-                                };
-                                stmts.push(decl);
-                                Some(HIRExpression::Variable {
-                                    name: temp_name,
-                                    ty: target_ty.clone(),
-                                    line,
-                                })
-                            } else {
-                                eval_val.clone()
-                            }
-                        } else {
-                            eval_val.clone()
-                        };
-
-                    stmts.push(HIRStatement::Return {
-                        line,
-                        value: return_expr,
-                    });
-                    Some(HIRStatement::Block {
-                        line,
-                        statements: stmts,
-                    })
-                } else {
-                    Some(HIRStatement::Return { line, value: val })
-                }
+                *self.current_expected_type.borrow_mut() = prev_expected;
+                Some(HIRStatement::Return { line, value: val })
             }
             Statement::DelStmt { target, .. } => {
                 let t = self.lower_expression(target);

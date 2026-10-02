@@ -127,12 +127,12 @@ impl Lowering {
         let mut final_callee = String::new();
         let mut final_args = hir_args.clone();
         let mut ty = TejxType::Int64;
-        let promise_receiver = Self::is_promise_type(&self.non_none_type(&lowered_object.get_type()));
-        let should_flatten_promise_return =
-            ((member == "then" || member == "catchError")
-                && promise_receiver)
-                || matches!(object, Expression::Identifier { name, .. } if name == "Promise")
-                    && member == "resolve";
+        let promise_receiver =
+            Self::is_promise_type(&self.non_none_type(&lowered_object.get_type()));
+        let should_flatten_promise_return = ((member == "then" || member == "catchError")
+            && promise_receiver)
+            || matches!(object, Expression::Identifier { name, .. } if name == "Promise")
+                && member == "resolve";
 
         if let Expression::SuperExpr { .. } = object {
             if let Some(parent) = &*self.parent_class.borrow() {
@@ -160,44 +160,6 @@ impl Lowering {
             let mut resolved = false;
 
             if let Expression::Identifier { name: obj_name, .. } = object {
-                if obj_name == "Promise" && member == "all" {
-                    final_callee = "f_Promise_all".to_string();
-                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
-                        ty = match ret_ty {
-                            TejxType::Function(_, ret) => (*ret).clone(),
-                            _ => ret_ty.clone(),
-                        };
-                    }
-                    resolved = true;
-                } else if obj_name == "Promise" && member == "race" {
-                    final_callee = "f_Promise_race".to_string();
-                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
-                        ty = match ret_ty {
-                            TejxType::Function(_, ret) => (*ret).clone(),
-                            _ => ret_ty.clone(),
-                        };
-                    }
-                    resolved = true;
-                } else if obj_name == "Promise" && member == "any" {
-                    final_callee = "f_Promise_any".to_string();
-                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
-                        ty = match ret_ty {
-                            TejxType::Function(_, ret) => (*ret).clone(),
-                            _ => ret_ty.clone(),
-                        };
-                    }
-                    resolved = true;
-                } else if obj_name == "Promise" && member == "allSettled" {
-                    final_callee = "f_Promise_allSettled".to_string();
-                    if let Some(ret_ty) = self.user_functions.borrow().get(&final_callee).cloned() {
-                        ty = match ret_ty {
-                            TejxType::Function(_, ret) => (*ret).clone(),
-                            _ => ret_ty.clone(),
-                        };
-                    }
-                    resolved = true;
-                }
-
                 if !resolved && self.class_methods.borrow().contains_key(obj_name) {
                     let static_candidates = [
                         format!("f_{}_{}", obj_name, member),
@@ -318,8 +280,7 @@ impl Lowering {
                                     if !visited_parents.insert(parent_base.clone()) {
                                         break;
                                     }
-                                    let parent_method_key =
-                                        format!("f_{}_{}", parent_base, member);
+                                    let parent_method_key = format!("f_{}_{}", parent_base, member);
                                     if let Some(ret_ty) =
                                         self.user_functions.borrow().get(&parent_method_key)
                                     {
@@ -381,20 +342,6 @@ impl Lowering {
             final_callee = monomorphized_callee;
         }
 
-        if matches!(object, Expression::Identifier { name, .. } if name == "Promise") {
-            match member {
-                "resolve" => final_callee = "rt_promise_resolved".to_string(),
-                "reject" => final_callee = "rt_promise_rejected".to_string(),
-                _ => {}
-            }
-        } else if promise_receiver {
-            match member {
-                "then" => final_callee = "rt_promise_then".to_string(),
-                "catchError" => final_callee = "rt_promise_catch".to_string(),
-                _ => {}
-            }
-        }
-
         let lookup_name = if final_callee.starts_with("f_") {
             &final_callee[2..]
         } else {
@@ -432,10 +379,109 @@ impl Lowering {
         } else {
             let expected_count_opt = self.user_function_args.borrow().get(&final_callee).copied();
             if let Some(expected_count) = expected_count_opt {
+                let defaults_opt = self
+                    .user_function_param_defaults
+                    .borrow()
+                    .get(&final_callee)
+                    .cloned();
                 while final_args.len() < expected_count {
-                    final_args.push(HIRExpression::NoneLiteral { line });
+                    let idx = final_args.len();
+                    let lowered_arg = if let Some(ref defs) = defaults_opt {
+                        if idx < defs.len() && defs[idx].is_some() {
+                            self.lower_expression(defs[idx].as_ref().unwrap())
+                        } else {
+                            HIRExpression::NoneLiteral { line }
+                        }
+                    } else {
+                        HIRExpression::NoneLiteral { line }
+                    };
+                    final_args.push(lowered_arg);
                 }
             }
+        }
+
+        if final_callee.starts_with("f_Promise_spawn") || final_callee.starts_with("Promise_spawn")
+        {
+            let arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                final_args[0].clone()
+            };
+            return HIRExpression::Call {
+                line,
+                callee: "f___tejx_promise_spawn".to_string(),
+                args: vec![arg],
+                ty,
+            };
+        }
+        // Promise.all(tasks) — runs closures in parallel virtual threads,
+        // blocks until all complete, returns T[] directly (not a Promise).
+        if final_callee.starts_with("f_Promise_all") || final_callee.starts_with("Promise_all") {
+            let arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                final_args[0].clone()
+            };
+            return HIRExpression::Call {
+                line,
+                callee: "f___tejx_promise_all".to_string(),
+                args: vec![arg],
+                ty,
+            };
+        }
+        // Promise.settled(tasks) — like all() but captures errors.
+        // Returns PromiseResult<T>[] — never throws.
+        if final_callee.starts_with("f_Promise_settled")
+            || final_callee.starts_with("Promise_settled")
+        {
+            let arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                final_args[0].clone()
+            };
+            return HIRExpression::Call {
+                line,
+                callee: "f___tejx_promise_settled".to_string(),
+                args: vec![arg],
+                ty,
+            };
+        }
+        if final_callee.starts_with("f_Promise_then") || final_callee.starts_with("Promise_then") {
+            let p_arg = final_args[0].clone();
+            let res_arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                HIRExpression::NoneLiteral { line }
+            };
+            let rej_arg = if final_args.len() > 2 {
+                final_args[2].clone()
+            } else {
+                HIRExpression::NoneLiteral { line }
+            };
+            return HIRExpression::Call {
+                line,
+                callee: "f___tejx_promise_then".to_string(),
+                args: vec![p_arg, res_arg, rej_arg],
+                ty,
+            };
+        }
+        if final_callee.starts_with("f_Promise_catch")
+            || final_callee.starts_with("f_Promise_catchError")
+            || final_callee.starts_with("Promise_catch")
+            || final_callee.starts_with("Promise_catchError")
+        {
+            let p_arg = final_args[0].clone();
+            let rej_arg = if final_args.len() > 1 {
+                final_args[1].clone()
+            } else {
+                HIRExpression::NoneLiteral { line }
+            };
+            return HIRExpression::Call {
+                line,
+                callee: "f___tejx_promise_catch".to_string(),
+                args: vec![p_arg, rej_arg],
+                ty,
+            };
         }
 
         if should_flatten_promise_return {
@@ -556,42 +602,41 @@ impl Lowering {
                         s.push_str(".0");
                     }
                     (s, TejxType::Float32)
+                } else if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
+                    (format!("{:.0}", value), TejxType::Int64)
                 } else {
-                    if *value > i32::MAX as f64 || *value < i32::MIN as f64 {
-                        (format!("{:.0}", value), TejxType::Int64)
-                    } else {
-                        (format!("{:.0}", value), TejxType::Int32)
-                    }
+                    (format!("{:.0}", value), TejxType::Int32)
                 };
                 HIRExpression::Literal {
-                    line: line,
+                    line,
                     value: val_str,
                     ty,
                 }
             }
             Expression::StringLiteral { value, .. } => {
-                let ty = if let Some(expected) = self.current_expected_type.borrow().clone() {
+                let (val, ty) = if let Some(expected) = self.current_expected_type.borrow().clone() {
                     if matches!(expected, TejxType::Char) {
-                        TejxType::Char
+                        let c = value.chars().next().unwrap_or('\0') as u32;
+                        (c.to_string(), TejxType::Char)
                     } else {
-                        TejxType::String
+                        (value.clone(), TejxType::String)
                     }
                 } else {
-                    TejxType::String
+                    (value.clone(), TejxType::String)
                 };
                 HIRExpression::Literal {
-                    line: line,
-                    value: value.clone(),
+                    line,
+                    value: val,
                     ty,
                 }
             }
             Expression::CharLiteral { value, .. } => HIRExpression::Literal {
-                line: line,
-                value: value.to_string(), // Keep it as string internally since HIR Literal holds strings
+                line,
+                value: (*value as u32).to_string(),
                 ty: TejxType::Char,
             },
             Expression::BooleanLiteral { value, .. } => HIRExpression::Literal {
-                line: line,
+                line,
                 value: value.to_string(),
                 ty: TejxType::Bool,
             },
@@ -599,21 +644,13 @@ impl Lowering {
                 let (name, ty) = self
                     .lookup("this")
                     .unwrap_or_else(|| ("this".to_string(), TejxType::Int64));
-                HIRExpression::Variable {
-                    line: line,
-                    name,
-                    ty,
-                }
+                HIRExpression::Variable { line, name, ty }
             }
             Expression::SuperExpr { .. } => {
                 let (name, ty) = self
                     .lookup("super")
                     .unwrap_or_else(|| ("super".to_string(), TejxType::Int64));
-                HIRExpression::Variable {
-                    line: line,
-                    name,
-                    ty,
-                }
+                HIRExpression::Variable { line, name, ty }
             }
             Expression::Identifier { name, .. } => {
                 let (resolved_name, mut ty) = self
@@ -637,7 +674,7 @@ impl Lowering {
                     resolved_name
                 };
                 HIRExpression::Variable {
-                    line: line,
+                    line,
                     name: final_name,
                     ty,
                 }
@@ -653,7 +690,7 @@ impl Lowering {
 
                 let cond = self.build_not_none_condition(&left_hir, line);
                 HIRExpression::If {
-                    line: line,
+                    line,
                     condition: Box::new(cond),
                     then_branch: Box::new(left_hir),
                     else_branch: Box::new(right_hir),
@@ -680,7 +717,7 @@ impl Lowering {
                         }
                     }
                     return HIRExpression::IndexAccess {
-                        line: line,
+                        line,
                         target: Box::new(target_hir),
                         index: Box::new(index_hir),
                         ty: elem_ty,
@@ -705,10 +742,10 @@ impl Lowering {
 
                 let cond = self.build_not_none_condition(&target_hir, line);
                 HIRExpression::If {
-                    line: line,
+                    line,
                     condition: Box::new(cond),
                     then_branch: Box::new(HIRExpression::IndexAccess {
-                        line: line,
+                        line,
                         target: Box::new(target_hir),
                         index: Box::new(index_hir),
                         ty: elem_ty.clone(),
@@ -741,12 +778,12 @@ impl Lowering {
                         _ => "__unknown__".to_string(),
                     };
                     return HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: "rt_instanceof".to_string(),
                         args: vec![
                             obj,
                             HIRExpression::Literal {
-                                line: line,
+                                line,
                                 value: class_name,
                                 ty: TejxType::String,
                             },
@@ -782,9 +819,9 @@ impl Lowering {
 
                 let bin_ty = self.infer_hir_binary_type(&l, op, &r);
                 HIRExpression::BinaryExpr {
-                    line: line,
+                    line,
                     left: Box::new(l),
-                    op: op.clone(),
+                    op: *op,
                     right: Box::new(r),
                     ty: bin_ty,
                 }
@@ -802,14 +839,9 @@ impl Lowering {
                             .get_array_element_type(),
                     ),
                     Expression::MemberAccessExpr { object, member, .. } => {
-                        let obj_ty = self.lower_expression(object).get_type();
-                        match self.resolve_alias_type(&obj_ty) {
-                            TejxType::Object(props) => props
-                                .iter()
-                                .find(|(name, _, _)| name == member)
-                                .map(|(_, _, ty)| ty.clone()),
-                            _ => None,
-                        }
+                        let lowered_obj = self.lower_expression(object);
+                        let lowered_member = self.lower_member_access_with_obj(line, "", lowered_obj, member);
+                        Some(lowered_member.get_type())
                     }
                     _ => None,
                 };
@@ -822,70 +854,70 @@ impl Lowering {
                 // Desugar compound assignments: a += b  ->  a = a + b
                 let final_value = match _op {
                     TokenType::PlusEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Plus,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::MinusEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Minus,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::StarEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Star,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::SlashEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Slash,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::ModuloEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Modulo,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::AmpersandEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Ampersand,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::PipeEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Pipe,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::CaretEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::Caret,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::LessLessEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::LessLess,
                         right: Box::new(v),
                         ty: ty.clone(),
                     },
                     TokenType::GreaterGreaterEquals => HIRExpression::BinaryExpr {
-                        line: line,
+                        line,
                         left: Box::new(self.lower_expression(target)),
                         op: TokenType::GreaterGreater,
                         right: Box::new(v),
@@ -907,7 +939,7 @@ impl Lowering {
                         if let Some(s_set) = setters.get(&class_name) {
                             if s_set.contains(member) {
                                 return HIRExpression::Call {
-                                    line: line,
+                                    line,
                                     callee: format!("f_{}_set_{}", class_name, member),
                                     args: vec![self.lower_expression(object), final_value],
                                     ty: TejxType::Void,
@@ -923,7 +955,7 @@ impl Lowering {
                     | Expression::ArrayAccessExpr { .. } => {
                         let t = self.lower_expression(target);
                         HIRExpression::Assignment {
-                            line: line,
+                            line,
                             target: Box::new(t),
                             value: Box::new(final_value),
                             ty,
@@ -932,7 +964,7 @@ impl Lowering {
                     _ => {
                         let t = self.lower_expression(target);
                         HIRExpression::Assignment {
-                            line: line,
+                            line,
                             target: Box::new(t),
                             value: Box::new(final_value),
                             ty,
@@ -940,39 +972,53 @@ impl Lowering {
                     }
                 }
             }
-            Expression::UnaryExpr { op, right, .. } => {
+            Expression::UnaryExpr {
+                op,
+                right,
+                is_postfix,
+                ..
+            } => {
                 // ++i, --i, !x, -x
                 match op {
                     TokenType::PlusPlus | TokenType::MinusMinus => {
                         let r_expr = self.lower_expression(right);
                         let ty = r_expr.get_type();
 
-                        let delta = "1".to_string();
-                        let bin_op = if matches!(op, TokenType::PlusPlus) {
-                            TokenType::Plus
+                        if *is_postfix {
+                            HIRExpression::PostfixUpdate {
+                                target: Box::new(r_expr),
+                                op: *op,
+                                ty,
+                                line,
+                            }
                         } else {
-                            TokenType::Minus
-                        };
+                            let delta = "1".to_string();
+                            let bin_op = if matches!(op, TokenType::PlusPlus) {
+                                TokenType::Plus
+                            } else {
+                                TokenType::Minus
+                            };
 
-                        HIRExpression::Assignment {
-                            line: line,
-                            target: Box::new(r_expr.clone()),
-                            value: Box::new(HIRExpression::BinaryExpr {
-                                line: line,
-                                left: Box::new(r_expr),
-                                op: bin_op,
-                                right: Box::new(HIRExpression::Literal {
-                                    line: line,
-                                    value: delta,
-                                    ty: TejxType::Int32,
+                            HIRExpression::Assignment {
+                                line,
+                                target: Box::new(r_expr.clone()),
+                                value: Box::new(HIRExpression::BinaryExpr {
+                                    line,
+                                    left: Box::new(r_expr),
+                                    op: bin_op,
+                                    right: Box::new(HIRExpression::Literal {
+                                        line,
+                                        value: delta,
+                                        ty: TejxType::Int32,
+                                    }),
+                                    ty: ty.clone(),
                                 }),
-                                ty: ty.clone(),
-                            }),
-                            ty,
+                                ty,
+                            }
                         }
                     }
                     TokenType::Bang => HIRExpression::Call {
-                        line: line,
+                        line,
                         callee: "rt_not".to_string(),
                         args: vec![self.lower_expression(right)],
                         ty: TejxType::Bool,
@@ -1000,9 +1046,9 @@ impl Lowering {
                         let zero_val = if ty.is_float() { "0.0" } else { "0" };
 
                         HIRExpression::BinaryExpr {
-                            line: line,
+                            line,
                             left: Box::new(HIRExpression::Literal {
-                                line: line,
+                                line,
                                 value: zero_val.to_string(),
                                 ty: ty.clone(),
                             }),
@@ -1021,9 +1067,23 @@ impl Lowering {
                 _col,
                 ..
             } => {
-                let hir_args: Vec<HIRExpression> =
-                    args.iter().map(|a| self.lower_expression(a)).collect();
                 let callee_str = callee.to_callee_name();
+                let hir_args: Vec<HIRExpression> = if callee_str == "__spawn_async" {
+                    args.iter()
+                        .map(|a| {
+                            let prev = self.current_expected_type.borrow_mut().take();
+                            if let Some(inner) = &prev {
+                                *self.current_expected_type.borrow_mut() =
+                                    Some(TejxType::Function(vec![], Box::new(inner.clone())));
+                            }
+                            let lowered = self.lower_expression(a);
+                            *self.current_expected_type.borrow_mut() = prev;
+                            lowered
+                        })
+                        .collect()
+                } else {
+                    args.iter().map(|a| self.lower_expression(a)).collect()
+                };
                 let normalized = callee_str
                     .replace('.', "_")
                     .replace("::", "_")
@@ -1033,7 +1093,7 @@ impl Lowering {
                 let mut ty = TejxType::Int64;
 
                 if callee_str == "typeof" {
-                    if let Some(arg) = hir_args.get(0) {
+                    if let Some(arg) = hir_args.first() {
                         let arg_ty = arg.get_type();
                         if matches!(
                             arg_ty,
@@ -1043,34 +1103,61 @@ impl Lowering {
                             final_callee = "rt_typeof".to_string();
                             ty = TejxType::String;
                         } else {
-                            // Extract known static type string
-                            let type_str = match &arg_ty {
-                                TejxType::Int8
-                                | TejxType::UInt8
-                                | TejxType::Int16
-                                | TejxType::UInt16
-                                | TejxType::UInt32
-                                | TejxType::Int32
-                                | TejxType::UInt64
-                                | TejxType::Int64
-                                | TejxType::Int128
-                                | TejxType::UInt128 => "int",
-                                TejxType::Float32 | TejxType::Float64 => "float",
-                                TejxType::Bool => "bool",
-                                TejxType::String => "string",
-                                TejxType::Char => "char",
-                                TejxType::FixedArray(_, _)
-                                | TejxType::DynamicArray(_)
-                                | TejxType::Slice(_) => "array",
-                                TejxType::Function(_, _) => "function",
-                                TejxType::Class(_, _) => "object",
-                                TejxType::Object(_) => "object",
-                                TejxType::Void => "None",
-                                _ => "void",
-                            };
+                            // Extract precise static type string
+                            fn type_str_precise(ty: &TejxType, disp_map: &std::collections::HashMap<String, String>) -> String {
+                                match ty {
+                                    TejxType::Int8 => "int8".to_string(),
+                                    TejxType::UInt8 => "uint8".to_string(),
+                                    TejxType::Int16 => "int16".to_string(),
+                                    TejxType::UInt16 => "uint16".to_string(),
+                                    TejxType::Int32 | TejxType::UInt32 => "int".to_string(),
+                                    TejxType::Int64 => "int64".to_string(),
+                                    TejxType::UInt64 => "uint64".to_string(),
+                                    TejxType::Int128 => "int128".to_string(),
+                                    TejxType::UInt128 => "uint128".to_string(),
+                                    TejxType::Float32 => "float".to_string(),
+                                    TejxType::Float64 => "float64".to_string(),
+                                    TejxType::Bool => "bool".to_string(),
+                                    TejxType::String => "string".to_string(),
+                                    TejxType::Char => "char".to_string(),
+                                    TejxType::Function(_, _) => "function".to_string(),
+                                    TejxType::Void => "void".to_string(),
+                                    TejxType::FixedArray(inner, len) => {
+                                        format!("{}[{}]", type_str_precise(inner, disp_map), len)
+                                    }
+                                    TejxType::DynamicArray(inner) => {
+                                        format!("{}[]", type_str_precise(inner, disp_map))
+                                    }
+                                    TejxType::Slice(inner) => {
+                                        format!("{}[]", type_str_precise(inner, disp_map))
+                                    }
+                                    TejxType::Class(name, type_args) if type_args.is_empty() => {
+                                        if let Some(disp) = disp_map.get(name.as_str()) {
+                                            disp.clone()
+                                        } else {
+                                            name.clone()
+                                        }
+                                    }
+                                    TejxType::Class(name, type_args) => {
+                                        let args: Vec<String> = type_args
+                                            .iter()
+                                            .map(|a| type_str_precise(a, disp_map))
+                                            .collect();
+                                        format!("{}<{}>", name, args.join(", "))
+                                    }
+                                    TejxType::Object(_) => "struct".to_string(),
+                                    TejxType::Optional(inner) => {
+                                        format!("Optional<{}>", type_str_precise(inner, disp_map))
+                                    }
+                                    TejxType::Any => "any".to_string(),
+                                    TejxType::Float16 => "float16".to_string(),
+                                }
+                            }
+                            let disp_map = self.class_display_names.borrow();
+                            let type_str = type_str_precise(&arg_ty, &disp_map);
                             return HIRExpression::Literal {
                                 line,
-                                value: type_str.to_string(),
+                                value: type_str,
                                 ty: TejxType::String,
                             };
                         }
@@ -1113,7 +1200,7 @@ impl Lowering {
                         }
                     };
 
-                    if let Some(arg) = hir_args.get(0) {
+                    if let Some(arg) = hir_args.first() {
                         if let Some(sz) = sizeof_const(&arg.get_type()) {
                             return HIRExpression::Literal {
                                 line,
@@ -1261,52 +1348,6 @@ impl Lowering {
                         if !resolved {
                             // Priority 2: Static Methods
                             if let Expression::Identifier { name: obj_name, .. } = object.as_ref() {
-                                if obj_name == "Promise" && member == "all" {
-                                    final_callee = "f_Promise_all".to_string();
-                                    if let Some(ret_ty) =
-                                        self.user_functions.borrow().get(&final_callee).cloned()
-                                    {
-                                        ty = match ret_ty {
-                                            TejxType::Function(_, ret) => (*ret).clone(),
-                                            _ => ret_ty.clone(),
-                                        };
-                                    }
-                                    resolved = true;
-                                } else if obj_name == "Promise" && member == "race" {
-                                    final_callee = "f_Promise_race".to_string();
-                                    if let Some(ret_ty) =
-                                        self.user_functions.borrow().get(&final_callee).cloned()
-                                    {
-                                        ty = match ret_ty {
-                                            TejxType::Function(_, ret) => (*ret).clone(),
-                                            _ => ret_ty.clone(),
-                                        };
-                                    }
-                                    resolved = true;
-                                } else if obj_name == "Promise" && member == "any" {
-                                    final_callee = "f_Promise_any".to_string();
-                                    if let Some(ret_ty) =
-                                        self.user_functions.borrow().get(&final_callee).cloned()
-                                    {
-                                        ty = match ret_ty {
-                                            TejxType::Function(_, ret) => (*ret).clone(),
-                                            _ => ret_ty.clone(),
-                                        };
-                                    }
-                                    resolved = true;
-                                } else if obj_name == "Promise" && member == "allSettled" {
-                                    final_callee = "f_Promise_allSettled".to_string();
-                                    if let Some(ret_ty) =
-                                        self.user_functions.borrow().get(&final_callee).cloned()
-                                    {
-                                        ty = match ret_ty {
-                                            TejxType::Function(_, ret) => (*ret).clone(),
-                                            _ => ret_ty.clone(),
-                                        };
-                                    }
-                                    resolved = true;
-                                }
-
                                 if !resolved && self.class_methods.borrow().contains_key(obj_name) {
                                     let static_candidates = [
                                         format!("f_{}_{}", obj_name, member),
@@ -1381,161 +1422,151 @@ impl Lowering {
                                 n_args.extend(hir_args.clone());
                                 final_args = n_args;
                                 // resolved = true;
+                            } else if obj_ty == TejxType::Any && member == "length" {
+                                final_callee = "rt_len".to_string();
+                                ty = TejxType::Int32;
+                                let mut n_args = vec![obj_hir.clone()];
+                                n_args.extend(hir_args.clone());
+                                final_args = n_args;
+                                // resolved = true;
                             } else {
-                                if obj_ty == TejxType::Any && member == "length" {
-                                    final_callee = "rt_len".to_string();
-                                    ty = TejxType::Int32;
-                                    let mut n_args = vec![obj_hir.clone()];
-                                    n_args.extend(hir_args.clone());
-                                    final_args = n_args;
-                                    // resolved = true;
+                                let template_type_name = match obj_ty {
+                                    TejxType::Class(ref c, _) => c.clone(),
+                                    _ => format!("{:?}", obj_ty),
+                                };
+                                let type_name = template_type_name
+                                    .split('<')
+                                    .next()
+                                    .unwrap_or(&template_type_name)
+                                    .trim()
+                                    .to_string();
+                                let concrete_type_name =
+                                    self.monomorphized_class_name(&obj_hir.get_type());
+                                let concrete_method_key =
+                                    format!("f_{}_{}", concrete_type_name, member);
+                                let method_key = format!("f_{}_{}", type_name, member);
+
+                                if let Some(ret_ty) = self
+                                    .user_functions
+                                    .borrow()
+                                    .get(&concrete_method_key)
+                                    .cloned()
+                                {
+                                    final_callee = concrete_method_key.clone();
+                                    // Substitute generic type params from the concrete object type
+                                    ty = self.substitute_generics(
+                                        &ret_ty,
+                                        &obj_hir.get_type(),
+                                        &final_callee,
+                                    );
                                 } else {
-                                    let template_type_name = match obj_ty {
-                                        TejxType::Class(ref c, _) => c.clone(),
-                                        _ => format!("{:?}", obj_ty),
-                                    };
-                                    let type_name = template_type_name
-                                        .split('<')
-                                        .next()
-                                        .unwrap_or(&template_type_name)
-                                        .trim()
-                                        .to_string();
-                                    let concrete_type_name =
-                                        self.monomorphized_class_name(&obj_hir.get_type());
-                                    let concrete_method_key =
-                                        format!("f_{}_{}", concrete_type_name, member);
-                                    let method_key = format!("f_{}_{}", type_name, member);
-
-                                    if let Some(ret_ty) = self
-                                        .user_functions
-                                        .borrow()
-                                        .get(&concrete_method_key)
-                                        .cloned()
+                                    let mut resolved_by_mono = false;
+                                    if let Some(insts) =
+                                        self.generic_instantiations.borrow().get(&type_name)
                                     {
-                                        final_callee = concrete_method_key.clone();
-                                        // Substitute generic type params from the concrete object type
-                                        ty = self.substitute_generics(
-                                            &ret_ty,
-                                            &obj_hir.get_type(),
-                                            &final_callee,
-                                        );
-                                    } else {
-                                        let mut resolved_by_mono = false;
-                                        if let Some(insts) =
-                                            self.generic_instantiations.borrow().get(&type_name)
-                                        {
-                                            if insts.len() == 1 {
-                                                if let Some(args) = insts.iter().next() {
-                                                    let mono_class =
-                                                        self.monomorphized_name(&type_name, args);
-                                                    let mono_key =
-                                                        format!("f_{}_{}", mono_class, member);
-                                                    if let Some(ret_ty) = self
-                                                        .user_functions
-                                                        .borrow()
-                                                        .get(&mono_key)
-                                                        .cloned()
-                                                    {
-                                                        final_callee = mono_key.clone();
-                                                        ty = self.substitute_generics(
-                                                            &ret_ty,
-                                                            &obj_hir.get_type(),
-                                                            &final_callee,
-                                                        );
-                                                        resolved_by_mono = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if !resolved_by_mono {
-                                            if let Some(ret_ty) = self
-                                                .user_functions
-                                                .borrow()
-                                                .get(&method_key)
-                                                .cloned()
-                                            {
-                                                final_callee = method_key.clone();
-                                                ty = self.substitute_generics(
-                                                    &ret_ty,
-                                                    &obj_hir.get_type(),
-                                                    &final_callee,
-                                                );
-                                            } else if self
-                                                .extern_functions
-                                                .borrow()
-                                                .contains(&method_key)
-                                            {
-                                                final_callee = method_key;
-                                            } else {
-                                                // Walk class hierarchy to find inherited methods
-                                                let mut found = false;
-                                                let mut parent_class = {
-                                                    self.class_parents
-                                                        .borrow()
-                                                        .get(&type_name)
-                                                        .cloned()
-                                                };
-                                                while let Some(ref parent) = parent_class {
-                                                    let parent_method_key =
-                                                        format!("f_{}_{}", parent, member);
-                                                    if let Some(ret_ty) = self
-                                                        .user_functions
-                                                        .borrow()
-                                                        .get(&parent_method_key)
-                                                    {
-                                                        final_callee = parent_method_key;
-                                                        ty = self.substitute_generics(
-                                                            ret_ty,
-                                                            &obj_hir.get_type(),
-                                                            &final_callee,
-                                                        );
-                                                        found = true;
-                                                        break;
-                                                    } else if self
-                                                        .extern_functions
-                                                        .borrow()
-                                                        .contains(&parent_method_key)
-                                                    {
-                                                        final_callee = parent_method_key;
-                                                        found = true;
-                                                        break;
-                                                    }
-                                                    parent_class = self
-                                                        .class_parents
-                                                        .borrow()
-                                                        .get(parent)
-                                                        .cloned();
-                                                }
-                                                if !found {
-                                                    // Fallback to dynamic or best-effort mangling
-                                                    if type_name == "Any" || type_name == "any" {
-                                                        if let Expression::Identifier {
-                                                            ref name,
-                                                            ..
-                                                        } = object.as_ref()
-                                                        {
-                                                            let mangled = self
-                                                                .lookup(name)
-                                                                .map(|(m, _)| m)
-                                                                .unwrap_or_else(|| name.clone());
-                                                            final_callee =
-                                                                format!("{}.{}", mangled, member);
-                                                        } else {
-                                                            final_callee = method_key;
-                                                        }
-                                                    } else {
-                                                        final_callee = method_key;
-                                                    }
+                                        if insts.len() == 1 {
+                                            if let Some(args) = insts.iter().next() {
+                                                let mono_class =
+                                                    self.monomorphized_name(&type_name, args);
+                                                let mono_key =
+                                                    format!("f_{}_{}", mono_class, member);
+                                                if let Some(ret_ty) = self
+                                                    .user_functions
+                                                    .borrow()
+                                                    .get(&mono_key)
+                                                    .cloned()
+                                                {
+                                                    final_callee = mono_key.clone();
+                                                    ty = self.substitute_generics(
+                                                        &ret_ty,
+                                                        &obj_hir.get_type(),
+                                                        &final_callee,
+                                                    );
+                                                    resolved_by_mono = true;
                                                 }
                                             }
                                         }
                                     }
-                                    let mut n_args = vec![obj_hir];
-                                    n_args.extend(hir_args.clone());
-                                    final_args = n_args;
+
+                                    if !resolved_by_mono {
+                                        if let Some(ret_ty) =
+                                            self.user_functions.borrow().get(&method_key).cloned()
+                                        {
+                                            final_callee = method_key.clone();
+                                            ty = self.substitute_generics(
+                                                &ret_ty,
+                                                &obj_hir.get_type(),
+                                                &final_callee,
+                                            );
+                                        } else if self
+                                            .extern_functions
+                                            .borrow()
+                                            .contains(&method_key)
+                                        {
+                                            final_callee = method_key;
+                                        } else {
+                                            // Walk class hierarchy to find inherited methods
+                                            let mut found = false;
+                                            let mut parent_class = {
+                                                self.class_parents.borrow().get(&type_name).cloned()
+                                            };
+                                            while let Some(ref parent) = parent_class {
+                                                let parent_method_key =
+                                                    format!("f_{}_{}", parent, member);
+                                                if let Some(ret_ty) = self
+                                                    .user_functions
+                                                    .borrow()
+                                                    .get(&parent_method_key)
+                                                {
+                                                    final_callee = parent_method_key;
+                                                    ty = self.substitute_generics(
+                                                        ret_ty,
+                                                        &obj_hir.get_type(),
+                                                        &final_callee,
+                                                    );
+                                                    found = true;
+                                                    break;
+                                                } else if self
+                                                    .extern_functions
+                                                    .borrow()
+                                                    .contains(&parent_method_key)
+                                                {
+                                                    final_callee = parent_method_key;
+                                                    found = true;
+                                                    break;
+                                                }
+                                                parent_class = self
+                                                    .class_parents
+                                                    .borrow()
+                                                    .get(parent)
+                                                    .cloned();
+                                            }
+                                            if !found {
+                                                // Fallback to dynamic or best-effort mangling
+                                                if type_name == "Any" || type_name == "any" {
+                                                    if let Expression::Identifier {
+                                                        ref name, ..
+                                                    } = object.as_ref()
+                                                    {
+                                                        let mangled = self
+                                                            .lookup(name)
+                                                            .map(|(m, _)| m)
+                                                            .unwrap_or_else(|| name.clone());
+                                                        final_callee =
+                                                            format!("{}.{}", mangled, member);
+                                                    } else {
+                                                        final_callee = method_key;
+                                                    }
+                                                } else {
+                                                    final_callee = method_key;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                // resolved = true;
+                                let mut n_args = vec![obj_hir];
+                                n_args.extend(hir_args.clone());
+                                final_args = n_args;
                             }
                         }
                     }
@@ -1561,6 +1592,10 @@ impl Lowering {
                         TejxType::Function(_, ret) => *ret,
                         _ => ret_ty,
                     };
+
+                    if final_callee == "f_slow_task" {
+                        println!("DEBUG: CallExpr f_slow_task ty resolved to {:?}", ty);
+                    }
 
                     // Also try to substitute generics for top-level calls if they have generic params
                     if !final_args.is_empty() {
@@ -1632,7 +1667,7 @@ impl Lowering {
                             let mut new_var_args = fixed.to_vec();
                             let rest_array_ty = self.variadic_pack_type(&final_callee);
                             new_var_args.push(HIRExpression::ArrayLiteral {
-                                line: line,
+                                line,
                                 elements: rest.to_vec(),
                                 ty: rest_array_ty,
                                 sized_allocation: None,
@@ -1641,18 +1676,33 @@ impl Lowering {
                         }
                     }
                 } else {
-                    // Non-variadic: pad missing arguments with None for Optional parameters
+                    // Non-variadic: pad missing arguments with default expressions if available, or NoneLiteral
                     let expected_count_opt =
                         self.user_function_args.borrow().get(&final_callee).copied();
                     if let Some(expected_count) = expected_count_opt {
+                        let defaults_opt = self
+                            .user_function_param_defaults
+                            .borrow()
+                            .get(&final_callee)
+                            .cloned();
                         while final_args.len() < expected_count {
-                            final_args.push(HIRExpression::NoneLiteral { line });
+                            let idx = final_args.len();
+                            let lowered_arg = if let Some(ref defs) = defaults_opt {
+                                if idx < defs.len() && defs[idx].is_some() {
+                                    self.lower_expression(defs[idx].as_ref().unwrap())
+                                } else {
+                                    HIRExpression::NoneLiteral { line }
+                                }
+                            } else {
+                                HIRExpression::NoneLiteral { line }
+                            };
+                            final_args.push(lowered_arg);
                         }
                     }
                 }
 
                 HIRExpression::Call {
-                    line: line,
+                    line,
                     callee: final_callee,
                     args: final_args,
                     ty,
@@ -1685,7 +1735,7 @@ impl Lowering {
                     }
                 }
                 HIRExpression::IndexAccess {
-                    line: line,
+                    line,
                     target: Box::new(lowered_target),
                     index: Box::new(self.lower_expression(index)),
                     ty,
@@ -1715,7 +1765,7 @@ impl Lowering {
                         // Push accumulated static chunk if any
                         if !current_chunk.is_empty() {
                             chunks.push(HIRExpression::ArrayLiteral {
-                                line: line,
+                                line,
                                 elements: current_chunk.clone(),
                                 ty: inferred_ty.clone(),
                                 sized_allocation: sized_allocation.clone(),
@@ -1731,7 +1781,7 @@ impl Lowering {
                 // Push final chunk
                 if !current_chunk.is_empty() {
                     chunks.push(HIRExpression::ArrayLiteral {
-                        line: line,
+                        line,
                         elements: current_chunk,
                         ty: inferred_ty.clone(),
                         sized_allocation: sized_allocation.clone(),
@@ -1741,7 +1791,7 @@ impl Lowering {
                 if chunks.is_empty() {
                     // Empty array []
                     HIRExpression::ArrayLiteral {
-                        line: line,
+                        line,
                         elements: vec![],
                         sized_allocation,
                         ty: inferred_ty.clone(),
@@ -1750,13 +1800,13 @@ impl Lowering {
                     // If it's only a spread, force a copy so the source array isn't reused.
                     if has_spread && chunks.len() == 1 {
                         let empty = HIRExpression::ArrayLiteral {
-                            line: line,
+                            line,
                             elements: vec![],
                             sized_allocation: None,
                             ty: inferred_ty.clone(),
                         };
                         return HIRExpression::Call {
-                            line: line,
+                            line,
                             callee: "rt_array_concat".to_string(),
                             args: vec![empty, chunks[0].clone()],
                             ty: inferred_ty.clone(),
@@ -1766,7 +1816,7 @@ impl Lowering {
                     let mut expr = chunks[0].clone();
                     for next_chunk in chunks.into_iter().skip(1) {
                         expr = HIRExpression::Call {
-                            line: line,
+                            line,
                             callee: "rt_array_concat".to_string(),
                             args: vec![expr, next_chunk],
                             ty: inferred_ty.clone(),
@@ -1873,26 +1923,34 @@ impl Lowering {
                     ),
                 );
 
+                let lambda_ret_type = expected_lambda_ret.clone().unwrap_or_else(|| {
+                    self.lambda_inferred_returns
+                        .get(&(*_line, *_col))
+                        .cloned()
+                        .unwrap_or(TejxType::Void)
+                });
+                self.return_type_stack.borrow_mut().push(lambda_ret_type.clone());
+
                 let hir_body = self.lower_statement(body).unwrap_or(HIRStatement::Block {
-                    line: line,
+                    line,
                     statements: vec![],
                 });
 
+                self.return_type_stack.borrow_mut().pop();
+
                 self._exit_scope();
+
+                self.function_source_files
+                    .borrow_mut()
+                    .insert(lambda_name.clone(), self.current_file.borrow().clone());
 
                 self.lambda_functions
                     .borrow_mut()
                     .push(HIRStatement::Function {
-                        async_params: None,
-                        line: line,
+                        line,
                         name: lambda_name.clone(),
                         params: mangled_params,
-                        _return_type: expected_lambda_ret.clone().unwrap_or_else(|| {
-                            self.lambda_inferred_returns
-                                .get(&(*_line, *_col))
-                                .cloned()
-                                .unwrap_or(TejxType::Void)
-                        }),
+                        _return_type: lambda_ret_type,
                         body: Box::new(hir_body),
                         is_extern: false,
                     });
@@ -1908,32 +1966,12 @@ impl Lowering {
                     Box::new(lambda_ret_ty),
                 );
                 HIRExpression::Literal {
-                    line: line,
+                    line,
                     value: lambda_name,
                     ty: fn_ty, // Track as function type for sizeof/type-aware ops
                 }
             }
-            Expression::AwaitExpr { expr, .. } => {
-                let lowered = self.lower_expression(expr);
-                let awaited_ty = match lowered.get_type() {
-                    TejxType::Class(name, generics)
-                        if name == "Promise" && !generics.is_empty() =>
-                    {
-                        generics[0].clone()
-                    }
-                    TejxType::Class(name, _)
-                        if name.starts_with("Promise<") && name.ends_with('>') =>
-                    {
-                        TejxType::from_name(&name[8..name.len() - 1])
-                    }
-                    other => other,
-                };
-                HIRExpression::Await {
-                    line,
-                    expr: Box::new(lowered),
-                    ty: awaited_ty,
-                }
-            }
+
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
                 let obj_name = match object.as_ref() {
                     Expression::Identifier { name, .. } => name.clone(),
@@ -1953,7 +1991,7 @@ impl Lowering {
                 let result_ty = TejxType::Optional(Box::new(access_hir.get_type()));
 
                 HIRExpression::If {
-                    line: line,
+                    line,
                     condition: Box::new(cond),
                     then_branch: Box::new(access_hir),
                     else_branch: Box::new(HIRExpression::NoneLiteral { line }),
@@ -2058,15 +2096,44 @@ impl Lowering {
                 }
                 let normalized_class = self.monomorphized_class_name(&class_ty);
 
-                // Variadic check for constructor
                 let cons_unmangled = format!("{}_constructor", normalized_class);
+
+                // Pad default arguments for constructor if fewer arguments provided than expected
+                let ctor_defaults_opt = self
+                    .constructor_param_defaults
+                    .borrow()
+                    .get(&normalized_class)
+                    .cloned()
+                    .or_else(|| {
+                        if let TejxType::Class(ref base, _) = class_ty {
+                            self.constructor_param_defaults
+                                .borrow()
+                                .get(base)
+                                .cloned()
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(ref defs) = ctor_defaults_opt {
+                    while hir_args.len() < defs.len() {
+                        let idx = hir_args.len();
+                        if let Some(ref def_expr) = defs[idx] {
+                            hir_args.push(self.lower_expression(def_expr));
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Variadic check for constructor
                 if let Some(&fixed_count) = self.variadic_functions.borrow().get(&cons_unmangled) {
                     if hir_args.len() >= fixed_count {
                         let (fixed, rest) = hir_args.split_at(fixed_count);
                         let mut new_var_args = fixed.to_vec();
                         let rest_array_ty = self.variadic_pack_type(&cons_unmangled);
                         new_var_args.push(HIRExpression::ArrayLiteral {
-                            line: line,
+                            line,
                             elements: rest.to_vec(),
                             sized_allocation: None,
                             ty: rest_array_ty,
@@ -2086,7 +2153,7 @@ impl Lowering {
                 }
 
                 HIRExpression::NewExpr {
-                    line: line,
+                    line,
                     class_name: normalized_class,
                     _args: hir_args,
                     ty: class_ty,
@@ -2100,7 +2167,7 @@ impl Lowering {
                 let callee_expr = self.lower_expression(callee);
 
                 HIRExpression::OptionalChain {
-                    line: line,
+                    line,
                     target: Box::new(callee_expr),
                     operation: "()".to_string(), // In HIR/MIR, OptionalChain "()" means call
                     ty: TejxType::Int64,
@@ -2117,7 +2184,7 @@ impl Lowering {
                 let f_branch = self.lower_expression(_false_branch);
                 let ty = self.infer_ternary_type(&t_branch.get_type(), &f_branch.get_type());
                 HIRExpression::If {
-                    line: line,
+                    line,
                     condition: Box::new(cond),
                     then_branch: Box::new(t_branch),
                     else_branch: Box::new(f_branch),
@@ -2126,7 +2193,7 @@ impl Lowering {
             }
 
             _ => HIRExpression::Literal {
-                line: line,
+                line,
                 value: "0".to_string(),
                 ty: TejxType::Int64,
             },
@@ -2257,6 +2324,13 @@ impl Lowering {
         }
 
         let combined = format!("{}_{}", obj_name, member);
+        if let Some(&val) = self.enum_members.borrow().get(&combined) {
+            return HIRExpression::Literal {
+                line,
+                value: val.to_string(),
+                ty: TejxType::Int64,
+            };
+        }
         let f_combined = format!("f_{}", combined);
         let fallback_ty = if matches!(obj_ty, TejxType::Any) {
             TejxType::Any
@@ -2357,8 +2431,7 @@ impl Lowering {
                 | TejxType::UInt64
                 | TejxType::Int128
                 | TejxType::UInt128
-        )
-        {
+        ) {
             return TejxType::Int32; // Default promotion
         }
 

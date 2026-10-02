@@ -24,9 +24,19 @@ pub const DEFAULT_HOME_DIR: &str = ".tejx";
 /// Resolve the stdlib (lib/) directory path.
 /// Priority: explicit > local (lib/) > installed (relative to binary) > $HOME/.tejx/lib
 pub fn resolve_stdlib_path(explicit: Option<&str>) -> PathBuf {
-    // Priority: explicit > local (lib/) > installed (relative to binary) > $HOME/.tejx/lib
+    // Priority: explicit > env var > workspace src/library > local (lib/) > installed > $HOME/.tejx/lib
     if let Some(p) = explicit {
         return PathBuf::from(p);
+    }
+    if let Ok(env_path) = std::env::var("TEJX_STDLIB_PATH") {
+        if !env_path.is_empty() {
+            return PathBuf::from(env_path);
+        }
+    }
+
+    // Workspace development mode: src/library
+    if std::path::Path::new("src/library").exists() {
+        return PathBuf::from("src/library");
     }
 
     // Local lib/ directory
@@ -52,15 +62,37 @@ pub fn resolve_stdlib_path(explicit: Option<&str>) -> PathBuf {
         }
     }
     // Fallback
-    PathBuf::from(LIB_DIR)
+    if std::path::Path::new("src/library").exists() {
+        PathBuf::from("src/library")
+    } else {
+        PathBuf::from(LIB_DIR)
+    }
 }
 
 /// Resolve the runtime library path.
-/// Priority: explicit > installed (relative to binary) > $HOME/.tejx/runtime/tejx_rt.a
+/// Priority: explicit > env var > target/release > installed > $HOME/.tejx/runtime/tejx_rt.a
 pub fn resolve_runtime_path(explicit: Option<&str>) -> PathBuf {
-    // Priority: explicit > installed (relative to binary) > $HOME/.tejx/runtime/tejx_rt.a
     if let Some(p) = explicit {
         return PathBuf::from(p);
+    }
+    if let Ok(env_path) = std::env::var("TEJX_RUNTIME_PATH") {
+        if !env_path.is_empty() {
+            return PathBuf::from(env_path);
+        }
+    }
+
+    // Workspace development mode
+    if std::path::Path::new("target/release/libtejx_rt.a").exists() {
+        return PathBuf::from("target/release/libtejx_rt.a");
+    }
+    if std::path::Path::new("target/release/tejx_rt.a").exists() {
+        return PathBuf::from("target/release/tejx_rt.a");
+    }
+    if std::path::Path::new("target/debug/libtejx_rt.a").exists() {
+        return PathBuf::from("target/debug/libtejx_rt.a");
+    }
+    if std::path::Path::new("target/debug/tejx_rt.a").exists() {
+        return PathBuf::from("target/debug/tejx_rt.a");
     }
 
     // Installed mode

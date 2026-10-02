@@ -63,8 +63,6 @@ impl Lexer {
         keywords.insert("protected".to_string(), TokenType::Protected);
         keywords.insert("abstract".to_string(), TokenType::Abstract);
         keywords.insert("static".to_string(), TokenType::Static);
-        keywords.insert("async".to_string(), TokenType::Async);
-        keywords.insert("await".to_string(), TokenType::Await);
         keywords.insert("try".to_string(), TokenType::Try);
         keywords.insert("catch".to_string(), TokenType::Catch);
         keywords.insert("finally".to_string(), TokenType::Finally);
@@ -378,15 +376,31 @@ impl Lexer {
                     }
                 } else if self.peek(1) == '*' {
                     // Block comment /* ... */
+                    let start_line = self.line;
+                    let start_col = self.column;
                     self.advance(); // skip /
                     self.advance(); // skip *
+                    let mut closed = false;
                     while !self.is_at_end() {
                         if self.peek(0) == '*' && self.peek(1) == '/' {
                             self.advance(); // skip *
                             self.advance(); // skip /
+                            closed = true;
                             break;
                         }
                         self.advance();
+                    }
+                    if !closed {
+                        self.errors.push(
+                            crate::common::diagnostics::Diagnostic::new(
+                                "Unclosed block comment".to_string(),
+                                start_line,
+                                start_col,
+                                self.filename.clone(),
+                            )
+                            .with_code("E0002")
+                            .with_hint("add '*/' to close the block comment"),
+                        );
                     }
                 } else {
                     return;
@@ -499,11 +513,9 @@ impl Lexer {
 
     fn read_template_string(&mut self) -> Token {
         let start_col = self.column;
+        let start_line = self.line;
         self.advance(); // Skip `
         let mut value = String::new();
-        // Basic template string support - skipping deep interpolation logic for now to get minimal working version
-        // matching C++ logic but simplified for first pass.
-        // Actually, let's implement the brace counting if possible.
 
         let mut brace_depth = 0;
         let mut in_interpolation = false;
@@ -533,10 +545,26 @@ impl Lexer {
             }
         }
 
-        if !self.is_at_end() {
+        let closed = if !self.is_at_end() && self.peek(0) == '`' {
             self.advance();
+            true
+        } else {
+            false
+        };
+
+        if !closed {
+            self.errors.push(
+                crate::common::diagnostics::Diagnostic::new(
+                    "Unclosed template literal".to_string(),
+                    start_line,
+                    start_col,
+                    self.filename.clone(),
+                )
+                .with_code("E0001")
+                .with_hint("add closing '`' to terminate the template literal"),
+            );
         }
 
-        Token::new(TokenType::TemplateString, value, self.line, start_col)
+        Token::new(TokenType::TemplateString, value, start_line, start_col)
     }
 }

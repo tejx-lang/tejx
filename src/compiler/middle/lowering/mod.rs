@@ -1,4 +1,3 @@
-pub mod async_desugar;
 pub mod builtins;
 pub mod class;
 pub mod expr;
@@ -20,6 +19,8 @@ pub struct Lowering {
     lambda_counter: RefCell<usize>,
     user_functions: RefCell<HashMap<String, TejxType>>,
     user_function_args: RefCell<HashMap<String, usize>>,
+    pub user_function_param_defaults: RefCell<HashMap<String, Vec<Option<Expression>>>>,
+    pub constructor_param_defaults: RefCell<HashMap<String, Vec<Option<Expression>>>>,
     extern_functions: RefCell<HashSet<String>>,
     variadic_functions: RefCell<HashMap<String, usize>>,
     lambda_functions: RefCell<Vec<HIRStatement>>,
@@ -41,11 +42,11 @@ pub struct Lowering {
     discovered_function_instantiations:
         RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     type_aliases: RefCell<HashMap<String, TejxType>>,
-    pub async_enabled: bool,
-    current_async_promise_id: RefCell<Option<String>>,
+    pub enum_members: RefCell<HashMap<String, i64>>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
     pub filename: RefCell<String>,
     pub stdlib_path: RefCell<std::path::PathBuf>,
+    pub include_dirs: RefCell<Vec<std::path::PathBuf>>,
     pub import_access: RefCell<HashMap<String, HashSet<String>>>,
     module_export_cache: RefCell<HashMap<std::path::PathBuf, HashSet<String>>>,
     module_default_export_cache: RefCell<HashMap<std::path::PathBuf, bool>>,
@@ -53,14 +54,17 @@ pub struct Lowering {
     pub lambda_inferred_types: HashMap<(usize, usize), Vec<TejxType>>,
     pub lambda_inferred_returns: HashMap<(usize, usize), TejxType>,
     pub call_instantiations: HashMap<(usize, usize, String), Vec<TejxType>>,
-    current_return_type: RefCell<Option<TejxType>>,
     current_expected_type: RefCell<Option<TejxType>>,
+    return_type_stack: RefCell<Vec<TejxType>>,
     pub generic_instantiations: RefCell<HashMap<String, std::collections::HashSet<Vec<TejxType>>>>,
     pub function_instantiations: HashMap<String, std::collections::HashSet<Vec<TejxType>>>,
     env_owner_stack: RefCell<Vec<String>>,
     captured_vars_by_owner: RefCell<HashMap<String, HashSet<String>>>,
     lambda_env_owner: RefCell<HashMap<String, String>>,
-    function_display_names: RefCell<HashMap<String, String>>,
+    pub function_display_names: RefCell<HashMap<String, String>>,
+    pub class_display_names: RefCell<HashMap<String, String>>,
+    pub current_file: RefCell<String>,
+    pub function_source_files: RefCell<HashMap<String, String>>,
     pending_lambda_display_name: RefCell<Option<String>>,
 }
 
@@ -74,6 +78,8 @@ pub struct LoweringResult {
     pub class_methods: HashMap<String, Vec<String>>,
     pub class_parents: HashMap<String, String>,
     pub function_display_names: HashMap<String, String>,
+    pub class_display_names: HashMap<String, String>,
+    pub function_source_files: HashMap<String, String>,
 }
 
 impl Default for Lowering {
@@ -88,6 +94,8 @@ impl Lowering {
             lambda_counter: RefCell::new(0),
             user_functions: RefCell::new(HashMap::new()),
             user_function_args: RefCell::new(HashMap::new()),
+            user_function_param_defaults: RefCell::new(HashMap::new()),
+            constructor_param_defaults: RefCell::new(HashMap::new()),
             extern_functions: RefCell::new(HashSet::new()),
             variadic_functions: RefCell::new(HashMap::new()),
             lambda_functions: RefCell::new(Vec::new()),
@@ -108,11 +116,11 @@ impl Lowering {
             erased_generic_functions: RefCell::new(HashSet::new()),
             discovered_function_instantiations: RefCell::new(HashMap::new()),
             type_aliases: RefCell::new(HashMap::new()),
-            async_enabled: false,
-            current_async_promise_id: RefCell::new(None),
+            enum_members: RefCell::new(HashMap::new()),
             diagnostics: RefCell::new(Vec::new()),
             filename: RefCell::new(String::new()),
             stdlib_path: RefCell::new(std::path::PathBuf::from("lib")),
+            include_dirs: RefCell::new(Vec::new()),
             import_access: RefCell::new(HashMap::new()),
             module_export_cache: RefCell::new(HashMap::new()),
             module_default_export_cache: RefCell::new(HashMap::new()),
@@ -120,14 +128,17 @@ impl Lowering {
             lambda_inferred_types: HashMap::new(),
             lambda_inferred_returns: HashMap::new(),
             call_instantiations: HashMap::new(),
-            current_return_type: RefCell::new(None),
             current_expected_type: RefCell::new(None),
+            return_type_stack: RefCell::new(Vec::new()),
             generic_instantiations: RefCell::new(HashMap::new()),
             function_instantiations: HashMap::new(),
             env_owner_stack: RefCell::new(Vec::new()),
             captured_vars_by_owner: RefCell::new(HashMap::new()),
             lambda_env_owner: RefCell::new(HashMap::new()),
             function_display_names: RefCell::new(HashMap::new()),
+            class_display_names: RefCell::new(HashMap::new()),
+            current_file: RefCell::new(String::new()),
+            function_source_files: RefCell::new(HashMap::new()),
             pending_lambda_display_name: RefCell::new(None),
         }
     }
@@ -366,16 +377,16 @@ impl Lowering {
         &self,
         statements: &[Statement],
         base_name: &str,
-    ) -> Option<ClassDeclaration> {
-        for stmt in statements {
+    ) -> Option<(ClassDeclaration, usize)> {
+        for (i, stmt) in statements.iter().enumerate() {
             match stmt {
                 Statement::ClassDeclaration(class_decl) if class_decl.name == base_name => {
-                    return Some(class_decl.clone());
+                    return Some((class_decl.clone(), i));
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::ClassDeclaration(class_decl) = declaration.as_ref() {
                         if class_decl.name == base_name {
-                            return Some(class_decl.clone());
+                            return Some((class_decl.clone(), i));
                         }
                     }
                 }
@@ -389,16 +400,55 @@ impl Lowering {
         &self,
         statements: &[Statement],
         base_name: &str,
-    ) -> Option<FunctionDeclaration> {
-        for stmt in statements {
+    ) -> Option<(FunctionDeclaration, usize)> {
+        for (i, stmt) in statements.iter().enumerate() {
             match stmt {
                 Statement::FunctionDeclaration(func) if func.name == base_name => {
-                    return Some(func.clone());
+                    return Some((func.clone(), i));
+                }
+                Statement::ClassDeclaration(class_decl) => {
+                    for method in &class_decl.methods {
+                        let expected = format!("{}_{}", class_decl.name, method.func.name);
+                        if expected == base_name || method.func.name == base_name {
+                            let mut func = method.func.clone();
+                            func.params.insert(
+                                0,
+                                crate::frontend::ast::Parameter {
+                                    name: "this".to_string(),
+                                    type_name: crate::frontend::ast::TypeNode::Named(
+                                        class_decl.name.clone(),
+                                    ),
+                                    _default_value: None,
+                                    _is_rest: false,
+                                },
+                            );
+                            return Some((func, i));
+                        }
+                    }
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::FunctionDeclaration(func) = declaration.as_ref() {
                         if func.name == base_name {
-                            return Some(func.clone());
+                            return Some((func.clone(), i));
+                        }
+                    } else if let Statement::ClassDeclaration(class_decl) = declaration.as_ref() {
+                        for method in &class_decl.methods {
+                            let expected = format!("{}_{}", class_decl.name, method.func.name);
+                            if expected == base_name || method.func.name == base_name {
+                                let mut func = method.func.clone();
+                                func.params.insert(
+                                    0,
+                                    crate::frontend::ast::Parameter {
+                                        name: "this".to_string(),
+                                        type_name: crate::frontend::ast::TypeNode::Named(
+                                            class_decl.name.clone(),
+                                        ),
+                                        _default_value: None,
+                                        _is_rest: false,
+                                    },
+                                );
+                                return Some((func, i));
+                            }
                         }
                     }
                 }
@@ -445,12 +495,17 @@ impl Lowering {
         self.nested_functions.borrow_mut().truncate(nested_len);
     }
 
-    fn monomorphize_to_fixed_point(&self, merged_statements: &mut Vec<Statement>) {
+    fn monomorphize_to_fixed_point(
+        &self,
+        merged_statements: &mut Vec<Statement>,
+        merged_statement_files: &mut Vec<String>,
+    ) {
         let mut emitted_class_instantiations = HashSet::new();
         let mut emitted_function_instantiations = HashSet::new();
 
         loop {
             let mut new_statements = Vec::new();
+            let mut new_statement_files = Vec::new();
 
             let class_instantiations: Vec<(String, Vec<TejxType>)> = self
                 .generic_instantiations
@@ -475,10 +530,12 @@ impl Lowering {
                     continue;
                 }
 
-                let Some(mut class_decl) = self.find_class_template(merged_statements, &base_name)
+                let Some((mut class_decl, t_idx)) =
+                    self.find_class_template(merged_statements, &base_name)
                 else {
                     continue;
                 };
+                let origin_file = merged_statement_files.get(t_idx).cloned().unwrap_or_default();
 
                 if class_decl.generic_params.len() != concrete_args.len() {
                     continue;
@@ -486,6 +543,11 @@ impl Lowering {
 
                 let mut substitutions = HashMap::new();
                 let mangled_name = self.monomorphized_name(&base_name, &concrete_args);
+                let display_args: Vec<String> = concrete_args.iter().map(|t| t.to_name()).collect();
+                let display_name = format!("{}<{}>", base_name, display_args.join(", "));
+                self.class_display_names
+                    .borrow_mut()
+                    .insert(mangled_name.clone(), display_name);
                 for (param, arg_type) in class_decl.generic_params.iter().zip(concrete_args.iter())
                 {
                     substitutions.insert(param.name.clone(), arg_type.to_type_node());
@@ -500,6 +562,7 @@ impl Lowering {
 
                 self.register_class(&class_decl);
                 new_statements.push(Statement::ClassDeclaration(class_decl));
+                new_statement_files.push(origin_file);
             }
 
             let mut function_instantiations = Vec::new();
@@ -526,11 +589,12 @@ impl Lowering {
                     continue;
                 }
 
-                let Some(mut func_decl) =
+                let Some((mut func_decl, t_idx)) =
                     self.find_function_template(merged_statements, &base_name)
                 else {
                     continue;
                 };
+                let origin_file = merged_statement_files.get(t_idx).cloned().unwrap_or_default();
 
                 if func_decl.generic_params.len() != concrete_args.len() {
                     continue;
@@ -551,6 +615,7 @@ impl Lowering {
 
                 self.register_function(&func_decl);
                 new_statements.push(Statement::FunctionDeclaration(func_decl));
+                new_statement_files.push(origin_file);
             }
 
             if new_statements.is_empty() {
@@ -562,23 +627,36 @@ impl Lowering {
             }
 
             merged_statements.extend(new_statements);
+            merged_statement_files.extend(new_statement_files);
         }
     }
 
-    pub fn lower(&self, program: &Program, _base_path: &std::path::Path) -> LoweringResult {
+    pub fn lower(
+        &self,
+        program: &Program,
+        _base_path: &std::path::Path,
+        statement_files: Option<&[String]>,
+    ) -> LoweringResult {
         let line = 0; // Top level
         let mut functions = Vec::new();
         let mut main_stmts = Vec::new();
-        let mut main_is_async = false;
         let mut merged_statements = program.statements.clone();
+        let default_file = self.filename.borrow().clone();
+        let mut merged_statement_files: Vec<String> = if let Some(files) = statement_files {
+            if files.len() == merged_statements.len() {
+                files.to_vec()
+            } else {
+                vec![default_file.clone(); merged_statements.len()]
+            }
+        } else {
+            vec![default_file.clone(); merged_statements.len()]
+        };
+        *self.current_file.borrow_mut() = default_file.clone();
 
-        // Pass 0.5: Scan for Variadic Functions + async main discovery
+        // Pass 0.5: Scan for Variadic Functions
         for stmt in &merged_statements {
             match stmt {
                 Statement::FunctionDeclaration(func) => {
-                    if func.name == "main" {
-                        main_is_async = func._is_async;
-                    }
                     let fixed_count = func.params.iter().take_while(|p| !p._is_rest).count();
                     if fixed_count < func.params.len() {
                         self.variadic_functions
@@ -588,9 +666,6 @@ impl Lowering {
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::FunctionDeclaration(func) = declaration.as_ref() {
-                        if func.name == "main" {
-                            main_is_async = func._is_async;
-                        }
                         let fixed_count = func.params.iter().take_while(|p| !p._is_rest).count();
                         if fixed_count < func.params.len() {
                             self.variadic_functions
@@ -670,10 +745,15 @@ impl Lowering {
         }
 
         // Pass 1.5: Monomorphize generic declarations to a fixed point before HIR/MIR lowering.
-        self.monomorphize_to_fixed_point(&mut merged_statements);
+        self.monomorphize_to_fixed_point(&mut merged_statements, &mut merged_statement_files);
 
         // Pass 1.6: Register monomorphized functions/classes (and any new variants).
-        for stmt in &merged_statements {
+        for (index, stmt) in merged_statements.iter().enumerate() {
+            let file = merged_statement_files
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| default_file.clone());
+            *self.current_file.borrow_mut() = file;
             match stmt {
                 Statement::FunctionDeclaration(func) => {
                     self.register_function(func);
@@ -698,7 +778,12 @@ impl Lowering {
 
         // Pass 2: Lower
         self.push_env_owner(TEJX_MAIN.to_string());
-        for stmt in &merged_statements {
+        for (index, stmt) in merged_statements.iter().enumerate() {
+            let file = merged_statement_files
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| default_file.clone());
+            *self.current_file.borrow_mut() = file;
             match stmt {
                 Statement::FunctionDeclaration(func) => {
                     if self.should_lower_function(func) {
@@ -797,78 +882,18 @@ impl Lowering {
                 .cloned()
                 .unwrap_or(TejxType::Void);
 
-            if main_is_async {
-                let main_call = HIRExpression::Call {
+            entry_body_stmts.push(HIRStatement::ExpressionStmt {
+                line: 0,
+                expr: HIRExpression::Call {
                     line: 0,
                     callee: "f_main".to_string(),
                     args: vec![],
-                    ty: TejxType::Int64,
-                };
-                entry_body_stmts.push(HIRStatement::ExpressionStmt {
-                    line: 0,
-                    expr: HIRExpression::Call {
-                        line: 0,
-                        callee: "rt_await".to_string(),
-                        args: vec![main_call],
-                        ty: TejxType::Int64,
-                    },
-                });
-            } else {
-                entry_body_stmts.push(HIRStatement::ExpressionStmt {
-                    line: 0,
-                    expr: HIRExpression::Call {
-                        line: 0,
-                        callee: "f_main".to_string(),
-                        args: vec![],
-                        ty: main_ret_ty,
-                    },
-                });
-            }
+                    ty: main_ret_ty,
+                },
+            });
         }
 
-        // Finalize entry point: Run event loop (moved to runtime.rs)
-        // entry_body_stmts.push(HIRStatement::ExpressionStmt { line: line,
-        //     expr: HIRExpression::Call { line: line,
-        //         callee: TEJX_RUN_EVENT_LOOP.to_string(),
-        //         args: vec![],
-        //         ty: TejxType::Void,
-        //     }
-        // });
-        // entry_body_stmts.push(HIRStatement::Return { line: line,  value: Some(HIRExpression::Literal { line: line,  value: "0".to_string(), ty: TejxType::Int32 }) });
-
-        // Create the actual entry point function
         functions.push(HIRStatement::Function {
-            name: "f_async_add".to_string(),
-            async_params: None,
-            params: vec![
-                ("a".to_string(), TejxType::Int32),
-                ("b".to_string(), TejxType::Int32),
-            ],
-            _return_type: TejxType::Int64,
-            body: Box::new(HIRStatement::Block {
-                line: 0,
-                statements: vec![],
-            }),
-            is_extern: false,
-            line: 0,
-        });
-        functions.push(HIRStatement::Function {
-            name: "rt_main_async_worker".to_string(),
-            params: vec![(
-                "ctx".to_string(),
-                TejxType::DynamicArray(Box::new(TejxType::Int64)),
-            )],
-            _return_type: TejxType::Void,
-            body: Box::new(HIRStatement::Block {
-                line: 0,
-                statements: vec![],
-            }),
-            is_extern: false,
-            async_params: None,
-            line: 0,
-        });
-        functions.push(HIRStatement::Function {
-            async_params: None,
             line,
             name: TEJX_MAIN.to_string(),
             params: vec![],
@@ -915,15 +940,7 @@ impl Lowering {
             RT_MOVE_MEMBER.to_string(),
             vec![TejxType::Int64, TejxType::Int32],
         );
-        signatures.insert(
-            TEJX_ENQUEUE_TASK.to_string(),
-            vec![TejxType::Int64, TejxType::Int64],
-        );
-        signatures.insert(TEJX_INC_ASYNC_OPS.to_string(), vec![]);
-        signatures.insert(TEJX_DEC_ASYNC_OPS.to_string(), vec![]);
-        signatures.insert(TEJX_RUN_EVENT_LOOP.to_string(), vec![]);
-        signatures.insert("rt_sleep".to_string(), vec![TejxType::Int64]);
-        signatures.insert("rt_await".to_string(), vec![TejxType::Int64]);
+
         signatures.insert(
             "__optional_chain".to_string(),
             vec![TejxType::Int64, TejxType::Int64],
@@ -995,6 +1012,10 @@ impl Lowering {
             }
         }
 
+        self.function_source_files
+            .borrow_mut()
+            .insert(crate::common::intrinsics::TEJX_MAIN.to_string(), default_file.clone());
+
         LoweringResult {
             functions,
             signatures,
@@ -1003,6 +1024,8 @@ impl Lowering {
             class_methods: self.class_methods.borrow().clone(),
             class_parents: self.class_parents.borrow().clone(),
             function_display_names: self.function_display_names.borrow().clone(),
+            class_display_names: self.class_display_names.borrow().clone(),
+            function_source_files: self.function_source_files.borrow().clone(),
         }
     }
 }

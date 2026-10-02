@@ -1,4 +1,26 @@
 use super::*; // Extracted \n
+use std::collections::HashSet;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+static LIVE_ATOMICS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
+pub unsafe fn register_atomic(ptr: *mut AtomicI64) -> i64 {
+    let addr = ptr as usize;
+    if let Ok(mut set) = LIVE_ATOMICS.lock() {
+        set.insert(addr);
+    }
+    addr as i64
+}
+
+pub unsafe fn unregister_atomic(addr: usize) -> bool {
+    if let Ok(mut set) = LIVE_ATOMICS.lock() {
+        set.remove(&addr)
+    } else {
+        false
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_Atomic_constructor(this: i64, val: i64) {
     let ptr = rt_obj_ptr(this);
@@ -7,7 +29,7 @@ pub unsafe extern "C" fn rt_Atomic_constructor(this: i64, val: i64) {
     }
     rt_ensure_type_finalizer(this, rt_atomic_object_finalizer);
     let atom = Box::new(AtomicI64::new(val));
-    *ptr.offset(0) = Box::into_raw(atom) as i64;
+    *ptr.offset(0) = register_atomic(Box::into_raw(atom));
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_Atomic_add(this: i64, val: i64) -> i64 {

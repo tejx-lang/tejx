@@ -1,0 +1,93 @@
+// Test Suite: Enums and Type Aliases in TejX
+// ==========================================
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+enum HttpStatus {
+    Ok = 200,
+    Created = 201,
+    BadRequest = 400,
+    NotFound = 404
+}
+
+type Counter = int;
+type Name = string;
+type Coordinate = { x: int, y: int };
+type BinaryOp = (a: int, b: int) => int;
+
+function add(a: int, b: int): int {
+    return a + b;
+}
+
+function multiply(a: int, b: int): int {
+    return a * b;
+}
+
+function applyOp(op: BinaryOp, x: int, y: int): int {
+    return op(x, y);
+}
+
+function test_enums() {
+    print("--- Testing Enums ---");
+
+    let c1 = Color.Red;
+    let c2 = Color.Green;
+    let c3 = Color.Blue;
+
+    assert_true(c1 == Color.Red, "Color.Red equality");
+    assert_false(c1 == Color.Green, "Color.Red != Color.Green");
+
+    let s1 = HttpStatus.Ok;
+    let s2 = HttpStatus.NotFound;
+
+    assert_true(s1 == HttpStatus.Ok, "HttpStatus.Ok equality");
+    assert_false(s1 == s2, "Ok != NotFound");
+
+    // Using enum in switch
+    let statusMsg = "";
+    switch (s1) {
+        case HttpStatus.Ok:
+            statusMsg = "SUCCESS";
+            break;
+        case HttpStatus.NotFound:
+            statusMsg = "NOT_FOUND";
+            break;
+        default:
+            statusMsg = "UNKNOWN";
+            break;
+    }
+    assert_eq_string("SUCCESS", statusMsg, "Switch on enum HttpStatus.Ok");
+}
+
+function test_type_aliases() {
+    print("--- Testing Type Aliases ---");
+
+    let c: Counter = 100;
+    assert_eq_int(100, c, "Counter type alias");
+
+    let n: Name = "TejX";
+    assert_eq_string("TejX", n, "Name type alias");
+
+    let pt: Coordinate = { x: 15, y: 25 };
+    assert_eq_int(15, pt.x, "Coordinate.x");
+    assert_eq_int(25, pt.y, "Coordinate.y");
+
+    let sum = applyOp(add, 10, 20);
+    assert_eq_int(30, sum, "BinaryOp add alias");
+
+    let prod = applyOp(multiply, 5, 6);
+    assert_eq_int(30, prod, "BinaryOp multiply alias");
+}
+
+function main() {
+    print("=== ENUMS AND TYPE ALIASES TEST START ===");
+    test_enums();
+    test_type_aliases();
+    print("=== ENUMS AND TYPE ALIASES TEST COMPLETE ===");
+}

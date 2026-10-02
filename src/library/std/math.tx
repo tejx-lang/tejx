@@ -2,3 +2,76 @@ import "./math/constants.tx";
 import "./math/basic.tx";
 import "./math/trig.tx";
 import "./math/random.tx";
+
+export namespace math {
+    export function pi(): float { return pi(); }
+    export function tau(): float { return tau(); }
+    export function e(): float { return e(); }
+    export function PI(): float { return 3.141592653589793; }
+    export function TAU(): float { return 6.283185307179586; }
+    export function E(): float { return 2.718281828459045; }
+
+    export function abs(x: float): float { return abs(x); }
+    export function min(a: float, b: float): float { return min(a, b); }
+    export function max(a: float, b: float): float { return max(a, b); }
+    export function clamp(v: float, lo: float, hi: float): float { return clamp(v, lo, hi); }
+    export function sign(v: float): int { return sign(v); }
+    export function lerp(start: float, end: float, amount: float): float { return lerp(start, end, amount); }
+    export function trunc(x: float): float { return trunc(x); }
+    export function floor(x: float): float { return floor(x); }
+    export function ceil(x: float): float { return ceil(x); }
+    export function round(x: float): float { return round(x); }
+    export function sqrt(x: float): float { return sqrt(x); }
+    export function exp(x: float): float { return exp(x); }
+    export function ln(x: float): float { return ln(x); }
+    export function pow(base: float, exponent: float): float { return pow(base, exponent); }
+    export function powi(base: float, exponent: int): float { return powi(base, exponent); }
+
+    export function sin(x: float): float { return sin(x); }
+    export function cos(x: float): float { return cos(x); }
+    export function tan(x: float): float { return tan(x); }
+    export function asin(x: float): float { return asin(x); }
+    export function acos(x: float): float { return acos(x); }
+    export function atan(x: float): float { return atan(x); }
+
+    export function seedRandom(seed: int64): void { seedRandom(seed); }
+    export function random(): float { return random(); }
+    export function randomInt(lower: int, upper: int): int { return randomInt(lower, upper); }
+}
+
+export class Math {
+    static pi(): float { return pi(); }
+    static tau(): float { return tau(); }
+    static e(): float { return e(); }
+    static PI(): float { return 3.141592653589793; }
+    static TAU(): float { return 6.283185307179586; }
+    static E(): float { return 2.718281828459045; }
+
+    static abs(x: float): float { return abs(x); }
+    static min(a: float, b: float): float { return min(a, b); }
+    static max(a: float, b: float): float { return max(a, b); }
+    static clamp(v: float, lo: float, hi: float): float { return clamp(v, lo, hi); }
+    static sign(v: float): int { return sign(v); }
+    static lerp(start: float, end: float, amount: float): float { return lerp(start, end, amount); }
+    static trunc(x: float): float { return trunc(x); }
+    static floor(x: float): float { return floor(x); }
+    static ceil(x: float): float { return ceil(x); }
+    static round(x: float): float { return round(x); }
+    static sqrt(x: float): float { return sqrt(x); }
+    static exp(x: float): float { return exp(x); }
+    static ln(x: float): float { return ln(x); }
+    static pow(base: float, exponent: float): float { return pow(base, exponent); }
+    static powi(base: float, exponent: int): float { return powi(base, exponent); }
+
+    static sin(x: float): float { return sin(x); }
+    static cos(x: float): float { return cos(x); }
+    static tan(x: float): float { return tan(x); }
+    static asin(x: float): float { return asin(x); }
+    static acos(x: float): float { return acos(x); }
+    static atan(x: float): float { return atan(x); }
+
+    static seedRandom(seed: int64): void { seedRandom(seed); }
+    static random(): float { return random(); }
+    static randomInt(lower: int, upper: int): int { return randomInt(lower, upper); }
+}
+

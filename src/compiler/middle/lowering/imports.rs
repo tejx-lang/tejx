@@ -115,15 +115,17 @@ impl Lowering {
         } else if !is_default && !import_items.is_empty() {
             for item in import_items {
                 if !exported_names.contains(&item.name) {
-                    self.diagnostics.borrow_mut().push(
-                        Diagnostic::new(
-                            format!("'{}' is not exported from '{}'", item.name, source_str),
-                            import_line,
-                            import_col,
-                            filename.to_string(),
-                        )
-                        .with_code("E0202"),
-                    );
+                    let mut diag = Diagnostic::new(
+                        format!("'{}' is not exported from '{}'", item.name, source_str),
+                        import_line,
+                        import_col,
+                        filename.to_string(),
+                    )
+                    .with_code("E0202");
+                    if let Some(best) = crate::common::diagnostics::find_best_match_str(&item.name, exported_names) {
+                        diag = diag.with_hint(&format!("Did you mean '{}'?", best));
+                    }
+                    self.diagnostics.borrow_mut().push(diag);
                 }
             }
         }
@@ -294,7 +296,7 @@ impl Lowering {
                 let is_default = *_is_default;
                 let source_str = source.clone();
 
-                let path = if let Some(mod_name) = source_str.strip_prefix("std:") {
+                let mut path = if let Some(mod_name) = source_str.strip_prefix("std:") {
                     let base = self.stdlib_path.borrow().clone();
                     // Search strictly in lib/std/
                     base.join(STD_DIR).join(format!("{}.tx", mod_name))
@@ -312,17 +314,55 @@ impl Lowering {
                     p
                 };
 
+                if !path.exists()
+                    && !source_str.starts_with("std:")
+                    && !source_str.starts_with("./")
+                    && !source_str.starts_with("../")
+                {
+                    let clean_source = source_str.trim_matches('"');
+                    let mut sub_p = std::path::PathBuf::from(clean_source);
+                    if !sub_p.to_string_lossy().ends_with(".tx") {
+                        sub_p.set_extension("tx");
+                    }
+                    for inc_dir in self.include_dirs.borrow().iter() {
+                        let candidate = inc_dir.join(&sub_p);
+                        if candidate.exists() {
+                            path = candidate;
+                            break;
+                        }
+                    }
+                }
+
                 if !path.exists() {
-                    self.diagnostics.borrow_mut().push(
-                        Diagnostic::new(
-                            format!("Module not found: '{}'", source_str),
-                            import_line,
-                            import_col,
-                            filename.clone(),
-                        )
-                        .with_code("E0200")
-                        .with_label(&format!("Module not found: '{}'", source_str)),
-                    );
+                    let hint = if source_str.starts_with("std:") {
+                        let mod_name = source_str.trim_start_matches("std:");
+                        let known_std = [
+                            "binary", "collections", "crypto", "dns", "fs", "gc", "http",
+                            "json", "math", "net", "runtime", "system", "thread", "time", "url",
+                        ];
+                        if let Some(best) = crate::common::diagnostics::find_best_match(mod_name, known_std.iter().copied()) {
+                            Some(format!("Did you mean 'std:{}'?", best))
+                        } else {
+                            Some(format!("Available standard modules include: {}", known_std.join(", ")))
+                        }
+                    } else {
+                        Some(format!("Ensure the file '{}' exists relative to this file or in an include path", source_str))
+                    };
+
+                    let mut diag = Diagnostic::new(
+                        format!("Module not found: '{}'", source_str),
+                        import_line,
+                        import_col,
+                        filename.clone(),
+                    )
+                    .with_code("E0200")
+                    .with_label(&format!("Module not found: '{}'", source_str));
+
+                    if let Some(h) = hint {
+                        diag = diag.with_hint(&h);
+                    }
+
+                    self.diagnostics.borrow_mut().push(diag);
                     i += 1;
                     continue;
                 }

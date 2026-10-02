@@ -1,0 +1,184 @@
+// Production-Grade Test Suite: Composite and Structural Types
+// ===========================================================
+// Thoroughly exercises:
+// - Dynamic Arrays (push, pop, shift, unshift, slice, reverse, sort, length)
+// - Multi-dimensional Arrays (2D, 3D, matrix multiplication, jagged arrays)
+// - Fixed-size Arrays (stack-allocated / fixed capacity)
+// - Array Spread ([...a, ...b])
+// - Anonymous Objects / Structs (property read, write, nested objects)
+// - Optionals (Optional<T>, None, safe narrowing)
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function test_dynamic_arrays() {
+    print("--- Testing Dynamic Arrays ---");
+
+    let arr: int[] = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
+    assert_eq_int(10, arr.length(), "Initial array length is 10");
+    assert_eq_int(0, arr[0], "First element is 0");
+    assert_eq_int(90, arr[9], "Last element is 90");
+
+    // Element mutation
+    arr[5] = 999;
+    assert_eq_int(999, arr[5], "Direct index assignment");
+
+    // Pop operation
+    let popped = arr.pop();
+    assert_eq_int(90, popped, "Popped value");
+    assert_eq_int(9, arr.length(), "Length after pop");
+
+    // Shift operation
+    let shifted = arr.shift();
+    assert_eq_int(0, shifted, "Shifted value");
+    assert_eq_int(8, arr.length(), "Length after shift");
+    assert_eq_int(10, arr[0], "New first element after shift");
+
+    // Unshift operation
+    arr.unshift(42);
+    assert_eq_int(9, arr.length(), "Length after unshift");
+    assert_eq_int(42, arr[0], "First element after unshift is 42");
+
+    // Reverse
+    let rev_arr: int[] = [1, 2, 3, 4, 5];
+    let reversed_res: int[] = reverse<int>(rev_arr);
+    assert_eq_int(5, reversed_res[0], "Reversed[0] == 5");
+    assert_eq_int(4, reversed_res[1], "Reversed[1] == 4");
+    assert_eq_int(3, reversed_res[2], "Reversed[2] == 3");
+    assert_eq_int(2, reversed_res[3], "Reversed[3] == 2");
+    assert_eq_int(1, reversed_res[4], "Reversed[4] == 1");
+
+    // Sort
+    let unsorted: int[] = [50, 10, 40, 20, 30];
+    unsorted.sort();
+    assert_eq_int(10, unsorted[0], "Sorted[0] == 10");
+    assert_eq_int(20, unsorted[1], "Sorted[1] == 20");
+    assert_eq_int(30, unsorted[2], "Sorted[2] == 30");
+    assert_eq_int(40, unsorted[3], "Sorted[3] == 40");
+    assert_eq_int(50, unsorted[4], "Sorted[4] == 50");
+}
+
+function test_multidimensional_arrays() {
+    print("--- Testing Multi-Dimensional Arrays ---");
+
+    // 2D Array: 3x3 Matrix
+    let matrix: int[][] = [];
+    for (let r = 0; r < 3; r++) {
+        let row: int[] = [];
+        for (let c = 0; c < 3; c++) {
+            row.push(r * 3 + c);
+        }
+        matrix.push(row);
+    }
+
+    assert_eq_int(3, matrix.length(), "Matrix rows count");
+    assert_eq_int(3, matrix[0].length(), "Matrix cols count");
+    assert_eq_int(0, matrix[0][0], "matrix[0][0] == 0");
+    assert_eq_int(4, matrix[1][1], "matrix[1][1] == 4");
+    assert_eq_int(8, matrix[2][2], "matrix[2][2] == 8");
+
+    // Jagged Array (triangle)
+    let triangle: int[][] = [];
+    for (let i = 1; i <= 5; i++) {
+        let row: int[] = [];
+        for (let j = 0; j < i; j++) {
+            row.push(j + 1);
+        }
+        triangle.push(row);
+    }
+    assert_eq_int(5, triangle.length(), "Triangle height");
+    assert_eq_int(1, triangle[0].length(), "Row 0 length");
+    assert_eq_int(3, triangle[2].length(), "Row 2 length");
+    assert_eq_int(5, triangle[4].length(), "Row 4 length");
+    assert_eq_int(3, triangle[2][2], "Row 2 last element");
+}
+
+function test_array_spread() {
+    print("--- Testing Array Spread ---");
+
+    let first: int[] = [1, 2, 3];
+    let second: int[] = [4, 5, 6];
+    let combined: int[] = [...first, ...second];
+
+    assert_eq_int(6, combined.length(), "Combined spread length");
+    assert_eq_int(1, combined[0], "combined[0]");
+    assert_eq_int(2, combined[1], "combined[1]");
+    assert_eq_int(3, combined[2], "combined[2]");
+    assert_eq_int(4, combined[3], "combined[3]");
+    assert_eq_int(5, combined[4], "combined[4]");
+    assert_eq_int(6, combined[5], "combined[5]");
+}
+
+function test_anonymous_objects() {
+    print("--- Testing Anonymous Structs / Objects ---");
+
+    let user = {
+        id: 1001,
+        username: "developer",
+        active: true
+    };
+
+    assert_eq_int(1001, user.id, "User ID");
+    assert_eq_string("developer", user.username, "Username");
+    assert_true(user.active, "User is active");
+
+    // Mutation
+    user.active = false;
+    assert_false(user.active, "User mutated to inactive");
+
+    // Nested Object
+    let company = {
+        name: "Acme Corp",
+        address: {
+            city: "Metropolis",
+            zipCode: 12345
+        }
+    };
+
+    assert_eq_string("Acme Corp", company.name, "Company name");
+    assert_eq_string("Metropolis", company.address.city, "Company city");
+    assert_eq_int(12345, company.address.zipCode, "Company zip");
+}
+
+class BoxNode {
+    value: int;
+    next: Optional<BoxNode> = None;
+    constructor(value: int) {
+        this.value = value;
+    }
+}
+
+function test_optionals() {
+    print("--- Testing Optionals ---");
+
+    let opt_num: Optional<int> = None;
+    assert_true(opt_num == None, "Optional initially None");
+
+    opt_num = 42;
+    assert_true(opt_num != None, "Optional is not None after assignment");
+    if (opt_num != None) {
+        assert_eq_int(42, opt_num, "Unwrapped optional value");
+    }
+
+    // Optional Class reference
+    let node1 = new BoxNode(10);
+    let node2 = new BoxNode(20);
+    node1.next = node2;
+
+    assert_true(node1.next != None, "node1.next is Some");
+    assert_true(node2.next == None, "node2.next is None");
+
+    let nextNode = node1.next;
+    if (nextNode != None) {
+        assert_eq_int(20, nextNode.value, "node2 value via nextNode");
+    }
+}
+
+function main() {
+    print("=== COMPOSITE TYPES TESTS START ===");
+    test_dynamic_arrays();
+    test_multidimensional_arrays();
+    test_array_spread();
+    test_anonymous_objects();
+    test_optionals();
+    print("=== COMPOSITE TYPES TESTS COMPLETE ===");
+}

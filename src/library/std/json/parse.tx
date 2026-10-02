@@ -1,31 +1,38 @@
-function _json_parse(s: string): any {
-    let index = 0;
-    let len = s.length();
+class JsonParser {
+    s: string;
+    index: int;
+    len: int;
 
-    function skipWhitespace() {
-        while (index < len) {
-            let ch = s[index];
+    constructor(s: string) {
+        this.s = s;
+        this.index = 0;
+        this.len = s.length();
+    }
+
+    skipWhitespace() {
+        while (this.index < this.len) {
+            let ch = this.s[this.index];
             if (ch == " " || ch == "\n" || ch == "\t" || ch == "\r") {
-                index++;
+                this.index++;
             } else {
                 break;
             }
         }
     }
 
-    function parseString(): string {
-        index++;
+    parseString(): string {
+        this.index++;
         let res = "";
-        while (index < len) {
-            let ch = s[index];
+        while (this.index < this.len) {
+            let ch = this.s[this.index];
             if (ch == "\"") {
-                index++;
+                this.index++;
                 return res;
             }
             if (ch == "\\") {
-                index++;
-                if (index < len) {
-                    let esc = s[index];
+                this.index++;
+                if (this.index < this.len) {
+                    let esc = this.s[this.index];
                     if (esc == "\"") res = res + "\"";
                     else if (esc == "\\") res = res + "\\";
                     else if (esc == "/") res = res + "/";
@@ -39,50 +46,50 @@ function _json_parse(s: string): any {
             } else {
                 res = res + ch;
             }
-            index++;
+            this.index++;
         }
         throw new Error("SyntaxError: Unterminated string in JSON");
     }
 
-    function parseNumber(): float {
-        let start = index;
-        if (index < len && s[index] == "-") index++;
+    parseNumber(): float {
+        let start = this.index;
+        if (this.index < this.len && this.s[this.index] == "-") this.index++;
 
-        while (index < len) {
-            let ch = s[index];
+        while (this.index < this.len) {
+            let ch = this.s[this.index];
             if ((ch >= "0" && ch <= "9") || ch == "." || ch == "e" || ch == "E" || ch == "+" || ch == "-") {
-                index++;
+                this.index++;
             } else {
                 break;
             }
         }
 
-        if (start == index) throw new Error("SyntaxError: Expected number");
+        if (start == this.index) throw new Error("SyntaxError: Expected number");
 
-        let numStr = s.substring(start, index);
-        return parseFloat(numStr);
+        let numStr = this.s.substring(start, this.index);
+        return Number.Float(numStr);
     }
 
-    function parseArray(): any[] {
-        index++;
+    parseArray(): any[] {
+        this.index++;
         let res: any[] = [];
-        skipWhitespace();
+        this.skipWhitespace();
 
-        if (index < len && s[index] == "]") {
-            index++;
+        if (this.index < this.len && this.s[this.index] == "]") {
+            this.index++;
             return res;
         }
 
-        while (index < len) {
-            let item: any = parseValue();
+        while (this.index < this.len) {
+            let item: any = this.parseValue();
             res.push(item);
-            skipWhitespace();
+            this.skipWhitespace();
 
-            let ch = s[index];
+            let ch = this.s[this.index];
             if (ch == ",") {
-                index++;
+                this.index++;
             } else if (ch == "]") {
-                index++;
+                this.index++;
                 return res;
             } else {
                 throw new Error("SyntaxError: Expected ',' or ']' after array element");
@@ -92,35 +99,35 @@ function _json_parse(s: string): any {
         throw new Error("SyntaxError: Unterminated array");
     }
 
-    function parseObject(): any {
-        index++;
+    parseObject(): any {
+        this.index++;
         let res: any = {};
-        skipWhitespace();
+        this.skipWhitespace();
 
-        if (index < len && s[index] == "}") {
-            index++;
+        if (this.index < this.len && this.s[this.index] == "}") {
+            this.index++;
             return res;
         }
 
-        while (index < len) {
-            skipWhitespace();
-            if (s[index] != "\"") throw new Error("SyntaxError: Expected string key in object");
+        while (this.index < this.len) {
+            this.skipWhitespace();
+            if (this.s[this.index] != "\"") throw new Error("SyntaxError: Expected string key in object");
 
-            let key = parseString();
-            skipWhitespace();
+            let key = this.parseString();
+            this.skipWhitespace();
 
-            if (s[index] != ":") throw new Error("SyntaxError: Expected ':' after property key");
-            index++;
+            if (this.s[this.index] != ":") throw new Error("SyntaxError: Expected ':' after property key");
+            this.index++;
 
-            let val: any = parseValue();
+            let val: any = this.parseValue();
             res[key] = val;
 
-            skipWhitespace();
-            let ch = s[index];
+            this.skipWhitespace();
+            let ch = this.s[this.index];
             if (ch == ",") {
-                index++;
+                this.index++;
             } else if (ch == "}") {
-                index++;
+                this.index++;
                 return res;
             } else {
                 throw new Error("SyntaxError: Expected ',' or '}' after property value");
@@ -130,37 +137,43 @@ function _json_parse(s: string): any {
         throw new Error("SyntaxError: Unterminated object");
     }
 
-    function parseLiteral(word: string, returnValue: any): any {
+    parseLiteral(word: string, returnValue: any): any {
         let wordLen = word.length();
-        let slice = s.substring(index, index + wordLen);
+        let slice = this.s.substring(this.index, this.index + wordLen);
         if (slice == word) {
-            index = index + wordLen;
+            this.index = this.index + wordLen;
             return returnValue;
         }
-        throw new Error("SyntaxError: Unexpected token at index " + rt_to_string(index));
+        throw new Error("SyntaxError: Unexpected token at index " + rt_to_string(this.index));
     }
 
-    function parseValue(): any {
-        skipWhitespace();
-        if (index >= len) throw new Error("SyntaxError: Unexpected end of JSON input");
+    parseValue(): any {
+        this.skipWhitespace();
+        if (this.index >= this.len) throw new Error("SyntaxError: Unexpected end of JSON input");
 
-        let ch = s[index];
-        if (ch == "{") return parseObject();
-        if (ch == "[") return parseArray();
-        if (ch == "\"") return parseString();
-        if (ch == "t") return parseLiteral("true", true);
-        if (ch == "f") return parseLiteral("false", false);
-        if (ch == "n") return parseLiteral("null", None);
-        if ((ch >= "0" && ch <= "9") || ch == "-") return parseNumber();
+        let ch = this.s[this.index];
+        if (ch == "{") return this.parseObject();
+        if (ch == "[") return this.parseArray();
+        if (ch == "\"") return this.parseString();
+        if (ch == "t") return this.parseLiteral("true", true);
+        if (ch == "f") return this.parseLiteral("false", false);
+        if (ch == "n") return this.parseLiteral("null", None);
+        if ((ch >= "0" && ch <= "9") || ch == "-") return this.parseNumber();
 
         throw new Error("SyntaxError: Unexpected token '" + ch + "'");
     }
 
-    let result: any = parseValue();
-    skipWhitespace();
-    if (index < len) {
-        throw new Error("SyntaxError: Unexpected data after JSON payload");
+    parse(): any {
+        let result: any = this.parseValue();
+        this.skipWhitespace();
+        if (this.index < this.len) {
+            throw new Error("SyntaxError: Unexpected data after JSON payload");
+        }
+        return result;
     }
+}
 
-    return result;
+function _json_parse(s: string): any {
+    let parser = new JsonParser(s);
+    return parser.parse();
 }

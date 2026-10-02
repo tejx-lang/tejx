@@ -91,6 +91,7 @@ impl CodeGen {
         casted
     }
 
+
     pub(crate) fn emit_strip_heap_offset(&mut self, val: &str) -> String {
         // Handle management offsets (HEAP_OFFSET or STACK_OFFSET)
         self.temp_counter += 1;
@@ -98,31 +99,13 @@ impl CodeGen {
         self.temp_counter += 1;
         let is_stack = format!("%is_stack_{}", self.temp_counter);
 
-        if !self.declared_functions.contains("HEAP_OFFSET_GLOBAL") {
-            self.global_buffer
-                .push_str("@HEAP_OFFSET = external global i64\n");
-            self.declared_functions
-                .insert("HEAP_OFFSET_GLOBAL".to_string());
-        }
-        if !self.declared_functions.contains("STACK_OFFSET_GLOBAL") {
-            self.global_buffer
-                .push_str("@STACK_OFFSET = external global i64\n");
-            self.declared_functions
-                .insert("STACK_OFFSET_GLOBAL".to_string());
-        }
+        const HEAP_OFFSET_CONST: i64 = 1i64 << 50;
+        const STACK_OFFSET_CONST: i64 = 1i64 << 48;
 
-        self.temp_counter += 1;
-        let h_offset = format!("%h_offset_{}", self.temp_counter);
-        self.emit_line(&format!("{} = load i64, i64* @HEAP_OFFSET", h_offset));
-
-        self.temp_counter += 1;
-        let s_offset = format!("%s_offset_{}", self.temp_counter);
-        self.emit_line(&format!("{} = load i64, i64* @STACK_OFFSET", s_offset));
-
-        self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, val, h_offset));
+        self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, val, HEAP_OFFSET_CONST));
         self.emit_line(&format!(
             "{} = icmp uge i64 {}, {}",
-            is_stack, val, s_offset
+            is_stack, val, STACK_OFFSET_CONST
         ));
 
         self.temp_counter += 1;
@@ -130,7 +113,7 @@ impl CodeGen {
         // Prioritize HEAP_OFFSET if both are true (since HEAP_OFFSET > STACK_OFFSET)
         self.emit_line(&format!(
             "{} = select i1 {}, i64 {}, i64 {}",
-            sub_val, is_heap, h_offset, s_offset
+            sub_val, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST
         ));
 
         self.temp_counter += 1;
@@ -171,9 +154,14 @@ impl CodeGen {
         } else {
             ""
         };
+        let alias_meta = if ptr.starts_with('%') && !self.volatile_locals {
+            ", !alias.scope !4, !noalias !3"
+        } else {
+            ""
+        };
         self.buffer.push_str(&format!(
-            "  store{} {} {}, {}* {}\n",
-            volatile_kw, llvm_ty, val, llvm_ty, ptr
+            "  store{} {} {}, {}* {}{}\n",
+            volatile_kw, llvm_ty, val, llvm_ty, ptr, alias_meta
         ));
     }
 
@@ -184,9 +172,14 @@ impl CodeGen {
         } else {
             ""
         };
+        let alias_meta = if ptr.starts_with('%') && !self.volatile_locals {
+            ", !alias.scope !4, !noalias !3"
+        } else {
+            ""
+        };
         self.buffer.push_str(&format!(
-            "  {} = load{} {}, {}* {}\n",
-            dest_reg, volatile_kw, llvm_ty, llvm_ty, ptr
+            "  {} = load{} {}, {}* {}{}\n",
+            dest_reg, volatile_kw, llvm_ty, llvm_ty, ptr, alias_meta
         ));
     }
 
@@ -224,6 +217,17 @@ impl CodeGen {
                 char_val, val_name
             ));
             return char_val;
+        }
+
+        if matches!(src_ty, TejxType::Char) && matches!(dst_ty, TejxType::String) {
+            self.declare_runtime_fn("rt_to_string_char", "i64 @rt_to_string_char(i32)");
+            self.temp_counter += 1;
+            let str_val = format!("%char_to_str_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_to_string_char(i32 {})",
+                str_val, val_name
+            ));
+            return str_val;
         }
 
         if dst_is_any && matches!(src_ty, TejxType::String) && val_name.starts_with("ptrtoint") {
@@ -414,7 +418,11 @@ impl CodeGen {
             | ("i32", "i64")
             | ("i32", "i128")
             | ("i64", "i128") => {
-                let ext_op = if src_ty.is_unsigned_integer() { "zext" } else { "sext" };
+                let ext_op = if src_ty.is_unsigned_integer() {
+                    "zext"
+                } else {
+                    "sext"
+                };
                 if dst_llvm == "i64" && matches!(dst_ty, TejxType::Any) {
                     // Primitive -> Any: Use raw bit pattern (unboxed).
                     // Small integers are kept as-is; heuristic in runtime handles this.
@@ -450,7 +458,7 @@ impl CodeGen {
                 }
             }
             ("double", "i64") => {
-                if src_ty.is_float() && (dst_ty.is_numeric() || matches!(dst_ty, TejxType::Any)) {
+                if src_ty.is_float() && matches!(dst_ty, TejxType::Any) {
                     self.emit_line(&format!(
                         "{} = bitcast double {} to i64",
                         cast_reg, val_name
@@ -470,7 +478,10 @@ impl CodeGen {
                 } else {
                     "fptosi"
                 };
-                self.emit_line(&format!("{} = {} double {} to i128", cast_reg, op, val_name));
+                self.emit_line(&format!(
+                    "{} = {} double {} to i128",
+                    cast_reg, op, val_name
+                ));
             }
             ("i64", "double") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
@@ -493,7 +504,10 @@ impl CodeGen {
                 } else {
                     "sitofp"
                 };
-                self.emit_line(&format!("{} = {} i128 {} to double", cast_reg, op, val_name));
+                self.emit_line(&format!(
+                    "{} = {} i128 {} to double",
+                    cast_reg, op, val_name
+                ));
             }
             ("i64", "float") => {
                 if src_ty.is_float() || matches!(src_ty, TejxType::Any) {
@@ -663,6 +677,17 @@ impl CodeGen {
         }
     }
 
+    pub(crate) fn emit_get_current_env(&mut self) -> Option<String> {
+        if let Some(alloca) = self.current_env.clone() {
+            self.temp_counter += 1;
+            let env_reg = format!("%env_reloaded_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i64, i64* {}", env_reg, alloca));
+            Some(env_reg)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn resolve_value(&mut self, val: &MIRValue) -> String {
         match val {
             MIRValue::Constant { value, ty } => {
@@ -720,6 +745,47 @@ impl CodeGen {
                         "i64 @rt_array_set_fast(i64, i64, i64)",
                     );
 
+                    // A lambda expression can run repeatedly (for example in a server accept
+                    // loop), so it must receive a new environment on every evaluation. Reusing
+                    // the parent's environment makes concurrently-running closures overwrite
+                    // each other's captured values.
+                    self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");
+                    self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
+                    self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
+                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
+
+                    let capture_count = self.captured_vars.len();
+                    self.temp_counter += 1;
+                    let fresh_env = format!("%closure_env{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = call i64 @rt_array_new(i64 {}, i64 8)",
+                        fresh_env, capture_count
+                    ));
+
+                    // rt_closure_from_ptr allocates, so root the snapshot until it has been
+                    // attached to the new closure.
+                    self.temp_counter += 1;
+                    let env_root = format!("%closure_env_root{}", self.temp_counter);
+                    self.alloca_buffer
+                        .push_str(&format!("  {} = alloca i64\n", env_root));
+                    self.emit_line(&format!("store i64 {}, i64* {}", fresh_env, env_root));
+                    self.emit_line(&format!("call void @rt_push_root(i64* {})", env_root));
+
+                    if let Some(parent_env) = self.emit_get_current_env() {
+                        for index in 0..capture_count {
+                            self.temp_counter += 1;
+                            let captured_value = format!("%closure_capture{}", self.temp_counter);
+                            self.emit_line(&format!(
+                                "{} = call i64 @rt_array_get_fast(i64 {}, i64 {})",
+                                captured_value, parent_env, index
+                            ));
+                            self.emit_line(&format!(
+                                "call i64 @rt_array_set_fast(i64 {}, i64 {}, i64 {})",
+                                fresh_env, index, captured_value
+                            ));
+                        }
+                    }
+
                     self.temp_counter += 1;
                     let closure_id = format!("%closure{}", self.temp_counter);
                     self.emit_line(&format!(
@@ -727,28 +793,19 @@ impl CodeGen {
                         closure_id, fn_ptr
                     ));
 
-                    // Set env (slot 1) — rt_closure_from_ptr already sets fn_ptr at slot 0
-                    let env_to_pass = if let Some(env) = self.current_env.clone() {
-                        env
-                    } else {
-                        // Create a fresh empty environment (array) if the parent doesn't have one
-                        self.declare_runtime_fn(
-                            "rt_Array_new_fixed",
-                            "i64 @rt_Array_new_fixed(i64, i64)",
-                        );
-                        self.temp_counter += 1;
-                        let fresh_env = format!("%fresh_env{}", self.temp_counter);
-                        self.emit_line(&format!(
-                            "{} = call i64 @rt_Array_new_fixed(i64 0, i64 8)",
-                            fresh_env
-                        ));
-                        fresh_env
-                    };
+                    // Reload fresh_env from env_root in case rt_closure_from_ptr triggered GC!
+                    self.temp_counter += 1;
+                    let env_to_pass = format!("%closure_env_reloaded{}", self.temp_counter);
+                    self.emit_line(&format!(
+                        "{} = load i64, i64* {}",
+                        env_to_pass, env_root
+                    ));
 
                     self.emit_line(&format!(
                         "call i64 @rt_array_set_fast(i64 {}, i64 1, i64 {})",
                         closure_id, env_to_pass
                     ));
+                    self.emit_line("call void @rt_pop_roots(i64 1)");
 
                     return closure_id;
                 }
@@ -785,7 +842,7 @@ impl CodeGen {
                     return "0.0".to_string();
                 }
 
-                if value == "null" {
+                if value == "null" && !matches!(ty, TejxType::String) {
                     return "0".to_string();
                 }
 
@@ -809,7 +866,7 @@ impl CodeGen {
             MIRValue::Variable { name, ty } => {
                 if name.starts_with("g_") {
                     self.temp_counter += 1;
-                    let tmp = format!("%t{}", self.temp_counter);
+                    let mut tmp = format!("%t{}", self.temp_counter);
                     if self.is_gc_global(name) {
                         let slot_name = Self::static_root_slot_name(name);
                         self.emit_line(&format!(
@@ -819,11 +876,16 @@ impl CodeGen {
                     } else {
                         self.emit_line(&format!("{} = load i64, i64* @{}", tmp, name));
                     }
+                    let expected_llvm = Self::get_llvm_type(ty);
+                    if expected_llvm != "i64" && expected_llvm != "void" {
+                        tmp = self.emit_abi_cast(&tmp, &TejxType::Int64, ty);
+                    }
                     return tmp;
                 }
+
                 if name == "__env" {
-                    if let Some(env) = &self.current_env {
-                        return env.clone();
+                    if let Some(env) = self.emit_get_current_env() {
+                        return env;
                     }
                     return "0".to_string();
                 }
@@ -832,7 +894,7 @@ impl CodeGen {
                     return name.to_string();
                 }
                 if let Some(cap_idx) = self.get_captured_index(name) {
-                    if let Some(env) = self.current_env.clone() {
+                    if let Some(env) = self.emit_get_current_env() {
                         self.declare_runtime_fn(
                             "rt_array_get_fast",
                             "i64 @rt_array_get_fast(i64, i64)",
@@ -947,7 +1009,7 @@ impl CodeGen {
                 // Should check globals here properly
                 if name.starts_with("g_") || self.declared_globals.contains(name) {
                     self.temp_counter += 1;
-                    let val_reg = format!("%gval_{}", self.temp_counter);
+                    let mut val_reg = format!("%gval_{}", self.temp_counter);
                     let g_name = Self::canonical_global_name(name);
                     if !self.declared_globals.contains(&g_name) {
                         self.global_buffer
@@ -962,6 +1024,10 @@ impl CodeGen {
                         ));
                     } else {
                         self.emit_line(&format!("{} = load i64, i64* @{}", val_reg, g_name));
+                    }
+                    let expected_llvm = Self::get_llvm_type(ty);
+                    if expected_llvm != "i64" && expected_llvm != "void" {
+                        val_reg = self.emit_abi_cast(&val_reg, &TejxType::Int64, ty);
                     }
                     return val_reg;
                 }
@@ -1061,7 +1127,7 @@ impl CodeGen {
         }
 
         if let Some(cap_idx) = self.get_captured_index(name) {
-            if let Some(env) = self.current_env.clone() {
+            if let Some(env) = self.emit_get_current_env() {
                 self.declare_runtime_fn(
                     "rt_array_set_fast",
                     "i64 @rt_array_set_fast(i64, i64, i64)",
@@ -1214,15 +1280,18 @@ impl CodeGen {
         if !self.current_function_tracks_location
             || line == 0
             || self.current_debug_line == Some(line)
-            || self.source_file.is_empty()
+            || self.current_function_source_file.is_empty()
         {
             return;
         }
 
         self.current_debug_line = Some(line);
-        self.declare_runtime_fn("rt_set_location", "void @rt_set_location(i64, i64) nounwind");
+        self.declare_runtime_fn(
+            "rt_set_location",
+            "void @rt_set_location(i64, i64) nounwind",
+        );
 
-        let source_file = self.source_file.clone();
+        let source_file = self.current_function_source_file.clone();
         let file_ptr = self.emit_string_constant(&source_file);
         self.emit_line(&format!(
             "call void @rt_set_location(i64 {}, i64 {})",
@@ -1231,11 +1300,14 @@ impl CodeGen {
     }
 
     pub(crate) fn runtime_location_args(&mut self, line: usize) -> Option<(String, usize)> {
-        if !self.current_function_tracks_location || line == 0 || self.source_file.is_empty() {
+        if !self.current_function_tracks_location
+            || line == 0
+            || self.current_function_source_file.is_empty()
+        {
             return None;
         }
 
-        let source_file = self.source_file.clone();
+        let source_file = self.current_function_source_file.clone();
         let file_ptr = self.emit_string_constant(&source_file);
         Some((file_ptr, line))
     }

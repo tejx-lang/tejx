@@ -1,0 +1,411 @@
+// Graph Algorithms Suite — Real-World Data Structure Test
+// ========================================================
+// Comprehensive graph test: adjacency list representation, DFS, BFS,
+// topological sort, cycle detection, connected components.
+// Tests recursive traversal, complex object graphs, and GC under
+// heavy reference manipulation.
+
+import { collect } from "std:gc";
+
+// --- Graph Node ---
+class GraphNode {
+    id: int;
+    label: string;
+    neighbors: int[]; // adjacency list (indices into graph)
+    visited: bool;
+    component: int;
+
+    constructor(id: int, label: string) {
+        this.id = id;
+        this.label = label;
+        this.neighbors = [];
+        this.visited = false;
+        this.component = -1;
+    }
+
+    addEdge(to: int): void {
+        this.neighbors.push(to);
+    }
+
+    reset(): void {
+        this.visited = false;
+        this.component = -1;
+    }
+}
+
+// --- Graph ---
+class Graph {
+    nodes: GraphNode[];
+    directed: bool;
+
+    constructor(directed: bool) {
+        this.nodes = [];
+        this.directed = directed;
+    }
+
+    addNode(label: string): int {
+        let id = this.nodes.length();
+        this.nodes.push(new GraphNode(id, label));
+        return id;
+    }
+
+    addEdge(from: int, to: int): void {
+        this.nodes[from].addEdge(to);
+        if (!this.directed) {
+            this.nodes[to].addEdge(from);
+        }
+    }
+
+    resetVisited(): void {
+        for (let i = 0; i < this.nodes.length(); i++) {
+            this.nodes[i].reset();
+        }
+    }
+
+    // --- DFS (iterative with explicit stack) ---
+    dfs(start: int): int[] {
+        this.resetVisited();
+        let order: int[] = [];
+        let stack: int[] = [start];
+
+        while (stack.length() > 0) {
+            let current = stack.pop();
+
+            if (this.nodes[current].visited) continue;
+            this.nodes[current].visited = true;
+            order.push(current);
+
+            let neighbors = this.nodes[current].neighbors;
+            // Push in reverse for consistent order
+            for (let i = neighbors.length() - 1; i >= 0; i--) {
+                if (!this.nodes[neighbors[i]].visited) {
+                    stack.push(neighbors[i]);
+                }
+            }
+        }
+
+        return order;
+    }
+
+    // --- BFS ---
+    bfs(start: int): int[] {
+        this.resetVisited();
+        let order: int[] = [];
+        let queue: int[] = [start];
+        this.nodes[start].visited = true;
+        let front = 0;
+
+        while (front < queue.length()) {
+            let current = queue[front];
+            front = front + 1;
+            order.push(current);
+
+            let neighbors = this.nodes[current].neighbors;
+            for (let i = 0; i < neighbors.length(); i++) {
+                let neighbor = neighbors[i];
+                if (!this.nodes[neighbor].visited) {
+                    this.nodes[neighbor].visited = true;
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        return order;
+    }
+
+    // --- Connected Components (undirected) ---
+    findComponents(): int {
+        this.resetVisited();
+        let componentCount = 0;
+
+        for (let i = 0; i < this.nodes.length(); i++) {
+            if (!this.nodes[i].visited) {
+                // BFS from this node
+                let queue: int[] = [i];
+                this.nodes[i].visited = true;
+                this.nodes[i].component = componentCount;
+                let front = 0;
+
+                while (front < queue.length()) {
+                    let current = queue[front];
+                    front = front + 1;
+
+                    let neighbors = this.nodes[current].neighbors;
+                    for (let j = 0; j < neighbors.length(); j++) {
+                        let n = neighbors[j];
+                        if (!this.nodes[n].visited) {
+                            this.nodes[n].visited = true;
+                            this.nodes[n].component = componentCount;
+                            queue.push(n);
+                        }
+                    }
+                }
+
+                componentCount = componentCount + 1;
+            }
+        }
+
+        return componentCount;
+    }
+
+    // --- Topological Sort (Kahn's Algorithm, directed only) ---
+    topologicalSort(): int[] {
+        let n = this.nodes.length();
+        let inDegree: int[] = [];
+        for (let i = 0; i < n; i++) {
+            inDegree.push(0);
+        }
+
+        // Compute in-degrees
+        for (let i = 0; i < n; i++) {
+            let neighbors = this.nodes[i].neighbors;
+            for (let j = 0; j < neighbors.length(); j++) {
+                inDegree[neighbors[j]] = inDegree[neighbors[j]] + 1;
+            }
+        }
+
+        // Queue all nodes with in-degree 0
+        let queue: int[] = [];
+        let front = 0;
+        for (let i = 0; i < n; i++) {
+            if (inDegree[i] == 0) {
+                queue.push(i);
+            }
+        }
+
+        let order: int[] = [];
+        while (front < queue.length()) {
+            let current = queue[front];
+            front = front + 1;
+            order.push(current);
+
+            let neighbors = this.nodes[current].neighbors;
+            for (let j = 0; j < neighbors.length(); j++) {
+                let neighbor = neighbors[j];
+                inDegree[neighbor] = inDegree[neighbor] - 1;
+                if (inDegree[neighbor] == 0) {
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        return order; // If order.length < n, graph has a cycle
+    }
+
+    // --- Cycle Detection (directed, using colors/DFS) ---
+    hasCycle(): bool {
+        let n = this.nodes.length();
+        // 0 = white (unvisited), 1 = gray (in-stack), 2 = black (done)
+        let color: int[] = [];
+        for (let i = 0; i < n; i++) {
+            color.push(0);
+        }
+
+        for (let i = 0; i < n; i++) {
+            if (color[i] == 0) {
+                if (this.dfsCycleHelper(i, color)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private dfsCycleHelper(node: int, color: int[]): bool {
+        color[node] = 1; // gray
+
+        let neighbors = this.nodes[node].neighbors;
+        for (let i = 0; i < neighbors.length(); i++) {
+            let n = neighbors[i];
+            if (color[n] == 1) return true; // back edge = cycle
+            if (color[n] == 0) {
+                if (this.dfsCycleHelper(n, color)) return true;
+            }
+        }
+
+        color[node] = 2; // black
+        return false;
+    }
+
+    // --- Shortest Path (unweighted BFS) ---
+    shortestPath(from: int, to: int): int {
+        if (from == to) return 0;
+
+        this.resetVisited();
+        let dist: int[] = [];
+        for (let i = 0; i < this.nodes.length(); i++) {
+            dist.push(-1);
+        }
+        dist[from] = 0;
+        this.nodes[from].visited = true;
+
+        let queue: int[] = [from];
+        let front = 0;
+
+        while (front < queue.length()) {
+            let current = queue[front];
+            front = front + 1;
+
+            let neighbors = this.nodes[current].neighbors;
+            for (let i = 0; i < neighbors.length(); i++) {
+                let neighbor = neighbors[i];
+                if (!this.nodes[neighbor].visited) {
+                    this.nodes[neighbor].visited = true;
+                    dist[neighbor] = dist[current] + 1;
+                    if (neighbor == to) return dist[neighbor];
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        return -1; // unreachable
+    }
+}
+
+// --- Assertions ---
+function assert(condition: bool, message: string): void {
+    if (!condition) {
+        print("❌ ASSERT FAILED: " + message);
+        throw new Error("AssertionFailed: " + message);
+    } else {
+        print("✅ PASS: " + message);
+    }
+}
+
+function main() {
+    print("=== Graph Algorithms Test ===");
+
+    // --- Test 1: Simple undirected graph ---
+    print("--- T1: Undirected Graph BFS/DFS ---");
+    let g1 = new Graph(false);
+    //  0 -- 1 -- 2
+    //  |         |
+    //  3 -- 4 -- 5
+    g1.addNode("A"); // 0
+    g1.addNode("B"); // 1
+    g1.addNode("C"); // 2
+    g1.addNode("D"); // 3
+    g1.addNode("E"); // 4
+    g1.addNode("F"); // 5
+
+    g1.addEdge(0, 1);
+    g1.addEdge(1, 2);
+    g1.addEdge(0, 3);
+    g1.addEdge(3, 4);
+    g1.addEdge(4, 5);
+    g1.addEdge(2, 5);
+
+    let bfsOrder = g1.bfs(0);
+    assert(bfsOrder.length() == 6, "BFS visits all 6 nodes");
+    assert(bfsOrder[0] == 0, "BFS starts at 0");
+
+    let dfsOrder = g1.dfs(0);
+    assert(dfsOrder.length() == 6, "DFS visits all 6 nodes");
+    assert(dfsOrder[0] == 0, "DFS starts at 0");
+
+    // --- Test 2: Connected components ---
+    print("--- T2: Connected Components ---");
+    let g2 = new Graph(false);
+    // Component 1: 0-1-2
+    g2.addNode("X0"); g2.addNode("X1"); g2.addNode("X2");
+    g2.addEdge(0, 1);
+    g2.addEdge(1, 2);
+
+    // Component 2: 3-4
+    g2.addNode("Y0"); g2.addNode("Y1");
+    g2.addEdge(3, 4);
+
+    // Component 3: 5 (isolated)
+    g2.addNode("Z0");
+
+    let components = g2.findComponents();
+    assert(components == 3, "3 connected components");
+    assert(g2.nodes[0].component == g2.nodes[1].component, "0 and 1 same component");
+    assert(g2.nodes[0].component == g2.nodes[2].component, "0 and 2 same component");
+    assert(g2.nodes[3].component == g2.nodes[4].component, "3 and 4 same component");
+    assert(g2.nodes[0].component != g2.nodes[3].component, "Different components");
+    assert(g2.nodes[0].component != g2.nodes[5].component, "Different from isolated");
+
+    // --- Test 3: Topological Sort (DAG) ---
+    print("--- T3: Topological Sort ---");
+    let g3 = new Graph(true);
+    // Course prerequisites:
+    // 0: Intro -> 1: Data Structures -> 3: Algorithms
+    // 0: Intro -> 2: Discrete Math -> 3: Algorithms
+    // 3: Algorithms -> 4: Advanced CS
+    g3.addNode("Intro");     // 0
+    g3.addNode("DS");        // 1
+    g3.addNode("DiscMath");  // 2
+    g3.addNode("Algo");      // 3
+    g3.addNode("Advanced");  // 4
+
+    g3.addEdge(0, 1);
+    g3.addEdge(0, 2);
+    g3.addEdge(1, 3);
+    g3.addEdge(2, 3);
+    g3.addEdge(3, 4);
+
+    let topoOrder = g3.topologicalSort();
+    assert(topoOrder.length() == 5, "Topo sort includes all 5 nodes");
+    assert(topoOrder[0] == 0, "Intro comes first");
+    assert(topoOrder[4] == 4, "Advanced comes last");
+
+    // Verify: for each edge u->v, u appears before v
+    // Find positions
+    let pos: int[] = [0, 0, 0, 0, 0];
+    for (let i = 0; i < 5; i++) {
+        pos[topoOrder[i]] = i;
+    }
+    assert(pos[0] < pos[1], "Intro before DS");
+    assert(pos[0] < pos[2], "Intro before DiscMath");
+    assert(pos[1] < pos[3], "DS before Algo");
+    assert(pos[2] < pos[3], "DiscMath before Algo");
+    assert(pos[3] < pos[4], "Algo before Advanced");
+
+    // --- Test 4: Cycle detection ---
+    print("--- T4: Cycle Detection ---");
+    assert(!g3.hasCycle(), "DAG has no cycle");
+
+    let g4 = new Graph(true);
+    g4.addNode("A"); g4.addNode("B"); g4.addNode("C");
+    g4.addEdge(0, 1);
+    g4.addEdge(1, 2);
+    g4.addEdge(2, 0); // Creates cycle
+
+    assert(g4.hasCycle(), "Cyclic graph detected");
+
+    // --- Test 5: Shortest path ---
+    print("--- T5: Shortest Path ---");
+    assert(g1.shortestPath(0, 5) == 3, "Shortest 0->5 is 3 (0-3-4-5 or 0-1-2-5)");
+    assert(g1.shortestPath(0, 0) == 0, "Distance to self is 0");
+    assert(g1.shortestPath(0, 4) == 2, "Shortest 0->4 is 2");
+
+    // --- Test 6: Large graph + GC stress ---
+    print("--- T6: Large Graph (500 nodes) ---");
+    let gLarge = new Graph(false);
+
+    // Linear chain of 500 nodes
+    for (let i = 0; i < 500; i++) {
+        gLarge.addNode("N" + i);
+    }
+    for (let i = 0; i < 499; i++) {
+        gLarge.addEdge(i, i + 1);
+    }
+
+    collect();
+
+    let largeBfs = gLarge.bfs(0);
+    assert(largeBfs.length() == 500, "Large BFS visits all 500 nodes");
+    assert(largeBfs[0] == 0, "Large BFS starts at 0");
+    assert(largeBfs[499] == 499, "Large BFS ends at 499");
+
+    let largeDist = gLarge.shortestPath(0, 499);
+    assert(largeDist == 499, "Shortest path in chain 0->499 = 499");
+
+    let largeComponents = gLarge.findComponents();
+    assert(largeComponents == 1, "Linear chain is 1 component");
+
+    collect();
+
+    print("=== Graph Algorithms Test PASSED ===");
+}

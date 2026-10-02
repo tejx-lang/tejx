@@ -6,7 +6,6 @@ pub struct Parser {
     current: usize,
     errors: Vec<crate::common::diagnostics::Diagnostic>,
     filename: String,
-    pub async_enabled: bool,
 }
 
 impl Parser {
@@ -16,7 +15,6 @@ impl Parser {
             current: 0,
             errors: Vec::new(),
             filename: filename.to_string(),
-            async_enabled: true,
         }
     }
 
@@ -30,7 +28,13 @@ impl Parser {
 
     pub fn previous(&self) -> &Token {
         if self.current == 0 {
-            panic!("No previous token");
+            static DEFAULT_TOKEN: Token = Token {
+                token_type: TokenType::EndOfFile,
+                value: String::new(),
+                line: 1,
+                column: 1,
+            };
+            return self.tokens.first().unwrap_or(&DEFAULT_TOKEN);
         }
         &self.tokens[self.current - 1]
     }
@@ -47,13 +51,23 @@ impl Parser {
         Program { statements }
     }
 
+
     fn push_parse_error(&mut self, message: impl Into<String>, line: usize, col: usize) {
-        self.push_parse_error_with_hint(
-            message,
-            line,
-            col,
-            "Check for a missing, extra, or misplaced token near this location.",
-        );
+        let msg = message.into();
+        let hint = if msg.contains("';'") {
+            "Statements in TejX must end with a semicolon ';'"
+        } else if msg.contains("')'") {
+            "Check for an unclosed or misplaced parenthesis ')'"
+        } else if msg.contains("'}'") {
+            "Check for an unclosed or misplaced brace '}'"
+        } else if msg.contains("']'") {
+            "Check for an unclosed or misplaced bracket ']'"
+        } else if msg.contains("':'") {
+            "Type annotations require a colon ':', e.g., 'let x: int = 1'"
+        } else {
+            "Check for a missing, extra, or misplaced token near this location."
+        };
+        self.push_parse_error_with_hint(msg, line, col, hint);
     }
 
     fn push_parse_error_with_hint(
@@ -77,20 +91,7 @@ impl Parser {
         );
     }
 
-    fn push_feature_error(&mut self, message: impl Into<String>, line: usize, col: usize, hint: &str) {
-        let message = message.into();
-        self.errors.push(
-            crate::common::diagnostics::Diagnostic::new(
-                message.clone(),
-                line,
-                col,
-                self.filename.clone(),
-            )
-            .with_code("E0003")
-            .with_hint(hint)
-            .with_label(&message),
-        );
-    }
+
 
     // --- Declarations ---
 
@@ -109,25 +110,8 @@ impl Parser {
                 None
             }
             TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
-            TokenType::Function => Some(self.parse_function_declaration(false, false)),
-            TokenType::Async => {
-                if !self.async_enabled {
-                    let t = self.peek();
-                    self.push_feature_error(
-                        "async/await is disabled",
-                        t.line,
-                        t.column,
-                        "Remove 'async'/'await' here or compile without disabling async support.",
-                    );
-                }
-                if self.check_next(TokenType::Function) {
-                    self.advance(); // consume async
-                    Some(self.parse_function_declaration(true, false))
-                } else {
-                    // Could be async arrow func or just expression statement?
-                    Some(self.parse_statement())
-                }
-            }
+            TokenType::Function => Some(self.parse_function_declaration(false)),
+
             TokenType::Class => Some(self.parse_class_declaration(false)),
             TokenType::Abstract => {
                 if self.check_next(TokenType::Class) {
@@ -148,11 +132,8 @@ impl Parser {
 
                 let decl = match self.peek().token_type {
                     TokenType::Let | TokenType::Const => Some(self.parse_var_declaration()),
-                    TokenType::Function => Some(self.parse_function_declaration(false, is_extern)),
-                    TokenType::Async => {
-                        self.advance(); // consume async
-                        Some(self.parse_function_declaration(true, is_extern))
-                    }
+                    TokenType::Function => Some(self.parse_function_declaration(is_extern)),
+
                     TokenType::Class => Some(self.parse_class_declaration(false)),
                     TokenType::Abstract => {
                         self.advance(); // consume abstract
@@ -179,7 +160,7 @@ impl Parser {
             TokenType::Namespace => Some(self.parse_namespace_declaration()),
             TokenType::Extern => {
                 self.advance(); // consume extern
-                Some(self.parse_function_declaration(false, true))
+                Some(self.parse_function_declaration(true))
             }
             TokenType::Import => Some(self.parse_import_statement()),
             _ => Some(self.parse_statement()),
@@ -293,8 +274,6 @@ impl Parser {
         match self.peek().token_type {
             TokenType::Interface
             | TokenType::Enum
-            | TokenType::Async
-            | TokenType::Await
             | TokenType::Catch
             | TokenType::Finally
             | TokenType::Option
@@ -314,6 +293,7 @@ impl Parser {
             | TokenType::None
             | TokenType::Namespace
             | TokenType::As
+            | TokenType::TypeAlias
             | TokenType::TypeVoid
             | TokenType::TypeInt
             | TokenType::TypeInt8
@@ -392,7 +372,7 @@ impl Parser {
         }
     }
 
-    fn parse_function_declaration(&mut self, is_async: bool, is_extern: bool) -> Statement {
+    fn parse_function_declaration(&mut self, is_extern: bool) -> Statement {
         let start = self
             .consume(TokenType::Function, "Expected 'function'")
             .clone();
@@ -430,7 +410,7 @@ impl Parser {
             loop {
                 let is_rest = self.match_token(TokenType::Ellipsis);
                 let p_name = self
-                    .consume(TokenType::Identifier, "Expected param name")
+                    .consume_identifier("Expected param name")
                     .value
                     .clone();
                 let mut p_type = TypeNode::Named("".to_string());
@@ -480,7 +460,6 @@ impl Parser {
             params,
             return_type,
             body: Box::new(body),
-            _is_async: is_async,
             is_extern,
             generic_params,
             _line: start.line,
@@ -551,7 +530,6 @@ impl Parser {
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let mut is_static = false;
             let mut is_abstract_member = false;
-            let mut is_async = false;
             let mut access = AccessModifier::Public;
 
             // Modifiers
@@ -566,8 +544,6 @@ impl Parser {
                     is_static = true;
                 } else if self.match_token(TokenType::Abstract) {
                     is_abstract_member = true;
-                } else if self.match_token(TokenType::Async) {
-                    is_async = true;
                 } else {
                     break;
                 }
@@ -581,17 +557,21 @@ impl Parser {
                 if !self.check(TokenType::CloseParen) {
                     loop {
                         let name = self
-                            .consume(TokenType::Identifier, "Expected param name")
+                            .consume_identifier("Expected param name")
                             .value
                             .clone();
                         let mut type_name = TypeNode::Named("".to_string());
                         if self.match_token(TokenType::Colon) {
                             type_name = self.parse_type_annotation();
                         }
+                        let mut default_val = None;
+                        if self.match_token(TokenType::Equals) {
+                            default_val = Some(Box::new(self.parse_assignment()));
+                        }
                         params.push(Parameter {
                             name,
                             type_name,
-                            _default_value: None,
+                            _default_value: default_val,
                             _is_rest: false,
                         });
                         if !self.match_token(TokenType::Comma) {
@@ -610,7 +590,6 @@ impl Parser {
                     params,
                     return_type: TypeNode::Named("void".to_string()),
                     body: Box::new(body),
-                    _is_async: false,
                     is_extern: false,
                     generic_params: Vec::new(),
                     _line: constructor_start.line,
@@ -673,17 +652,21 @@ impl Parser {
                 if !self.check(TokenType::CloseParen) {
                     loop {
                         let p_name = self
-                            .consume(TokenType::Identifier, "Expected param")
+                            .consume_identifier("Expected param")
                             .value
                             .clone();
                         let mut p_type = TypeNode::Named("".to_string());
                         if self.match_token(TokenType::Colon) {
                             p_type = self.parse_type_annotation();
                         }
+                        let mut default_val = None;
+                        if self.match_token(TokenType::Equals) {
+                            default_val = Some(Box::new(self.parse_assignment()));
+                        }
                         params.push(Parameter {
                             name: p_name,
                             type_name: p_type,
-                            _default_value: None,
+                            _default_value: default_val,
                             _is_rest: false,
                         });
                         if !self.match_token(TokenType::Comma) {
@@ -714,7 +697,6 @@ impl Parser {
                         params,
                         return_type,
                         body,
-                        _is_async: is_async,
                         is_extern: false,
                         generic_params: method_generic_params,
                         _line: 0,
@@ -769,7 +751,6 @@ impl Parser {
                     _line: start.line,
                     _col: start.column,
                 }),
-                _is_async: false,
                 is_extern: false,
                 generic_params: Vec::new(),
                 _line: start.line,
@@ -827,7 +808,7 @@ impl Parser {
                 .clone();
             let mut value = None;
             if self.match_token(TokenType::Equals) {
-                value = Some(Box::new(self.parse_expression()));
+                value = Some(Box::new(self.parse_assignment()));
             }
             members.push(EnumMember {
                 _name: member_name,
@@ -996,7 +977,7 @@ impl Parser {
                 if !self.check(TokenType::CloseParen) {
                     loop {
                         let p_name = self
-                            .consume(TokenType::Identifier, "Param name")
+                            .consume_identifier("Param name")
                             .value
                             .clone();
                         self.consume(TokenType::Colon, "Expected ':'");
@@ -1101,9 +1082,9 @@ impl Parser {
             params_str.push('(');
             if !self.check(TokenType::CloseParen) {
                 loop {
-                    if self.check(TokenType::Identifier) && self.check_next(TokenType::Colon) {
+                    if (self.check(TokenType::Identifier) || self.is_keyword_identifier()) && self.check_next(TokenType::Colon) {
                         let name = self
-                            .consume(TokenType::Identifier, "Param name")
+                            .consume_identifier("Param name")
                             .value
                             .clone();
                         self.consume(TokenType::Colon, "Expected ':'");
@@ -1229,7 +1210,7 @@ impl Parser {
                             );
                             TypeNode::Any
                         } else {
-                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
+                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap_or(TypeNode::Any)))
                         }
                     }
                     "Option" => {
@@ -1241,7 +1222,7 @@ impl Parser {
                             "Rename this type to Optional<T>.",
                         );
                         if generic_args.len() == 1 {
-                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
+                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap_or(TypeNode::Any)))
                         } else {
                             TypeNode::Any
                         }
@@ -1404,7 +1385,10 @@ impl Parser {
 
         if self.is_at_end() && !self.check(TokenType::CloseBrace) {
             self.push_parse_error_with_hint(
-                format!("Unclosed block starting at line {}:{}", start.line, start.column),
+                format!(
+                    "Unclosed block starting at line {}:{}",
+                    start.line, start.column
+                ),
                 self.previous().line,
                 self.previous().column + self.previous().value.len(),
                 "Add the missing '}' to close this block.",
@@ -1948,23 +1932,6 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Expression {
-        if self.match_token(TokenType::Await) {
-            let op_token = self.previous().clone();
-            if !self.async_enabled {
-                self.push_feature_error(
-                    "async/await is disabled",
-                    op_token.line,
-                    op_token.column,
-                    "Remove 'await' here or compile without disabling async support.",
-                );
-            }
-            let right = self.parse_unary();
-            return Expression::AwaitExpr {
-                expr: Box::new(right),
-                _line: op_token.line,
-                _col: op_token.column,
-            };
-        }
         if self.match_token(TokenType::PlusPlus)
             || self.match_token(TokenType::MinusMinus)
             || self.match_token(TokenType::Bang)
@@ -1976,6 +1943,7 @@ impl Parser {
             return Expression::UnaryExpr {
                 op: op_token.token_type,
                 right: Box::new(right),
+                is_postfix: false,
                 _line: op_token.line,
                 _col: op_token.column,
             };
@@ -1987,6 +1955,7 @@ impl Parser {
             expr = Expression::UnaryExpr {
                 op: op_token.token_type,
                 right: Box::new(expr),
+                is_postfix: true,
                 _line: op_token.line,
                 _col: op_token.column,
             };
@@ -2308,7 +2277,7 @@ impl Parser {
                 } else {
                     // Very simple escape handling for char
                     if token.value.starts_with('\\') && token.value.len() == 2 {
-                        match token.value.chars().nth(1).unwrap() {
+                        match token.value.chars().nth(1).unwrap_or('\0') {
                             'n' => '\n',
                             'r' => '\r',
                             't' => '\t',
@@ -2333,7 +2302,18 @@ impl Parser {
                 self.advance();
                 self.parse_template_string(token)
             }
-            TokenType::Identifier => {
+            TokenType::Identifier
+            | TokenType::From
+            | TokenType::To
+            | TokenType::Of
+            | TokenType::TypeAlias
+            | TokenType::As
+            | TokenType::Public
+            | TokenType::Private
+            | TokenType::Protected
+            | TokenType::Static
+            | TokenType::Abstract
+            | TokenType::Namespace => {
                 if self.check_next(TokenType::Arrow) {
                     return self.parse_lambda();
                 }
@@ -2397,10 +2377,16 @@ impl Parser {
     }
 
     fn peek_offset(&self, offset: usize) -> &Token {
+        static DEFAULT_EOF: Token = Token {
+            token_type: TokenType::EndOfFile,
+            value: String::new(),
+            line: 1,
+            column: 1,
+        };
         if self.is_at_offset_end(offset) {
             match self.tokens.last() {
                 Some(t) => t,
-                None => panic!("No tokens available"),
+                None => &DEFAULT_EOF,
             }
         } else {
             &self.tokens[self.current + offset]
@@ -2412,10 +2398,10 @@ impl Parser {
         let start_col = self.peek().column;
         let mut params = Vec::new();
 
-        if self.check(TokenType::Identifier) {
+        if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
             // Single param: x => ...
             let name = self
-                .consume(TokenType::Identifier, "Expected param name")
+                .consume_identifier("Expected param name")
                 .value
                 .clone();
             params.push(Parameter {
@@ -2431,7 +2417,7 @@ impl Parser {
                 loop {
                     let is_rest = self.match_token(TokenType::Ellipsis);
                     let name = self
-                        .consume(TokenType::Identifier, "Expected param name")
+                        .consume_identifier("Expected param name")
                         .value
                         .clone();
                     let mut type_name = TypeNode::Any;
@@ -2439,10 +2425,15 @@ impl Parser {
                         type_name = self.parse_type_annotation();
                     }
 
+                    let mut default_val = None;
+                    if self.match_token(TokenType::Equals) {
+                        default_val = Some(Box::new(self.parse_assignment()));
+                    }
+
                     params.push(Parameter {
                         name,
                         type_name,
-                        _default_value: None,
+                        _default_value: default_val,
                         _is_rest: is_rest,
                     });
 
@@ -2660,18 +2651,17 @@ impl Parser {
                 (t.line, t.column)
             };
 
-            self.errors
-                .push(
-                    crate::common::diagnostics::Diagnostic::new(
-                        message.to_string(),
-                        line,
-                        col,
-                        self.filename.clone(),
-                    )
-                    .with_code("E0002")
-                    .with_hint("Check for a missing, extra, or misplaced token near this location.")
-                    .with_label(message),
-                );
+            self.errors.push(
+                crate::common::diagnostics::Diagnostic::new(
+                    message.to_string(),
+                    line,
+                    col,
+                    self.filename.clone(),
+                )
+                .with_code("E0002")
+                .with_hint("Check for a missing, extra, or misplaced token near this location.")
+                .with_label(message),
+            );
 
             // Advance to avoid infinite loops
             self.advance()
@@ -2831,10 +2821,8 @@ impl Parser {
 
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let _is_export = self.match_token(TokenType::Export);
-            let is_async = self.match_token(TokenType::Async);
-
             if self.check(TokenType::Function) {
-                let func_decl = match self.parse_function_declaration(is_async, false) {
+                let func_decl = match self.parse_function_declaration(false) {
                     Statement::FunctionDeclaration(f) => f,
                     _ => unreachable!(),
                 };
@@ -2918,7 +2906,6 @@ impl Parser {
                     _line: start.line,
                     _col: start.column,
                 }),
-                _is_async: false,
                 is_extern: false,
                 generic_params: Vec::new(),
                 _line: start.line,

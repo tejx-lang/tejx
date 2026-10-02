@@ -43,13 +43,13 @@ function test_inheritance(): void {
 
 function test_structural_access(): void {
     print("--- Testing Map Property Access ---\n");
-    let obj: any = {}; // Use Map literal to test structural fallback
-    obj.prop = "Hello Map";
+    let obj: Map<string, string> = new Map<string, string>(); // Testing Map object directly
+    obj.set("prop", "Hello Map");
     
     print("Map property: ");
-    print(obj.prop);
+    print(obj.get("prop"));
 
-    assert_eq_string("Hello Map", obj.prop, "map access");
+    assert_eq_string("Hello Map", obj.get("prop"), "map access");
 }
 
 function main(): void {

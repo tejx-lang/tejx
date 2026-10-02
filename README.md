@@ -8,14 +8,12 @@ TejX is a high-performance, strictly typed programming language that compiles to
 
 | Guide                                             | Description                                       |
 | :------------------------------------------------ | :------------------------------------------------ |
-| **[Docs Index](docs/README.md)**                  | Entry point for the consolidated documentation.   |
-| **[Language Guide](docs/LANGUAGE.md)**            | Syntax, types, and core language features.        |
-| **[Type System](docs/TYPE_SYSTEM.md)**            | Exact typing rules, `Optional<T>`, and generics.  |
-| **[Module System](docs/MODULE_SYSTEM.md)**        | Imports, exports, and stdlib resolution.          |
-| **[Concurrency Guide](docs/CONCURRENCY.md)**      | Async/await, event loop behavior, and threads.    |
-| **[Memory Model](docs/MEMORY_MODEL.md)**          | Runtime value layout, roots, and GC behavior.     |
-| **[Internals & Architecture](docs/INTERNALS.md)** | Granular compiler walkthrough from source to LLVM. |
-| **[File Structure](docs/FILE_STRUCTURE.md)**      | Repository layout, SDK layout, and paths.         |
+| **[Docs Index](docs/README.md)**                  | Central portal for the consolidated documentation suite. |
+| **[Language Specification](docs/LANGUAGE_SPECIFICATION.md)** | Comprehensive grammar, semantics, types, and language manual. |
+| **[Standard Library Reference](docs/STANDARD_LIBRARY_REFERENCE.md)** | Complete reference for all standard modules (`std:*`) and prelude. |
+| **[Memory Model](docs/MEMORY_MODEL.md)**          | Runtime value layout, generational GC, roots, and object representation. |
+| **[Internals & Architecture](docs/INTERNALS.md)** | Granular compiler walkthrough from source lexing to LLVM IR and linking. |
+| **[File Structure](docs/FILE_STRUCTURE.md)**      | Repository layout, installed SDK layout, and path resolution rules. |
 
 ---
 

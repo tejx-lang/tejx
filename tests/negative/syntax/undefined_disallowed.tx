@@ -1,0 +1,4 @@
+// Description: Verify that 'undefined' is rejected with hint to use 'None'.
+function main() {
+    let x = undefined;
+}

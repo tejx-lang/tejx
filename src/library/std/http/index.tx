@@ -1,5 +1,8 @@
 import std:json;
+import std:net;
+import std:thread;
 import "./client.tx";
+import "./server.tx";
 
 function requestOption(options: any, key: string): any {
     if (options == None) {
@@ -29,29 +32,13 @@ function requestBodyKind(body: any): int {
     if (bodyType == "string") {
         return 1;
     }
-    if (bodyType == "object" || rt_is_array(body)) {
+    if (bodyType == "object" || bodyType == "struct" || rt_is_array(body)) {
         return 2;
     }
     return 1;
 }
 
-export class HttpRequest {
-    method: string;
-    body: any;
-    headers: Headers;
-    insecureTls: bool;
-    timeoutMs: int;
-    bodyKind: int;
 
-    constructor(method: string, body: any, headers: any, insecureTls: bool, timeoutMs: int) {
-        this.method = method.toUpperCase();
-        this.body = body;
-        this.headers = new Headers(headers);
-        this.insecureTls = insecureTls;
-        this.timeoutMs = normalizedTimeout(timeoutMs);
-        this.bodyKind = requestBodyKind(body);
-    }
-}
 
 function httpClientFor(url: string, insecureTls: bool): HttpClient {
     if (url.startsWith("https://")) {
@@ -92,24 +79,14 @@ export class Request {
         return request;
     }
 
-    send(): HttpResponse {
+    send(): Response {
         let client: HttpClient = httpClientFor(this.url, this.insecureTls);
         let headers = this.headers.copy();
         let bodyText = this.bodyText(headers);
         return new Response(client.request(this.method, this.url, bodyText, headers, this.timeoutMs));
     }
 
-    sendAsync(): Promise<HttpResponse> {
-        let client: HttpClient = httpClientFor(this.url, this.insecureTls);
-        let headers = this.headers.copy();
-        let bodyText = this.bodyText(headers);
-        return rt_promise_then(client.requestAsync(this.method, this.url, bodyText, headers, this.timeoutMs),
-            (response) => {
-                return new Response(response);
-            },
-            0 as any as (e: Error) => HttpResponse
-        );
-    }
+
 
     private setBody(body: any): void {
         this.body = body;
@@ -131,15 +108,7 @@ export class Request {
             return;
         }
 
-        if (options instanceof HttpRequest) {
-            let request: HttpRequest = options as HttpRequest;
-            this.method = request.method.toUpperCase();
-            this.headers = request.headers.copy();
-            this.insecureTls = request.insecureTls;
-            this.timeoutMs = normalizedTimeout(request.timeoutMs);
-            this.setBody(request.body);
-            return;
-        }
+
 
         let method: any = requestOption(options, "method");
         if (method != None) {
@@ -197,7 +166,7 @@ export class Request {
     }
 }
 
-export class HttpResponse {
+export class Response {
     httpVersion: string;
     status: int;
     statusText: string;
@@ -234,11 +203,7 @@ export class HttpResponse {
     }
 }
 
-export class Response extends HttpResponse {
-    constructor(response: HttpClientResponse) {
-        super(response);
-    }
-}
+
 
 function requestFromInput(input: any, options: any): Request {
     if (input instanceof Request) {
@@ -255,10 +220,8 @@ function requestFromInput(input: any, options: any): Request {
     throw new Error("fetch expects a string URL or Request");
 }
 
-export function fetchSync(input: any, options: any = None): HttpResponse {
+export function fetch(input: any, options: any = None): Response {
     return requestFromInput(input, options).send();
 }
 
-export function fetch(input: any, options: any = None): Promise<HttpResponse> {
-    return requestFromInput(input, options).sendAsync();
-}
+

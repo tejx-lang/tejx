@@ -1,0 +1,81 @@
+import std:http;
+import std:json;
+import std:system;
+
+function main() {
+    // Use default 2KB stack — like Go goroutines. Lightweight enough for 100k+ concurrent vthreads.
+    // No need to call setVThreadStackSize; the runtime default is already 2KB.
+
+    let app: HttpServer = new HttpServer();
+
+    // Enable CORS for all routes
+    app.enableCorsAll();
+
+    // Basic route
+    app.get("/", (req: ServerRequest, res: ServerResponse) => {
+        res.json({
+            "message": "Welcome to TejX API Server!",
+            "status": "success"
+        });
+    });
+
+    // Path parameter route — /user/:id
+    app.get("/user/:id", (req: ServerRequest, res: ServerResponse) => {
+        let userId = req.params.get("id");
+        res.json({
+            "userId": userId,
+            "name": "User " + (userId as string)
+        });
+    });
+
+    // Query string route — /search?q=hello
+    app.get("/search", (req: ServerRequest, res: ServerResponse) => {
+        let q = req.query.get("q");
+        res.json({
+            "query": q,
+            "results": []
+        });
+    });
+
+    // System info route
+    app.get("/system", (req: ServerRequest, res: ServerResponse) => {
+        res.json({
+            "pid": system.pid(),
+            "cpus": system.cpuCount(),
+            "totalMemory": system.totalMemory(),
+            "freeMemory": system.freeMemory(),
+            "uptime": system.uptime(),
+            "os": system.getOSType()
+        });
+    });
+
+    // Exec route
+    app.get("/exec", (req: ServerRequest, res: ServerResponse) => {
+        let result = system.exec("echo hello from TejX");
+        res.json({ "output": result });
+    });
+
+    // POST with body parsing
+    app.post("/echo", (req: ServerRequest, res: ServerResponse) => {
+        res.json({
+            "method": req.method,
+            "body": req.body,
+            "path": req.path
+        });
+    });
+
+    // Wildcard route
+    app.get("/files/*", (req: ServerRequest, res: ServerResponse) => {
+        res.json({ "path": req.path, "type": "file-serve" });
+    });
+
+    let port = 9191;
+    app.listen(port, () => {
+        print(`🚀 TejX API Server running on http://127.0.0.1:${port}`);
+        print("Press Ctrl+C to stop.");
+    });
+
+    while (true) {
+        Thread.sleep(1000000);
+    }
+}

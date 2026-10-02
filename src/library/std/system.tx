@@ -1,4 +1,7 @@
 import "./system/process.tx";
+import std:collections;
+
+// ── Top-level convenience exports ─────────────────────────────────────────────
 
 export function exit(code: int): void {
     _system_exit(code);
@@ -12,8 +15,13 @@ export function getEnv(key: string): Optional<string> {
     return _system_get_env(key);
 }
 
-export function getAllEnv(): any {
-    return _system_get_all_env();
+export function getAllEnv(): Map<string, string> {
+    let arr = _system_get_all_env();
+    let map = new Map<string, string>();
+    for (let i = 0; i < arr.length(); i = i + 2) {
+        map.set(arr[i], arr[i + 1]);
+    }
+    return map;
 }
 
 export function getOSType(): string {
@@ -40,6 +48,58 @@ export function getHostname(): Optional<string> {
     return _system_get_hostname();
 }
 
+export function cpuCount(): int {
+    return _system_get_cpu_count();
+}
+
+export function totalMemory(): int64 {
+    return _system_get_total_memory();
+}
+
+export function freeMemory(): int64 {
+    return _system_get_free_memory();
+}
+
+export function pid(): int {
+    return _system_get_pid();
+}
+
+export function uptime(): float {
+    return _system_get_uptime();
+}
+
+/// Executes a shell command synchronously and returns its stdout (trimmed).
+/// If stdout is empty, stderr is returned for easy error inspection.
+export function exec(cmd: string): string {
+    return _system_exec(cmd);
+}
+
+/// Executes a shell command synchronously.
+/// Returns a 3-element array: [exitCode: int, stdout: string, stderr: string].
+export function execFull(cmd: string): any[] {
+    return _system_exec_full(cmd);
+}
+
+/// Spawns a child process asynchronously.
+/// Returns the child PID (> 0) on success, or -1 on failure.
+export function spawn(program: string, args: string[]): int {
+    return _system_spawn(program, args);
+}
+
+/// Sends SIGTERM (graceful) or SIGKILL (force=true) to a process by PID.
+/// Returns true if the signal was delivered successfully.
+export function kill(pid: int, force: bool = false): bool {
+    return _system_kill(pid, force);
+}
+
+/// Waits for a child process by PID and returns its exit code.
+/// Returns -1 on failure, -2 if the process was killed by a signal.
+export function waitFor(pid: int): int {
+    return _system_wait(pid);
+}
+
+// ── system namespace ───────────────────────────────────────────────────────────
+
 export namespace system {
     export function exit(code: int): void {
         _system_exit(code);
@@ -53,8 +113,8 @@ export namespace system {
         return _system_get_env(key);
     }
 
-    export function getAllEnv(): any {
-        return _system_get_all_env();
+    export function getAllEnv(): Map<string, string> {
+        return getAllEnv();
     }
 
     export function getOSType(): string {
@@ -80,15 +140,57 @@ export namespace system {
     export function getHostname(): Optional<string> {
         return _system_get_hostname();
     }
+
+    export function cpuCount(): int {
+        return _system_get_cpu_count();
+    }
+
+    export function totalMemory(): int64 {
+        return _system_get_total_memory();
+    }
+
+    export function freeMemory(): int64 {
+        return _system_get_free_memory();
+    }
+
+    export function pid(): int {
+        return _system_get_pid();
+    }
+
+    export function uptime(): float {
+        return _system_get_uptime();
+    }
+
+    export function exec(cmd: string): string {
+        return _system_exec(cmd);
+    }
+
+    export function execFull(cmd: string): any[] {
+        return _system_exec_full(cmd);
+    }
+
+    export function spawn(program: string, args: string[]): int {
+        return _system_spawn(program, args);
+    }
+
+    export function kill(pid: int, force: bool = false): bool {
+        return _system_kill(pid, force);
+    }
+
+    export function waitFor(pid: int): int {
+        return _system_wait(pid);
+    }
 }
+
+// ── os namespace ───────────────────────────────────────────────────────────────
 
 export namespace os {
     export function getEnv(key: string): Optional<string> {
         return _system_get_env(key);
     }
 
-    export function getAllEnv(): any {
-        return _system_get_all_env();
+    export function getAllEnv(): Map<string, string> {
+        return getAllEnv();
     }
 
     export function getType(): string {
@@ -113,5 +215,65 @@ export namespace os {
 
     export function getHostname(): Optional<string> {
         return _system_get_hostname();
+    }
+
+    export function cpuCount(): int {
+        return _system_get_cpu_count();
+    }
+
+    export function totalMemory(): int64 {
+        return _system_get_total_memory();
+    }
+
+    export function freeMemory(): int64 {
+        return _system_get_free_memory();
+    }
+
+    export function uptime(): float {
+        return _system_get_uptime();
+    }
+}
+
+// ── process namespace ──────────────────────────────────────────────────────────
+
+export namespace process {
+    export function exit(code: int): void {
+        _system_exit(code);
+    }
+
+    export function pid(): int {
+        return _system_get_pid();
+    }
+
+    export function uptime(): float {
+        return _system_get_uptime();
+    }
+
+    export function cwd(): Optional<string> {
+        return _system_get_cwd();
+    }
+
+    export function env(): Map<string, string> {
+        return getAllEnv();
+    }
+
+    export function exec(cmd: string): string {
+        return _system_exec(cmd);
+    }
+
+    export function execFull(cmd: string): any[] {
+        return _system_exec_full(cmd);
+    }
+
+    export function spawn(program: string, args: string[]): int {
+        return _system_spawn(program, args);
+    }
+
+    export function kill(pid: int, force: bool = false): bool {
+        return _system_kill(pid, force);
+    }
+
+    export function waitFor(pid: int): int {
+        return _system_wait(pid);
     }
 }

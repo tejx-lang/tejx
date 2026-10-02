@@ -12,70 +12,102 @@ function test_output() {
 function test_fs_sync() {
     print("--- FS Sync Test ---");
     let path = "test_io_sync.txt";
-    if (fs.existsSync(path)) fs.unlinkSync(path);
+    if (fs.exists(path)) fs.unlink(path);
 
     // Write/Read
-    fs.writeFileSync(path, "Hello IO");
-    assert_true(fs.existsSync(path), "File created");
+    fs.writeFile(path, "Hello IO");
+    assert_true(fs.exists(path), "File created");
     
-    let content = fs.readFileSync(path);
+    let content = fs.readFile(path);
     assert_eq_string("Hello IO", content, "Read content");
 
     // Append
-    fs.appendFileSync(path, " World");
-    let appended = fs.readFileSync(path);
+    fs.appendFile(path, " World");
+    let appended = fs.readFile(path);
     assert_eq_string("Hello IO World", appended, "Appended content");
 
     // Unlink
-    fs.unlinkSync(path);
-    assert_false(fs.existsSync(path), "File deleted");
+    fs.unlink(path);
+    assert_false(fs.exists(path), "File deleted");
 }
 
-async function test_fs_async() {
+function test_fs_async() {
     print("--- FS Async Test ---");
     let path = "test_io_async.txt";
-    if (fs.existsSync(path)) fs.unlinkSync(path);
+    if (fs.exists(path)) fs.unlink(path);
 
-    await fs.writeFile(path, "Hello Async IO");
-    assert_true(fs.existsSync(path), "Async File created");
+    fs.writeFile(path, "Hello Async IO");
+    assert_true(fs.exists(path), "Async File created");
 
-    let content = await fs.readFile(path);
+    let content = fs.readFile(path);
     assert_eq_string("Hello Async IO", content, "Async Read content");
 
-    fs.unlinkSync(path);
-    assert_false(fs.existsSync(path), "Async File deleted");
+    fs.unlink(path);
+    assert_false(fs.exists(path), "Async File deleted");
 }
 
 function test_directories() {
     print("--- Directory Test ---");
     let dir = "test_io_dir";
-    if (fs.existsSync(dir)) {
-        // fs.rmdirSync(dir); // assuming unlink handles dirs or rmdir exists? 
+    if (fs.exists(dir)) {
+        // fs.rmdir(dir); // assuming unlink handles dirs or rmdir exists? 
         // features_fs.tx used unlinkSync for dirs (likely recursive or system call wrapper)
-        fs.unlinkSync(dir);
+        fs.unlink(dir);
     }
     
-    fs.mkdirSync(dir);
-    assert_true(fs.existsSync(dir), "Dir created");
+    fs.mkdir(dir);
+    assert_true(fs.exists(dir), "Dir created");
 
     let filePath = dir + "/file1.txt";
-    fs.writeFileSync(filePath, "1");
-    assert_true(fs.existsSync(filePath), "File in dir created");
+    fs.writeFile(filePath, "1");
+    assert_true(fs.exists(filePath), "File in dir created");
 
-    let files = fs.readdirSync(dir);
+    let files = fs.readdir(dir);
     // Depending on impl, might include . or ..? Usually just entries.
     // If we just created 1 file, length should be 1.
     assert_eq_int(1, files.length(), "Dir files count");
 
-    fs.unlinkSync(dir);
-    assert_false(fs.existsSync(dir), "Dir deleted");
+    fs.unlink(dir);
+    assert_false(fs.exists(dir), "Dir deleted");
 }
 
-async function main() {
+function test_fs_intense() {
+    print("--- FS Intense Test ---");
+    let intense_dir = "test_io_intense_dir";
+    if (fs.exists(intense_dir)) {
+        fs.unlink(intense_dir);
+    }
+    fs.mkdir(intense_dir);
+    
+    // Create 100 files sequentially to stress file system
+    for (let i = 0; i < 100; i++) {
+        let fpath = intense_dir + "/file_" + i + ".txt";
+        fs.writeFile(fpath, "Data payload for file " + i);
+    }
+    
+    let files = fs.readdir(intense_dir);
+    assert_eq_int(100, files.length(), "100 files created");
+    
+    // Read and verify a random one
+    let content = fs.readFile(intense_dir + "/file_42.txt");
+    assert_eq_string("Data payload for file 42", content, "Intense file 42 content");
+    
+    // Cleanup
+    for (let i = 0; i < 100; i++) {
+        let fpath = intense_dir + "/file_" + i + ".txt";
+        fs.unlink(fpath);
+    }
+    
+    fs.unlink(intense_dir);
+    assert_false(fs.exists(intense_dir), "Intense dir cleaned up");
+}
+
+function main() {
     print("=== IO TESTS START ===");
     test_output();
     test_fs_sync();
-    await test_fs_async();
+    test_fs_async();
     test_directories();
+    test_fs_intense();
     print("=== IO TESTS COMPLETE ===");
 }

@@ -16,31 +16,6 @@ extern function rt_Condition_constructor(_this: Condition): void;
 extern function rt_Condition_wait(_this: Condition, mutex: Mutex): void;
 extern function rt_Condition_notify(_this: Condition): void;
 extern function rt_Condition_notifyAll(_this: Condition): void;
-extern function rt_Thread_constructor(_this: Thread, task: () => void): void;
-extern function rt_Thread_start(_this: Thread): void;
-extern function rt_Thread_join(_this: Thread): void;
-
-export class Thread {
-    private _data: int64;
-    private _task: () => void;
-
-    constructor(task: () => void) {
-        rt_Thread_constructor(this, task);
-        rt_Thread_start(this);
-    }
-
-    start(): void {
-        rt_Thread_start(this);
-    }
-
-    join(): void {
-        rt_Thread_join(this);
-    }
-
-    static spawn(task: () => void): Thread {
-        return new Thread(task);
-    }
-}
 
 export class Atomic {
     private _data: int64;
@@ -131,6 +106,20 @@ export function joinAll(threads: Thread[]): void {
     }
 }
 
-export function parallel(threads: Thread[]): void {
-    joinAll(threads);
+export function sleep(ms: int): void {
+    Thread.sleep(ms);
+}
+
+export namespace thread {
+    export function spawn(task: () => void): Thread {
+        return Thread.spawn(task);
+    }
+
+    export function joinAll(threads: Thread[]): void {
+        joinAll(threads);
+    }
+
+    export function sleep(ms: int): void {
+        Thread.sleep(ms);
+    }
 }

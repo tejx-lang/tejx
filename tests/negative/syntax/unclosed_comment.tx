@@ -1,0 +1,5 @@
+// Description: Verify unclosed block comment produces a diagnostic error.
+function main() {
+    /* This comment is never closed
+    print("hello");
+}

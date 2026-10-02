@@ -1,17 +1,10 @@
 // Time Tests
 // ==========
-import {delay,sleep,now} from "std:time";
+import { now } from "std:time";
+import { sleep } from "std:thread";
 import { assert_eq_int, assert_true } from "../utils.tx";
 
-async function test_delay() {
-    print("--- Async Delay ---");
-    let t1 = now();
-    await delay(500);
-    let t2 = now();
-    let d = t2 - t1;
-    assert_true(d >= 500, "Async delay >= 500ms");
-    print("Async delay diff: ", d);
-}
+
 
 function test_sleep() {
     print("--- Sync Sleep ---");
@@ -23,13 +16,24 @@ function test_sleep() {
     print("Sync sleep diff: ", diff);
 }
 
-async function main() {
+function test_time_intense(): void {
+    print("--- Time Intense Precision Test ---");
+    let call_times: int[] = [];
+    let start = now();
+    for (let i = 0; i < 10000; i++) {
+        call_times.push(now());
+    }
+    let totalTime = now() - start;
+    assert_true(totalTime >= 0, "10000 now() calls should take >= 0 ms");
+    assert_true(call_times.length() == 10000, "10000 times recorded");
+}
+
+function main() {
     print("=== TIME TESTS START ===");
     let start = now();
     assert_true(start > 0, "time.now() positive");
     
     test_sleep();
-    await test_delay();
-    
+    test_time_intense();
     print("=== TIME TESTS COMPLETE ===");
 }

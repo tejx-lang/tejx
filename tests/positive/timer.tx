@@ -1,35 +1,34 @@
 // tests/timer_test.tx
-import { setTimeout, setInterval, clearInterval, clearTimeout, delay } from "std:time";
+import { setTimeout, setInterval, clearInterval, clearTimeout } from "std:time";
+import { Atomic, sleep } from "std:thread";
 import { assert_eq_int, assert_true } from "./utils.tx";
 
-async function main(): Promise<void> {
+function main(): void {
     print("Starting timers...");
 
-    let counts = {
-        timeoutCount: 0,
-        intervalCount: 0
-    };
+    let timeoutCount = new Atomic(0);
+    let intervalCount = new Atomic(0);
 
     let timeoutId = setTimeout(() => {
-        counts.timeoutCount = counts.timeoutCount + 1;
+        timeoutCount.increment();
         print("Timeout executed!");
     }, 80);
 
     let intervalId = setInterval(() => {
-        counts.intervalCount = counts.intervalCount + 1;
+        intervalCount.increment();
         print("Interval executed!");
     }, 30);
 
-    await delay(170);
+    sleep(170);
     clearInterval(intervalId);
     clearTimeout(timeoutId);
 
-    let intervalCountAfterClear = counts.intervalCount;
-    await delay(90);
+    let intervalCountAfterClear = intervalCount.load();
+    sleep(90);
 
-    assert_eq_int(1, counts.timeoutCount, "setTimeout fires exactly once");
+    assert_eq_int(1, timeoutCount.load(), "setTimeout fires exactly once");
     assert_true(intervalCountAfterClear >= 2, "setInterval fires before clearInterval");
-    assert_eq_int(intervalCountAfterClear, counts.intervalCount, "clearInterval stops future ticks");
+    assert_eq_int(intervalCountAfterClear, intervalCount.load(), "clearInterval stops future ticks");
     print("Interval cleared.");
     print("Timers test complete.");
 }

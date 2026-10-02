@@ -259,6 +259,7 @@ pub enum Expression {
     UnaryExpr {
         op: TokenType,
         right: Box<Expression>,
+        is_postfix: bool,
         _line: usize,
         _col: usize,
     },
@@ -327,12 +328,6 @@ pub enum Expression {
         _line: usize,
         _col: usize,
     },
-    AwaitExpr {
-        expr: Box<Expression>,
-        _line: usize,
-        _col: usize,
-    },
-
     TernaryExpr {
         _condition: Box<Expression>,
         _true_branch: Box<Expression>,
@@ -401,7 +396,6 @@ pub struct FunctionDeclaration {
     pub params: Vec<Parameter>,
     pub return_type: TypeNode,
     pub body: Box<Statement>, // BlockStmt
-    pub _is_async: bool,
     pub is_extern: bool,
     pub generic_params: Vec<GenericParam>,
     pub _line: usize,
@@ -585,7 +579,6 @@ impl Expression {
             Expression::ThisExpr { _line, .. } => *_line,
             Expression::SuperExpr { _line, .. } => *_line,
             Expression::LambdaExpr { _line, .. } => *_line,
-            Expression::AwaitExpr { _line, .. } => *_line,
             Expression::TernaryExpr { _line, .. } => *_line,
             Expression::OptionalMemberAccessExpr { _line, .. } => *_line,
             Expression::OptionalCallExpr { _line, .. } => *_line,

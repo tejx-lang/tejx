@@ -462,6 +462,7 @@ impl TypeChecker {
                 right,
                 _line,
                 _col,
+                ..
             } => {
                 let right_type = self.check_expression(right)?;
                 match op {
@@ -576,12 +577,41 @@ impl TypeChecker {
                     if name == "console" {
                         return Ok(TejxType::from_name("Console"));
                     }
+                    if name == "null" || name == "undefined" {
+                        self.report_error_detailed(
+                            format!("'{}' is not valid in TejX. Use 'None' instead", name),
+                            *_line,
+                            *_col,
+                            "E0102",
+                            Some("Replace with 'None'"),
+                        );
+                        return Ok(TejxType::from_name("<inferred>"));
+                    }
+                    let known_std_module_hint = match name.as_str() {
+                        "Math" | "math" => Some("Math utilities and constants are available in 'std:math'. Add 'import std:math;' at the top of the file."),
+                        "fs" | "FS" => Some("File system utilities are available in 'std:fs'. Add 'import std:fs;' at the top of the file."),
+                        "json" | "JSON" => Some("JSON utilities are available in 'std:json'. Add 'import std:json;' at the top of the file."),
+                        "time" => Some("Time and timer utilities are available in 'std:time'. Add 'import std:time;' at the top of the file."),
+                        "system" | "os" | "process" => Some("System and process utilities are available in 'std:system'. Add 'import std:system;' at the top of the file."),
+                        "crypto" => Some("Cryptography utilities are available in 'std:crypto'. Add 'import std:crypto;' at the top of the file."),
+                        "net" => Some("Networking utilities are available in 'std:net'. Add 'import std:net;' at the top of the file."),
+                        "http" => Some("HTTP client/server utilities are available in 'std:http'. Add 'import std:http;' at the top of the file."),
+                        _ => None,
+                    };
+
+                    let hint = if let Some(std_hint) = known_std_module_hint {
+                        std_hint.to_string()
+                    } else if let Some(sugg) = self.suggest_similar_identifier(name) {
+                        format!("Did you mean '{}'?", sugg)
+                    } else {
+                        "Check the spelling or ensure the variable is declared before use".to_string()
+                    };
                     self.report_error_detailed(
                         format!("Undefined variable '{}'", name),
                         *_line,
                         *_col,
                         "E0102",
-                        Some("Check the spelling or ensure the variable is declared before use"),
+                        Some(&hint),
                     );
                     Ok(TejxType::from_name("<inferred>"))
                 }
@@ -815,67 +845,6 @@ impl TypeChecker {
 
                 // Special case for class names (static access)
                 if let Expression::Identifier { name, .. } = &**object {
-                    if name == "Promise" && member == "all" {
-                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
-                        return Ok(TejxType::Function(
-                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
-                                "Promise".to_string(),
-                                vec![missing.clone()],
-                            )))],
-                            Box::new(TejxType::Class(
-                                "Promise".to_string(),
-                                vec![TejxType::DynamicArray(Box::new(missing))],
-                            )),
-                        ));
-                    }
-                    if name == "Promise" && member == "race" {
-                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
-                        return Ok(TejxType::Function(
-                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
-                                "Promise".to_string(),
-                                vec![missing.clone()],
-                            )))],
-                            Box::new(TejxType::Class("Promise".to_string(), vec![missing])),
-                        ));
-                    }
-                    if name == "Promise" && member == "any" {
-                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
-                        return Ok(TejxType::Function(
-                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
-                                "Promise".to_string(),
-                                vec![missing.clone()],
-                            )))],
-                            Box::new(TejxType::Class("Promise".to_string(), vec![missing])),
-                        ));
-                    }
-                    if name == "Promise" && member == "allSettled" {
-                        let missing = TejxType::Class("$MISSING_GENERIC_0".to_string(), vec![]);
-                        return Ok(TejxType::Function(
-                            vec![TejxType::DynamicArray(Box::new(TejxType::Class(
-                                "Promise".to_string(),
-                                vec![missing.clone()],
-                            )))],
-                            Box::new(TejxType::Class(
-                                "Promise".to_string(),
-                                vec![TejxType::DynamicArray(Box::new(TejxType::Object(vec![
-                                    ("status".to_string(), false, TejxType::String),
-                                    (
-                                        "value".to_string(),
-                                        false,
-                                        TejxType::Optional(Box::new(missing)),
-                                    ),
-                                    (
-                                        "reason".to_string(),
-                                        false,
-                                        TejxType::Optional(Box::new(TejxType::Class(
-                                            "Error".to_string(),
-                                            vec![],
-                                        ))),
-                                    ),
-                                ])))],
-                            )),
-                        ));
-                    }
                     if let Some(s) = self.lookup(name) {
                         if s.ty.to_name() == "class" || s.ty.to_name() == "enum" {
                             if let Some(members) = self.class_members.get(name) {
@@ -925,7 +894,9 @@ impl TypeChecker {
                                         "class"
                                     };
                                     let available = self.collect_member_names(name, true);
-                                    let hint = if available.is_empty() {
+                                    let hint = if let Some(best) = crate::common::diagnostics::find_best_match(member, &available) {
+                                        Some(format!("Did you mean '{}'?", best))
+                                    } else if available.is_empty() {
                                         None
                                     } else {
                                         Some(format!(
@@ -959,10 +930,8 @@ impl TypeChecker {
                         self.report_error_detailed(format!("Static member '{}' accessed on instance", member), *_line, *_col, "E0116", Some("Access static members using the class name, e.g., ClassName.member"));
                     }
                     if info.access != AccessLevel::Public {
-                        let declaring_base = declaring_type
-                            .split('<')
-                            .next()
-                            .unwrap_or(&declaring_type);
+                        let declaring_base =
+                            declaring_type.split('<').next().unwrap_or(&declaring_type);
                         if !declaring_base.starts_with("function") {
                             let is_accessible = self.is_member_accessible_from_current_class(
                                 &declaring_type,
@@ -1070,10 +1039,12 @@ impl TypeChecker {
 
                 if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
                     let available = self.collect_member_names(&obj_type, false);
-                    let hint = if available.is_empty() {
-                        None
-                    } else {
+                    let hint = if let Some(best) = crate::common::diagnostics::find_best_match(member, &available) {
+                        Some(format!("Did you mean '.{}'?", best))
+                    } else if !available.is_empty() {
                         Some(format!("Available members: {}", available.join(", ")))
+                    } else {
+                        Some("Check the property name or define it in the class".to_string())
                     };
                     self.report_error_detailed(
                         format!(
@@ -1083,8 +1054,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        hint.as_deref()
-                            .or(Some("Check the property name or define it in the class")),
+                        hint.as_deref(),
                     );
                 }
                 Ok(TejxType::from_name("<inferred>"))
@@ -1199,7 +1169,26 @@ impl TypeChecker {
                         if let Some(s) = self.lookup_assignment_target(name) {
                             Ok(s.ty.clone())
                         } else {
-                            self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some("Check the spelling or ensure the variable is declared before use"));
+                            let known_std_module_hint = match name.as_str() {
+                                "Math" | "math" => Some("Math utilities and constants are available in 'std:math'. Add 'import std:math;' at the top of the file."),
+                                "fs" | "FS" => Some("File system utilities are available in 'std:fs'. Add 'import std:fs;' at the top of the file."),
+                                "json" | "JSON" => Some("JSON utilities are available in 'std:json'. Add 'import std:json;' at the top of the file."),
+                                "time" => Some("Time and timer utilities are available in 'std:time'. Add 'import std:time;' at the top of the file."),
+                                "system" | "os" | "process" => Some("System and process utilities are available in 'std:system'. Add 'import std:system;' at the top of the file."),
+                                "crypto" => Some("Cryptography utilities are available in 'std:crypto'. Add 'import std:crypto;' at the top of the file."),
+                                "net" => Some("Networking utilities are available in 'std:net'. Add 'import std:net;' at the top of the file."),
+                                "http" => Some("HTTP client/server utilities are available in 'std:http'. Add 'import std:http;' at the top of the file."),
+                                _ => None,
+                            };
+
+                            let hint = if let Some(std_hint) = known_std_module_hint {
+                                std_hint.to_string()
+                            } else if let Some(sugg) = self.suggest_similar_identifier(name) {
+                                format!("Did you mean '{}'?", sugg)
+                            } else {
+                                "Check the spelling or ensure the variable is declared before use".to_string()
+                            };
+                            self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some(&hint));
                             Ok(TejxType::from_name("<inferred>"))
                         }
                     }
@@ -1397,7 +1386,7 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
-                let mut callee_str = callee.to_callee_name();
+                let callee_str = callee.to_callee_name();
                 let member_callee = match &**callee {
                     Expression::MemberAccessExpr { object, member, .. }
                     | Expression::OptionalMemberAccessExpr { object, member, .. } => {
@@ -1405,19 +1394,7 @@ impl TypeChecker {
                     }
                     _ => None,
                 };
-                if let Some((object, member)) = member_callee {
-                    if let Expression::Identifier { name, .. } = object {
-                        if name == "Promise" && member == "all" {
-                            callee_str = "Promise_all".to_string();
-                        } else if name == "Promise" && member == "race" {
-                            callee_str = "Promise_race".to_string();
-                        } else if name == "Promise" && member == "any" {
-                            callee_str = "Promise_any".to_string();
-                        } else if name == "Promise" && member == "allSettled" {
-                            callee_str = "Promise_allSettled".to_string();
-                        }
-                    }
-                }
+                if let Some((_object, _member)) = member_callee {}
 
                 if callee_str == "typeof" {
                     for arg in args {
@@ -1453,10 +1430,14 @@ impl TypeChecker {
                         );
                         return Ok(TejxType::from_name("<inferred>"));
                     }
-                    if let Some(Symbol { ty: parent_type, .. }) = self.lookup("super") {
+                    if let Some(Symbol {
+                        ty: parent_type, ..
+                    }) = self.lookup("super")
+                    {
                         let parent_name = parent_type.to_name();
                         let mut expected_arg_types = Vec::new();
-                        if let Some(info) = self.resolve_instance_member(&parent_name, "constructor")
+                        if let Some(info) =
+                            self.resolve_instance_member(&parent_name, "constructor")
                         {
                             if let TejxType::Function(params, _) = &info.ty {
                                 expected_arg_types = params.clone();
@@ -1471,8 +1452,7 @@ impl TypeChecker {
                             actual_arg_types.push(actual);
                         }
 
-                        let is_optional_param =
-                            |ty: &TejxType| matches!(ty, TejxType::Optional(_));
+                        let is_optional_param = |ty: &TejxType| matches!(ty, TejxType::Optional(_));
                         if !expected_arg_types.is_empty() {
                             if args.len() > expected_arg_types.len() {
                                 self.report_error_detailed(
@@ -1537,7 +1517,13 @@ impl TypeChecker {
 
                         return Ok(TejxType::Void);
                     }
-                    self.report_error_detailed("Cannot use 'super' here".to_string(), *_line, *_col, "E0115", Some("'super' can only be used inside a class that extends another class"));
+                    self.report_error_detailed(
+                        "Cannot use 'super' here".to_string(),
+                        *_line,
+                        *_col,
+                        "E0115",
+                        Some("'super' can only be used inside a class that extends another class"),
+                    );
                     return Ok(TejxType::from_name("<inferred>"));
                 }
 
@@ -1548,7 +1534,13 @@ impl TypeChecker {
                         false
                     };
 
-                let callee_type = self.check_expression(callee)?.to_name();
+                let mut callee_type_val = self.check_expression(callee)?;
+                if let Some(alias_sym) = self.lookup(&callee_type_val.to_name()) {
+                    if let Some(aliased) = &alias_sym.aliased_type {
+                        callee_type_val = aliased.clone();
+                    }
+                }
+                let callee_type = callee_type_val.to_name();
                 let callable_callee_type = if optional_member_return {
                     Self::unwrap_optional_type_name_str(&callee_type).unwrap_or(&callee_type)
                 } else {
@@ -1562,7 +1554,13 @@ impl TypeChecker {
 
                 // Always try symbol lookup to fill s_params and is_variadic exactly.
                 if let Some(s) = self.lookup(&callee_str) {
-                    let type_name_str = s.ty.to_name();
+                    let mut actual_ty = s.ty.clone();
+                    if let Some(alias_sym) = self.lookup(&actual_ty.to_name()) {
+                        if let Some(aliased) = &alias_sym.aliased_type {
+                            actual_ty = aliased.clone();
+                        }
+                    }
+                    let type_name_str = actual_ty.to_name();
                     let mut symbol_is_callable = false;
                     if return_type == "<inferred>" && type_name_str.starts_with("function:") {
                         let parts: Vec<&str> = type_name_str.split(':').collect();
@@ -1574,21 +1572,28 @@ impl TypeChecker {
                             return_type = ret;
                         }
                         symbol_is_callable = true;
-                    } else if let TejxType::Function(_, ret) = &s.ty {
+                    } else if let TejxType::Function(fn_params, ret) = &actual_ty {
                         return_type = ret.to_name();
+                        s_params = fn_params.iter().map(|p| p.to_name()).collect();
+                        is_variadic = s.is_variadic;
+                        _signature_found = true;
                         symbol_is_callable = true;
                     } else if return_type == "<inferred>" && type_name_str.contains("=>") {
-                        let (parsed_ret, _, _) = self.parse_signature(type_name_str.clone());
+                        let (parsed_ret, parsed_params, parsed_variadic) =
+                            self.parse_signature(type_name_str.clone());
                         let parts: Vec<&str> = parsed_ret.splitn(2, ':').collect();
                         if parts.len() >= 2 {
                             return_type = parts[1].to_string();
                         } else {
                             return_type = parsed_ret;
                         }
+                        s_params = parsed_params;
+                        is_variadic = parsed_variadic;
+                        _signature_found = true;
                         symbol_is_callable = true;
                     }
 
-                    if symbol_is_callable {
+                    if symbol_is_callable && !_signature_found {
                         s_params = s.params.iter().map(|p| p.to_name()).collect();
                         is_variadic = s.is_variadic;
                         _signature_found = true;
@@ -1679,8 +1684,7 @@ impl TypeChecker {
                                     &info.ty.to_name(),
                                     &receiver_ty.to_name(),
                                 );
-                                if !info.is_static
-                                    && !Self::is_callable_type_name(&member_ty_name)
+                                if !info.is_static && !Self::is_callable_type_name(&member_ty_name)
                                 {
                                     let receiver_name = receiver_ty.to_name();
                                     let hint = format!(
@@ -1764,10 +1768,26 @@ impl TypeChecker {
                     }
                 }
                 if call_generic_params.is_empty() && !member_lookup_resolved {
-                    let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
-                    if let Some(s) = self.lookup(func_name) {
-                        call_generic_params = s.generic_params.clone();
-                        call_generic_owner = func_name.to_string();
+                    if let Some((object, member)) = member_callee {
+                        if let Expression::Identifier { name, .. } = object {
+                            if let Some(s) = self.lookup(&name) {
+                                if s.ty.to_name() == "class" {
+                                    if let Some(members) = self.class_members.get(name) {
+                                        if let Some(info) = members.get(member) {
+                                            call_generic_params = info.generic_params.clone();
+                                            call_generic_owner = member.to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if call_generic_params.is_empty() {
+                        let func_name = callee_str.split('.').next_back().unwrap_or(&callee_str);
+                        if let Some(s) = self.lookup(func_name) {
+                            call_generic_params = s.generic_params.clone();
+                            call_generic_owner = func_name.to_string();
+                        }
                     }
                 }
 
@@ -1807,10 +1827,8 @@ impl TypeChecker {
                 }
 
                 let mut param_offset = 0;
-                if member_callee.is_some() {
-                    if !s_params.is_empty() && s_params.len() > args.len() {
-                        param_offset = 1;
-                    }
+                if member_callee.is_some() && !s_params.is_empty() && s_params.len() > args.len() {
+                    param_offset = 1;
                 }
 
                 let parse_type_string = |tc: &TypeChecker, ty_str: &str| -> TejxType {
@@ -1879,7 +1897,7 @@ impl TypeChecker {
                                     *_line,
                                     *_col,
                                     "E0101",
-                                    Some("Provide a valid concrete type"),
+                                    Some(&self.type_suggestion_or_default_hint(&concrete.to_name())),
                                 );
                                 explicit_type_args_valid = false;
                                 break;
@@ -2256,12 +2274,27 @@ impl TypeChecker {
                 if explicit_type_args_valid {
                     if !call_generic_params.is_empty() {
                         if let Some(explicit_args) = explicit_type_args.clone() {
-                            self.call_instantiations.insert(
-                                (*_line, *_col, callee_str.clone()),
-                                explicit_args.clone(),
-                            );
+                            let mut inst_name = func_name.to_string();
+                            if let Some((object, member)) = member_callee {
+                                if let Ok(mut receiver_ty) = self.check_expression(object) {
+                                    if let TejxType::Optional(inner) = receiver_ty {
+                                        receiver_ty = *inner;
+                                    }
+                                    if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                        if let Some(aliased) = &sym.aliased_type {
+                                            receiver_ty = aliased.clone();
+                                        }
+                                    }
+                                    if matches!(receiver_ty, TejxType::Class(..)) {
+                                        inst_name = format!("{}_{}", receiver_ty.to_name(), member);
+                                    }
+                                }
+                            }
+
+                            self.call_instantiations
+                                .insert((*_line, *_col, callee_str.clone()), explicit_args.clone());
                             self.function_instantiations
-                                .entry(func_name.to_string())
+                                .entry(inst_name)
                                 .or_default()
                                 .insert(explicit_args);
                         }
@@ -2346,12 +2379,27 @@ impl TypeChecker {
                             Some("Pass an argument with a concrete type or provide explicit type arguments"),
                         );
                     } else {
-                        self.call_instantiations.insert(
-                            (*_line, *_col, callee_str.clone()),
-                            concrete_args.clone(),
-                        );
+                        let mut inst_name = func_name.to_string();
+                        if let Some((object, member)) = member_callee {
+                            if let Ok(mut receiver_ty) = self.check_expression(object) {
+                                if let TejxType::Optional(inner) = receiver_ty {
+                                    receiver_ty = *inner;
+                                }
+                                if let Some(sym) = self.lookup(&receiver_ty.to_name()) {
+                                    if let Some(aliased) = &sym.aliased_type {
+                                        receiver_ty = aliased.clone();
+                                    }
+                                }
+                                if matches!(receiver_ty, TejxType::Class(..)) {
+                                    inst_name = format!("{}_{}", receiver_ty.to_name(), member);
+                                }
+                            }
+                        }
+
+                        self.call_instantiations
+                            .insert((*_line, *_col, callee_str.clone()), concrete_args.clone());
                         self.function_instantiations
-                            .entry(func_name.to_string())
+                            .entry(inst_name)
                             .or_default()
                             .insert(concrete_args);
                     }
@@ -2364,6 +2412,21 @@ impl TypeChecker {
                         .lookup(&callee_str)
                         .and_then(|s| s.min_params)
                         .map(|m| m.saturating_sub(param_offset))
+                        .or_else(|| {
+                            if let Some((object, member)) = member_callee {
+                                if let Ok(receiver_ty) = self.check_expression(object) {
+                                    if let Some((_, info)) = self
+                                        .resolve_instance_member_with_owner(
+                                            &receiver_ty.to_name(),
+                                            member,
+                                        )
+                                    {
+                                        return info.min_params;
+                                    }
+                                }
+                            }
+                            None
+                        })
                         .unwrap_or(effective_param_count);
 
                     if args.len() < min_required || args.len() > effective_param_count {
@@ -2417,9 +2480,8 @@ impl TypeChecker {
                 let final_ret_ty = apply_bindings_to_type_str(self, &return_type, &bindings);
                 let mut parsed_ret_ty = parse_type_string(self, &final_ret_ty);
                 if let Some((object, member)) = member_callee {
-                    let is_static_promise_resolve =
-                        matches!(object, Expression::Identifier { name, .. } if name == "Promise")
-                            && member == "resolve";
+                    let is_static_promise_resolve = matches!(object, Expression::Identifier { name, .. } if name == "Promise")
+                        && member == "resolve";
                     let is_instance_promise_chain = self
                         .check_expression(object)
                         .ok()
@@ -2624,23 +2686,6 @@ impl TypeChecker {
             }
             Expression::SpreadExpr { _expr, .. } => self.check_expression(_expr),
 
-            Expression::AwaitExpr { expr, _line, _col } => {
-                if !self.current_function_is_async && self.current_function_return.is_some() {
-                    self.report_error_detailed(
-                        "'await' can only be used inside 'async' function".to_string(),
-                        *_line,
-                        *_col,
-                        "E0113",
-                        Some("Mark the enclosing function with 'async' keyword"),
-                    );
-                }
-                let t = self.check_expression(expr)?.to_name();
-                if t.starts_with("Promise<") {
-                    Ok(TejxType::from_name(&t[8..t.len() - 1]))
-                } else {
-                    Ok(TejxType::from_name(&t))
-                }
-            }
             Expression::OptionalArrayAccessExpr { target, index, .. } => {
                 let target_ty = self.check_expression(target)?;
                 self.check_expression(index)?;
@@ -2726,10 +2771,8 @@ impl TypeChecker {
                     self.resolve_instance_member_with_owner(&resolved_obj_ty.to_name(), member)
                 {
                     if info.access != AccessLevel::Public
-                        && !self.is_member_accessible_from_current_class(
-                            &declaring_type,
-                            &info.access,
-                        )
+                        && !self
+                            .is_member_accessible_from_current_class(&declaring_type, &info.access)
                     {
                         self.report_error_detailed(
                             format!(
@@ -2887,7 +2930,7 @@ impl TypeChecker {
                                     *_line,
                                     *_col,
                                     "E0101",
-                                    Some("Provide a valid concrete type"),
+                                    Some(&self.type_suggestion_or_default_hint(&concrete_ty.to_name())),
                                 );
                             }
                             if let Some(bound) = &gp.bound {
@@ -2965,7 +3008,8 @@ impl TypeChecker {
                                 );
                                 reported_explicit_generic_issue = true;
                             } else {
-                                for (gp, concrete) in sym.generic_params.iter().zip(generics.iter()) {
+                                for (gp, concrete) in sym.generic_params.iter().zip(generics.iter())
+                                {
                                     if !self.is_valid_type(concrete) {
                                         self.report_error_detailed(
                                             format!(
@@ -2976,7 +3020,7 @@ impl TypeChecker {
                                             *_line,
                                             *_col,
                                             "E0101",
-                                            Some("Provide a valid concrete type"),
+                                            Some(&self.type_suggestion_or_default_hint(&concrete.to_name())),
                                         );
                                         reported_explicit_generic_issue = true;
                                         break;
@@ -3028,23 +3072,26 @@ impl TypeChecker {
                     self.report_error_detailed(format!("Cannot instantiate abstract class '{}'", class_name), *_line, *_col, "E0110", Some("Create a concrete subclass that implements all abstract methods, then instantiate that instead"));
                 }
 
-                let constructor_arg_types_for = |tc: &TypeChecker, class_ref: &str| -> Vec<TejxType> {
-                    let Some((_, info)) =
-                        tc.resolve_instance_member_with_owner(class_ref, "constructor")
-                    else {
-                        return Vec::new();
-                    };
+                let constructor_arg_types_for =
+                    |tc: &TypeChecker, class_ref: &str| -> Vec<TejxType> {
+                        let Some((_, info)) =
+                            tc.resolve_instance_member_with_owner(class_ref, "constructor")
+                        else {
+                            return Vec::new();
+                        };
 
-                    let substituted = tc.substitute_generics(&info.ty.to_name(), class_ref);
-                    match TejxType::from_name(&substituted) {
-                        TejxType::Function(params, _) => params,
-                        TejxType::Class(sig, _) if sig.starts_with("function:") || sig.contains("=>") => {
-                            let (_ret, params, _) = tc.parse_signature(sig);
-                            params.iter().map(|p| TejxType::from_name(p)).collect()
+                        let substituted = tc.substitute_generics(&info.ty.to_name(), class_ref);
+                        match TejxType::from_name(&substituted) {
+                            TejxType::Function(params, _) => params,
+                            TejxType::Class(sig, _)
+                                if sig.starts_with("function:") || sig.contains("=>") =>
+                            {
+                                let (_ret, params, _) = tc.parse_signature(sig);
+                                params.iter().map(|p| TejxType::from_name(p)).collect()
+                            }
+                            _ => Vec::new(),
                         }
-                        _ => Vec::new(),
-                    }
-                };
+                    };
 
                 let expected_arg_types = constructor_arg_types_for(self, &class_ty.to_name());
 
@@ -3066,6 +3113,14 @@ impl TypeChecker {
                         _ => false,
                     }
                 };
+                let constructor_min_required = if let Some((_, info)) =
+                    self.resolve_instance_member_with_owner(&class_ty.to_name(), "constructor")
+                {
+                    info.min_params.unwrap_or(expected_arg_types.len())
+                } else {
+                    expected_arg_types.len()
+                };
+
                 if !expected_arg_types.is_empty() {
                     if args.len() > expected_arg_types.len() {
                         self.report_error_detailed(
@@ -3080,14 +3135,24 @@ impl TypeChecker {
                             "E0109",
                             Some(&format!("Provide {} argument(s)", expected_arg_types.len())),
                         );
-                    } else if args.len() < expected_arg_types.len() {
-                        let missing = &expected_arg_types[args.len()..];
+                    } else if args.len() < constructor_min_required {
+                        let missing = &expected_arg_types[args.len()..constructor_min_required];
                         if !missing.iter().all(is_optional_param) {
+                            let expected_msg =
+                                if constructor_min_required < expected_arg_types.len() {
+                                    format!(
+                                        "{} to {}",
+                                        constructor_min_required,
+                                        expected_arg_types.len()
+                                    )
+                                } else {
+                                    format!("{}", expected_arg_types.len())
+                                };
                             self.report_error_detailed(
                                 format!(
                                     "Constructor for '{}' expects {} argument(s), but {} were provided",
                                     effective_class_name,
-                                    expected_arg_types.len(),
+                                    expected_msg,
                                     args.len()
                                 ),
                                 *_line,
@@ -3095,7 +3160,7 @@ impl TypeChecker {
                                 "E0109",
                                 Some(&format!(
                                     "Provide {} argument(s)",
-                                    expected_arg_types.len()
+                                    expected_msg
                                 )),
                             );
                         }

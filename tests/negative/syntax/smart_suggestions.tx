@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that typos in variables, types, and members emit friendly suggestions.
+
+function main(): void {
+    let myCounter: int = 10;
+    print(myCountr);
+}

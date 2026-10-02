@@ -9,8 +9,8 @@ impl CodeGen {
     fn call_can_raise_runtime_exception(&self, callee: &str) -> bool {
         !Self::known_non_throwing_call_target(callee)
             && (self.tracked_runtime_functions.contains(callee)
-            || self.extern_mir_functions.contains(callee)
-            || !self.known_mir_functions.contains(callee))
+                || self.extern_mir_functions.contains(callee)
+                || !self.known_mir_functions.contains(callee))
     }
 
     fn instruction_needs_runtime_location(&self, inst: &MIRInstruction) -> bool {
@@ -160,10 +160,15 @@ impl CodeGen {
                     self.emit_line(&format!("call void @{}()", TEJX_POP_HANDLER));
                 }
 
-                if self.num_roots > 0 {
-                    self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-                    self.emit_line(&format!("call void @rt_pop_roots(i64 {})", self.num_roots));
-                }
+                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
+                let final_val = if let Some(v) = value {
+                    let val_str = self.resolve_value(v);
+                    Some(self.emit_abi_cast(&val_str, v.get_type(), &func.return_type))
+                } else {
+                    None
+                };
+
+                self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");
 
                 if let Some(arena) = self.current_arena.clone() {
                     self.emit_line(&format!("call void @{}(i64 {})", RT_ARENA_DESTROY, arena));
@@ -173,10 +178,7 @@ impl CodeGen {
                     self.emit_line("call void @rt_leave_frame()");
                 }
 
-                let ret_llvm_ty = Self::get_llvm_type(&func.return_type);
-                if let Some(v) = value {
-                    let val_str = self.resolve_value(v);
-                    let final_val = self.emit_abi_cast(&val_str, v.get_type(), &func.return_type);
+                if let Some(final_val) = final_val {
                     self.emit_line(&format!("ret {} {}", ret_llvm_ty, final_val));
                 } else if ret_llvm_ty == "void" {
                     self.emit_line("ret void");
@@ -383,6 +385,16 @@ impl CodeGen {
                     ));
                     l_str
                 }
+            } else if matches!(l_ty, TejxType::Char) {
+                self.declare_runtime_fn("rt_to_string_char", "i64 @rt_to_string_char(i32)");
+                let val_as_char = self.emit_abi_cast(&l, l_ty, &TejxType::Char);
+                self.temp_counter += 1;
+                let l_str = format!("%l_str{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_char(i32 {})",
+                    l_str, val_as_char
+                ));
+                l_str
             } else if matches!(l_ty, TejxType::Bool) {
                 self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
                 let val_as_bool = self.emit_abi_cast(&l, l_ty, &TejxType::Int64);
@@ -434,6 +446,16 @@ impl CodeGen {
                     ));
                     r_str
                 }
+            } else if matches!(r_ty, TejxType::Char) {
+                self.declare_runtime_fn("rt_to_string_char", "i64 @rt_to_string_char(i32)");
+                let val_as_char = self.emit_abi_cast(&r, r_ty, &TejxType::Char);
+                self.temp_counter += 1;
+                let r_str = format!("%r_str{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_char(i32 {})",
+                    r_str, val_as_char
+                ));
+                r_str
             } else if matches!(r_ty, TejxType::Bool) {
                 self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
                 let val_as_bool = self.emit_abi_cast(&r, r_ty, &TejxType::Int64);
@@ -879,8 +901,8 @@ impl CodeGen {
             )
         };
 
-        let requires_heap = self.class_requires_heap_alloc(shape_name);
-        let can_stack_allocate = func.name != "tejx_main" && !requires_heap;
+        let _requires_heap = self.class_requires_heap_alloc(shape_name);
+        let can_stack_allocate = false;
         if can_stack_allocate && !is_escaped && !dst.is_empty() && self.current_arena.is_some() {
             let arena = self.current_arena.clone().unwrap();
             self.declare_runtime_fn(
@@ -1277,7 +1299,8 @@ impl CodeGen {
                 let elem_size = inner.size();
                 let body_size = elem_size.saturating_mul(*len);
                 let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
-                if func.name != "tejx_main" && !is_escaped && body_size <= 256 {
+                let can_stack_allocate = false;
+                if can_stack_allocate && func.name != "tejx_main" && !is_escaped && body_size <= 256 {
                     let stack_arr = format!("%stack_arr_{}", dst.replace('.', "_"));
                     let total_size = body_size + 24;
                     self.alloca_buffer.push_str(&format!(
@@ -1824,6 +1847,7 @@ impl CodeGen {
             let mut llvm_args = Vec::new();
             let mut llvm_decl_args = Vec::new();
             let mut temp_root_count = 0;
+            let mut reload_instructions = Vec::new();
             let expected_param_tys = if is_runtime_fn || final_callee.starts_with("virtual_call_") {
                 None
             } else {
@@ -1897,9 +1921,10 @@ impl CodeGen {
                         };
 
                         if Self::is_gc_managed(&effective_arg_ty)
+                            && !final_reg.starts_with("ptrtoint")
+                            && !casted.starts_with("ptrtoint")
                             && !(final_callee == "rt_string_from_c_str"
-                                && matches!(arg_mir.get_type(), TejxType::String)
-                                && final_reg.starts_with("ptrtoint"))
+                                && matches!(arg_mir.get_type(), TejxType::String))
                         {
                             self.declare_runtime_fn(
                                 "rt_push_root",
@@ -1916,10 +1941,18 @@ impl CodeGen {
                             self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
                             self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
                             temp_root_count += 1;
+
+                            self.temp_counter += 1;
+                            let reloaded = format!("%arg_reloaded_{}", self.temp_counter);
+                            reload_instructions.push(format!("  {} = load i64, i64* {}", reloaded, tmp_root));
+                            
+                            call_args_info.push((arg_mir, reloaded.clone()));
+                            llvm_args.push(format!("{} {}", target_llvm_ty, reloaded));
+                        } else {
+                            call_args_info.push((arg_mir, final_reg));
+                            llvm_args.push(format!("{} {}", target_llvm_ty, casted));
                         }
 
-                        call_args_info.push((arg_mir, final_reg));
-                        llvm_args.push(format!("{} {}", target_llvm_ty, casted));
                         llvm_decl_args.push(target_llvm_ty);
                     }
                 }
@@ -2063,10 +2096,18 @@ impl CodeGen {
                     self.emit_line(&format!("store i64 {}, i64* {}", casted, tmp_root));
                     self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
                     temp_root_count += 1;
+
+                    self.temp_counter += 1;
+                    let reloaded = format!("%arg_reloaded_{}", self.temp_counter);
+                    reload_instructions.push(format!("  {} = load i64, i64* {}", reloaded, tmp_root));
+                    
+                    call_args_info.push((arg.clone(), reloaded.clone()));
+                    llvm_args.push(format!("{} {}", target_llvm_ty, reloaded));
+                } else {
+                    call_args_info.push((arg.clone(), final_reg));
+                    llvm_args.push(format!("{} {}", target_llvm_ty, casted));
                 }
 
-                call_args_info.push((arg.clone(), final_reg));
-                llvm_args.push(format!("{} {}", target_llvm_ty, casted));
                 llvm_decl_args.push(target_llvm_ty);
             }
 
@@ -2105,6 +2146,10 @@ impl CodeGen {
                     || final_callee == "rt_print_string_array"
                 {
                     "void".to_string()
+                } else if ret_ty.is_float() || matches!(ret_ty, TejxType::Bool) {
+                    Self::get_llvm_type(&ret_ty).to_string()
+                } else if matches!(ret_ty, TejxType::Void) {
+                    "void".to_string()
                 } else {
                     "i64".to_string()
                 }
@@ -2114,6 +2159,10 @@ impl CodeGen {
 
             let use_quotes = !is_runtime_fn;
             let is_virtual = final_callee.starts_with("virtual_call_");
+
+            for reload in reload_instructions {
+                self.emit_line(reload.trim());
+            }
 
             let callee_symbol = if is_virtual {
                 // Dynamic dispatch on 'any' types via Map is removed.
@@ -2176,6 +2225,10 @@ impl CodeGen {
             if !dst.is_empty() {
                 if decl_ret == "double" {
                     final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float64, &store_ty);
+                    self.float_ssa_vars.insert(dst.clone(), result_tmp.clone());
+                } else if decl_ret == "float" {
+                    final_val = self.emit_abi_cast(&result_tmp, &TejxType::Float32, &store_ty);
+                    self.float_ssa_vars.insert(dst.clone(), result_tmp.clone());
                 } else if is_runtime_fn && decl_ret == "i64" {
                     let runtime_returns_primitive = matches!(
                         final_callee.as_str(),
@@ -2259,19 +2312,6 @@ impl CodeGen {
                 }
 
                 if is_container_mutator && i > 0 {
-                    should_consume = true;
-                }
-
-                // Fix: The worker task must NOT free the promise ID (Arg 0) after resolving.
-                // Consider it consumed by the resolve call (ownership transfer to runtime/void).
-                if (final_callee == RT_PROMISE_RESOLVE || final_callee == RT_PROMISE_REJECT)
-                    && (i == 0 || i == 1)
-                {
-                    should_consume = true;
-                }
-
-                // Fix: The arguments bundle passed to a task MUST be consumed (moved to the task queue).
-                if final_callee == TEJX_ENQUEUE_TASK && i == 1 {
                     should_consume = true;
                 }
 
@@ -2480,6 +2520,7 @@ impl CodeGen {
     }
 
     pub(crate) fn emit_throw(&mut self, value: &MIRValue) {
+        let val = self.resolve_value(value);
         if let Some(arena) = self.current_arena.clone() {
             self.declare_runtime_fn(
                 RT_ARENA_DESTROY,
@@ -2487,11 +2528,7 @@ impl CodeGen {
             );
             self.emit_line(&format!("call void @{}(i64 {})", RT_ARENA_DESTROY, arena));
         }
-        if self.num_roots > 0 {
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.emit_line(&format!("call void @rt_pop_roots(i64 {})", self.num_roots));
-        }
-        let val = self.resolve_value(value);
+        self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");
         self.emit_line(&format!("call void @tejx_throw(i64 {})", val));
         self.emit_line("unreachable");
     }

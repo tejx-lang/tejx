@@ -33,8 +33,6 @@ pub enum TokenType {
     Private,
     Protected,
     Static,
-    Async,
-    Await, // OOP Modifiers
     Try,
     Catch,
     Finally,

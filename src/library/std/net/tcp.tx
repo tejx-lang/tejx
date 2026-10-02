@@ -12,6 +12,87 @@ extern function rt_net_start_tls_insecure(stream: int64, host: string): int;
 extern function rt_TcpStream_constructor(_this: TcpStream, id: int64): void;
 extern function rt_TcpListener_constructor(_this: TcpListener, id: int64): void;
 
+extern function rt_net_connect(addr: string): int64;
+extern function rt_net_connect_host(host: string, port: int): int64;
+extern function rt_net_connect_tls(host: string, port: int): int64;
+extern function rt_net_connect_tls_insecure(host: string, port: int): int64;
+extern function rt_net_lookup(host: string): Optional<string>;
+extern function rt_net_lookup_all(host: string): string[];
+extern function rt_net_listen(addr: string): int64;
+extern function rt_net_last_error(): string;
+extern function rt_net_close(stream: int64): int;
+extern function rt_net_close_listener(listener: int64): int;
+// Atomic-swap close: safe to call concurrently with the GC finalizer.
+extern function rt_net_close_stream_obj(_this: TcpStream): int;
+extern function rt_net_close_listener_obj(_this: TcpListener): int;
+
+function _net_connect_stream(addr: string): Optional<TcpStream> {
+    let id = rt_net_connect(addr);
+    if (id <= 0) return None;
+    return new TcpStream(id);
+}
+
+function _net_connect_host_stream(host: string, port: int): Optional<TcpStream> {
+    let id = rt_net_connect_host(host, port);
+    if (id <= 0) return None;
+    return new TcpStream(id);
+}
+
+function _net_connect_tls_stream(host: string, port: int, insecure: bool = false): Optional<TcpStream> {
+    let id = insecure
+        ? rt_net_connect_tls_insecure(host, port)
+        : rt_net_connect_tls(host, port);
+    if (id <= 0) return None;
+    return new TcpStream(id);
+}
+
+function _net_lookup_host(host: string): Optional<string> {
+    return rt_net_lookup(host);
+}
+
+function _net_lookup_all_hosts(host: string): string[] {
+    return rt_net_lookup_all(host);
+}
+
+function _net_listen_on(addr: string): TcpListener {
+    let id = rt_net_listen(addr);
+    if (id <= 0) {
+        let err = rt_net_last_error();
+        if (err != "") {
+            throw new Error(err);
+        }
+        throw new Error("Failed to listen on " + addr);
+    }
+    return new TcpListener(id);
+}
+
+function _net_close_stream(id: int64): void {
+    if (id <= 0) return;
+    let res = rt_net_close(id);
+    if (res == -1) {
+        throw new Error("Invalid stream");
+    }
+}
+
+function _net_close_listener(id: int64): void {
+    if (id <= 0) return;
+    rt_net_close_listener(id);
+}
+
+function _net_close_any(stream: Optional<any>): void {
+    if (stream == None) return;
+
+    let value: any = stream;
+    if (value instanceof TcpStream) {
+        value.close();
+        return;
+    }
+
+    let id: int64 = value as int64;
+    if (id <= 0) return;
+    _net_close_stream(id);
+}
+
 export class TcpStream {
     private id: int64;
 
@@ -86,9 +167,9 @@ export class TcpStream {
     }
 
     close(): void {
-        if (!this.isOpen()) return;
-        _net_close_stream(this.id);
-        this.id = 0;
+        // Use the atomic-swap close so this is safe to call concurrently with
+        // the GC finalizer (only one side will see a non-zero id and free the box).
+        rt_net_close_stream_obj(this);
     }
 }
 
@@ -105,11 +186,8 @@ export class TcpListener {
 
     tryAccept(): Optional<TcpStream> {
         let sid = rt_net_accept(this.id);
-        if (sid == 0) {
+        if (sid <= 0) {
             return None;
-        }
-        if (sid < 0) {
-            throw new Error("Accept failed");
         }
         return new TcpStream(sid);
     }
@@ -127,8 +205,6 @@ export class TcpListener {
     }
 
     close(): void {
-        if (!this.isOpen()) return;
-        _net_close_listener(this.id);
-        this.id = 0;
+        rt_net_close_listener_obj(this);
     }
 }

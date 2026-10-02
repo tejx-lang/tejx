@@ -1,0 +1,409 @@
+// Compiler Edge Cases Tests
+// ==========================
+// Production-grade tests for compiler correctness under unusual conditions:
+// - Deeply nested expressions and blocks
+// - Long if-else chains
+// - Recursive class hierarchies
+// - Boundary integer values
+// - Float edge cases
+// - Empty collections
+// - Large function bodies
+// - Complex type interactions
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false, assert_ne_int, assert_eq_float } from "../utils.tx";
+import { collect } from "std:gc";
+
+class ItemPair {
+    first: int;
+    second: string;
+    constructor(f: int, s: string) { this.first = f; this.second = s; }
+}
+
+// === Deep Expression Nesting ===
+
+function test_deeply_nested_expressions() {
+    print("--- Compiler: Deep Expression Nesting ---");
+
+    // 20-level deep arithmetic
+    let result = ((((((((((((((((((((1 + 2) + 3) + 4) + 5) + 6) + 7) + 8) + 9) + 10)
+        + 11) + 12) + 13) + 14) + 15) + 16) + 17) + 18) + 19) + 20));
+    assert_eq_int(210, result, "Deep addition nest (1..20)");
+
+    // Nested multiplication
+    let mul = (((2 * 3) * 2) * 2) * 2;
+    assert_eq_int(48, mul, "Nested multiplication");
+
+    // Mixed operations deeply nested
+    let mixed = ((10 + 5) * 2 - 3) * (4 + 1) - ((7 - 2) * 3);
+    assert_eq_int(120, mixed, "Deep mixed operations");
+
+    // Boolean nesting
+    let boolResult = (true && (false || (true && (true || false))));
+    assert_true(boolResult, "Deep boolean nesting");
+
+    // String concatenation nesting
+    let s = "a" + ("b" + ("c" + ("d" + ("e" + "f"))));
+    assert_eq_string("abcdef", s, "Nested string concat");
+}
+
+// === Deep Block Nesting ===
+
+function test_deep_block_nesting() {
+    print("--- Compiler: Deep Block Nesting ---");
+
+    let val = 0;
+    { // depth 1
+        val = val + 1;
+        { // depth 2
+            val = val + 1;
+            { // depth 3
+                val = val + 1;
+                { // depth 4
+                    val = val + 1;
+                    { // depth 5
+                        val = val + 1;
+                        { // depth 6
+                            val = val + 1;
+                            { // depth 7
+                                val = val + 1;
+                                { // depth 8
+                                    val = val + 1;
+                                    { // depth 9
+                                        val = val + 1;
+                                        { // depth 10
+                                            val = val + 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq_int(10, val, "10-deep block nesting");
+}
+
+// === Long If-Else Chains ===
+
+function classify(n: int): string {
+    if (n == 0) return "zero";
+    else if (n == 1) return "one";
+    else if (n == 2) return "two";
+    else if (n == 3) return "three";
+    else if (n == 4) return "four";
+    else if (n == 5) return "five";
+    else if (n == 6) return "six";
+    else if (n == 7) return "seven";
+    else if (n == 8) return "eight";
+    else if (n == 9) return "nine";
+    else if (n == 10) return "ten";
+    else if (n == 11) return "eleven";
+    else if (n == 12) return "twelve";
+    else if (n == 13) return "thirteen";
+    else if (n == 14) return "fourteen";
+    else if (n == 15) return "fifteen";
+    else if (n == 16) return "sixteen";
+    else if (n == 17) return "seventeen";
+    else if (n == 18) return "eighteen";
+    else if (n == 19) return "nineteen";
+    else if (n == 20) return "twenty";
+    else return "unknown";
+}
+
+function test_long_if_else() {
+    print("--- Compiler: Long If-Else Chain ---");
+
+    assert_eq_string("zero", classify(0), "Classify 0");
+    assert_eq_string("one", classify(1), "Classify 1");
+    assert_eq_string("ten", classify(10), "Classify 10");
+    assert_eq_string("fifteen", classify(15), "Classify 15");
+    assert_eq_string("twenty", classify(20), "Classify 20");
+    assert_eq_string("unknown", classify(99), "Classify unknown");
+    assert_eq_string("unknown", classify(-1), "Classify negative");
+}
+
+// === Recursive Class Hierarchies ===
+
+class Animal {
+    name: string;
+    constructor(name: string) { this.name = name; }
+    getName(): string { return this.name; }
+    speak(): string { return this.name + " speaks"; }
+}
+
+class Mammal extends Animal {
+    legs: int;
+    constructor(name: string, legs: int) {
+        super(name);
+        this.legs = legs;
+    }
+    getLegs(): int { return this.legs; }
+    speak(): string { return this.getName() + " (mammal)"; }
+}
+
+class Dog extends Mammal {
+    breed: string;
+    constructor(breed: string) {
+        super("Dog", 4);
+        this.breed = breed;
+    }
+    getBreed(): string { return this.breed; }
+    speak(): string { return "Woof! I'm a " + this.breed; }
+}
+
+class GuideDog extends Dog {
+    handler: string;
+    constructor(breed: string, handler: string) {
+        super(breed);
+        this.handler = handler;
+    }
+    getHandler(): string { return this.handler; }
+    describe(): string {
+        return this.speak() + " guiding " + this.handler;
+    }
+}
+
+function test_deep_inheritance() {
+    print("--- Compiler: Deep Inheritance (4 levels) ---");
+
+    let gd = new GuideDog("Labrador", "Alice");
+    assert_eq_string("Labrador", gd.getBreed(), "GuideDog breed");
+    assert_eq_string("Alice", gd.getHandler(), "GuideDog handler");
+    assert_eq_int(4, gd.getLegs(), "GuideDog legs from Mammal");
+    assert_eq_string("Dog", gd.getName(), "GuideDog name from Animal");
+    assert_eq_string("Woof! I'm a Labrador guiding Alice", gd.describe(), "GuideDog describe");
+}
+
+// === Boundary Integer Values ===
+
+function test_integer_boundaries() {
+    print("--- Compiler: Integer Boundaries ---");
+
+    // Basic boundary tests
+    let zero = 0;
+    let neg = -1;
+    let one = 1;
+
+    assert_eq_int(0, zero, "Zero");
+    assert_eq_int(-1, neg, "Negative one");
+    assert_eq_int(1, one, "One");
+
+    // Arithmetic at boundaries
+    assert_eq_int(0, zero + zero, "0 + 0");
+    assert_eq_int(-1, zero + neg, "0 + -1");
+    assert_eq_int(0, neg + one, "-1 + 1");
+    assert_eq_int(0, zero * 999999, "0 * large");
+
+    // Large number arithmetic (64-bit)
+    let large: int64 = 1000000;
+    let result: int64 = large * large;
+    assert_true(result > 0, "Large multiply positive");
+    assert_true(result == 1000000000000, "10^6 * 10^6 = 10^12");
+
+    // Negative arithmetic
+    assert_eq_int(1, neg * neg, "-1 * -1 = 1");
+    assert_eq_int(-1000000, neg * large, "-1 * 10^6");
+}
+
+// === Float Edge Cases ===
+
+function test_float_edge_cases() {
+    print("--- Compiler: Float Edge Cases ---");
+
+    let zero: float = 0.0;
+    let one: float = 1.0;
+    let tiny: float = 0.0001;
+    let large: float = 1000000.0;
+
+    assert_eq_float(0.0, zero, "Float zero");
+    assert_eq_float(1.0, one, "Float one");
+
+    // Precision
+    let sum: float = 0.0;
+    for (let i = 0; i < 10; i++) {
+        sum = sum + 0.1;
+    }
+    // Float imprecision — just verify it's close to 1.0
+    assert_true(sum > 0.99, "Float sum > 0.99");
+    assert_true(sum < 1.01, "Float sum < 1.01");
+
+    // Large * small
+    let product = large * tiny;
+    assert_true(product > 99.0, "large * tiny > 99");
+    assert_true(product < 101.0, "large * tiny < 101");
+
+    // Division
+    assert_eq_float(0.5, one / 2.0, "1.0 / 2.0");
+}
+
+// === Empty Collections ===
+
+function test_empty_collections() {
+    print("--- Compiler: Empty Collections ---");
+
+    // Empty array operations
+    let emptyArr: int[] = [];
+    assert_eq_int(0, emptyArr.length(), "Empty int array length");
+
+    // Empty string operations
+    let emptyStr = "";
+    assert_eq_int(0, emptyStr.length(), "Empty string length");
+    assert_eq_string("", emptyStr, "Empty string equality");
+    assert_eq_string("hello", emptyStr + "hello", "Empty + string");
+    assert_eq_string("hello", "hello" + emptyStr, "String + empty");
+
+    // Array push on empty
+    emptyArr.push(42);
+    assert_eq_int(1, emptyArr.length(), "Push on empty array");
+    assert_eq_int(42, emptyArr[0], "First element after push");
+
+    // Pop back to empty
+    let popped = emptyArr.pop();
+    assert_eq_int(42, popped, "Popped value");
+    assert_eq_int(0, emptyArr.length(), "Back to empty");
+}
+
+// === Large Function Body ===
+
+function test_large_function() {
+    print("--- Compiler: Large Function Body ---");
+
+    // 100+ distinct assignments and operations
+    let v0 = 0; let v1 = 1; let v2 = 2; let v3 = 3; let v4 = 4;
+    let v5 = 5; let v6 = 6; let v7 = 7; let v8 = 8; let v9 = 9;
+
+    v0 = v0 + v1; // 1
+    v1 = v1 + v2; // 3
+    v2 = v2 + v3; // 5
+    v3 = v3 + v4; // 7
+    v4 = v4 + v5; // 9
+    v5 = v5 + v6; // 11
+    v6 = v6 + v7; // 13
+    v7 = v7 + v8; // 15
+    v8 = v8 + v9; // 17
+    v9 = v9 + v0; // 10
+
+    let round1Sum = v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9;
+    assert_eq_int(91, round1Sum, "Large function round 1 sum");
+
+    // Round 2
+    v0 = v0 * 2; // 2
+    v1 = v1 * 2; // 6
+    v2 = v2 * 2; // 10
+    v3 = v3 * 2; // 14
+    v4 = v4 * 2; // 18
+    v5 = v5 * 2; // 22
+    v6 = v6 * 2; // 26
+    v7 = v7 * 2; // 30
+    v8 = v8 * 2; // 34
+    v9 = v9 * 2; // 20
+
+    let round2Sum = v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9;
+    assert_eq_int(182, round2Sum, "Large function round 2 sum");
+
+    // Round 3 — conditional operations
+    for (let i = 0; i < 50; i++) {
+        if (i % 5 == 0) v0 = v0 + 1;
+        if (i % 5 == 1) v1 = v1 + 1;
+        if (i % 5 == 2) v2 = v2 + 1;
+        if (i % 5 == 3) v3 = v3 + 1;
+        if (i % 5 == 4) v4 = v4 + 1;
+    }
+
+    assert_eq_int(12, v0, "v0 after conditionals");
+    assert_eq_int(16, v1, "v1 after conditionals");
+    assert_eq_int(20, v2, "v2 after conditionals");
+    assert_eq_int(24, v3, "v3 after conditionals");
+    assert_eq_int(28, v4, "v4 after conditionals");
+}
+
+// === Complex Type Interactions ===
+
+function makePairs(count: int): ItemPair[] {
+    let pairs: ItemPair[] = [];
+    for (let i = 0; i < count; i++) {
+        pairs.push(new ItemPair(i, "pair-" + i));
+    }
+    return pairs;
+}
+
+function sumPairIds(pairs: ItemPair[]): int {
+    let sum = 0;
+    for (let i = 0; i < pairs.length(); i++) {
+        sum = sum + pairs[i].first;
+    }
+    return sum;
+}
+
+function test_complex_types() {
+    print("--- Compiler: Complex Type Interactions ---");
+
+    let pairs = makePairs(100);
+    assert_eq_int(100, pairs.length(), "100 pairs created");
+
+    let sum = sumPairIds(pairs);
+    assert_eq_int(4950, sum, "Sum of pair ids (0..99)");
+
+    // Nested arrays of objects
+    let groups: ItemPair[][] = [];
+    for (let g = 0; g < 10; g++) {
+        groups.push(makePairs(10));
+    }
+
+    assert_eq_int(10, groups.length(), "10 groups");
+    for (let g = 0; g < 10; g++) {
+        assert_eq_int(10, groups[g].length(), "Group " + g + " has 10 pairs");
+        assert_eq_int(45, sumPairIds(groups[g]), "Group " + g + " sum");
+    }
+
+    // Verify under GC pressure
+    collect();
+    for (let g = 0; g < 10; g++) {
+        assert_eq_int(45, sumPairIds(groups[g]), "Group " + g + " sum after GC");
+    }
+}
+
+// === Recursive Functions with Multiple Return Paths ===
+
+function fib(n: int): int {
+    if (n <= 0) return 0;
+    if (n == 1) return 1;
+    return fib(n - 1) + fib(n - 2);
+}
+
+function factorial(n: int): int {
+    if (n <= 1) return 1;
+    return n * factorial(n - 1);
+}
+
+function test_recursion_variants() {
+    print("--- Compiler: Recursion Variants ---");
+
+    assert_eq_int(0, fib(0), "fib(0)");
+    assert_eq_int(1, fib(1), "fib(1)");
+    assert_eq_int(1, fib(2), "fib(2)");
+    assert_eq_int(55, fib(10), "fib(10)");
+    assert_eq_int(610, fib(15), "fib(15)");
+
+    assert_eq_int(1, factorial(0), "0!");
+    assert_eq_int(1, factorial(1), "1!");
+    assert_eq_int(120, factorial(5), "5!");
+    assert_eq_int(3628800, factorial(10), "10!");
+}
+
+function main() {
+    print("=== COMPILER EDGE CASES START ===");
+    test_deeply_nested_expressions();
+    test_deep_block_nesting();
+    test_long_if_else();
+    test_deep_inheritance();
+    test_integer_boundaries();
+    test_float_edge_cases();
+    test_empty_collections();
+    test_large_function();
+    test_complex_types();
+    test_recursion_variants();
+    print("=== COMPILER EDGE CASES COMPLETE ===");
+}

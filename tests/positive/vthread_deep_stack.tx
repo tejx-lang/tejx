@@ -1,0 +1,16 @@
+function recurse(n: int): int {
+    if (n <= 0) {
+        return 0;
+    }
+    return 1 + recurse(n - 1);
+}
+
+function main(): void {
+    print("Testing growable stack in virtual thread (10,000 recursion depth)...");
+    let t = Thread.spawn(() => {
+        let result = recurse(10000);
+        print("Deep recursion result in vthread:", result);
+    });
+    t.join();
+    print("Growable stack test completed successfully!");
+}

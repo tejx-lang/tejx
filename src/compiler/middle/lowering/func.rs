@@ -81,16 +81,20 @@ impl Lowering {
         let param_types: Vec<TejxType> = func
             .params
             .iter()
-            .map(|p| TejxType::from_node(&p.type_name))
+            .map(|p| {
+                let mut ty = TejxType::from_node(&p.type_name);
+                if ty == TejxType::Void {
+                    if let Some(def) = &p._default_value {
+                        ty = self.lower_expression(def).get_type().clone();
+                    }
+                }
+                ty
+            })
             .collect();
         let mut ret_type = TejxType::from_node(&func.return_type);
-        if func._is_async {
-            let is_promise = matches!(ret_type, TejxType::Class(ref n, _) if n == "Promise");
-            if !is_promise {
-                ret_type = TejxType::Class("Promise".to_string(), vec![ret_type]);
-            }
+        if false {
+            ret_type = TejxType::Class("Promise".to_string(), vec![ret_type]);
         }
-
         let name = if func.is_extern {
             func.name.clone()
         } else {
@@ -118,7 +122,15 @@ impl Lowering {
         );
         self.user_function_args
             .borrow_mut()
-            .insert(name, func.params.len());
+            .insert(name.clone(), func.params.len());
+        let defaults: Vec<Option<Expression>> = func
+            .params
+            .iter()
+            .map(|p| p._default_value.as_ref().map(|b| (**b).clone()))
+            .collect();
+        self.user_function_param_defaults
+            .borrow_mut()
+            .insert(name.clone(), defaults);
         if func.is_extern {
             self.extern_functions.borrow_mut().insert(func.name.clone());
         }
@@ -537,23 +549,25 @@ impl Lowering {
         functions: &mut Vec<HIRStatement>,
     ) {
         let line = func._line;
-        if self.async_enabled && func._is_async {
-            self.lower_async_function(func, functions);
-            return;
-        }
-
         let name = format!("f_{}", func.name);
         let params: Vec<(String, TejxType)> = func
             .params
             .iter()
             .map(|p| {
-                (
-                    p.name.clone(),
-                    self.resolve_alias_type(&TejxType::from_node(&p.type_name)),
-                )
+                let mut ty = self.resolve_alias_type(&TejxType::from_node(&p.type_name));
+                if ty == TejxType::Void {
+                    if let Some(def) = &p._default_value {
+                        ty = self.lower_expression(def).get_type().clone();
+                    }
+                }
+                (p.name.clone(), ty)
             })
             .collect();
-        let return_type = self.resolve_alias_type(&TejxType::from_node(&func.return_type));
+        let mut return_type = self.resolve_alias_type(&TejxType::from_node(&func.return_type));
+        if false {
+            // Async functions always return Promise<T>
+            return_type = TejxType::Class("Promise".to_string(), vec![return_type]);
+        }
 
         self.push_env_owner(name.clone());
         self.enter_scope();
@@ -562,21 +576,61 @@ impl Lowering {
             .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
             .collect();
 
+        let mut body_ast = func.body.clone();
+        if false {
+            use crate::frontend::ast::{Expression, Statement};
+            body_ast = Box::new(Statement::ReturnStmt {
+                value: Some(Box::new(Expression::CallExpr {
+                    callee: Box::new(Expression::Identifier {
+                        name: "__spawn_async".to_string(),
+                        _line: line,
+                        _col: 0,
+                    }),
+                    type_args: None,
+                    args: vec![Expression::LambdaExpr {
+                        params: vec![],
+                        body: func.body.clone(),
+                        _line: line,
+                        _col: 0,
+                    }],
+                    _line: line,
+                    _col: 0,
+                })),
+                _line: line,
+                _col: 0,
+            });
+        }
+
+        let inner_return = if false {
+            self.resolve_alias_type(&TejxType::from_node(&func.return_type))
+        } else {
+            return_type.clone()
+        };
+
+        self.return_type_stack.borrow_mut().push(inner_return);
+
         let body = self
-            .lower_statement(&func.body)
+            .lower_statement(&body_ast)
             .unwrap_or(HIRStatement::Block {
                 line,
                 statements: vec![],
             });
+
+        self.return_type_stack.borrow_mut().pop();
 
         self._exit_scope();
         self.pop_env_owner();
         self.function_display_names
             .borrow_mut()
             .insert(name.clone(), func.name.clone());
+        self.function_source_files
+            .borrow_mut()
+            .insert(name.clone(), self.current_file.borrow().clone());
+        self.function_source_files
+            .borrow_mut()
+            .insert(func.name.clone(), self.current_file.borrow().clone());
 
         functions.push(HIRStatement::Function {
-            async_params: None,
             line,
             name,
             params: mangled_params,

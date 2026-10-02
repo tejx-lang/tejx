@@ -1,0 +1,158 @@
+// Production-Grade Test Suite: Closures, Lexical Scoping & Functional Features
+// =============================================================================
+// Thoroughly exercises:
+// - Anonymous functions and arrow functions / lambdas
+// - Closures capturing variables from enclosing scopes
+// - Mutable state inside closures across multiple invocations (counters, accumulators)
+// - Higher-order functions (functions taking functions, functions returning functions)
+// - Function currying and composition
+// - Default parameter values on functions
+// - Variadic / rest parameters (...args)
+// - Block scoping and lexical shadowing
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function test_basic_lambdas() {
+    print("--- Testing Lambdas & Arrow Functions ---");
+
+    const square = (x: int) => x * x;
+    assert_eq_int(16, square(4), "square(4) == 16");
+    assert_eq_int(81, square(9), "square(9) == 81");
+
+    const addThree = (a: int, b: int, c: int) => a + b + c;
+    assert_eq_int(60, addThree(10, 20, 30), "addThree(10, 20, 30) == 60");
+
+    // Multi-statement lambda with block body
+    const computeTax = (amount: int, isExempt: bool) => {
+        if (isExempt) {
+            return 0;
+        }
+        return amount / 10;
+    };
+    assert_eq_int(0, computeTax(500, true), "Exempt tax is 0");
+    assert_eq_int(50, computeTax(500, false), "Non-exempt tax is 50");
+}
+
+class CounterHolder {
+    count: int = 0;
+    constructor() {}
+}
+
+function test_stateful_closures() {
+    print("--- Testing Closures Mutating State Across Calls ---");
+
+    // Generator-style counter using closure over a heap holder
+    let holder = new CounterHolder();
+    let nextId = () => {
+        holder.count = holder.count + 1;
+        return holder.count;
+    };
+
+    assert_eq_int(1, nextId(), "First call returns 1");
+    assert_eq_int(2, nextId(), "Second call returns 2");
+    assert_eq_int(3, nextId(), "Third call returns 3");
+    assert_eq_int(4, nextId(), "Fourth call returns 4");
+    assert_eq_int(5, nextId(), "Fifth call returns 5");
+}
+
+function test_higher_order_functions() {
+    print("--- Testing Higher-Order Functions ---");
+
+    // Function taking a callback
+    function applyTwice(x: int, f: (n: int) => int): int {
+        return f(f(x));
+    }
+
+    let doubleIt = (n: int) => n * 2;
+    assert_eq_int(20, applyTwice(5, doubleIt), "applyTwice(5, *2) == 20");
+
+    let addTen = (n: int) => n + 10;
+    assert_eq_int(25, applyTwice(5, addTen), "applyTwice(5, +10) == 25");
+
+    // Map implementation
+    function customMap(arr: int[], fn: (item: int) => int): int[] {
+        let result: int[] = [];
+        for (let i = 0; i < arr.length(); i++) {
+            result.push(fn(arr[i]));
+        }
+        return result;
+    }
+
+    let original: int[] = [1, 2, 3, 4, 5];
+    let cubed = customMap(original, (n) => n * n * n);
+    assert_eq_int(1, cubed[0], "cubed[0] == 1");
+    assert_eq_int(8, cubed[1], "cubed[1] == 8");
+    assert_eq_int(27, cubed[2], "cubed[2] == 27");
+    assert_eq_int(64, cubed[3], "cubed[3] == 64");
+    assert_eq_int(125, cubed[4], "cubed[4] == 125");
+
+    // Filter implementation
+    function customFilter(arr: int[], predicate: (item: int) => bool): int[] {
+        let result: int[] = [];
+        for (let i = 0; i < arr.length(); i++) {
+            if (predicate(arr[i])) {
+                result.push(arr[i]);
+            }
+        }
+        return result;
+    }
+
+    let evens = customFilter(original, (n) => n % 2 == 0);
+    assert_eq_int(2, evens.length(), "Filtered evens count == 2");
+    assert_eq_int(2, evens[0], "evens[0] == 2");
+    assert_eq_int(4, evens[1], "evens[1] == 4");
+}
+
+function greet(name: string = "World", greeting: string = "Hello"): string {
+    return greeting + ", " + name + "!";
+}
+
+function sumVariadic(...numbers: int[]): int {
+    let total = 0;
+    for (let i = 0; i < numbers.length(); i++) {
+        total += numbers[i];
+    }
+    return total;
+}
+
+function test_default_and_rest_parameters() {
+    print("--- Testing Default and Rest Parameters ---");
+
+    assert_eq_string("Hello, World!", greet(), "Both defaults used");
+    assert_eq_string("Hello, Alice!", greet("Alice"), "Name provided, greeting default");
+    assert_eq_string("Greetings, Bob!", greet("Bob", "Greetings"), "Both args provided");
+
+    assert_eq_int(0, sumVariadic(), "Zero variadic args sum == 0");
+    assert_eq_int(10, sumVariadic(10), "One variadic arg sum == 10");
+    assert_eq_int(60, sumVariadic(10, 20, 30), "Three variadic args sum == 60");
+    assert_eq_int(150, sumVariadic(10, 20, 30, 40, 50), "Five variadic args sum == 150");
+}
+
+function test_lexical_scoping_and_shadowing() {
+    print("--- Testing Lexical Scoping and Shadowing ---");
+
+    let val = 100;
+    assert_eq_int(100, val, "Outer val == 100");
+
+    {
+        let val = 200;
+        assert_eq_int(200, val, "Inner shadowed val == 200");
+        {
+            let val = 300;
+            assert_eq_int(300, val, "Deeply nested shadowed val == 300");
+        }
+        assert_eq_int(200, val, "Restored inner shadowed val == 200");
+    }
+
+    assert_eq_int(100, val, "Restored outer val == 100");
+}
+
+function main() {
+    print("=== CLOSURES & SCOPES TESTS START ===");
+    test_basic_lambdas();
+    test_stateful_closures();
+    test_higher_order_functions();
+    test_default_and_rest_parameters();
+    test_lexical_scoping_and_shadowing();
+    print("=== CLOSURES & SCOPES TESTS COMPLETE ===");
+}

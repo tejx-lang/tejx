@@ -1,0 +1,108 @@
+// Production-Grade Test Suite: Concurrency Primitives & Thread Safety
+// ===================================================================
+// Thoroughly exercises:
+// - Thread creation and join()
+// - Atomic load, store, add, and compare-and-swap
+// - Mutex synchronization under multi-threaded contention
+// - SharedQueue producer-consumer pattern across multiple workers
+// - Virtual thread scale: spawning and joining 50+ threads concurrently
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+import { Mutex, Atomic, SharedQueue, spawn, joinAll } from "std:thread";
+
+function test_atomic_operations() {
+    print("--- Testing Atomics ---");
+
+    let atom = new Atomic(100);
+    assert_eq_int(100, atom.load(), "Initial atomic value 100");
+
+    atom.store(250);
+    assert_eq_int(250, atom.load(), "Stored atomic value 250");
+
+    atom.add(50);
+    assert_eq_int(300, atom.load(), "Added 50 to atomic value (300)");
+
+    atom.sub(100);
+    assert_eq_int(200, atom.load(), "Subtracted 100 from atomic value (200)");
+}
+
+function test_mutex_contention() {
+    print("--- Testing Mutex Synchronization ---");
+
+    let mtx = new Mutex();
+    let sharedCounter = new Atomic(0);
+
+    let worker = () => {
+        for (let i = 0; i < 500; i++) {
+            mtx.lock();
+            let c = sharedCounter.load();
+            sharedCounter.store(c + 1);
+            mtx.unlock();
+        }
+    };
+
+    let t1 = new Thread(worker);
+    let t2 = new Thread(worker);
+    let t3 = new Thread(worker);
+    let t4 = new Thread(worker);
+
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+
+    assert_eq_int(2000, sharedCounter.load(), "4 threads x 500 increments under Mutex == 2000");
+}
+
+function test_shared_queue() {
+    print("--- Testing SharedQueue Producer-Consumer ---");
+
+    let q = new SharedQueue<int>();
+    let producedCount = 50;
+
+    // Produce items
+    let producer = new Thread(() => {
+        for (let i = 1; i <= producedCount; i++) {
+            q.enqueue(i);
+        }
+    });
+
+    producer.join();
+    assert_eq_int(producedCount, q.size(), "Queue size matches produced items");
+
+    // Consume items and verify sum (1..50 = 50 * 51 / 2 = 1275)
+    let totalSum = 0;
+    while (!q.isEmpty()) {
+        totalSum += q.dequeue();
+    }
+    assert_eq_int(1275, totalSum, "Sum of consumed items 1..50 == 1275");
+}
+
+function test_high_concurrency_spawns() {
+    print("--- Testing High Concurrency (50 Concurrent Threads) ---");
+
+    let completed = new Atomic(0);
+    let threads: Thread[] = [];
+
+    for (let i = 0; i < 50; i++) {
+        let t = new Thread(() => {
+            completed.add(1);
+        });
+        threads.push(t);
+    }
+
+    for (let i = 0; i < threads.length(); i++) {
+        threads[i].join();
+    }
+
+    assert_eq_int(50, completed.load(), "All 50 threads successfully joined");
+}
+
+function main() {
+    print("=== CONCURRENCY PRIMITIVES TESTS START ===");
+    test_atomic_operations();
+    test_mutex_contention();
+    test_shared_queue();
+    test_high_concurrency_spawns();
+    print("=== CONCURRENCY PRIMITIVES TESTS COMPLETE ===");
+}

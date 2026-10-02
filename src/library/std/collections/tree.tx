@@ -1,3 +1,4 @@
+import "./hash.tx";
 class StdTrieNode {
     children: Map<string, StdTrieNode>;
     hasValue: bool;

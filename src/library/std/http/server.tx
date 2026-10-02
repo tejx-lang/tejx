@@ -1,0 +1,573 @@
+import std:net;
+import std:thread;
+import std:json;
+import std:time;
+import std:collections;
+
+extern function rt_http_send_fast_response(stream: TcpStream, status: int, content_type: string, body: string, keep_alive: bool, cors_origin: string): int;
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+
+export function parseDecimalIntServer(text: string): int {
+    return Number.Int(text);
+}
+
+// ── PathParams ────────────────────────────────────────────────────────────────
+
+/// Holds extracted path parameters (e.g. /user/:id → params.get("id") = "42").
+export class PathParams {
+    private params: Map<string, string>;
+
+    constructor() {
+        this.params = new Map<string, string>();
+    }
+
+    set(key: string, value: string): void {
+        this.params.set(key, value);
+    }
+
+    get(key: string): Optional<string> {
+        return this.params.get(key);
+    }
+
+    has(key: string): bool {
+        return this.params.has(key);
+    }
+
+    all(): Map<string, string> {
+        return this.params.clone();
+    }
+}
+
+// ── Internal Route Matching ───────────────────────────────────────────────────
+
+/// Checks if a request path matches a route pattern and extracts path parameters.
+/// Returns the populated PathParams on match, or None on mismatch.
+/// Supports:
+///   - Exact:       "/user/list" matches "/user/list"
+///   - Params:      "/user/:id"  matches "/user/42" → {id: "42"}
+///   - Wildcard:    "*"          matches everything
+///   - Suffix wild: "/files/*"   matches "/files/any/path/here"
+let _EMPTY_PATH_PARAMS: PathParams = new PathParams();
+
+function _matchRoute(pattern: string, requestPath: string): Optional<PathParams> {
+    // Universal wildcard
+    if (pattern == "*") {
+        return _EMPTY_PATH_PARAMS;
+    }
+
+    // Fast exact match (bypasses substring and splits)
+    if (pattern == requestPath) {
+        return _EMPTY_PATH_PARAMS;
+    }
+
+    // Strip query string from request path for matching
+    let path = requestPath;
+    let queryIdx = path.indexOf("?");
+    if (queryIdx >= 0) {
+        path = path.substring(0, queryIdx);
+    }
+
+    // Exact match
+    if (pattern == path) {
+        return _EMPTY_PATH_PARAMS;
+    }
+
+    // Suffix wildcard: "/files/*" matches "/files/anything"
+    if (pattern.endsWith("/*")) {
+        let prefix = pattern.substring(0, pattern.length() - 2);
+        if (path == prefix || path.startsWith(prefix + "/")) {
+            return new PathParams();
+        }
+        return None;
+    }
+
+    // Parametric match: split on "/" and check each segment
+    let patternParts = pattern.split("/");
+    let pathParts = path.split("/");
+
+    if (patternParts.length() != pathParts.length()) {
+        return None;
+    }
+
+    let params = new PathParams();
+    for (let i = 0; i < patternParts.length(); i++) {
+        let pp = patternParts[i];
+        let rp = pathParts[i];
+        if (pp.startsWith(":")) {
+            // Named parameter — extract it
+            let paramName = pp.substring(1, pp.length());
+            params.set(paramName, rp);
+        } else if (pp != rp) {
+            return None;
+        }
+    }
+    return params;
+}
+
+/// Parses the query string portion of a URL into a Map.
+function _parseQueryString(rawPath: string): Map<string, string> {
+    let map = new Map<string, string>();
+    let idx = rawPath.indexOf("?");
+    if (idx < 0) return map;
+    let qs = rawPath.substring(idx + 1, rawPath.length());
+    let pairs = qs.split("&");
+    for (let i = 0; i < pairs.length(); i++) {
+        let pair = pairs[i];
+        let sep = pair.indexOf("=");
+        if (sep > 0) {
+            let key = pair.substring(0, sep);
+            let value = pair.substring(sep + 1, pair.length());
+            map.set(key, value);
+        } else if (pair.length() > 0) {
+            map.set(pair, "");
+        }
+    }
+    return map;
+}
+
+// ── ServerRequest ─────────────────────────────────────────────────────────────
+
+export class ServerRequest {
+    method: string;
+    path: string;
+    rawPath: string;              // Full path including query string
+    headers: Map<string, string>;
+    body: string;
+    params: PathParams;           // Path parameters extracted by route matching
+    query: Map<string, string>;   // Query string parameters
+
+    constructor(rawRequest: string) {
+        this.method = "GET";
+        this.path = "/";
+        this.rawPath = "/";
+        this.headers = new Map<string, string>();
+        this.body = "";
+        this.params = _EMPTY_PATH_PARAMS;
+        this.query = new Map<string, string>();
+
+        let headerEnd = rawRequest.indexOf("\r\n\r\n");
+        if (headerEnd < 0) return;
+
+        let headerText = rawRequest.substring(0, headerEnd);
+        this.body = rawRequest.substring(headerEnd + 4, rawRequest.length());
+
+        let firstLineEnd = headerText.indexOf("\r\n");
+        let firstLine = firstLineEnd >= 0 ? headerText.substring(0, firstLineEnd) : headerText;
+
+        let firstSpace = firstLine.indexOf(" ");
+        if (firstSpace > 0) {
+            this.method = firstLine.substring(0, firstSpace).toUpperCase();
+            let restOfFirstLine = firstLine.substring(firstSpace + 1, firstLine.length());
+            let secondSpaceRel = restOfFirstLine.indexOf(" ");
+            if (secondSpaceRel > 0) {
+                this.rawPath = restOfFirstLine.substring(0, secondSpaceRel);
+            } else {
+                this.rawPath = restOfFirstLine;
+            }
+            let qIdx = this.rawPath.indexOf("?");
+            if (qIdx >= 0) {
+                this.path = this.rawPath.substring(0, qIdx);
+                this.query = _parseQueryString(this.rawPath);
+            } else {
+                this.path = this.rawPath;
+            }
+        }
+
+        // Parse headers directly by scanning "\r\n" without allocating an intermediate array
+        let remaining = firstLineEnd >= 0 ? headerText.substring(firstLineEnd + 2, headerText.length()) : "";
+        while (remaining.length() > 0) {
+            let nextLineEnd = remaining.indexOf("\r\n");
+            let line = nextLineEnd >= 0 ? remaining.substring(0, nextLineEnd) : remaining;
+            let sep = line.indexOf(":");
+            if (sep > 0) {
+                let key = line.substring(0, sep).trim().toLowerCase();
+                let value = line.substring(sep + 1, line.length()).trim();
+                this.headers.set(key, value);
+            }
+            if (nextLineEnd < 0) break;
+            remaining = remaining.substring(nextLineEnd + 2, remaining.length());
+        }
+    }
+
+    getHeader(name: string): Optional<string> {
+        return this.headers.get(name.toLowerCase());
+    }
+
+    json<T>(): T {
+        if (this.body.trim() == "") {
+            return json.parse("{}") as T;
+        }
+        return json.parse(this.body) as T;
+    }
+}
+
+// ── ServerResponse ────────────────────────────────────────────────────────────
+
+export class ServerResponse {
+    status: int;
+    headers: Map<string, string>;
+    body: string;
+    stream: TcpStream;
+    sent: bool;
+    hasCustomHeaders: bool;
+
+    constructor(stream: TcpStream) {
+        this.status = 200;
+        this.headers = new Map<string, string>();
+        this.body = "";
+        this.stream = stream;
+        this.sent = false;
+        this.hasCustomHeaders = false;
+
+        // Default headers
+        this.headers.set("Content-Type", "text/plain; charset=utf-8");
+        this.headers.set("Connection", "keep-alive");
+        this.headers.set("X-Powered-By", "TejX");
+    }
+
+    setStatus(code: int): ServerResponse {
+        this.status = code;
+        return this;
+    }
+
+    setHeader(name: string, value: string): ServerResponse {
+        this.headers.set(name, value);
+        this.hasCustomHeaders = true;
+        return this;
+    }
+
+    /// Configures CORS headers to allow cross-origin requests.
+    cors(origin: string): ServerResponse {
+        this.headers.set("Access-Control-Allow-Origin", origin);
+        this.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+        this.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+        this.headers.set("Access-Control-Max-Age", "86400");
+        return this;
+    }
+
+    /// Configures CORS headers allowing all origins (*)
+    corsAll(): ServerResponse {
+        return this.cors("*");
+    }
+
+    /// Sends a string body response.
+    send(body: string): void {
+        if (this.sent) return;
+        this.body = body;
+        this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends a JSON-serialized response.
+    json(data: any): void {
+        if (this.sent) return;
+        this.headers.set("Content-Type", "application/json; charset=utf-8");
+        this.body = json.stringify(data);
+        this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends a plain-text response.
+    text(body: string): void {
+        if (this.sent) return;
+        this.headers.set("Content-Type", "text/plain; charset=utf-8");
+        this.body = body;
+        this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends an HTML response.
+    html(body: string): void {
+        if (this.sent) return;
+        this.headers.set("Content-Type", "text/html; charset=utf-8");
+        this.body = body;
+        this.headers.set("Content-Length", String(this.body.length()));
+        this.flush();
+    }
+
+    /// Sends a redirect response (default 302 Found).
+    redirect(location: string): void {
+        if (this.sent) return;
+        this.status = 302;
+        this.headers.set("Location", location);
+        this.headers.set("Content-Length", "0");
+        this.flush();
+    }
+
+    /// Sends a redirect with a specific status code (301, 302, etc.).
+    redirectWithCode(location: string, code: int): void {
+        if (this.sent) return;
+        this.status = code;
+        this.headers.set("Location", location);
+        this.headers.set("Content-Length", "0");
+        this.flush();
+    }
+
+    private statusText(code: int): string {
+        if (code == 200) return "OK";
+        if (code == 201) return "Created";
+        if (code == 204) return "No Content";
+        if (code == 301) return "Moved Permanently";
+        if (code == 302) return "Found";
+        if (code == 304) return "Not Modified";
+        if (code == 400) return "Bad Request";
+        if (code == 401) return "Unauthorized";
+        if (code == 403) return "Forbidden";
+        if (code == 404) return "Not Found";
+        if (code == 405) return "Method Not Allowed";
+        if (code == 409) return "Conflict";
+        if (code == 422) return "Unprocessable Entity";
+        if (code == 429) return "Too Many Requests";
+        if (code == 500) return "Internal Server Error";
+        if (code == 502) return "Bad Gateway";
+        if (code == 503) return "Service Unavailable";
+        return "Unknown";
+    }
+
+    private flush(): void {
+        let contentType = this.headers.get("Content-Type");
+        let ctStr = contentType != None ? (contentType as string) : "text/plain; charset=utf-8";
+        let conn = this.headers.get("Connection");
+        let keepAlive = conn == None || (conn as string).toLowerCase().indexOf("close") < 0;
+        let origin = this.headers.get("Access-Control-Allow-Origin");
+        let originStr = origin != None ? (origin as string) : "";
+
+        rt_http_send_fast_response(this.stream, this.status, ctStr, this.body, keepAlive, originStr);
+        this.sent = true;
+    }
+}
+
+// ── Route ─────────────────────────────────────────────────────────────────────
+
+export class Route {
+    method: string;
+    path: string;
+    handler: (req: ServerRequest, res: ServerResponse) => void;
+
+    constructor(method: string, path: string, handler: (req: ServerRequest, res: ServerResponse) => void) {
+        this.method = method;
+        this.path = path;
+        this.handler = handler;
+    }
+}
+
+// ── HttpServer ────────────────────────────────────────────────────────────────
+
+export class HttpServer {
+    private listener: Optional<TcpListener>;
+    private routes: Route[];
+    private activeConns: Atomic;
+    private maxConns: int;
+    private corsOrigin: Optional<string>;
+
+    constructor() {
+        this.listener = None;
+        this.routes = [];
+        this.activeConns = new Atomic(0);
+        // 128k concurrent connections — matches Node.js/Go high-concurrency defaults.
+        this.maxConns = 131072;
+        this.corsOrigin = None;
+    }
+
+    get(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("GET", path, handler));
+    }
+
+    post(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("POST", path, handler));
+    }
+
+    put(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("PUT", path, handler));
+    }
+
+    delete_(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("DELETE", path, handler));
+    }
+
+    patch(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("PATCH", path, handler));
+    }
+
+    options(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("OPTIONS", path, handler));
+    }
+
+    head(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.routes.push(new Route("HEAD", path, handler));
+    }
+
+    /// Enables CORS for all routes. Automatically handles OPTIONS preflight.
+    enableCors(origin: string): void {
+        this.corsOrigin = origin;
+        // Auto-register OPTIONS handler for CORS preflight on all paths
+        this.routes.push(new Route("OPTIONS", "*", (req: ServerRequest, res: ServerResponse) => {
+            res.cors(origin).setStatus(204).send("");
+        }));
+    }
+
+    /// Enables CORS for all origins (*).
+    enableCorsAll(): void {
+        this.enableCors("*");
+    }
+
+    /// Registers the same handler for multiple HTTP methods.
+    route(methods: string[], path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        for (let i = 0; i < methods.length(); i++) {
+            this.routes.push(new Route(methods[i].toUpperCase(), path, handler));
+        }
+    }
+
+    /// Registers a handler for ALL HTTP methods on a path.
+    all(path: string, handler: (req: ServerRequest, res: ServerResponse) => void): void {
+        this.route(["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"], path, handler);
+    }
+
+    private runAcceptLoop(listener: TcpListener): void {
+        while (true) {
+            let client: Optional<TcpStream> = listener.tryAccept();
+            if (client == None) {
+                continue;
+            }
+            let conn = client as TcpStream;
+            Thread.spawn(() => {
+                this.handleConnection(conn);
+            });
+        }
+    }
+
+    listen(port: int, callback: () => void): void {
+        let listener: TcpListener = net.listen("127.0.0.1:" + String(port));
+        this.listener = listener;
+
+        callback();
+
+        this.runAcceptLoop(listener);
+    }
+
+    private readHttpRequest(client: TcpStream, buffer: string): any {
+        let rawRequest = buffer;
+        let contentLength = -1;
+        let headerEndIndex = -1;
+
+        while (true) {
+            if (headerEndIndex < 0) {
+                headerEndIndex = rawRequest.indexOf("\r\n\r\n");
+            }
+
+            if (headerEndIndex >= 0) {
+                if (contentLength < 0) {
+                    let headersString = rawRequest.substring(0, headerEndIndex);
+                    let clIndex = headersString.toLowerCase().indexOf("content-length:");
+                    if (clIndex >= 0) {
+                        let clStart = clIndex + 15;
+                        let substringToSearch = headersString.substring(clStart, headersString.length());
+                        let clEndRelative = substringToSearch.indexOf("\r\n");
+                        let clEnd = clEndRelative < 0 ? headersString.length() : clStart + clEndRelative;
+                        let clStr = headersString.substring(clStart, clEnd).trim();
+                        contentLength = parseDecimalIntServer(clStr);
+                    } else {
+                        contentLength = 0;
+                    }
+                }
+
+                let bodyLength = rawRequest.length() - (headerEndIndex + 4);
+                if (bodyLength >= contentLength) {
+                    break;
+                }
+            }
+
+            let chunk = client.read(8192);
+            if (chunk == "") {
+                break;
+            }
+            rawRequest = rawRequest + chunk;
+        }
+
+        if (rawRequest.trim() == "") {
+            return None;
+        }
+
+        let totalLength = (headerEndIndex >= 0)
+            ? (headerEndIndex + 4 + (contentLength > 0 ? contentLength : 0))
+            : rawRequest.length();
+        let currentRequestStr = rawRequest;
+        let remaining = "";
+
+        if (totalLength < rawRequest.length()) {
+            currentRequestStr = rawRequest.substring(0, totalLength);
+            remaining = rawRequest.substring(totalLength, rawRequest.length());
+        }
+
+        return {
+            "request": currentRequestStr,
+            "remaining": remaining
+        };
+    }
+
+    private matchAndRunRoute(req: ServerRequest, res: ServerResponse): bool {
+        let routeCount = this.routes.length();
+        for (let i = 0; i < routeCount; i++) {
+            let route = this.routes[i];
+            if (route.method != req.method && route.method != "*") continue;
+            let matchResult = _matchRoute(route.path, req.path);
+            if (matchResult == None) continue;
+
+            req.params = matchResult as PathParams;
+            route.handler(req, res);
+            return true;
+        }
+        return false;
+    }
+
+    private dispatchRequest(client: TcpStream, currentRequestStr: string): bool {
+        let req = new ServerRequest(currentRequestStr);
+        let res = new ServerResponse(client);
+
+        if (this.corsOrigin != None) {
+            res.cors(this.corsOrigin as string);
+        }
+
+        let keepAlive = true;
+        let connHeader = req.getHeader("connection");
+        if (connHeader != None) {
+            if ((connHeader as string).toLowerCase().indexOf("close") >= 0) {
+                keepAlive = false;
+            }
+        }
+
+        if (keepAlive) {
+            res.headers.set("Connection", "keep-alive");
+        } else {
+            res.headers.set("Connection", "close");
+        }
+
+        let handled = this.matchAndRunRoute(req, res);
+        if (!handled) {
+            res.setStatus(404).json({ "error": "Not Found", "path": req.path });
+        }
+
+        if (!res.sent) {
+            res.send("");
+        }
+
+        return keepAlive;
+    }
+
+    private handleConnection(client: TcpStream): void {
+        let buffer = "";
+        while (true) {
+            let reqResult: any = this.readHttpRequest(client, buffer);
+            if (reqResult == None) {
+                break;
+            }
+            buffer = reqResult.remaining as string;
+            let keepAlive: bool = this.dispatchRequest(client, reqResult.request as string);
+            if (!keepAlive) {
+                break;
+            }
+        }
+        client.close();
+    }
+}
