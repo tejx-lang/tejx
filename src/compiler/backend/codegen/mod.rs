@@ -213,7 +213,11 @@ impl CodeGen {
 
     pub(crate) fn get_target_info() -> (&'static str, String) {
         let arch = if cfg!(target_arch = "aarch64") {
-            "arm64"
+            if cfg!(target_os = "macos") {
+                "arm64"
+            } else {
+                "aarch64"
+            }
         } else if cfg!(target_arch = "x86_64") {
             "x86_64"
         } else {
