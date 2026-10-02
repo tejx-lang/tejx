@@ -349,7 +349,7 @@ class HttpClient {
             if (maybeStream != None) {
                 return maybeStream as TcpStream;
             }
-            sleep(10);
+            Thread.sleep(10);
         }
 
         throw new Error("Failed to connect to " + parsedUrl.host + ":" + String(port) + " after retries");

@@ -13,7 +13,7 @@ class Dog extends Animal {
     }
 }
 
-function printAnyObject(obj: Object) {
+function printAnyObject(obj: any) {
     print("Received object in printAnyObject: valid\n");
 }
 
@@ -29,8 +29,8 @@ function testInference(multiplier = 2) {
 
 function main() {
     let d = new Dog("Buddy", "Golden Retriever");
-    // Object polymorphism: assigning Dog instance to Object
-    let obj: Object = d;
+    // Object polymorphism: assigning Dog instance to any
+    let obj: any = d;
     printAnyObject(obj);
 
     // Downcast with 'as'

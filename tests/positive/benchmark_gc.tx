@@ -1,12 +1,12 @@
 import { collect } from "std:gc";
-import { nowMs } from "std:time";
+import { now } from "std:time";
 
 function memorySpikeBenchmark(): void {
     print("--- Memory & CPU Spike Benchmark ---");
-    let startTime = nowMs();
+    let startTime = now();
     let maxPause = 0;
     
-    let lastTime = nowMs();
+    let lastTime = now();
     
     let junk: string[] = [];
     let totalAllocated = 0;
@@ -20,7 +20,7 @@ function memorySpikeBenchmark(): void {
             totalAllocated += 5000;
         }
         
-        let currentTime = nowMs();
+        let currentTime = now();
         let loopTime = currentTime - lastTime;
         if (loopTime > maxPause) {
             maxPause = loopTime;
@@ -28,7 +28,7 @@ function memorySpikeBenchmark(): void {
         lastTime = currentTime;
     }
     
-    let endTime = nowMs();
+    let endTime = now();
     print("Total Execution Time (ms): " + (endTime - startTime));
     print("Max STW Pause (ms): " + maxPause);
     print("Total objects allocated & discarded: " + totalAllocated);

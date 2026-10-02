@@ -11,7 +11,7 @@
 
 import { assert_eq_int, assert_true, assert_eq_string } from "./utils.tx";
 import { collect } from "std:gc";
-import { nowMs } from "std:time";
+import { now } from "std:time";
 
 // === Fibonacci ===
 function fib_recursive(n: int): int {
@@ -35,7 +35,7 @@ function fib_iterative(n: int): int {
 
 function test_fibonacci() {
     print("--- CPU: Fibonacci ---");
-    let start = nowMs();
+    let start = now();
 
     // Recursive (moderate depth to avoid timeout)
     assert_eq_int(0, fib_recursive(0), "fib(0)");
@@ -53,7 +53,7 @@ function test_fibonacci() {
         assert_eq_int(fib_recursive(n), fib_iterative(n), "fib cross-check n=" + n);
     }
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Fibonacci time: " + elapsed + "ms");
 }
 
@@ -113,7 +113,7 @@ function isSorted(arr: int[]): bool {
 
 function test_merge_sort() {
     print("--- CPU: Merge Sort ---");
-    let start = nowMs();
+    let start = now();
 
     // Sort 5000 elements in reverse order
     let arr: int[] = [];
@@ -142,7 +142,7 @@ function test_merge_sort() {
 
     collect();
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Merge sort time: " + elapsed + "ms");
 }
 
@@ -162,7 +162,7 @@ function bubbleSort(arr: int[]): void {
 
 function test_bubble_sort() {
     print("--- CPU: Bubble Sort ---");
-    let start = nowMs();
+    let start = now();
 
     let arr: int[] = [];
     for (let i = 2000; i > 0; i--) {
@@ -175,7 +175,7 @@ function test_bubble_sort() {
     assert_eq_int(1, arr[0], "First element");
     assert_eq_int(2000, arr[1999], "Last element");
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Bubble sort 2000 elements: " + elapsed + "ms");
 }
 
@@ -198,7 +198,7 @@ function matMul(a: int[][], b: int[][], n: int): int[][] {
 
 function test_matrix_multiply() {
     print("--- CPU: Matrix Multiplication ---");
-    let start = nowMs();
+    let start = now();
 
     let n = 50;
 
@@ -234,7 +234,7 @@ function test_matrix_multiply() {
     assert_eq_int(15, sq[1][0], "2x2 square [1][0]");  // 3*1+4*3
     assert_eq_int(22, sq[1][1], "2x2 square [1][1]");  // 3*2+4*4
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Matrix multiply time: " + elapsed + "ms");
 }
 
@@ -262,7 +262,7 @@ function sieve(limit: int): int {
 
 function test_prime_sieve() {
     print("--- CPU: Prime Sieve ---");
-    let start = nowMs();
+    let start = now();
 
     // Known values: π(100) = 25, π(1000) = 168, π(10000) = 1229, π(100000) = 9592
     assert_eq_int(25, sieve(100), "Primes up to 100");
@@ -272,7 +272,7 @@ function test_prime_sieve() {
 
     collect();
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Prime sieve time: " + elapsed + "ms");
 }
 
@@ -291,7 +291,7 @@ function isPalindrome(s: string): bool {
 
 function test_string_processing() {
     print("--- CPU: String Processing ---");
-    let start = nowMs();
+    let start = now();
 
     // Reverse
     assert_eq_string("dcba", reverseString("abcd"), "Reverse abcd");
@@ -317,7 +317,7 @@ function test_string_processing() {
 
     collect();
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  String processing time: " + elapsed + "ms");
 }
 

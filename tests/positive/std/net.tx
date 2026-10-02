@@ -2,7 +2,7 @@
 // =============
 import std:net;
 import std:binary;
-import { sleep } from "std:time";
+import { sleep } from "std:thread";
 import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
 
 class BoundListener {

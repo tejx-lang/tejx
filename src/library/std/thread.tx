@@ -106,6 +106,20 @@ export function joinAll(threads: Thread[]): void {
     }
 }
 
-export function parallel(threads: Thread[]): void {
-    joinAll(threads);
+export function sleep(ms: int): void {
+    Thread.sleep(ms);
+}
+
+export namespace thread {
+    export function spawn(task: () => void): Thread {
+        return Thread.spawn(task);
+    }
+
+    export function joinAll(threads: Thread[]): void {
+        joinAll(threads);
+    }
+
+    export function sleep(ms: int): void {
+        Thread.sleep(ms);
+    }
 }

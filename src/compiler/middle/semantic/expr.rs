@@ -577,6 +577,16 @@ impl TypeChecker {
                     if name == "console" {
                         return Ok(TejxType::from_name("Console"));
                     }
+                    if name == "null" || name == "undefined" {
+                        self.report_error_detailed(
+                            format!("'{}' is not valid in TejX. Use 'None' instead", name),
+                            *_line,
+                            *_col,
+                            "E0102",
+                            Some("Replace with 'None'"),
+                        );
+                        return Ok(TejxType::from_name("<inferred>"));
+                    }
                     self.report_error_detailed(
                         format!("Undefined variable '{}'", name),
                         *_line,

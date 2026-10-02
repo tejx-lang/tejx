@@ -9,20 +9,7 @@ extern function rt_http_send_fast_response(stream: TcpStream, status: int, conte
 // ── Utility ───────────────────────────────────────────────────────────────────
 
 export function parseDecimalIntServer(text: string): int {
-    let digits = "0123456789";
-    let normalized = text.trim();
-    let result = 0;
-
-    for (let i = 0; i < normalized.length(); i++) {
-        let digit = normalized.substring(i, i + 1);
-        let value = digits.indexOf(digit);
-        if (value < 0) {
-            return 0;
-        }
-        result = (result * 10) + value;
-    }
-
-    return result;
+    return Number.Int(text);
 }
 
 // ── PathParams ────────────────────────────────────────────────────────────────

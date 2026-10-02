@@ -55,9 +55,47 @@ export function sizeof<T>(val: T): int {
     return rt_sizeof(val);
 }
 
-export function parseFloat(s: string): float { return rt_to_number(s); }
-
-export let undefined: any = None;
+export class Number {
+    static Float(val: any): float {
+        return rt_to_number(val);
+    }
+    static Float32(val: any): float32 {
+        return rt_to_number(val) as float32;
+    }
+    static Float64(val: any): float64 {
+        return rt_to_number(val) as float64;
+    }
+    static Int(val: any): int {
+        return rt_to_number(val) as int;
+    }
+    static Int8(val: any): int8 {
+        return rt_to_number(val) as int8;
+    }
+    static Int16(val: any): int16 {
+        return rt_to_number(val) as int16;
+    }
+    static Int32(val: any): int32 {
+        return rt_to_number(val) as int32;
+    }
+    static Int64(val: any): int64 {
+        return rt_to_number(val) as int64;
+    }
+    static UInt(val: any): uint {
+        return rt_to_number(val) as uint;
+    }
+    static UInt8(val: any): uint8 {
+        return rt_to_number(val) as uint8;
+    }
+    static UInt16(val: any): uint16 {
+        return rt_to_number(val) as uint16;
+    }
+    static UInt32(val: any): uint32 {
+        return rt_to_number(val) as uint32;
+    }
+    static UInt64(val: any): uint64 {
+        return rt_to_number(val) as uint64;
+    }
+}
 
 export class Error {
     message: string;

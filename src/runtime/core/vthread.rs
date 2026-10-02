@@ -826,12 +826,21 @@ impl Scheduler {
     }
 }
 
+#[derive(Copy, Clone)]
+struct VThreadContext {
+    current: *mut VThread,
+    preempt_tick: u32,
+    preempt_last_ms: u64,
+}
+
 thread_local! {
     static LOCAL_WORKER: Cell<*const Worker<Box<VThread>>> = Cell::new(std::ptr::null());
-    static CURRENT_VTHREAD: Cell<*mut VThread> = Cell::new(std::ptr::null_mut());
+    static VTHREAD_CTX: Cell<VThreadContext> = Cell::new(VThreadContext {
+        current: std::ptr::null_mut(),
+        preempt_tick: 0,
+        preempt_last_ms: 0,
+    });
     static STEAL_RNG: Cell<u32> = Cell::new(123456789);
-    static PREEMPT_TICK: Cell<u32> = Cell::new(0);
-    static PREEMPT_LAST_MS: Cell<u64> = Cell::new(0);
 }
 
 pub fn vt_init(num_workers: usize) {
@@ -871,7 +880,7 @@ pub fn start_netpoller() {
                 libc::signal(libc::SIGPIPE, libc::SIG_IGN);
             }
             let mut poll = POLL.lock().unwrap().take().unwrap();
-            let mut events = Events::with_capacity(4096);
+            let mut events = Events::with_capacity(8192);
             loop {
                 let timeout = SCHEDULER.next_timer_timeout();
                 let _ = poll.poll(&mut events, timeout);
@@ -957,7 +966,7 @@ unsafe fn vthread_terminate(vt_ptr: *mut VThread) -> ! {
 }
 
 extern "C" fn vthread_entry_trampoline() -> ! {
-    let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+    let vt_ptr = VTHREAD_CTX.with(|c| c.get().current);
     if vt_ptr.is_null() {
         std::process::abort();
     }
@@ -974,7 +983,7 @@ extern "C" fn vthread_entry_trampoline() -> ! {
 
 #[inline(never)]
 pub unsafe fn vthread_suspend(reason: YieldReason) {
-    let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+    let vt_ptr = VTHREAD_CTX.with(|c| c.get().current);
     if vt_ptr.is_null() {
         return;
     }
@@ -1123,20 +1132,25 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
 
                 crate::restore_vthread_local_state(&mut t.local_state);
 
-                PREEMPT_LAST_MS.with(|c| c.set(current_time_ms()));
-                PREEMPT_TICK.with(|c| c.set(0));
-
                 let vt_raw: *mut VThread = &mut *t;
-                CURRENT_VTHREAD.with(|cell| {
-                    cell.set(vt_raw);
+                VTHREAD_CTX.with(|cell| {
+                    cell.set(VThreadContext {
+                        current: vt_raw,
+                        preempt_tick: 0,
+                        preempt_last_ms: current_time_ms(),
+                    });
                 });
 
                 unsafe {
                     tejx_context_switch(&mut (*vt_raw).worker_sp, (*vt_raw).sp);
                 }
 
-                CURRENT_VTHREAD.with(|cell| {
-                    cell.set(std::ptr::null_mut());
+                VTHREAD_CTX.with(|cell| {
+                    cell.set(VThreadContext {
+                        current: std::ptr::null_mut(),
+                        preempt_tick: 0,
+                        preempt_last_ms: 0,
+                    });
                 });
 
                 if !t.done {
@@ -1264,7 +1278,7 @@ where
 #[inline(never)]
 pub fn vt_sleep(ms: u64) {
     if vt_is_vthread() {
-        let until = current_time_ms().saturating_add(ms);
+        let until = current_time_ms().saturating_add(ms).saturating_add(1);
         unsafe { vthread_suspend(YieldReason::sleep(until)) };
     } else {
         let _guard = crate::ThreadIoGuard::new();
@@ -1337,29 +1351,33 @@ where
     f()
 }
 
-#[inline(never)]
+#[inline]
 pub fn vt_is_vthread() -> bool {
-    CURRENT_VTHREAD.with(|v| !v.get().is_null())
+    VTHREAD_CTX.with(|c| !c.get().current.is_null())
 }
 
+#[inline]
 pub fn vt_preempt_tick() {
-    let count = PREEMPT_TICK.with(|cell| {
-        let count = cell.get().wrapping_add(1);
-        cell.set(count);
-        count
+    VTHREAD_CTX.with(|cell| {
+        let mut ctx = cell.get();
+        if ctx.current.is_null() {
+            return;
+        }
+        let count = ctx.preempt_tick.wrapping_add(1);
+        ctx.preempt_tick = count;
+        if (count & 0x3fff) != 0 {
+            cell.set(ctx);
+            return;
+        }
+        let now = current_time_ms();
+        if now.saturating_sub(ctx.preempt_last_ms) >= 10 {
+            ctx.preempt_last_ms = now;
+            cell.set(ctx);
+            vt_yield();
+        } else {
+            cell.set(ctx);
+        }
     });
-    if (count & 0x7f) != 0 {
-        return;
-    }
-    if !vt_is_vthread() {
-        return;
-    }
-    let now = current_time_ms();
-    let last = PREEMPT_LAST_MS.with(|c| c.get());
-    if now.saturating_sub(last) >= 2 {
-        PREEMPT_LAST_MS.with(|c| c.set(now));
-        vt_yield();
-    }
 }
 
 #[cfg(test)]

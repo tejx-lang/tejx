@@ -2,6 +2,34 @@ import "./net/internal.tx";
 import "./net/tcp.tx";
 import "./dns.tx";
 
+// ── Canonical Top-Level Functions ─────────────────────────────────────────────
+
+export function connect(addr: string): Optional<TcpStream> {
+    return _net_connect_stream(addr);
+}
+
+export function connectHost(host: string, port: int = 80): Optional<TcpStream> {
+    return _net_connect_host_stream(host, port);
+}
+
+export function connectTls(host: string, port: int = 443): Optional<TcpStream> {
+    return _net_connect_tls_stream(host, port);
+}
+
+export function connectTlsInsecure(host: string, port: int = 443): Optional<TcpStream> {
+    return _net_connect_tls_stream(host, port, true);
+}
+
+export function listen(addr: string): TcpListener {
+    return _net_listen_on(addr);
+}
+
+export function close(stream: Optional<any>): void {
+    _net_close_any(stream);
+}
+
+// ── net Namespace ─────────────────────────────────────────────────────────────
+
 export namespace net {
     export function connect(addr: string): Optional<TcpStream> {
         return _net_connect_stream(addr);
@@ -19,15 +47,7 @@ export namespace net {
         return _net_connect_tls_stream(host, port, true);
     }
 
-    export function createConnection(addr: string): Optional<TcpStream> {
-        return _net_connect_stream(addr);
-    }
-
     export function listen(addr: string): TcpListener {
-        return _net_listen_on(addr);
-    }
-
-    export function createServer(addr: string): TcpListener {
         return _net_listen_on(addr);
     }
 

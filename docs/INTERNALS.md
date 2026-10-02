@@ -4,9 +4,9 @@ This document is the compiler walkthrough for TejX. It explains what happens at 
 
 Use it together with:
 
-- `TYPE_SYSTEM.md` for the language rules that the semantic pass enforces
-- `MODULE_SYSTEM.md` for import/export behavior
+- `LANGUAGE_SPECIFICATION.md` for the language specification, typing rules, and import/export behavior
 - `MEMORY_MODEL.md` for the runtime value layout that codegen targets
+- `STANDARD_LIBRARY_REFERENCE.md` for standard library and prelude contracts
 
 ## One-Screen Pipeline
 

@@ -6,7 +6,7 @@
 
 import { assert_eq_int, assert_true, assert_eq_string } from "./utils.tx";
 import { collect, getHeapUsed, getStats } from "std:gc";
-import { nowMs } from "std:time";
+import { now } from "std:time";
 
 class Item {
     id: int;
@@ -29,7 +29,7 @@ class Node {
 // --- Test 1: Rapid Object Create/Discard ---
 function test_rapid_object_churn() {
     print("--- Churn: Rapid Object Create/Discard ---");
-    let start = nowMs();
+    let start = now();
 
     collect();
     let baseline = getHeapUsed();
@@ -49,7 +49,7 @@ function test_rapid_object_churn() {
 
     collect();
     let afterChurn = getHeapUsed();
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
 
     print("  Baseline: " + baseline + ", After churn: " + afterChurn);
     print("  Time: " + elapsed + "ms (100K objects)");
@@ -59,7 +59,7 @@ function test_rapid_object_churn() {
 // --- Test 2: String Concatenation Churn ---
 function test_string_concat_churn() {
     print("--- Churn: String Concatenation ---");
-    let start = nowMs();
+    let start = now();
 
     collect();
     let baseline = getHeapUsed();
@@ -76,7 +76,7 @@ function test_string_concat_churn() {
 
     collect();
     let afterChurn = getHeapUsed();
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
 
     print("  Baseline: " + baseline + ", After string churn: " + afterChurn);
     print("  Time: " + elapsed + "ms");
@@ -86,7 +86,7 @@ function test_string_concat_churn() {
 // --- Test 3: Array Grow/Shrink Cycles ---
 function test_array_grow_shrink() {
     print("--- Churn: Array Grow/Shrink ---");
-    let start = nowMs();
+    let start = now();
 
     let arr: int[] = [];
 
@@ -108,14 +108,14 @@ function test_array_grow_shrink() {
         }
     }
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Time: " + elapsed + "ms (50 cycles of 10K grow/shrink)");
 }
 
 // --- Test 4: Linked List Build/Destroy Churn ---
 function test_linked_list_churn() {
     print("--- Churn: Linked List Build/Destroy ---");
-    let start = nowMs();
+    let start = now();
 
     collect();
     let baseline = getHeapUsed();
@@ -148,7 +148,7 @@ function test_linked_list_churn() {
 
     collect();
     let afterChurn = getHeapUsed();
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
 
     print("  Baseline: " + baseline + ", After list churn: " + afterChurn);
     print("  Time: " + elapsed + "ms (50 rounds of 2K-node lists)");
@@ -158,7 +158,7 @@ function test_linked_list_churn() {
 // --- Test 5: Mixed Data Structure Churn ---
 function test_mixed_churn() {
     print("--- Churn: Mixed Data Structures ---");
-    let start = nowMs();
+    let start = now();
 
     collect();
     let baseline = getHeapUsed();
@@ -209,7 +209,7 @@ function test_mixed_churn() {
 
     collect();
     let afterChurn = getHeapUsed();
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
 
     print("  Baseline: " + baseline + ", After mixed churn: " + afterChurn);
     print("  Time: " + elapsed + "ms");
@@ -219,7 +219,7 @@ function test_mixed_churn() {
 // --- Test 6: Accumulated Live Data Under Churn ---
 function test_accumulated_under_churn() {
     print("--- Churn: Accumulated Live Under Churn ---");
-    let start = nowMs();
+    let start = now();
 
     let live: Item[] = [];
 
@@ -251,7 +251,7 @@ function test_accumulated_under_churn() {
         assert_eq_string("keeper-" + i, live[i].name, "Final live item name #" + i);
     }
 
-    let elapsed = nowMs() - start;
+    let elapsed = now() - start;
     print("  Time: " + elapsed + "ms (100 rounds, 50K garbage objects)");
 }
 

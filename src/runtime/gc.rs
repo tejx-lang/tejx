@@ -914,7 +914,7 @@ pub unsafe extern "C" fn rt_unregister_thread() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_safepoint_poll() {
-    if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+    if SAFEPOINT_REQUEST.load(Ordering::Relaxed) {
         rt_safepoint_poll_slow();
         return;
     }

@@ -1,6 +1,7 @@
 // Time Tests
 // ==========
-import {sleep,now} from "std:time";
+import { now } from "std:time";
+import { sleep } from "std:thread";
 import { assert_eq_int, assert_true } from "../utils.tx";
 
 

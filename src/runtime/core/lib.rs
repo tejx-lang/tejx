@@ -3250,9 +3250,7 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
         let main_stack = crate::vthread::get_main_vt_stack_size();
         crate::vthread::vt_spawn_closure_with_stack(
             || {
-                eprintln!("[DEBUG] tejx_main started!");
                 tejx_main();
-                eprintln!("[DEBUG] tejx_main RETURNED!");
             },
             0,
             slot_live.clone(),

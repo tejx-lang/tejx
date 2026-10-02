@@ -1,4 +1,5 @@
-import { sleep, Date } from "std:time";
+import { Date } from "std:time";
+import { sleep } from "std:thread";
 import { assert_true, assert_eq_int } from "../utils.tx";
 
 function heavyTask(id: int): int {

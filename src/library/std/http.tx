@@ -3,6 +3,7 @@ import std:net;
 import std:thread;
 import "./http/client.tx";
 import "./http/server.tx";
+import "./url.tx";
 
 function requestOption(options: any, key: string): any {
     if (options == None) {

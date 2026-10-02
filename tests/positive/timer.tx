@@ -1,6 +1,6 @@
 // tests/timer_test.tx
-import { setTimeout, setInterval, clearInterval, clearTimeout, sleep } from "std:time";
-import { Atomic } from "std:thread";
+import { setTimeout, setInterval, clearInterval, clearTimeout } from "std:time";
+import { Atomic, sleep } from "std:thread";
 import { assert_eq_int, assert_true } from "./utils.tx";
 
 function main(): void {

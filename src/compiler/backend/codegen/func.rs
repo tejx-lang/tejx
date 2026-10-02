@@ -1597,7 +1597,9 @@ update:\n\
 
         // Branch to first block
         if !func.blocks.is_empty() {
-            self.emit_line("call void @rt_safepoint_poll()");
+            if self.num_roots > 0 || self.current_function_needs_loop_safepoints || self.current_function_has_runtime_frame {
+                self.emit_line("call void @rt_safepoint_poll()");
+            }
             self.emit_line(&format!("br label %{}", func.blocks[0].name));
         } else {
             self.emit_line("call void @rt_pop_roots(i64 __TEJX_NUM_ROOTS_PLACEHOLDER__)");

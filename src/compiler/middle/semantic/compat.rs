@@ -63,8 +63,7 @@ impl TypeChecker {
                         return false;
                     }
                 }
-                name_str == "Object"
-                    || name_str == "function"
+                name_str == "function"
                     || name_str == "Iterator"
                     || name_str == "Iterable"
                     || name_str == "None"
@@ -178,19 +177,6 @@ impl TypeChecker {
             return true;
         }
 
-        if let TejxType::Class(name, _) = expected {
-            if name == "Object" {
-                match actual {
-                    TejxType::Class(_, _)
-                    | TejxType::DynamicArray(_)
-                    | TejxType::FixedArray(_, _)
-                    | TejxType::Slice(_)
-                    | TejxType::String
-                    | TejxType::Object(_) => return true,
-                    _ => {}
-                }
-            }
-        }
 
         // Generic wildcard: single uppercase letter mapped via Class
         let is_generic_wildcard = |t: &TejxType| -> bool {
@@ -356,20 +342,9 @@ impl TypeChecker {
             }
         }
 
-        // Inheritance check & Object universal base class
+        // Inheritance check
         if let TejxType::Class(expected_name, _) = expected {
             let expected_base = self.base_class_name(expected_name);
-            if expected_base == "Object" {
-                match actual {
-                    TejxType::Class(_, _)
-                    | TejxType::DynamicArray(_)
-                    | TejxType::FixedArray(_, _)
-                    | TejxType::Slice(_)
-                    | TejxType::String
-                    | TejxType::Object(_) => return true,
-                    _ => {}
-                }
-            }
             if let TejxType::Class(actual_name, _) = actual {
                 let actual_base = self.base_class_name(actual_name);
                 if expected_base != actual_base && self.is_same_or_subclass(actual_base, expected_base) {

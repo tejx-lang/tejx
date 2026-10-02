@@ -114,12 +114,7 @@ export namespace system {
     }
 
     export function getAllEnv(): Map<string, string> {
-        let arr = _system_get_all_env();
-        let map = new Map<string, string>();
-        for (let i = 0; i < arr.length(); i = i + 2) {
-            map.set(arr[i], arr[i + 1]);
-        }
-        return map;
+        return getAllEnv();
     }
 
     export function getOSType(): string {
@@ -195,12 +190,7 @@ export namespace os {
     }
 
     export function getAllEnv(): Map<string, string> {
-        let arr = _system_get_all_env();
-        let map = new Map<string, string>();
-        for (let i = 0; i < arr.length(); i = i + 2) {
-            map.set(arr[i], arr[i + 1]);
-        }
-        return map;
+        return getAllEnv();
     }
 
     export function getType(): string {
@@ -231,10 +221,6 @@ export namespace os {
         return _system_get_cpu_count();
     }
 
-    export function cpus(): int {
-        return _system_get_cpu_count();
-    }
-
     export function totalMemory(): int64 {
         return _system_get_total_memory();
     }
@@ -245,10 +231,6 @@ export namespace os {
 
     export function uptime(): float {
         return _system_get_uptime();
-    }
-
-    export function exec(cmd: string): string {
-        return _system_exec(cmd);
     }
 }
 
@@ -272,12 +254,7 @@ export namespace process {
     }
 
     export function env(): Map<string, string> {
-        let arr = _system_get_all_env();
-        let map = new Map<string, string>();
-        for (let i = 0; i < arr.length(); i = i + 2) {
-            map.set(arr[i], arr[i + 1]);
-        }
-        return map;
+        return getAllEnv();
     }
 
     export function exec(cmd: string): string {

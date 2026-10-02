@@ -5,10 +5,6 @@ export function stringify(val: any, space: any = None): string {
     return _json_stringify(val, space);
 }
 
-export function format(val: any, space: any = 2): string {
-    return _json_stringify(val, space);
-}
-
 export function parse(s: string): any {
     return _json_parse(s);
 }
@@ -23,22 +19,14 @@ export function tryParse(s: string): any {
 
 export namespace json {
     export function stringify(val: any, space: any = None): string {
-        return _json_stringify(val, space);
-    }
-
-    export function format(val: any, space: any = 2): string {
-        return _json_stringify(val, space);
+        return stringify(val, space);
     }
 
     export function parse(s: string): any {
-        return _json_parse(s);
+        return parse(s);
     }
 
     export function tryParse(s: string): any {
-        try {
-            return _json_parse(s);
-        } catch (e) {
-            return None;
-        }
+        return tryParse(s);
     }
 }

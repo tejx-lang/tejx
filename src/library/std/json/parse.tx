@@ -67,7 +67,7 @@ class JsonParser {
         if (start == this.index) throw new Error("SyntaxError: Expected number");
 
         let numStr = this.s.substring(start, this.index);
-        return parseFloat(numStr);
+        return Number.Float(numStr);
     }
 
     parseArray(): any[] {

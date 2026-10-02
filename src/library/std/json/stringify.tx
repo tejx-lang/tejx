@@ -94,7 +94,7 @@ function _json_serialize(val: any, out: string[], seen: any[], indent: string, g
                 if (key == "toString" || key == "constructor" || key == "__proto__") continue;
 
                 let childVal: any = val[key];
-                if (typeof(childVal) == "function" || childVal == undefined) continue;
+                if (typeof(childVal) == "function" || childVal == None) continue;
 
                 if (added) {
                     out.push(",");

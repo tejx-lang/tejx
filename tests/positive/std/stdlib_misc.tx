@@ -39,9 +39,9 @@ function test_stdlib_wrappers() {
     if (fs.exists(file)) {
         fs.remove(file);
     }
-    writeText(file, "std");
+    writeFile(file, "std");
     assert_true(exists(file), "top-level fs exists");
-    assert_eq_string("std", readText(file), "top-level fs readText");
+    assert_eq_string("std", readFile(file), "top-level fs readFile");
     remove(file);
     
     // OS

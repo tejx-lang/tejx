@@ -1,4 +1,4 @@
-import { Mutex, Atomic, Condition, SharedQueue, spawn, joinAll, parallel } from "std:thread";
+import { Mutex, Atomic, Condition, SharedQueue, spawn, joinAll } from "std:thread";
 import { assert_eq_int ,assert_true} from "../utils.tx";
 
 class DispatchJob {
@@ -113,9 +113,9 @@ function main(): void {
     assert_eq_int(15, state.compareExchange(9, 20), "Atomic compareExchange returns current value on mismatch");
     assert_eq_int(15, state.load(), "Atomic compareExchange keeps value on mismatch");
 
-    // 6. simplest high-level API: run a batch in parallel and wait
+    // 6. simplest high-level API: run a batch and wait
     let batchCounter = new Atomic(0);
-    parallel([
+    joinAll([
         spawn(() => { batchCounter.add(1); }),
         spawn(() => { batchCounter.add(2); }),
         spawn(() => { batchCounter.add(3); }),
@@ -169,7 +169,7 @@ function main(): void {
     let thumbnailJobs = new Atomic(0);
     let cacheWarmups = new Atomic(0);
     let notifications = new Atomic(0);
-    parallel([
+    joinAll([
         spawn(() => {
             for (let i = 0; i < 4; i++) {
                 thumbnailJobs.increment();
@@ -279,7 +279,7 @@ function main(): void {
     // 12. A thread can orchestrate child threads and wait for them internally
     let nestedWork = new Atomic(0);
     let supervisor = new Thread(() => {
-        parallel([
+        joinAll([
             spawn(() => {
                 for (let i = 0; i < 5; i++) {
                     nestedWork.add(2);
@@ -315,8 +315,7 @@ function main(): void {
 
     // 14. Empty helper inputs are safe no-ops
     joinAll([]);
-    parallel([]);
-    assert_eq_int(0, 0, "joinAll and parallel accept empty input");
+    assert_eq_int(0, 0, "joinAll accepts empty input");
 
     print("--- Threading Tests Complete ---");
 }

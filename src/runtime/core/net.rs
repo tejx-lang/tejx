@@ -461,13 +461,25 @@ thread_local! {
     static LAST_NET_ERROR: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
 }
 
+static GLOBAL_LAST_NET_ERROR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
 pub fn set_last_net_error(err: &str) {
     LAST_NET_ERROR.with(|cell| *cell.borrow_mut() = err.to_string());
+    if let Ok(mut g) = GLOBAL_LAST_NET_ERROR.lock() {
+        *g = err.to_string();
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_last_error() -> i64 {
-    let s = LAST_NET_ERROR.with(|cell| cell.borrow().clone());
+    let s = LAST_NET_ERROR.with(|cell| {
+        let cur = cell.borrow().clone();
+        if !cur.is_empty() {
+            cur
+        } else {
+            GLOBAL_LAST_NET_ERROR.lock().map(|g| g.clone()).unwrap_or_default()
+        }
+    });
     rt_string_from_owned_string(s)
 }
 
@@ -509,8 +521,7 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
 
         let one: libc::c_int = 1;
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        // Do NOT set SO_REUSEPORT: standard servers fail with EADDRINUSE if another process is already listening.
 
         let res = match addr {
             std::net::SocketAddr::V4(v4) => {
@@ -563,7 +574,10 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
     #[cfg(not(unix))]
     {
         match TcpListener::bind(addr) {
-            Err(_) => -1,
+            Err(e) => {
+                set_last_net_error(&format!("Bind failed on {}: {}", addr, e));
+                -1
+            }
             Ok(mut listener) => {
                 let token = crate::vthread::vt_register_io(&mut listener);
                 let net_listener = NetListener { listener, token };
@@ -598,8 +612,10 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
                 let id = register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
                 return id;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted
-                   || e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 crate::vthread::vt_wait_io_read(net_listener.token);
             }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted
@@ -611,7 +627,6 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
                 crate::vthread::vt_sleep(1);
             }
             Err(_) => {
-                crate::vthread::vt_sleep(1);
                 continue;
             }
         }

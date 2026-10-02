@@ -1,5 +1,13 @@
 import "./net/internal.tx";
 
+export function lookup(host: string): Optional<string> {
+    return _net_lookup_host(host);
+}
+
+export function lookupAll(host: string): string[] {
+    return _net_lookup_all_hosts(host);
+}
+
 export namespace dns {
     export function lookup(host: string): Optional<string> {
         return _net_lookup_host(host);

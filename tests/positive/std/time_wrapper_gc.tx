@@ -1,6 +1,6 @@
 import { collect } from "std:gc";
-import { afterMs, everyMs, sleep } from "std:time";
-import { Atomic } from "std:thread";
+import { afterMs, everyMs } from "std:time";
+import { Atomic, sleep } from "std:thread";
 import { assert_true } from "../utils.tx";
 
 let untrackedFires: Atomic = new Atomic(0);

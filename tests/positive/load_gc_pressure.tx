@@ -9,7 +9,7 @@
 
 import { assert_true, assert_eq_int } from "./utils.tx";
 import { collect, collectYoung, getHeapUsed, getStats } from "std:gc";
-import { nowMs } from "std:time";
+import { now } from "std:time";
 
 class Payload {
     id: int;
@@ -27,9 +27,9 @@ class TreeNode {
 // --- Test 1: 1 Million Allocations ---
 function test_million_allocs() {
     print("--- Load: 1M Allocations ---");
-    let startTime = nowMs();
+    let startTime = now();
     let maxPause: int64 = 0;
-    let lastTime = nowMs();
+    let lastTime = now();
     let checkpoints = 0;
 
     for (let i = 0; i < 1000000; i++) {
@@ -37,7 +37,7 @@ function test_million_allocs() {
 
         // Periodic timing check
         if (i % 100000 == 0) {
-            let currentTime = nowMs();
+            let currentTime = now();
             let elapsed = currentTime - lastTime;
             if (elapsed > maxPause) {
                 maxPause = elapsed;
@@ -47,7 +47,7 @@ function test_million_allocs() {
         }
     }
 
-    let totalTime = nowMs() - startTime;
+    let totalTime = now() - startTime;
     print("  Total time: " + totalTime + "ms");
     print("  Max pause between 100K blocks: " + maxPause + "ms");
     print("  Checkpoints: " + checkpoints);
@@ -127,7 +127,7 @@ function test_mixed_live_dead() {
     print("--- Load: Mixed Live/Dead ---");
 
     let alive: Payload[] = [];
-    let startTime = nowMs();
+    let startTime = now();
 
     for (let i = 0; i < 200000; i++) {
         let obj = new Payload(i, "data-" + (i % 50));
@@ -141,7 +141,7 @@ function test_mixed_live_dead() {
 
     collect();
 
-    let totalTime = nowMs() - startTime;
+    let totalTime = now() - startTime;
     print("  Time: " + totalTime + "ms");
     print("  Live objects: " + alive.length());
 
@@ -172,7 +172,7 @@ function countTreeNodes(node: Optional<TreeNode>): int {
 function test_tree_gc_pressure() {
     print("--- Load: Tree Build Under GC ---");
 
-    let startTime = nowMs();
+    let startTime = now();
 
     // Build and discard trees repeatedly
     let lastTree: Optional<TreeNode> = None;
@@ -189,7 +189,7 @@ function test_tree_gc_pressure() {
         }
     }
 
-    let totalTime = nowMs() - startTime;
+    let totalTime = now() - startTime;
     print("  Time for 20 trees of depth 12: " + totalTime + "ms");
 
     // Verify final tree
@@ -201,7 +201,7 @@ function test_tree_gc_pressure() {
 function test_string_storm() {
     print("--- Load: String Allocation Storm ---");
 
-    let startTime = nowMs();
+    let startTime = now();
     let maxLen = 0;
 
     for (let i = 0; i < 100000; i++) {
@@ -212,7 +212,7 @@ function test_string_storm() {
     }
 
     collect();
-    let totalTime = nowMs() - startTime;
+    let totalTime = now() - startTime;
     print("  Time: " + totalTime + "ms, Max string length: " + maxLen);
     assert_true(maxLen > 10, "Strings were created");
 }

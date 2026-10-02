@@ -1,4 +1,5 @@
-import { clearTimeout, sleep, setTimeout } from "std:time";
+import { clearTimeout, setTimeout } from "std:time";
+import { sleep } from "std:thread";
 import { assert_true } from "../utils.tx";
 
 function main() {
