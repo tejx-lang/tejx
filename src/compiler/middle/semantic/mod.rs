@@ -397,6 +397,85 @@ impl TypeChecker {
         narrowed_match
     }
 
+    pub(crate) fn suggest_similar_identifier(&self, name: &str) -> Option<String> {
+        let mut candidates = HashSet::new();
+
+        // 1. Gather all accessible symbols from active scopes
+        for scope in self.scopes.iter().rev() {
+            for (sym_name, s) in scope {
+                if self.symbol_accessible(sym_name, s) {
+                    candidates.insert(sym_name.clone());
+                }
+            }
+        }
+
+        // 2. Global language builtins & keywords
+        let builtins = [
+            "print", "println", "panic", "sizeof", "String", "Number", "Boolean",
+            "Array", "Map", "Set", "None", "true", "false", "Math", "spawn",
+            "Thread", "Object", "Promise", "Error",
+        ];
+        for b in builtins {
+            candidates.insert(b.to_string());
+        }
+
+        crate::common::diagnostics::find_best_match_str(name, candidates)
+    }
+
+    pub(crate) fn suggest_similar_type(&self, ty_str: &str) -> Option<String> {
+        let base_name = ty_str.split('<').next().unwrap_or(ty_str).trim();
+
+        // Cross-language synonyms & common aliases
+        match base_name.to_lowercase().as_str() {
+            "boolean" => return Some("bool".to_string()),
+            "integer" => return Some("int".to_string()),
+            "str" => return Some("string".to_string()),
+            "double" => return Some("float64".to_string()),
+            "dict" | "dictionary" => return Some("Map".to_string()),
+            "list" | "vector" => return Some("Array".to_string()),
+            "character" => return Some("char".to_string()),
+            "null" | "nil" | "undefined" => return Some("None".to_string()),
+            _ => {}
+        }
+
+        let mut candidates = HashSet::new();
+
+        // Standard primitive types
+        let primitives = [
+            "int", "int8", "int16", "int32", "int64", "int128",
+            "uint", "uint8", "uint16", "uint32", "uint64", "uint128",
+            "float", "float16", "float32", "float64",
+            "bool", "string", "char", "void", "any", "None",
+            "Map", "Set", "Array", "Optional", "Promise", "Error",
+        ];
+        for p in primitives {
+            candidates.insert(p.to_string());
+        }
+
+        // Defined classes, enums, interfaces from scopes
+        for scope in self.scopes.iter().rev() {
+            for (sym_name, s) in scope {
+                if s.ty.to_name() == "class" || s.ty.to_name() == "enum" {
+                    candidates.insert(sym_name.clone());
+                }
+            }
+        }
+        for class_name in self.class_members.keys() {
+            candidates.insert(class_name.clone());
+        }
+
+        crate::common::diagnostics::find_best_match_str(base_name, candidates)
+    }
+
+    pub(crate) fn type_suggestion_or_default_hint(&self, ty_str: &str) -> String {
+        if let Some(sugg) = self.suggest_similar_type(ty_str) {
+            format!("Did you mean '{}'?", sugg)
+        } else {
+            "Valid types include: int, int32, float, float64, string, bool, or user-defined classes".to_string()
+        }
+    }
+
+
     pub(crate) fn report_error_detailed(
         &mut self,
         msg: String,

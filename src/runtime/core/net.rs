@@ -2,9 +2,6 @@ use super::*;
 use std::io::{Read, Write};
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Mutex;
-use std::collections::HashSet;
-use once_cell::sync::Lazy;
 use mio::net::{TcpListener, TcpStream};
 use native_tls::{TlsConnector, TlsStream};
 

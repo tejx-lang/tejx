@@ -80,8 +80,26 @@ Converts any value to its string representation.
 let s: string = String(12345);
 ```
 
+#### `Boolean(v: any): bool`
+Converts any value to a boolean (`false` for `None`, otherwise `v as bool`).
+```tx
+let b = Boolean(true);
+let empty = Boolean(None); // false
+```
+
 #### `None`
 The single canonical representation for absent, null, or empty values. `null` and `undefined` are invalid in TejX.
+
+---
+
+### 1.2 Array Utilities (`class Array`)
+
+The built-in `Array` namespace provides array reflection and checking utilities:
+
+```tx
+let isList = Array.isArray([1, 2, 3]); // true
+let notList = Array.isArray("hello"); // false
+```
 
 ---
 
@@ -787,6 +805,17 @@ import { pi, e, abs, min, max, clamp, sqrt, pow, sin, cos, random, randomInt } f
 - `seedRandom(seed: int64): void`: Seeds the pseudorandom generator.
 - `random(): float`: Returns a random float in range $[0.0, 1.0)$.
 - `randomInt(lower: int, upper: int): int`: Returns random integer in range $[\text{lower}, \text{upper}]$.
+
+### `class Math` (Static Class Utilities)
+When importing `std:math`, the `Math` class is available with static methods:
+```tx
+import std:math;
+
+let pi = Math.PI();
+let root = Math.sqrt(25.0);
+let maximum = Math.max(10.0, 20.0);
+let clamped = Math.clamp(15.0, 0.0, 10.0);
+```
 
 ---
 

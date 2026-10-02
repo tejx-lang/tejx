@@ -1049,7 +1049,7 @@ pub fn vt_wait_io(token_id: usize) {
     vt_wait_io_read(token_id);
 }
 
-fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
+fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
     unsafe { crate::gc::rt_register_thread(); }
     let local_box = Box::new(local);
     let local_ptr: *const Worker<Box<VThread>> = &*local_box;

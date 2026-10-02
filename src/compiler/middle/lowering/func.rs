@@ -623,6 +623,12 @@ impl Lowering {
         self.function_display_names
             .borrow_mut()
             .insert(name.clone(), func.name.clone());
+        self.function_source_files
+            .borrow_mut()
+            .insert(name.clone(), self.current_file.borrow().clone());
+        self.function_source_files
+            .borrow_mut()
+            .insert(func.name.clone(), self.current_file.borrow().clone());
 
         functions.push(HIRStatement::Function {
             line,

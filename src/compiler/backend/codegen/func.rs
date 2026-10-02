@@ -1310,8 +1310,13 @@ update:\n\
         self.num_roots = 0;
         self.current_debug_line = None;
         self.volatile_locals = func.blocks.iter().any(|b| b.exception_handler.is_some());
+        self.current_function_source_file = self
+            .function_source_files
+            .get(&func.name)
+            .cloned()
+            .unwrap_or_else(|| self.source_file.clone());
         self.current_function_has_runtime_frame =
-            !self.source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
+            !self.current_function_source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
         self.current_function_tracks_location = self.current_function_has_runtime_frame
             && Self::function_tracks_runtime_location(&func.name);
 
@@ -1570,7 +1575,7 @@ update:\n\
             .unwrap_or(0);
 
         if self.current_function_has_runtime_frame {
-            let source_file = self.source_file.clone();
+            let source_file = self.current_function_source_file.clone();
             let display_name = self
                 .function_display_names
                 .get(&func.name)

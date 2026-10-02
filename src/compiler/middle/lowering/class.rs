@@ -383,6 +383,12 @@ impl Lowering {
                 class_decl.name.replace("[", "_").replace("]", "_"),
                 func_decl.name
             );
+            self.function_source_files
+                .borrow_mut()
+                .insert(mangled_name.clone(), self.current_file.borrow().clone());
+            self.function_source_files
+                .borrow_mut()
+                .insert(format!("{}_{}", class_decl.name, func_decl.name), self.current_file.borrow().clone());
             functions.push(HIRStatement::Function {
                 line,
                 name: mangled_name,
@@ -417,6 +423,9 @@ impl Lowering {
             self.return_type_stack.borrow_mut().pop();
             self._exit_scope();
             self.pop_env_owner();
+            self.function_source_files
+                .borrow_mut()
+                .insert(name.clone(), self.current_file.borrow().clone());
             functions.push(HIRStatement::Function {
                 line,
                 name,
@@ -456,6 +465,9 @@ impl Lowering {
             self.return_type_stack.borrow_mut().pop();
             self._exit_scope();
             self.pop_env_owner();
+            self.function_source_files
+                .borrow_mut()
+                .insert(name.clone(), self.current_file.borrow().clone());
             functions.push(HIRStatement::Function {
                 line,
                 name,
@@ -568,6 +580,10 @@ impl Lowering {
 
             self._exit_scope();
             self.pop_env_owner();
+
+            self.function_source_files
+                .borrow_mut()
+                .insert(name.clone(), self.current_file.borrow().clone());
 
             functions.push(HIRStatement::Function {
                 line,

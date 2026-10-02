@@ -47,12 +47,21 @@ impl Parser {
 
 
     fn push_parse_error(&mut self, message: impl Into<String>, line: usize, col: usize) {
-        self.push_parse_error_with_hint(
-            message,
-            line,
-            col,
-            "Check for a missing, extra, or misplaced token near this location.",
-        );
+        let msg = message.into();
+        let hint = if msg.contains("';'") {
+            "Statements in TejX must end with a semicolon ';'"
+        } else if msg.contains("')'") {
+            "Check for an unclosed or misplaced parenthesis ')'"
+        } else if msg.contains("'}'") {
+            "Check for an unclosed or misplaced brace '}'"
+        } else if msg.contains("']'") {
+            "Check for an unclosed or misplaced bracket ']'"
+        } else if msg.contains("':'") {
+            "Type annotations require a colon ':', e.g., 'let x: int = 1'"
+        } else {
+            "Check for a missing, extra, or misplaced token near this location."
+        };
+        self.push_parse_error_with_hint(msg, line, col, hint);
     }
 
     fn push_parse_error_with_hint(

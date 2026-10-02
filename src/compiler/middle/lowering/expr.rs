@@ -1940,6 +1940,10 @@ impl Lowering {
 
                 self._exit_scope();
 
+                self.function_source_files
+                    .borrow_mut()
+                    .insert(lambda_name.clone(), self.current_file.borrow().clone());
+
                 self.lambda_functions
                     .borrow_mut()
                     .push(HIRStatement::Function {

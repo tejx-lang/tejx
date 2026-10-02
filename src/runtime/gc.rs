@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, Once};
 
 // =============================================================================
@@ -1383,7 +1382,6 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 }
 
 #[no_mangle]
-#[inline(always)]
 pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
     gc_allocate_impl(size)
 }

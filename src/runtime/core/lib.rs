@@ -38,7 +38,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{self, PanicHookInfo};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, Once, RwLock};
+use std::sync::{LazyLock, Mutex, Once};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
 #[derive(Default)]
@@ -314,11 +314,107 @@ unsafe fn runtime_error_like_summary(val: i64) -> Option<String> {
     Some(rendered)
 }
 
+fn runtime_display_file(file: &str) -> String {
+    if file.is_empty() {
+        return String::new();
+    }
+    if let Some(idx) = file.find("/library/std/") {
+        return format!("std/{}", &file[idx + "/library/std/".len()..]);
+    }
+    if let Some(rest) = file.strip_prefix("src/library/std/") {
+        return format!("std/{}", rest);
+    }
+    if let Some(rest) = file.strip_prefix("lib/std/") {
+        return format!("std/{}", rest);
+    }
+    if let Some(idx) = file.find("/library/core/") {
+        return format!("core/{}", &file[idx + "/library/core/".len()..]);
+    }
+    if let Some(rest) = file.strip_prefix("src/library/core/") {
+        return format!("core/{}", rest);
+    }
+    if let Some(rest) = file.strip_prefix("lib/core/") {
+        return format!("core/{}", rest);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_str = cwd.to_string_lossy();
+        if let Some(rel) = file.strip_prefix(cwd_str.as_ref()) {
+            let trimmed = rel.trim_start_matches('/');
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    file.to_string()
+}
+
+fn runtime_is_std_or_internal(file: &str) -> bool {
+    file.contains("/library/std/")
+        || file.contains("/library/core/")
+        || file.starts_with("src/library/")
+        || file.starts_with("lib/std/")
+        || file.starts_with("lib/core/")
+        || file.starts_with("std/")
+        || file.starts_with("core/")
+        || file.starts_with("std:")
+        || file.contains(".tejx/lib/")
+}
+
+fn runtime_read_source_file_string(file: &str) -> Option<String> {
+    if file.is_empty() {
+        return None;
+    }
+    if let Ok(contents) = std::fs::read_to_string(file) {
+        return Some(contents);
+    }
+    let std_relative = if let Some(idx) = file.find("/library/std/") {
+        Some(format!("std/{}", &file[idx + "/library/std/".len()..]))
+    } else if let Some(idx) = file.find("/library/core/") {
+        Some(format!("core/{}", &file[idx + "/library/core/".len()..]))
+    } else if file.starts_with("std/") || file.starts_with("core/") {
+        Some(file.to_string())
+    } else {
+        None
+    };
+
+    if let Some(rel) = std_relative {
+        let candidate_roots = [
+            std::path::PathBuf::from("src/library"),
+            std::path::PathBuf::from("lib"),
+        ];
+        for root in &candidate_roots {
+            let p = root.join(&rel);
+            if let Ok(c) = std::fs::read_to_string(&p) {
+                return Some(c);
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(home).join(".tejx").join("lib").join(&rel);
+            if let Ok(c) = std::fs::read_to_string(&p) {
+                return Some(c);
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(bin_dir) = exe.parent() {
+                if let Some(parent) = bin_dir.parent() {
+                    let p = parent.join("lib").join(&rel);
+                    if let Ok(c) = std::fs::read_to_string(&p) {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn runtime_format_location(frame: &RuntimeFrame) -> String {
     let function = unsafe { runtime_symbol_name_from_ptr(frame.function_ptr) };
     let file = unsafe { runtime_frame_file(frame) };
-    if !file.is_empty() && frame.line > 0 {
-        format!("{}:{} in {}", file, frame.line, function)
+    let display_file = runtime_display_file(&file);
+    if !display_file.is_empty() && frame.line > 0 {
+        format!("{}:{} in {}", display_file, frame.line, function)
     } else if frame.line > 0 {
         format!("line {} in {}", frame.line, function)
     } else {
@@ -329,8 +425,9 @@ fn runtime_format_location(frame: &RuntimeFrame) -> String {
 fn runtime_format_stack_frame(frame: &RuntimeFrame) -> String {
     let function = unsafe { runtime_symbol_name_from_ptr(frame.function_ptr) };
     let file = unsafe { runtime_frame_file(frame) };
-    if !file.is_empty() && frame.line > 0 {
-        format!("  at {} ({}:{})", function, file, frame.line)
+    let display_file = runtime_display_file(&file);
+    if !display_file.is_empty() && frame.line > 0 {
+        format!("  at {} ({}:{})", function, display_file, frame.line)
     } else if frame.line > 0 {
         format!("  at {} (line {})", function, frame.line)
     } else {
@@ -342,7 +439,7 @@ fn runtime_read_source_line(file: &str, line: usize) -> Option<String> {
     if file.is_empty() || line == 0 {
         return None;
     }
-    let contents = std::fs::read_to_string(file).ok()?;
+    let contents = runtime_read_source_file_string(file)?;
     let source_line = contents.lines().nth(line.saturating_sub(1))?;
     Some(source_line.trim_end().to_string())
 }
@@ -352,7 +449,7 @@ fn runtime_render_source_frame(file: &str, line: usize, label: &str) -> Option<S
         return None;
     }
 
-    let contents = std::fs::read_to_string(file).ok()?;
+    let contents = runtime_read_source_file_string(file)?;
     let lines: Vec<&str> = contents.lines().collect();
     if line > lines.len() {
         return None;
@@ -374,9 +471,10 @@ fn runtime_render_source_frame(file: &str, line: usize, label: &str) -> Option<S
     let width = max_line.to_string().len().max(1);
     let caret_col = current.chars().take_while(|ch| ch.is_whitespace()).count();
 
+    let display_file = runtime_display_file(file);
     let mut frame = String::new();
     frame.push_str("  --> ");
-    frame.push_str(file);
+    frame.push_str(&display_file);
     frame.push(':');
     frame.push_str(&line.to_string());
     frame.push('\n');
@@ -941,6 +1039,22 @@ unsafe fn render_runtime_exception_report_with_stack(
             report.push_str("  ");
             report.push_str(&source_line);
             report.push('\n');
+        }
+
+        // If the exception occurred inside standard library or runtime internals,
+        // also render the code frame of the user call site so developers immediately see their code!
+        if runtime_is_std_or_internal(&file) {
+            let caller_frame = stack.iter().rev().find(|f| {
+                let u_file = unsafe { runtime_frame_file(f) };
+                !u_file.is_empty() && !runtime_is_std_or_internal(&u_file) && f.line > 0
+            });
+            if let Some(caller) = caller_frame {
+                let u_file = unsafe { runtime_frame_file(caller) };
+                if let Some(caller_source_frame) = runtime_render_source_frame(&u_file, caller.line, "called from here") {
+                    report.push_str("\nCaused by call at:\n");
+                    report.push_str(&caller_source_frame);
+                }
+            }
         }
     }
 
@@ -2524,6 +2638,7 @@ pub unsafe extern "C" fn rt_get_total_memory() -> i64 {
 }
 
 #[no_mangle]
+#[allow(deprecated)]
 pub unsafe extern "C" fn rt_get_free_memory() -> i64 {
     #[cfg(target_os = "macos")]
     {
@@ -3622,6 +3737,7 @@ pub unsafe extern "C" fn f_any_unlock(m: i64) {
 // --- Thread Operations ---
 
 pub(crate) struct ThreadData {
+    #[allow(dead_code)]
     pub(crate) handle: Option<()>,   // VThreads are fire-and-forget; join uses slot_live
     pub(crate) started: AtomicBool,
     pub(crate) cb_slot: usize,

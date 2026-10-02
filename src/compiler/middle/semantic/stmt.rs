@@ -198,7 +198,7 @@ impl TypeChecker {
                     && has_explicit_type
                     && !self.is_valid_type(declared_ty.as_ref().unwrap())
                 {
-                    self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
+                    self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some(&self.type_suggestion_or_default_hint(&ty_str)));
                 }
                 if let Some(expr) = initializer {
                     let prev_expected = self.current_expected_type.take();
@@ -697,9 +697,7 @@ impl TypeChecker {
                         func._line,
                         func._col,
                         "E0101",
-                        Some(
-                            "Valid return types include primitive types, function types, object types, or user-defined classes",
-                        ),
+                        Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())),
                     );
                 }
                 let effective_ret_ty = if has_explicit_return {
@@ -748,9 +746,7 @@ impl TypeChecker {
                             func._line,
                             func._col,
                             "E0101",
-                            Some(
-                                "Valid parameter types include primitive types, function types, object types, or user-defined classes",
-                            ),
+                            Some(&self.type_suggestion_or_default_hint(&p_ty)),
                         );
                     }
                     if func.generic_params.is_empty() && p._is_rest {
@@ -827,9 +823,7 @@ impl TypeChecker {
                         func._line,
                         func._col,
                         "E0101",
-                        Some(
-                            "Valid return types include primitive types, function types, object types, or user-defined classes",
-                        ),
+                        Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())),
                     );
                 }
                 for (idx, param) in func.params.iter().enumerate() {
@@ -857,9 +851,7 @@ impl TypeChecker {
                             func._line,
                             func._col,
                             "E0101",
-                            Some(
-                                "Valid parameter types include primitive types, function types, object types, or user-defined classes",
-                            ),
+                            Some(&self.type_suggestion_or_default_hint(&param_ty)),
                         );
                     }
                     if !func.generic_params.is_empty() && param._is_rest {
@@ -1224,9 +1216,7 @@ impl TypeChecker {
                             class_decl._line,
                             class_decl._col,
                             "E0101",
-                            Some(
-                                "Valid types include: int, int32, float, float64, string, bool, or user-defined classes",
-                            ),
+                            Some(&self.type_suggestion_or_default_hint(&member_ty_str)),
                         );
                     }
 
@@ -1346,7 +1336,7 @@ impl TypeChecker {
                             && !param_ty.is_empty()
                             && !self.is_valid_type(&TejxType::from_name(&param_ty))
                         {
-                            self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, or user-defined classes"));
+                            self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some(&self.type_suggestion_or_default_hint(&param_ty)));
                         }
                         self.define(param.name.clone(), param_ty);
                     }
@@ -1369,7 +1359,7 @@ impl TypeChecker {
                         && declared_ret_ty != TejxType::Void
                         && !self.is_valid_type(&declared_ret_ty)
                     {
-                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some("Valid types include: int, int32, float, float64, string, bool, void, or user-defined classes"));
+                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())));
                     }
                     let effective_ret_ty = if has_explicit_return {
                         self.effective_async_return_type(declared_ret_ty.clone(), false)
@@ -1437,9 +1427,7 @@ impl TypeChecker {
                                 constructor._line,
                                 constructor._col,
                                 "E0101",
-                                Some(
-                                    "Valid types include: int, int32, float, float64, string, bool, or user-defined classes",
-                                ),
+                                Some(&self.type_suggestion_or_default_hint(&param_ty)),
                             );
                         }
                         self.define(param.name.clone(), param_ty);

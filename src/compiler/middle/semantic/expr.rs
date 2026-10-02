@@ -587,12 +587,31 @@ impl TypeChecker {
                         );
                         return Ok(TejxType::from_name("<inferred>"));
                     }
+                    let known_std_module_hint = match name.as_str() {
+                        "Math" | "math" => Some("Math utilities and constants are available in 'std:math'. Add 'import std:math;' at the top of the file."),
+                        "fs" | "FS" => Some("File system utilities are available in 'std:fs'. Add 'import std:fs;' at the top of the file."),
+                        "json" | "JSON" => Some("JSON utilities are available in 'std:json'. Add 'import std:json;' at the top of the file."),
+                        "time" => Some("Time and timer utilities are available in 'std:time'. Add 'import std:time;' at the top of the file."),
+                        "system" | "os" | "process" => Some("System and process utilities are available in 'std:system'. Add 'import std:system;' at the top of the file."),
+                        "crypto" => Some("Cryptography utilities are available in 'std:crypto'. Add 'import std:crypto;' at the top of the file."),
+                        "net" => Some("Networking utilities are available in 'std:net'. Add 'import std:net;' at the top of the file."),
+                        "http" => Some("HTTP client/server utilities are available in 'std:http'. Add 'import std:http;' at the top of the file."),
+                        _ => None,
+                    };
+
+                    let hint = if let Some(std_hint) = known_std_module_hint {
+                        std_hint.to_string()
+                    } else if let Some(sugg) = self.suggest_similar_identifier(name) {
+                        format!("Did you mean '{}'?", sugg)
+                    } else {
+                        "Check the spelling or ensure the variable is declared before use".to_string()
+                    };
                     self.report_error_detailed(
                         format!("Undefined variable '{}'", name),
                         *_line,
                         *_col,
                         "E0102",
-                        Some("Check the spelling or ensure the variable is declared before use"),
+                        Some(&hint),
                     );
                     Ok(TejxType::from_name("<inferred>"))
                 }
@@ -875,7 +894,9 @@ impl TypeChecker {
                                         "class"
                                     };
                                     let available = self.collect_member_names(name, true);
-                                    let hint = if available.is_empty() {
+                                    let hint = if let Some(best) = crate::common::diagnostics::find_best_match(member, &available) {
+                                        Some(format!("Did you mean '{}'?", best))
+                                    } else if available.is_empty() {
                                         None
                                     } else {
                                         Some(format!(
@@ -1018,10 +1039,12 @@ impl TypeChecker {
 
                 if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
                     let available = self.collect_member_names(&obj_type, false);
-                    let hint = if available.is_empty() {
-                        None
-                    } else {
+                    let hint = if let Some(best) = crate::common::diagnostics::find_best_match(member, &available) {
+                        Some(format!("Did you mean '.{}'?", best))
+                    } else if !available.is_empty() {
                         Some(format!("Available members: {}", available.join(", ")))
+                    } else {
+                        Some("Check the property name or define it in the class".to_string())
                     };
                     self.report_error_detailed(
                         format!(
@@ -1031,8 +1054,7 @@ impl TypeChecker {
                         *_line,
                         *_col,
                         "E0105",
-                        hint.as_deref()
-                            .or(Some("Check the property name or define it in the class")),
+                        hint.as_deref(),
                     );
                 }
                 Ok(TejxType::from_name("<inferred>"))
@@ -1147,7 +1169,26 @@ impl TypeChecker {
                         if let Some(s) = self.lookup_assignment_target(name) {
                             Ok(s.ty.clone())
                         } else {
-                            self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some("Check the spelling or ensure the variable is declared before use"));
+                            let known_std_module_hint = match name.as_str() {
+                                "Math" | "math" => Some("Math utilities and constants are available in 'std:math'. Add 'import std:math;' at the top of the file."),
+                                "fs" | "FS" => Some("File system utilities are available in 'std:fs'. Add 'import std:fs;' at the top of the file."),
+                                "json" | "JSON" => Some("JSON utilities are available in 'std:json'. Add 'import std:json;' at the top of the file."),
+                                "time" => Some("Time and timer utilities are available in 'std:time'. Add 'import std:time;' at the top of the file."),
+                                "system" | "os" | "process" => Some("System and process utilities are available in 'std:system'. Add 'import std:system;' at the top of the file."),
+                                "crypto" => Some("Cryptography utilities are available in 'std:crypto'. Add 'import std:crypto;' at the top of the file."),
+                                "net" => Some("Networking utilities are available in 'std:net'. Add 'import std:net;' at the top of the file."),
+                                "http" => Some("HTTP client/server utilities are available in 'std:http'. Add 'import std:http;' at the top of the file."),
+                                _ => None,
+                            };
+
+                            let hint = if let Some(std_hint) = known_std_module_hint {
+                                std_hint.to_string()
+                            } else if let Some(sugg) = self.suggest_similar_identifier(name) {
+                                format!("Did you mean '{}'?", sugg)
+                            } else {
+                                "Check the spelling or ensure the variable is declared before use".to_string()
+                            };
+                            self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some(&hint));
                             Ok(TejxType::from_name("<inferred>"))
                         }
                     }
@@ -1856,7 +1897,7 @@ impl TypeChecker {
                                     *_line,
                                     *_col,
                                     "E0101",
-                                    Some("Provide a valid concrete type"),
+                                    Some(&self.type_suggestion_or_default_hint(&concrete.to_name())),
                                 );
                                 explicit_type_args_valid = false;
                                 break;
@@ -2889,7 +2930,7 @@ impl TypeChecker {
                                     *_line,
                                     *_col,
                                     "E0101",
-                                    Some("Provide a valid concrete type"),
+                                    Some(&self.type_suggestion_or_default_hint(&concrete_ty.to_name())),
                                 );
                             }
                             if let Some(bound) = &gp.bound {
@@ -2979,7 +3020,7 @@ impl TypeChecker {
                                             *_line,
                                             *_col,
                                             "E0101",
-                                            Some("Provide a valid concrete type"),
+                                            Some(&self.type_suggestion_or_default_hint(&concrete.to_name())),
                                         );
                                         reported_explicit_generic_issue = true;
                                         break;

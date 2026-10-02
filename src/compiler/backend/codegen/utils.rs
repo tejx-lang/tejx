@@ -1280,7 +1280,7 @@ impl CodeGen {
         if !self.current_function_tracks_location
             || line == 0
             || self.current_debug_line == Some(line)
-            || self.source_file.is_empty()
+            || self.current_function_source_file.is_empty()
         {
             return;
         }
@@ -1291,7 +1291,7 @@ impl CodeGen {
             "void @rt_set_location(i64, i64) nounwind",
         );
 
-        let source_file = self.source_file.clone();
+        let source_file = self.current_function_source_file.clone();
         let file_ptr = self.emit_string_constant(&source_file);
         self.emit_line(&format!(
             "call void @rt_set_location(i64 {}, i64 {})",
@@ -1300,11 +1300,14 @@ impl CodeGen {
     }
 
     pub(crate) fn runtime_location_args(&mut self, line: usize) -> Option<(String, usize)> {
-        if !self.current_function_tracks_location || line == 0 || self.source_file.is_empty() {
+        if !self.current_function_tracks_location
+            || line == 0
+            || self.current_function_source_file.is_empty()
+        {
             return None;
         }
 
-        let source_file = self.source_file.clone();
+        let source_file = self.current_function_source_file.clone();
         let file_ptr = self.emit_string_constant(&source_file);
         Some((file_ptr, line))
     }

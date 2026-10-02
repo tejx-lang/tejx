@@ -97,6 +97,12 @@ export class Number {
     }
 }
 
+export class Array {
+    static isArray<T>(val: T): bool {
+        return rt_is_array(val);
+    }
+}
+
 export class Error {
     message: string;
     stack: string;
@@ -392,6 +398,11 @@ class __PromiseImpl {
 
 function String(v: any): string {
     return rt_to_string(v);
+}
+
+export function Boolean(v: any): bool {
+    if (v == None) return false;
+    return v as bool;
 }
 
 function _error_name_for_print(v: any): string {

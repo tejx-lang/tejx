@@ -528,10 +528,26 @@ fn main() {
             }
 
             _ if arg.starts_with("-") => {
-                eprintln!(
-                    "Unknown option: {}. Run 'tejxc --help' for all options.",
-                    arg
-                );
+                let valid_options = [
+                    "-h", "--help", "-v", "--version", "--check", "-r", "--run",
+                    "-S", "--emit-asm", "-O0", "-O1", "-O2", "-O3", "-Os",
+                    "-g", "--debug", "-Wall", "-Wextra", "-Werror", "--stats",
+                    "--verbose", "--emit-ast", "--emit-tokens", "--unsafe-arrays",
+                    "--emit-mir", "--emit-llvm", "-c", "--compile", "-o", "--output",
+                    "--stdlib-path", "--runtime-path", "--vt-stack", "--vthread-stack",
+                    "-Xss", "-I", "-L", "-l", "--target",
+                ];
+                if let Some(sugg) = crate::common::diagnostics::find_best_match(arg, valid_options) {
+                    eprintln!(
+                        "Unknown option: '{}'. Did you mean '{}'? Run 'tejxc --help' for all options.",
+                        arg, sugg
+                    );
+                } else {
+                    eprintln!(
+                        "Unknown option: '{}'. Run 'tejxc --help' for all options.",
+                        arg
+                    );
+                }
                 process::exit(1);
             }
             _ => {
@@ -673,7 +689,8 @@ fn main() {
     *lowering.generic_instantiations.borrow_mut() = type_checker.generic_instantiations;
     lowering.function_instantiations = type_checker.function_instantiations;
 
-    let lowering_result = lowering.lower(&merged_program, base_path);
+    let lowering_result =
+        lowering.lower(&merged_program, base_path, Some(&resolved_statement_files));
 
     // Check for lowering errors (import validation, etc.)
     {
@@ -726,6 +743,7 @@ fn main() {
     codegen.class_parents = lowering_result.class_parents;
     codegen.function_display_names = lowering_result.function_display_names;
     codegen.class_display_names = lowering_result.class_display_names;
+    codegen.function_source_files = lowering_result.function_source_files;
     codegen.vt_stack_size = cli_vt_stack;
     let llvm_code =
         codegen.generate_with_blocks(&mir_functions, lowering_result.captured_vars_by_function);

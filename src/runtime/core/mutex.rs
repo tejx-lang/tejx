@@ -1,9 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex as StdMutex};
-use once_cell::sync::Lazy;
-use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::Arc;
+
 
 // ── Mutex ─────────────────────────────────────────────────────────────────────
 // VThread-aware Mutex:

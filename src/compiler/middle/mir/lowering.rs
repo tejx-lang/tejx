@@ -2143,7 +2143,7 @@ impl MIRLowering {
             HIRExpression::PostfixUpdate {
                 target,
                 op,
-                ty,
+                ty: _,
                 line,
             } => {
                 let bin_op = if matches!(op, TokenType::PlusPlus) {

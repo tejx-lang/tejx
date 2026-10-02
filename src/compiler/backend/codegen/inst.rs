@@ -901,7 +901,7 @@ impl CodeGen {
             )
         };
 
-        let requires_heap = self.class_requires_heap_alloc(shape_name);
+        let _requires_heap = self.class_requires_heap_alloc(shape_name);
         let can_stack_allocate = false;
         if can_stack_allocate && !is_escaped && !dst.is_empty() && self.current_arena.is_some() {
             let arena = self.current_arena.clone().unwrap();

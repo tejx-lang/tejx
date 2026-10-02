@@ -61,8 +61,10 @@ pub struct Lowering {
     env_owner_stack: RefCell<Vec<String>>,
     captured_vars_by_owner: RefCell<HashMap<String, HashSet<String>>>,
     lambda_env_owner: RefCell<HashMap<String, String>>,
-    function_display_names: RefCell<HashMap<String, String>>,
-    class_display_names: RefCell<HashMap<String, String>>,
+    pub function_display_names: RefCell<HashMap<String, String>>,
+    pub class_display_names: RefCell<HashMap<String, String>>,
+    pub current_file: RefCell<String>,
+    pub function_source_files: RefCell<HashMap<String, String>>,
     pending_lambda_display_name: RefCell<Option<String>>,
 }
 
@@ -77,6 +79,7 @@ pub struct LoweringResult {
     pub class_parents: HashMap<String, String>,
     pub function_display_names: HashMap<String, String>,
     pub class_display_names: HashMap<String, String>,
+    pub function_source_files: HashMap<String, String>,
 }
 
 impl Default for Lowering {
@@ -134,6 +137,8 @@ impl Lowering {
             lambda_env_owner: RefCell::new(HashMap::new()),
             function_display_names: RefCell::new(HashMap::new()),
             class_display_names: RefCell::new(HashMap::new()),
+            current_file: RefCell::new(String::new()),
+            function_source_files: RefCell::new(HashMap::new()),
             pending_lambda_display_name: RefCell::new(None),
         }
     }
@@ -372,16 +377,16 @@ impl Lowering {
         &self,
         statements: &[Statement],
         base_name: &str,
-    ) -> Option<ClassDeclaration> {
-        for stmt in statements {
+    ) -> Option<(ClassDeclaration, usize)> {
+        for (i, stmt) in statements.iter().enumerate() {
             match stmt {
                 Statement::ClassDeclaration(class_decl) if class_decl.name == base_name => {
-                    return Some(class_decl.clone());
+                    return Some((class_decl.clone(), i));
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::ClassDeclaration(class_decl) = declaration.as_ref() {
                         if class_decl.name == base_name {
-                            return Some(class_decl.clone());
+                            return Some((class_decl.clone(), i));
                         }
                     }
                 }
@@ -395,11 +400,11 @@ impl Lowering {
         &self,
         statements: &[Statement],
         base_name: &str,
-    ) -> Option<FunctionDeclaration> {
-        for stmt in statements {
+    ) -> Option<(FunctionDeclaration, usize)> {
+        for (i, stmt) in statements.iter().enumerate() {
             match stmt {
                 Statement::FunctionDeclaration(func) if func.name == base_name => {
-                    return Some(func.clone());
+                    return Some((func.clone(), i));
                 }
                 Statement::ClassDeclaration(class_decl) => {
                     for method in &class_decl.methods {
@@ -417,14 +422,14 @@ impl Lowering {
                                     _is_rest: false,
                                 },
                             );
-                            return Some(func);
+                            return Some((func, i));
                         }
                     }
                 }
                 Statement::ExportDecl { declaration, .. } => {
                     if let Statement::FunctionDeclaration(func) = declaration.as_ref() {
                         if func.name == base_name {
-                            return Some(func.clone());
+                            return Some((func.clone(), i));
                         }
                     } else if let Statement::ClassDeclaration(class_decl) = declaration.as_ref() {
                         for method in &class_decl.methods {
@@ -442,7 +447,7 @@ impl Lowering {
                                         _is_rest: false,
                                     },
                                 );
-                                return Some(func);
+                                return Some((func, i));
                             }
                         }
                     }
@@ -490,12 +495,17 @@ impl Lowering {
         self.nested_functions.borrow_mut().truncate(nested_len);
     }
 
-    fn monomorphize_to_fixed_point(&self, merged_statements: &mut Vec<Statement>) {
+    fn monomorphize_to_fixed_point(
+        &self,
+        merged_statements: &mut Vec<Statement>,
+        merged_statement_files: &mut Vec<String>,
+    ) {
         let mut emitted_class_instantiations = HashSet::new();
         let mut emitted_function_instantiations = HashSet::new();
 
         loop {
             let mut new_statements = Vec::new();
+            let mut new_statement_files = Vec::new();
 
             let class_instantiations: Vec<(String, Vec<TejxType>)> = self
                 .generic_instantiations
@@ -520,10 +530,12 @@ impl Lowering {
                     continue;
                 }
 
-                let Some(mut class_decl) = self.find_class_template(merged_statements, &base_name)
+                let Some((mut class_decl, t_idx)) =
+                    self.find_class_template(merged_statements, &base_name)
                 else {
                     continue;
                 };
+                let origin_file = merged_statement_files.get(t_idx).cloned().unwrap_or_default();
 
                 if class_decl.generic_params.len() != concrete_args.len() {
                     continue;
@@ -550,6 +562,7 @@ impl Lowering {
 
                 self.register_class(&class_decl);
                 new_statements.push(Statement::ClassDeclaration(class_decl));
+                new_statement_files.push(origin_file);
             }
 
             let mut function_instantiations = Vec::new();
@@ -576,11 +589,12 @@ impl Lowering {
                     continue;
                 }
 
-                let Some(mut func_decl) =
+                let Some((mut func_decl, t_idx)) =
                     self.find_function_template(merged_statements, &base_name)
                 else {
                     continue;
                 };
+                let origin_file = merged_statement_files.get(t_idx).cloned().unwrap_or_default();
 
                 if func_decl.generic_params.len() != concrete_args.len() {
                     continue;
@@ -601,6 +615,7 @@ impl Lowering {
 
                 self.register_function(&func_decl);
                 new_statements.push(Statement::FunctionDeclaration(func_decl));
+                new_statement_files.push(origin_file);
             }
 
             if new_statements.is_empty() {
@@ -612,14 +627,31 @@ impl Lowering {
             }
 
             merged_statements.extend(new_statements);
+            merged_statement_files.extend(new_statement_files);
         }
     }
 
-    pub fn lower(&self, program: &Program, _base_path: &std::path::Path) -> LoweringResult {
+    pub fn lower(
+        &self,
+        program: &Program,
+        _base_path: &std::path::Path,
+        statement_files: Option<&[String]>,
+    ) -> LoweringResult {
         let line = 0; // Top level
         let mut functions = Vec::new();
         let mut main_stmts = Vec::new();
         let mut merged_statements = program.statements.clone();
+        let default_file = self.filename.borrow().clone();
+        let mut merged_statement_files: Vec<String> = if let Some(files) = statement_files {
+            if files.len() == merged_statements.len() {
+                files.to_vec()
+            } else {
+                vec![default_file.clone(); merged_statements.len()]
+            }
+        } else {
+            vec![default_file.clone(); merged_statements.len()]
+        };
+        *self.current_file.borrow_mut() = default_file.clone();
 
         // Pass 0.5: Scan for Variadic Functions
         for stmt in &merged_statements {
@@ -713,10 +745,15 @@ impl Lowering {
         }
 
         // Pass 1.5: Monomorphize generic declarations to a fixed point before HIR/MIR lowering.
-        self.monomorphize_to_fixed_point(&mut merged_statements);
+        self.monomorphize_to_fixed_point(&mut merged_statements, &mut merged_statement_files);
 
         // Pass 1.6: Register monomorphized functions/classes (and any new variants).
-        for stmt in &merged_statements {
+        for (index, stmt) in merged_statements.iter().enumerate() {
+            let file = merged_statement_files
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| default_file.clone());
+            *self.current_file.borrow_mut() = file;
             match stmt {
                 Statement::FunctionDeclaration(func) => {
                     self.register_function(func);
@@ -741,7 +778,12 @@ impl Lowering {
 
         // Pass 2: Lower
         self.push_env_owner(TEJX_MAIN.to_string());
-        for stmt in &merged_statements {
+        for (index, stmt) in merged_statements.iter().enumerate() {
+            let file = merged_statement_files
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| default_file.clone());
+            *self.current_file.borrow_mut() = file;
             match stmt {
                 Statement::FunctionDeclaration(func) => {
                     if self.should_lower_function(func) {
@@ -970,6 +1012,10 @@ impl Lowering {
             }
         }
 
+        self.function_source_files
+            .borrow_mut()
+            .insert(crate::common::intrinsics::TEJX_MAIN.to_string(), default_file.clone());
+
         LoweringResult {
             functions,
             signatures,
@@ -979,6 +1025,7 @@ impl Lowering {
             class_parents: self.class_parents.borrow().clone(),
             function_display_names: self.function_display_names.borrow().clone(),
             class_display_names: self.class_display_names.borrow().clone(),
+            function_source_files: self.function_source_files.borrow().clone(),
         }
     }
 }

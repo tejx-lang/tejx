@@ -163,3 +163,121 @@ impl Diagnostic {
         eprintln!();
     }
 }
+
+/// Calculates the Levenshtein distance between two strings using optimal O(min(m, n)) space DP.
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let (m, n) = (a_chars.len(), b_chars.len());
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+
+    let mut prev_row: Vec<usize> = (0..=n).collect();
+    let mut curr_row: Vec<usize> = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr_row[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            curr_row[j] = (prev_row[j] + 1)
+                .min(curr_row[j - 1] + 1)
+                .min(prev_row[j - 1] + cost);
+        }
+        prev_row.copy_from_slice(&curr_row);
+    }
+
+    prev_row[n]
+}
+
+/// Computes the maximum allowed edit distance threshold based on query length.
+pub fn max_allowed_distance(len: usize) -> usize {
+    match len {
+        0..=3 => 1,
+        4..=7 => 2,
+        _ => 3,
+    }
+}
+
+/// Finds the best matching candidate from an iterator of string-like items for a given target.
+/// Performs case-insensitive matching and edit distance ranking.
+pub fn find_best_match<I, S>(target: &str, candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    find_best_match_internal(target, candidates.into_iter().map(|s| s.as_ref().to_string()))
+}
+
+/// Alias for find_best_match.
+pub fn find_best_match_str<I, S>(target: &str, candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    find_best_match(target, candidates)
+}
+
+fn find_best_match_internal<I>(target: &str, candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let target_trimmed = target.trim();
+    if target_trimmed.is_empty() {
+        return None;
+    }
+    let target_lower = target_trimmed.to_lowercase();
+    let target_len = target_lower.chars().count();
+    let max_dist = max_allowed_distance(target_len);
+
+    let mut best_candidate: Option<String> = None;
+    let mut min_distance = usize::MAX;
+
+    for cand in candidates {
+        let cand_trimmed = cand.trim();
+        if cand_trimmed.is_empty() || cand_trimmed == target_trimmed {
+            continue;
+        }
+
+        let cand_lower = cand_trimmed.to_lowercase();
+        // Exact case-insensitive match takes top priority
+        if cand_lower == target_lower {
+            return Some(cand_trimmed.to_string());
+        }
+
+        let dist = levenshtein_distance(&target_lower, &cand_lower);
+        if dist <= max_dist && dist < min_distance {
+            min_distance = dist;
+            best_candidate = Some(cand_trimmed.to_string());
+        }
+    }
+
+    best_candidate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_levenshtein_distance() {
+        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
+        assert_eq!(levenshtein_distance("flaw", "lawn"), 2);
+        assert_eq!(levenshtein_distance("", "abc"), 3);
+        assert_eq!(levenshtein_distance("abc", ""), 3);
+        assert_eq!(levenshtein_distance("same", "same"), 0);
+    }
+
+    #[test]
+    fn test_find_best_match() {
+        let candidates = ["println", "print", "panic", "sizeof", "length"];
+        assert_eq!(find_best_match("pringln", candidates), Some("println".to_string()));
+        assert_eq!(find_best_match("lengh", candidates), Some("length".to_string()));
+        assert_eq!(find_best_match("Print", candidates), Some("print".to_string()));
+        assert_eq!(find_best_match("completely_unrelated", candidates), None);
+    }
+}
+
