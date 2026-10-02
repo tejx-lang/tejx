@@ -278,6 +278,7 @@ impl Parser {
             | TokenType::None
             | TokenType::Namespace
             | TokenType::As
+            | TokenType::TypeAlias
             | TokenType::TypeVoid
             | TokenType::TypeInt
             | TokenType::TypeInt8
@@ -394,7 +395,7 @@ impl Parser {
             loop {
                 let is_rest = self.match_token(TokenType::Ellipsis);
                 let p_name = self
-                    .consume(TokenType::Identifier, "Expected param name")
+                    .consume_identifier("Expected param name")
                     .value
                     .clone();
                 let mut p_type = TypeNode::Named("".to_string());
@@ -541,7 +542,7 @@ impl Parser {
                 if !self.check(TokenType::CloseParen) {
                     loop {
                         let name = self
-                            .consume(TokenType::Identifier, "Expected param name")
+                            .consume_identifier("Expected param name")
                             .value
                             .clone();
                         let mut type_name = TypeNode::Named("".to_string());
@@ -636,7 +637,7 @@ impl Parser {
                 if !self.check(TokenType::CloseParen) {
                     loop {
                         let p_name = self
-                            .consume(TokenType::Identifier, "Expected param")
+                            .consume_identifier("Expected param")
                             .value
                             .clone();
                         let mut p_type = TypeNode::Named("".to_string());
@@ -961,7 +962,7 @@ impl Parser {
                 if !self.check(TokenType::CloseParen) {
                     loop {
                         let p_name = self
-                            .consume(TokenType::Identifier, "Param name")
+                            .consume_identifier("Param name")
                             .value
                             .clone();
                         self.consume(TokenType::Colon, "Expected ':'");
@@ -1066,9 +1067,9 @@ impl Parser {
             params_str.push('(');
             if !self.check(TokenType::CloseParen) {
                 loop {
-                    if self.check(TokenType::Identifier) && self.check_next(TokenType::Colon) {
+                    if (self.check(TokenType::Identifier) || self.is_keyword_identifier()) && self.check_next(TokenType::Colon) {
                         let name = self
-                            .consume(TokenType::Identifier, "Param name")
+                            .consume_identifier("Param name")
                             .value
                             .clone();
                         self.consume(TokenType::Colon, "Expected ':'");
@@ -2286,7 +2287,18 @@ impl Parser {
                 self.advance();
                 self.parse_template_string(token)
             }
-            TokenType::Identifier => {
+            TokenType::Identifier
+            | TokenType::From
+            | TokenType::To
+            | TokenType::Of
+            | TokenType::TypeAlias
+            | TokenType::As
+            | TokenType::Public
+            | TokenType::Private
+            | TokenType::Protected
+            | TokenType::Static
+            | TokenType::Abstract
+            | TokenType::Namespace => {
                 if self.check_next(TokenType::Arrow) {
                     return self.parse_lambda();
                 }
@@ -2365,10 +2377,10 @@ impl Parser {
         let start_col = self.peek().column;
         let mut params = Vec::new();
 
-        if self.check(TokenType::Identifier) {
+        if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
             // Single param: x => ...
             let name = self
-                .consume(TokenType::Identifier, "Expected param name")
+                .consume_identifier("Expected param name")
                 .value
                 .clone();
             params.push(Parameter {
@@ -2384,7 +2396,7 @@ impl Parser {
                 loop {
                     let is_rest = self.match_token(TokenType::Ellipsis);
                     let name = self
-                        .consume(TokenType::Identifier, "Expected param name")
+                        .consume_identifier("Expected param name")
                         .value
                         .clone();
                     let mut type_name = TypeNode::Any;

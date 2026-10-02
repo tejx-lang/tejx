@@ -614,18 +614,19 @@ impl Lowering {
                 }
             }
             Expression::StringLiteral { value, .. } => {
-                let ty = if let Some(expected) = self.current_expected_type.borrow().clone() {
+                let (val, ty) = if let Some(expected) = self.current_expected_type.borrow().clone() {
                     if matches!(expected, TejxType::Char) {
-                        TejxType::Char
+                        let c = value.chars().next().unwrap_or('\0') as u32;
+                        (c.to_string(), TejxType::Char)
                     } else {
-                        TejxType::String
+                        (value.clone(), TejxType::String)
                     }
                 } else {
-                    TejxType::String
+                    (value.clone(), TejxType::String)
                 };
                 HIRExpression::Literal {
                     line,
-                    value: value.clone(),
+                    value: val,
                     ty,
                 }
             }
@@ -1922,10 +1923,20 @@ impl Lowering {
                     ),
                 );
 
+                let lambda_ret_type = expected_lambda_ret.clone().unwrap_or_else(|| {
+                    self.lambda_inferred_returns
+                        .get(&(*_line, *_col))
+                        .cloned()
+                        .unwrap_or(TejxType::Void)
+                });
+                self.return_type_stack.borrow_mut().push(lambda_ret_type.clone());
+
                 let hir_body = self.lower_statement(body).unwrap_or(HIRStatement::Block {
                     line,
                     statements: vec![],
                 });
+
+                self.return_type_stack.borrow_mut().pop();
 
                 self._exit_scope();
 
@@ -1935,12 +1946,7 @@ impl Lowering {
                         line,
                         name: lambda_name.clone(),
                         params: mangled_params,
-                        _return_type: expected_lambda_ret.clone().unwrap_or_else(|| {
-                            self.lambda_inferred_returns
-                                .get(&(*_line, *_col))
-                                .cloned()
-                                .unwrap_or(TejxType::Void)
-                        }),
+                        _return_type: lambda_ret_type,
                         body: Box::new(hir_body),
                         is_extern: false,
                     });

@@ -1,0 +1,94 @@
+import { Mutex, Atomic, SharedQueue } from "std:thread";
+import { setVThreadStackSize, getVThreadStackSize } from "std:runtime";
+import { assert_eq_int, assert_true } from "./utils.tx";
+
+function recursive_depth(depth: int, acc: int): int {
+    if (depth <= 0) {
+        return acc;
+    }
+    let a = depth * 2;
+    let b = depth + acc;
+    let c = a + b;
+    return recursive_depth(depth - 1, acc + 1) + (c - a - b);
+}
+
+function main(): void {
+    print("=== Virtual Thread Dynamic Memory Stress Test ===");
+
+    // 1. Verify default stack size
+    let initialStack = getVThreadStackSize();
+    print("Initial vthread stack size:", initialStack);
+    assert_true(initialStack >= 2048, "Initial stack must be at least 2 KB");
+
+    // 2. Dynamically scale thread stack size up to 64 KB
+    print("Dynamically increasing vthread stack size to 64 KB...");
+    setVThreadStackSize(64 * 1024);
+    let updatedStack = getVThreadStackSize();
+    print("Updated vthread stack size:", updatedStack);
+    assert_eq_int(64 * 1024, updatedStack, "Stack size updated to 64 KB");
+
+    // 3. Spawn 50 concurrent threads running deep recursion
+    let numThreads = 50;
+    let completed = new Atomic(0);
+    let threads: Thread[] = [];
+
+    for (let i = 0; i < numThreads; i++) {
+        let t = Thread.spawn(() => {
+            let res = recursive_depth(100, 0);
+            assert_eq_int(100, res, "Recursive calculation match");
+            completed.increment();
+        });
+        threads.push(t);
+    }
+
+    for (let i = 0; i < numThreads; i++) {
+        threads[i].join();
+    }
+
+    assert_eq_int(numThreads, completed.load(), "All 50 64KB threads completed");
+    print("Successfully ran 50 threads with 64 KB stack!");
+
+    // 4. Dynamically scale thread stack size up to 128 KB
+    print("Dynamically increasing vthread stack size to 128 KB...");
+    setVThreadStackSize(128 * 1024);
+    assert_eq_int(128 * 1024, getVThreadStackSize(), "Stack size updated to 128 KB");
+
+    let completed2 = new Atomic(0);
+    let threads2: Thread[] = [];
+    for (let i = 0; i < numThreads; i++) {
+        let t = Thread.spawn(() => {
+            let res = recursive_depth(150, 0);
+            assert_eq_int(150, res, "Recursive depth 150 calculation match");
+            completed2.increment();
+        });
+        threads2.push(t);
+    }
+
+    for (let i = 0; i < numThreads; i++) {
+        threads2[i].join();
+    }
+    assert_eq_int(numThreads, completed2.load(), "All 50 128KB threads completed");
+    print("Successfully ran 50 threads with 128 KB stack!");
+
+    // 5. Dynamically scale back down to 2 KB for minimum memory footprint
+    print("Dynamically scaling stack size back down to 2 KB...");
+    setVThreadStackSize(2 * 1024);
+    assert_eq_int(2 * 1024, getVThreadStackSize(), "Stack size reset to 2 KB");
+
+    let completed3 = new Atomic(0);
+    let threads3: Thread[] = [];
+    for (let i = 0; i < numThreads; i++) {
+        let t = Thread.spawn(() => {
+            Thread.sleep(1);
+            completed3.increment();
+        });
+        threads3.push(t);
+    }
+    for (let i = 0; i < numThreads; i++) {
+        threads3[i].join();
+    }
+    assert_eq_int(numThreads, completed3.load(), "All 50 2KB threads completed");
+    print("Successfully scaled back down to 2 KB!");
+
+    print("=== Dynamic Memory Stress Test PASSED! ===");
+}

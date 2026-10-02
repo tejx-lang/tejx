@@ -102,62 +102,54 @@ impl Linker {
         // Step 1: Compile any .ll files to .s (assembly) to bypass Apple Clang object emitter bugs, then assemble to .o
         for obj in &self.obj_paths {
             if obj.extension().and_then(|s| s.to_str()) == Some("ll") {
-                let out_asm = if self.emit_asm && self.obj_paths.len() == 1 {
-                    self.output_path.with_extension("s")
-                } else {
-                    obj.with_extension("s")
-                };
-                let _guard = if !self.emit_asm {
-                    Some(CleanupGuard(&out_asm))
-                } else {
-                    None
-                };
+                if self.emit_asm {
+                    let out_asm = if self.obj_paths.len() == 1 {
+                        self.output_path.with_extension("s")
+                    } else {
+                        obj.with_extension("s")
+                    };
+                    let mut asm_cmd = Command::new(&compiler);
+                    asm_cmd.arg("-S");
+                    asm_cmd.arg(&self.opt_level);
+                    if self.debug {
+                        asm_cmd.arg("-g");
+                    }
+                    asm_cmd.arg(obj);
+                    asm_cmd.arg("-o");
+                    asm_cmd.arg(&out_asm);
+
+                    if self.verbose {
+                        eprintln!("[linker] Executing: {:?}", asm_cmd);
+                    }
+
+                    let output_asm = asm_cmd
+                        .output()
+                        .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
+                    if !output_asm.status.success() {
+                        let stderr = String::from_utf8_lossy(&output_asm.stderr);
+                        return Err(format!(
+                            "LLVM assembly generation failed for {}:\n{}",
+                            obj.display(),
+                            stderr
+                        ));
+                    }
+                    continue;
+                }
+
                 let out_obj = if self.compile_only && self.obj_paths.len() == 1 {
-                    // If we have only one object and we are in compile-only mode, use output_path with .o
                     self.output_path.with_extension("o")
                 } else {
                     obj.with_extension("o")
                 };
 
-                // Generate Assembly (.s)
-                let mut asm_cmd = Command::new(&compiler);
-                asm_cmd.arg("-S");
-                asm_cmd.arg(&self.opt_level);
-                if self.debug {
-                    asm_cmd.arg("-g");
-                }
-                asm_cmd.arg(obj);
-                asm_cmd.arg("-o");
-                asm_cmd.arg(&out_asm);
-
-                if self.verbose {
-                    eprintln!("[linker] Executing: {:?}", asm_cmd);
-                }
-
-                let output_asm = asm_cmd
-                    .output()
-                    .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
-                if !output_asm.status.success() {
-                    let stderr = String::from_utf8_lossy(&output_asm.stderr);
-                    return Err(format!(
-                        "LLVM assembly generation failed for {}:\n{}",
-                        obj.display(),
-                        stderr
-                    ));
-                }
-
-                if self.emit_asm {
-                    continue;
-                }
-
-                // Assemble to Object (.o)
+                // Directly assemble .ll to Object (.o)
                 let mut obj_cmd = Command::new(&compiler);
                 obj_cmd.arg("-c");
                 obj_cmd.arg(&self.opt_level);
                 if self.debug {
                     obj_cmd.arg("-g");
                 }
-                obj_cmd.arg(&out_asm);
+                obj_cmd.arg(obj);
                 obj_cmd.arg("-o");
                 obj_cmd.arg(&out_obj);
 
@@ -167,13 +159,13 @@ impl Linker {
 
                 let output_obj = obj_cmd
                     .output()
-                    .map_err(|e| format!("Failed to assemble {}: {}", out_asm.display(), e))?;
+                    .map_err(|e| format!("Failed to assemble {}: {}", obj.display(), e))?;
 
                 if !output_obj.status.success() {
                     let stderr = String::from_utf8_lossy(&output_obj.stderr);
                     return Err(format!(
                         "Assembly failed for {}:\n{}",
-                        out_asm.display(),
+                        obj.display(),
                         stderr
                     ));
                 }

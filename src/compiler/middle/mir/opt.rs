@@ -20,12 +20,140 @@ impl MIROptimizer {
         let mut changed = true;
         while changed {
             changed = false;
+            changed |= self.propagate_constants(func);
+            changed |= self.fold_constants(func);
             changed |= self.promote_local_constant_arrays(func);
             changed |= self.rewrite_local_string_appends(func);
-            changed |= self.fold_constants(func);
             changed |= self.eliminate_dead_code(func);
             changed |= self.remove_unused_variables(func);
         }
+    }
+
+    fn get_instruction_dst(inst: &MIRInstruction) -> Option<&str> {
+        match inst {
+            MIRInstruction::Move { dst, .. }
+            | MIRInstruction::BinaryOp { dst, .. }
+            | MIRInstruction::Call { dst, .. }
+            | MIRInstruction::IndirectCall { dst, .. }
+            | MIRInstruction::LoadMember { dst, .. }
+            | MIRInstruction::LoadIndex { dst, .. }
+            | MIRInstruction::Cast { dst, .. } => Some(dst.as_str()),
+            _ => None,
+        }
+    }
+
+    fn replace_value_if_const(val: &mut MIRValue, map: &HashMap<String, MIRValue>) -> bool {
+        if let MIRValue::Variable { name, .. } = val {
+            if let Some(c) = map.get(name) {
+                *val = c.clone();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn replace_variable_uses(inst: &mut MIRInstruction, map: &HashMap<String, MIRValue>) -> bool {
+        let mut changed = false;
+        match inst {
+            MIRInstruction::Move { src, .. } => {
+                changed |= Self::replace_value_if_const(src, map);
+            }
+            MIRInstruction::BinaryOp { left, right, .. } => {
+                changed |= Self::replace_value_if_const(left, map);
+                changed |= Self::replace_value_if_const(right, map);
+            }
+            MIRInstruction::Branch { condition, .. } => {
+                changed |= Self::replace_value_if_const(condition, map);
+            }
+            MIRInstruction::Return {
+                value: Some(val), ..
+            } => {
+                changed |= Self::replace_value_if_const(val, map);
+            }
+            MIRInstruction::Call { args, .. } => {
+                for arg in args {
+                    changed |= Self::replace_value_if_const(arg, map);
+                }
+            }
+            MIRInstruction::IndirectCall { callee, args, .. } => {
+                changed |= Self::replace_value_if_const(callee, map);
+                for arg in args {
+                    changed |= Self::replace_value_if_const(arg, map);
+                }
+            }
+            MIRInstruction::LoadMember { obj, .. } => {
+                changed |= Self::replace_value_if_const(obj, map);
+            }
+            MIRInstruction::StoreMember { obj, src, .. } => {
+                changed |= Self::replace_value_if_const(obj, map);
+                changed |= Self::replace_value_if_const(src, map);
+            }
+            MIRInstruction::LoadIndex { obj, index, .. } => {
+                changed |= Self::replace_value_if_const(obj, map);
+                changed |= Self::replace_value_if_const(index, map);
+            }
+            MIRInstruction::StoreIndex {
+                obj, index, src, ..
+            } => {
+                changed |= Self::replace_value_if_const(obj, map);
+                changed |= Self::replace_value_if_const(index, map);
+                changed |= Self::replace_value_if_const(src, map);
+            }
+            MIRInstruction::Cast { src, .. } => {
+                changed |= Self::replace_value_if_const(src, map);
+            }
+            MIRInstruction::Throw { value, .. } => {
+                changed |= Self::replace_value_if_const(value, map);
+            }
+            _ => {}
+        }
+        changed
+    }
+
+    fn propagate_constants(&self, func: &mut MIRFunction) -> bool {
+        let mut def_counts: HashMap<String, usize> = HashMap::new();
+        let mut const_defs: HashMap<String, MIRValue> = HashMap::new();
+
+        for param in &func.params {
+            *def_counts.entry(param.clone()).or_insert(0) += 1;
+        }
+
+        for (b_idx, block) in func.blocks.iter().enumerate() {
+            for inst in &block.instructions {
+                if let Some(dst) = Self::get_instruction_dst(inst) {
+                    *def_counts.entry(dst.to_string()).or_insert(0) += 1;
+                    if let MIRInstruction::Move { dst: d, src, .. } = inst {
+                        if matches!(src, MIRValue::Constant { .. })
+                            && (b_idx == 0 || d.starts_with("_t"))
+                        {
+                            const_defs.insert(d.clone(), src.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut single_assign_constants: HashMap<String, MIRValue> = HashMap::new();
+        for (var, count) in def_counts {
+            if count == 1 && !var.starts_with("g_") {
+                if let Some(c) = const_defs.remove(&var) {
+                    single_assign_constants.insert(var, c);
+                }
+            }
+        }
+
+        if single_assign_constants.is_empty() {
+            return false;
+        }
+
+        let mut changed = false;
+        for block in &mut func.blocks {
+            for inst in &mut block.instructions {
+                changed |= Self::replace_variable_uses(inst, &single_assign_constants);
+            }
+        }
+
+        changed
     }
 
     fn promote_local_constant_arrays(&self, func: &mut MIRFunction) -> bool {
@@ -53,6 +181,10 @@ impl MIROptimizer {
                     Some(TejxType::DynamicArray(inner)) => (**inner).clone(),
                     _ => continue,
                 };
+
+                if !inner_ty.is_numeric() && !matches!(inner_ty, TejxType::Bool) {
+                    continue;
+                }
 
                 if let Some(aliases) = self.collect_array_aliases(func, &dst, len) {
                     let new_ty = TejxType::FixedArray(Box::new(inner_ty), len);

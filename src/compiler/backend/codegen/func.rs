@@ -36,21 +36,7 @@ impl CodeGen {
     }
 
     fn function_needs_loop_safepoints(func: &MIRFunction) -> bool {
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                match inst {
-                    MIRInstruction::Call { callee, .. } => {
-                        if !Self::known_non_throwing_call_target(callee) {
-                            return true;
-                        }
-                    }
-                    MIRInstruction::IndirectCall { .. }
-                    | MIRInstruction::TrySetup { .. } => return true,
-                    _ => {}
-                }
-            }
-        }
-        false
+        func.variables.values().any(Self::type_needs_loop_safepoints)
     }
 
     fn function_tracks_runtime_location(function_name: &str) -> bool {
@@ -1301,7 +1287,10 @@ update:\n\
             self.buffer.push_str("}\n");
         }
 
-        format!("{}{}", self.global_buffer, self.buffer)
+        format!(
+            "{}{}\n!0 = distinct !{{!0, !\"TejxDomain\"}}\n!1 = distinct !{{!1, !0, !\"HeapScope\"}}\n!2 = distinct !{{!2, !0, !\"StackScope\"}}\n!3 = !{{!1}}\n!4 = !{{!2}}\n",
+            self.global_buffer, self.buffer
+        )
     }
 
     pub(crate) fn gen_function_v2(&mut self, func: &MIRFunction) {
@@ -1618,6 +1607,57 @@ update:\n\
             self.emit_line("ret i64 0");
         }
 
+        // Pre-allocate one jmp_buf per distinct exception handler in this function
+        let mut declared_jmpbufs = HashSet::new();
+        for bb in &func.blocks {
+            if let Some(h) = bb.exception_handler {
+                if declared_jmpbufs.insert(h) {
+                    self.alloca_buffer
+                        .push_str(&format!("  %jmpbuf_h{} = alloca [37 x i64]\n", h));
+                }
+            }
+        }
+
+        // Build control flow graph predecessors to detect entrances into exception handlers
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); func.blocks.len()];
+        for (from_idx, b) in func.blocks.iter().enumerate() {
+            let mut has_uncond_term = false;
+            for inst in &b.instructions {
+                match inst {
+                    MIRInstruction::Jump { target, .. } => {
+                        if *target < func.blocks.len() {
+                            preds[*target].push(from_idx);
+                        }
+                        has_uncond_term = true;
+                    }
+                    MIRInstruction::Branch {
+                        true_target,
+                        false_target,
+                        ..
+                    } => {
+                        if *true_target < func.blocks.len() {
+                            preds[*true_target].push(from_idx);
+                        }
+                        if *false_target < func.blocks.len() {
+                            preds[*false_target].push(from_idx);
+                        }
+                    }
+                    MIRInstruction::TrySetup { try_target, .. } => {
+                        if *try_target < func.blocks.len() {
+                            preds[*try_target].push(from_idx);
+                        }
+                    }
+                    MIRInstruction::Return { .. } | MIRInstruction::Throw { .. } => {
+                        has_uncond_term = true;
+                    }
+                    _ => {}
+                }
+            }
+            if !has_uncond_term && from_idx + 1 < func.blocks.len() {
+                preds[from_idx + 1].push(from_idx);
+            }
+        }
+
         // Generate blocks with block name resolution
         for (i, bb) in func.blocks.iter().enumerate() {
             self.emit(&format!("{}:\n", bb.name));
@@ -1625,44 +1665,49 @@ update:\n\
             let mut has_handler = false;
             if let Some(handler_idx) = bb.exception_handler {
                 if handler_idx < func.blocks.len() {
-                    has_handler = true;
-                    let handler_name = &func.blocks[handler_idx].name;
-                    // Allocate jmp_buf on THIS function's stack frame
-                    self.temp_counter += 1;
-                    let jmpbuf = format!("%jmpbuf{}", self.temp_counter);
-                    self.alloca_buffer
-                        .push_str(&format!("  {} = alloca [37 x i64]\n", jmpbuf));
-                    self.temp_counter += 1;
-                    let jmpbuf_ptr = format!("%jmpbuf_ptr{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = bitcast [37 x i64]* {} to i8*",
-                        jmpbuf_ptr, jmpbuf
-                    ));
-                    // Call setjmp inline — this is the critical part
-                    self.temp_counter += 1;
-                    let handler_res = format!("%handler_res{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = call i32 @tejx_setjmp(i8* {}) returns_twice",
-                        handler_res, jmpbuf_ptr
-                    ));
-                    // If setjmp returned 0, register the handler and continue
-                    self.temp_counter += 1;
-                    let is_exception = format!("%is_exception{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = icmp ne i32 {}, 0",
-                        is_exception, handler_res
-                    ));
-                    let body_label = format!("{}_body", bb.name);
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        is_exception, handler_name, body_label
-                    ));
-                    self.emit(&format!("{}:\n", body_label));
-                    // Push handler AFTER setjmp returned 0 (normal path)
-                    self.emit_line(&format!(
-                        "call void @{}(i8* {})",
-                        TEJX_PUSH_HANDLER, jmpbuf_ptr
-                    ));
+                    // Only set up and push the handler upon entering the protected region
+                    let is_handler_entry = i == 0
+                        || preds[i].is_empty()
+                        || preds[i]
+                            .iter()
+                            .any(|&p| func.blocks[p].exception_handler != Some(handler_idx));
+
+                    if is_handler_entry {
+                        has_handler = true;
+                        let handler_name = &func.blocks[handler_idx].name;
+                        let jmpbuf = format!("%jmpbuf_h{}", handler_idx);
+                        self.temp_counter += 1;
+                        let jmpbuf_ptr = format!("%jmpbuf_ptr{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = bitcast [37 x i64]* {} to i8*",
+                            jmpbuf_ptr, jmpbuf
+                        ));
+                        // Call setjmp inline — this is the critical part
+                        self.temp_counter += 1;
+                        let handler_res = format!("%handler_res{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = call i32 @tejx_setjmp(i8* {}) returns_twice",
+                            handler_res, jmpbuf_ptr
+                        ));
+                        // If setjmp returned 0, register the handler and continue
+                        self.temp_counter += 1;
+                        let is_exception = format!("%is_exception{}", self.temp_counter);
+                        self.emit_line(&format!(
+                            "{} = icmp ne i32 {}, 0",
+                            is_exception, handler_res
+                        ));
+                        let body_label = format!("{}_body", bb.name);
+                        self.emit_line(&format!(
+                            "br i1 {}, label %{}, label %{}",
+                            is_exception, handler_name, body_label
+                        ));
+                        self.emit(&format!("{}:\n", body_label));
+                        // Push handler AFTER setjmp returned 0 (normal path)
+                        self.emit_line(&format!(
+                            "call void @{}(i8* {})",
+                            TEJX_PUSH_HANDLER, jmpbuf_ptr
+                        ));
+                    }
                 }
             }
 
@@ -1674,12 +1719,7 @@ update:\n\
             for inst in &bb.instructions {
                 if bb.exception_handler.is_some()
                     && !has_pop_handler
-                    && matches!(
-                        inst,
-                        MIRInstruction::Return { .. }
-                            | MIRInstruction::Jump { .. }
-                            | MIRInstruction::Branch { .. }
-                    )
+                    && matches!(inst, MIRInstruction::Return { .. })
                 {
                     self.emit_line("call void @tejx_pop_handler()");
                 }

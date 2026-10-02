@@ -2364,8 +2364,11 @@ impl TypeChecker {
                         .or_else(|| {
                             if let Some((object, member)) = member_callee {
                                 if let Ok(receiver_ty) = self.check_expression(object) {
-                                    if let Some((_, info)) =
-                                        self.resolve_instance_member_with_owner(&receiver_ty.to_name(), member)
+                                    if let Some((_, info)) = self
+                                        .resolve_instance_member_with_owner(
+                                            &receiver_ty.to_name(),
+                                            member,
+                                        )
                                     {
                                         return info.min_params;
                                     }
@@ -3084,11 +3087,16 @@ impl TypeChecker {
                     } else if args.len() < constructor_min_required {
                         let missing = &expected_arg_types[args.len()..constructor_min_required];
                         if !missing.iter().all(is_optional_param) {
-                            let expected_msg = if constructor_min_required < expected_arg_types.len() {
-                                format!("{} to {}", constructor_min_required, expected_arg_types.len())
-                            } else {
-                                format!("{}", expected_arg_types.len())
-                            };
+                            let expected_msg =
+                                if constructor_min_required < expected_arg_types.len() {
+                                    format!(
+                                        "{} to {}",
+                                        constructor_min_required,
+                                        expected_arg_types.len()
+                                    )
+                                } else {
+                                    format!("{}", expected_arg_types.len())
+                                };
                             self.report_error_detailed(
                                 format!(
                                     "Constructor for '{}' expects {} argument(s), but {} were provided",

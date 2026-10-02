@@ -42,6 +42,21 @@ use std::sync::{LazyLock, Mutex, Once, RwLock};
 
 const STRING_FLAG_FROZEN: u16 = 0x0800;
 #[derive(Default)]
+struct ConstCacheSlot {
+    ptr: std::sync::atomic::AtomicUsize,
+    slot_plus_one: std::sync::atomic::AtomicUsize,
+}
+
+const CONST_CACHE_SIZE: usize = 2048;
+static CONST_FAST_CACHE: [ConstCacheSlot; CONST_CACHE_SIZE] = {
+    const INIT: ConstCacheSlot = ConstCacheSlot {
+        ptr: std::sync::atomic::AtomicUsize::new(0),
+        slot_plus_one: std::sync::atomic::AtomicUsize::new(0),
+    };
+    [INIT; CONST_CACHE_SIZE]
+};
+
+#[derive(Default)]
 struct ConstStringRoots {
     slots_by_bytes: HashMap<Vec<u8>, usize>,
     slots_by_ptr: HashMap<usize, usize>,
@@ -1175,80 +1190,38 @@ pub unsafe extern "C" fn rt_update_array_cache(
 ) {
 }
 
-static ARRAY_FORWARD: LazyLock<Mutex<HashMap<i64, i64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static ARRAY_FORWARD_ACTIVE: AtomicBool = AtomicBool::new(false);
-static mut GC_ARRAY_FORWARD: Option<HashMap<i64, i64>> = None;
-
 #[no_mangle]
-pub unsafe extern "C" fn rt_gc_prepare_array_forward() {
-    let mut map = ARRAY_FORWARD.lock().unwrap();
-    if !map.is_empty() {
-        if let Some(existing) = &mut GC_ARRAY_FORWARD {
-            for (k, v) in map.drain() {
-                existing.insert(k, v);
-            }
-        } else {
-            let drained: HashMap<i64, i64> = map.drain().collect();
-            GC_ARRAY_FORWARD = Some(drained);
-        }
-        ARRAY_FORWARD_ACTIVE.store(false, Ordering::Release);
-    }
-}
+pub unsafe extern "C" fn rt_gc_prepare_array_forward() {}
 
-pub unsafe fn rt_gc_cleanup_array_forward() {
-    GC_ARRAY_FORWARD = None;
-}
+pub unsafe fn rt_gc_cleanup_array_forward() {}
 
-pub unsafe fn rt_gc_scan_array_forward_roots() {
-    if let Some(map) = &mut GC_ARRAY_FORWARD {
-        for val in map.values_mut() {
-            crate::gc::copy_object(val as *mut i64);
-        }
-    }
-    let mut pending = ARRAY_FORWARD.lock().unwrap();
-    for val in pending.values_mut() {
-        crate::gc::copy_object(val as *mut i64);
-    }
-}
+pub unsafe fn rt_gc_scan_array_forward_roots() {}
 
 #[inline]
-pub unsafe fn rt_gc_resolve_array_id(mut id: i64) -> i64 {
-    if let Some(map) = unsafe { &*(&raw const GC_ARRAY_FORWARD) } {
-        let mut visited = 0;
-        while let Some(&next) = map.get(&id) {
-            if next == id {
-                break;
-            }
-            id = next;
-            visited += 1;
-            if visited > 1000 {
-                eprintln!("WARNING: Cycle detected in GC_ARRAY_FORWARD for id {}", id);
-                break;
-            }
-        }
-    }
-    id
+pub unsafe fn rt_gc_resolve_array_id(id: i64) -> i64 {
+    rt_resolve_array_id(id)
 }
 
-#[inline]
+#[inline(always)]
 pub unsafe fn rt_resolve_array_id(mut id: i64) -> i64 {
     if id < HEAP_OFFSET {
         return id;
     }
-    if !ARRAY_FORWARD_ACTIVE.load(Ordering::Acquire) {
-        return id;
-    }
-    let map = ARRAY_FORWARD.lock().unwrap();
-    let mut visited = 0;
-    while let Some(next) = map.get(&id) {
-        if *next == id {
+    // Fast lock-free path: directly inspect ObjectHeader forwarding bit without taking any mutex
+    let mut hops = 0;
+    while hops < 16 {
+        let body = (id - HEAP_OFFSET) as *mut u8;
+        if !crate::gc::rt_is_gc_ptr(body) {
             break;
         }
-        id = *next;
-        visited += 1;
-        if visited > 1000 {
-            eprintln!("WARNING: Cycle detected in ARRAY_FORWARD for id {}", id);
+        let header = rt_get_header(body);
+        let word = (*header).gc_word;
+        if (word & 2) != 0 {
+            let fwd_header = (word & !(3 | (0xFFu64 << 56))) as *mut ObjectHeader;
+            let fwd_body = (fwd_header as u64).wrapping_add(std::mem::size_of::<ObjectHeader>() as u64) as *mut u8;
+            id = (fwd_body as i64) + HEAP_OFFSET;
+            hops += 1;
+        } else {
             break;
         }
     }
@@ -1525,8 +1498,19 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
     }
 
     let ptr_key = s as usize;
+    let cache_idx = (ptr_key >> 3) & (CONST_CACHE_SIZE - 1);
+    let cache_entry = &CONST_FAST_CACHE[cache_idx];
+    if cache_entry.ptr.load(Ordering::Relaxed) == ptr_key {
+        let slot1 = cache_entry.slot_plus_one.load(Ordering::Relaxed);
+        if slot1 != 0 {
+            return rt_get_static_root(slot1 - 1);
+        }
+    }
+
     if let Ok(guard) = CONST_STRING_ROOTS.read() {
         if let Some(&slot) = guard.slots_by_ptr.get(&ptr_key) {
+            cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
+            cache_entry.ptr.store(ptr_key, Ordering::Release);
             return rt_get_static_root(slot);
         }
     }
@@ -1536,6 +1520,8 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
 
     if let Ok(guard) = CONST_STRING_ROOTS.read() {
         if let Some(&slot) = guard.slots_by_bytes.get(bytes) {
+            cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
+            cache_entry.ptr.store(ptr_key, Ordering::Release);
             return rt_get_static_root(slot);
         }
     }
@@ -1560,11 +1546,30 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
     let mut roots = CONST_STRING_ROOTS.write().unwrap();
     if let Some(&slot) = roots.slots_by_bytes.get(bytes) {
         roots.slots_by_ptr.insert(ptr_key, slot);
+        cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
+        cache_entry.ptr.store(ptr_key, Ordering::Release);
         return rt_get_static_root(slot);
     }
     let slot = rt_add_static_root(res);
     roots.slots_by_bytes.insert(bytes.to_vec(), slot);
     roots.slots_by_ptr.insert(ptr_key, slot);
+
+    cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
+    cache_entry.ptr.store(ptr_key, Ordering::Release);
+    res
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_to_string_char(c: i32) -> i64 {
+    let ch = std::char::from_u32(c as u32).unwrap_or('\0');
+    let mut buf = [0u8; 8];
+    let s = ch.encode_utf8(&mut buf);
+    let len = s.len();
+    let body_ptr = alloc_string_body(len as i64, len as i64);
+    std::ptr::copy_nonoverlapping(s.as_ptr(), body_ptr, len);
+    *(body_ptr.add(len)) = 0;
+    let res = (body_ptr as i64) + HEAP_OFFSET;
+    rt_update_array_cache(res, body_ptr, len as i64, 1);
     res
 }
 
@@ -1631,13 +1636,13 @@ pub unsafe extern "C" fn rt_to_string_boolean(v: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_box_char(c: i32) -> i64 {
-    let size = 1;
+    let size = 4;
     let ptr = gc_allocate(size as usize);
     let header = rt_get_header(ptr);
     (*header).type_id = TAG_CHAR as u16;
     (*header).length = 1;
 
-    *(ptr as *mut u8) = c as u8;
+    *(ptr as *mut i32) = c;
     (ptr as i64) + HEAP_OFFSET
 }
 
@@ -2097,28 +2102,14 @@ pub unsafe extern "C" fn rt_class_new(
     _offsets_ptr: *const i64,
     stack_ptr: i64,
 ) -> i64 {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if stack_ptr != 0 {
-            // Tag it with STACK_OFFSET so runtime knows it's on stack
-            return stack_ptr + STACK_OFFSET;
-        }
-        let size = (body_size) as usize; // Body size is now just for data, no internal tag
-        let obj = gc_allocate(size) as *mut i64;
-
-        // Primitives and fields now start at offset 0.
-
-        let header = rt_get_header(obj as *mut u8);
-        (*header).type_id = type_id as u16;
-        // *obj = TAG_OBJECT; // Removed, type_id is in header
-        (obj as i64) + HEAP_OFFSET
-    }));
-    match result {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("🔥 Panic in rt_class_new: {:?}", e);
-            std::process::abort();
-        }
+    if stack_ptr != 0 {
+        return stack_ptr + STACK_OFFSET;
     }
+    let size = body_size as usize;
+    let obj = gc_allocate(size) as *mut i64;
+    let header = rt_get_header(obj as *mut u8);
+    (*header).type_id = type_id as u16;
+    (obj as i64) + HEAP_OFFSET
 }
 
 // --- Array Primitives ---
@@ -2459,7 +2450,7 @@ pub unsafe extern "C" fn rt_get_os_arch() -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_cwd() -> i64 {
     // Use libc::getcwd directly — avoids Rust's std::env overhead and allocation.
-    let mut buf = [0u8; 4096];
+    let mut buf = vec![0u8; 4096];
     let ptr = libc::getcwd(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
     if !ptr.is_null() {
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());

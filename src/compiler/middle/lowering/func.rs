@@ -607,8 +607,7 @@ impl Lowering {
             return_type.clone()
         };
 
-        let prev_expected = self.current_expected_type.borrow_mut().take();
-        *self.current_expected_type.borrow_mut() = Some(inner_return);
+        self.return_type_stack.borrow_mut().push(inner_return);
 
         let body = self
             .lower_statement(&body_ast)
@@ -617,7 +616,7 @@ impl Lowering {
                 statements: vec![],
             });
 
-        *self.current_expected_type.borrow_mut() = prev_expected;
+        self.return_type_stack.borrow_mut().pop();
 
         self._exit_scope();
         self.pop_env_owner();

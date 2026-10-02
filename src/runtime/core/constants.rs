@@ -18,8 +18,8 @@ pub const DEFAULT_MAIN_THREAD_STACK_SIZE: usize = 1024 * 1024;
 /// Stack alignment in bytes (16 bytes for ARM64 and x86_64 ABI compliance).
 pub const STACK_ALIGNMENT: usize = 16;
 
-/// Guard redzone placed below the stack limit for stack canary checking (16 bytes).
-pub const STACK_REDZONE_SIZE: usize = 16;
+/// Guard redzone placed below the stack limit for stack canary checking and context switch register preservation (256 bytes).
+pub const STACK_REDZONE_SIZE: usize = 256;
 
 /// Magic number planted in the stack redzone to detect stack overflow.
 pub const STACK_CANARY_MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;

@@ -376,7 +376,7 @@ function main() {
 
     // --- Test 5: Shortest path ---
     print("--- T5: Shortest Path ---");
-    assert(g1.shortestPath(0, 5) == 2, "Shortest 0->5 is 2 (0-3-4-5 or 0-1-2-5... wait 0-2-5)");
+    assert(g1.shortestPath(0, 5) == 3, "Shortest 0->5 is 3 (0-3-4-5 or 0-1-2-5)");
     assert(g1.shortestPath(0, 0) == 0, "Distance to self is 0");
     assert(g1.shortestPath(0, 4) == 2, "Shortest 0->4 is 2");
 

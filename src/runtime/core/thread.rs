@@ -18,22 +18,16 @@ use std::sync::Mutex;
 /// the pool is empty).  The stack doubles on overflow — up to 64 MB — using
 /// the copy-on-grow technique from Go's runtime.
 /// No may, no generator, no fixed 2 MB overhead, no SIGSEGV crashes.
-static LIVE_THREAD_DATA: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static LIVE_THREAD_DATA: Lazy<crate::SpinMutex<HashSet<usize>>> = Lazy::new(|| crate::SpinMutex::new(HashSet::new()));
 
 pub(crate) unsafe fn register_thread_data(ptr: *mut ThreadData) -> i64 {
     let addr = ptr as usize;
-    if let Ok(mut set) = LIVE_THREAD_DATA.lock() {
-        set.insert(addr);
-    }
+    LIVE_THREAD_DATA.lock().insert(addr);
     addr as i64
 }
 
 pub(crate) unsafe fn unregister_thread_data(addr: usize) -> bool {
-    if let Ok(mut set) = LIVE_THREAD_DATA.lock() {
-        set.remove(&addr)
-    } else {
-        false
-    }
+    LIVE_THREAD_DATA.lock().remove(&addr)
 }
 
 #[no_mangle]

@@ -596,7 +596,11 @@ impl Lowering {
                 })
             }
             Statement::ReturnStmt { value, .. } => {
+                let ret_ty = self.return_type_stack.borrow().last().cloned();
+                let prev_expected = self.current_expected_type.borrow_mut().take();
+                *self.current_expected_type.borrow_mut() = ret_ty;
                 let val = value.as_ref().map(|e| self.lower_expression(e));
+                *self.current_expected_type.borrow_mut() = prev_expected;
                 Some(HIRStatement::Return { line, value: val })
             }
             Statement::DelStmt { target, .. } => {

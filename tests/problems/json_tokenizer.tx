@@ -64,7 +64,7 @@ class Tokenizer {
 
     peek(): string {
         if (this.pos >= this.input.length()) return "";
-        return this.input.charAt(this.pos);
+        return this.input.substring(this.pos, this.pos + 1);
     }
 
     advance(): string {

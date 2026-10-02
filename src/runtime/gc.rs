@@ -17,7 +17,7 @@ use std::sync::{LazyLock, Mutex, Once};
 // =============================================================================
 
 pub static mut YOUNG_GEN_SIZE: usize = 512 * 1024 * 1024; // 512MB Eden
-pub const SURVIVOR_SIZE: usize = 64 * 1024 * 1024; // 64MB each survivor
+pub static mut SURVIVOR_SIZE: usize = 64 * 1024 * 1024; // dynamically sized in rt_init_gc
 pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB LOS threshold
 pub const GC_MIN_HEAP: usize = 2 * 1024 * 1024 * 1024; // 2GB floor
 pub const GC_MAX_HEAP: usize = 128 * 1024 * 1024 * 1024; // 128GB ceiling
@@ -55,14 +55,20 @@ pub(crate) unsafe fn detect_old_gen_size() -> usize {
         return ARGV_GC_HEAP_LIMIT.max(HARD_MIN);
     }
 
-    // Priority 2: auto-detect — 50% of physical RAM, up to a MAXIMUM of 2GB.
-    // (min(50% of system available memory and 2gb))
+    // Priority 2: TEJX_HEAP environment variable
+    if let Ok(val) = std::env::var("TEJX_HEAP") {
+        if let Some(bytes) = parse_size_str(&val) {
+            return bytes.max(HARD_MIN);
+        }
+    }
+
+    // Priority 3: auto-detect — 50% of physical RAM, floor GC_MIN_HEAP (2GB), ceiling GC_MAX_HEAP (128GB)
     let pages = sysconf(SC_PHYS_PAGES);
     let page_size = sysconf(SC_PAGESIZE);
     if pages > 0 && page_size > 0 {
         let total_ram: usize = (pages as usize).saturating_mul(page_size as usize);
         let half_ram = total_ram / 2;
-        return half_ram.min(GC_MIN_HEAP); // min(50% RAM, 2GB)
+        return half_ram.clamp(GC_MIN_HEAP, GC_MAX_HEAP);
     }
 
     // Final fallback: 2GB (if sysconf fails)
@@ -1206,6 +1212,7 @@ pub unsafe extern "C" fn rt_init_gc() {
         // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > 50% of RAM (≥2GB)
         OLD_GEN_SIZE = (detect_old_gen_size() + 0xFFFF) & !0xFFFF;
         YOUNG_GEN_SIZE = ((OLD_GEN_SIZE / 3) + 0xFFFF) & !0xFFFF;
+        SURVIVOR_SIZE = ((YOUNG_GEN_SIZE / 8).clamp(64 * 1024 * 1024, 512 * 1024 * 1024) + 0xFFFF) & !0xFFFF;
 
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
         EDEN_START = mmap(
@@ -1379,15 +1386,9 @@ pub unsafe fn gc_allocate_large(size: usize) -> *mut u8 {
 }
 
 #[no_mangle]
+#[inline(always)]
 pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc_allocate_impl(size)));
-    match result {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("🔥 Panic in gc_allocate: {:?}", e);
-            std::process::abort();
-        }
-    }
+    gc_allocate_impl(size)
 }
 
 #[inline(always)]
@@ -1545,7 +1546,7 @@ pub unsafe fn mark_object(root: *mut i64) {
 
 pub unsafe fn process_mark_queue() {
     let mut local_queue = Vec::new();
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
 
     loop {
         {
@@ -1582,9 +1583,11 @@ pub unsafe fn process_mark_queue() {
             let header = (body_ptr as *mut ObjectHeader).offset(-1);
 
             if is_stack {
-                if !seen_stack.insert(header as usize) {
+                let h_addr = header as usize;
+                if seen_stack.contains(&h_addr) {
                     continue;
                 }
+                seen_stack.push(h_addr);
             } else {
                 if gc_is_marked((*header).gc_word) {
                     continue;
@@ -2179,7 +2182,7 @@ unsafe fn get_object_size(header: *mut ObjectHeader) -> usize {
 
 pub const PROMOTION_THRESHOLD: u8 = 2;
 
-unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>) {
+unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut Vec<usize>) {
     if root.is_null() || (root as usize) % 8 != 0 {
         return;
     }
@@ -2203,9 +2206,11 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
         // Stack object: doesn't move, but we MUST scan its fields
         let body = (val - STACK_OFFSET) as *mut u8;
         let header = rt_get_header(body);
-        if !seen_stack.insert(header as usize) {
+        let h_addr = header as usize;
+        if seen_stack.contains(&h_addr) {
             return;
         }
+        seen_stack.push(h_addr);
         scan_object_fields_with_seen(header, seen_stack);
         return;
     }
@@ -2295,14 +2300,14 @@ unsafe fn copy_object_with_seen(root: *mut i64, seen_stack: &mut HashSet<usize>)
 }
 
 pub unsafe fn copy_object(root: *mut i64) {
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
     copy_object_with_seen(root, &mut seen_stack);
 }
 
 #[inline]
 unsafe fn copy_object_with_seen_and_track_young(
     slot: *mut i64,
-    seen_stack: &mut HashSet<usize>,
+    seen_stack: &mut Vec<usize>,
     has_young_refs: &mut bool,
 ) {
     let val = *slot;
@@ -2328,7 +2333,7 @@ unsafe fn copy_object_with_seen_and_track_young(
     }
 }
 
-unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &mut HashSet<usize>) {
+unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &mut Vec<usize>) {
     let type_id = (*header).type_id;
     let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
 
@@ -2368,7 +2373,7 @@ unsafe fn scan_object_fields_with_seen(header: *mut ObjectHeader, seen_stack: &m
 
 unsafe fn scan_object_fields_minor_with_seen(
     header: *mut ObjectHeader,
-    seen_stack: &mut HashSet<usize>,
+    seen_stack: &mut Vec<usize>,
 ) -> bool {
     let type_id = (*header).type_id;
     let body_ptr = (header as *mut u8).add(std::mem::size_of::<ObjectHeader>());
@@ -2433,12 +2438,12 @@ unsafe fn scan_object_fields_minor_with_seen(
 }
 
 unsafe fn scan_object_fields_minor(header: *mut ObjectHeader) -> bool {
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
     scan_object_fields_minor_with_seen(header, &mut seen_stack)
 }
 
 unsafe fn scan_object_fields(header: *mut ObjectHeader) {
-    let mut seen_stack = HashSet::new();
+    let mut seen_stack: Vec<usize> = Vec::new();
     scan_object_fields_with_seen(header, &mut seen_stack);
 }
 

@@ -361,14 +361,14 @@ impl CodeGen {
             self.temp_counter += 1;
             let elem_ptr = format!("%fixed_arr_elem_{}", self.temp_counter);
             self.emit_line(&format!(
-                "{} = getelementptr {}, {}* {}, i64 {}",
+                "{} = getelementptr inbounds {}, {}* {}, i64 {}",
                 elem_ptr, llvm_ty, llvm_ty, data_ptr, idx_val
             ));
 
             self.temp_counter += 1;
             let loaded_val = format!("%fixed_arr_val_{}", self.temp_counter);
             self.emit_line(&format!(
-                "{} = load {}, {}* {}",
+                "{} = load {}, {}* {}, !alias.scope !3, !noalias !4",
                 loaded_val, llvm_ty, llvm_ty, elem_ptr
             ));
 
@@ -504,6 +504,179 @@ impl CodeGen {
             return;
         }
 
+        if matches!(obj.get_type(), TejxType::DynamicArray(_) | TejxType::Slice(_)) {
+            let effective_elem_ty = match obj.get_type() {
+                TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
+                    if matches!(inner.as_ref(), TejxType::Void) {
+                        element_ty
+                    } else {
+                        inner.as_ref()
+                    }
+                }
+                _ => element_ty,
+            };
+            let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
+            let llvm_ty = Self::get_llvm_storage_type(effective_elem_ty);
+
+            self.temp_counter += 1;
+            let id_val = self.temp_counter;
+            let chk_label = format!("arr_chk_{}", id_val);
+            let fast_label = format!("arr_fast_load_{}", id_val);
+            let slow_label = format!("arr_slow_load_{}", id_val);
+            let merge_label = format!("arr_merge_load_{}", id_val);
+
+            const STACK_OFFSET_CONST: i64 = 1i64 << 48;
+            const HEAP_OFFSET_CONST: i64 = 1i64 << 50;
+
+            self.temp_counter += 1;
+            let is_valid = format!("%is_valid_obj_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_valid, obj_val, STACK_OFFSET_CONST));
+            self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_valid, chk_label, slow_label));
+
+            // Check header
+            self.emit(&format!("{}:\n", chk_label));
+            self.temp_counter += 1;
+            let is_heap = format!("%is_heap_load_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, obj_val, HEAP_OFFSET_CONST));
+            self.temp_counter += 1;
+            let obj_offset = format!("%obj_offset_load_{}", self.temp_counter);
+            self.emit_line(&format!("{} = select i1 {}, i64 {}, i64 {}", obj_offset, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST));
+            self.temp_counter += 1;
+            let raw_obj = format!("%raw_obj_load_{}", self.temp_counter);
+            self.emit_line(&format!("{} = sub i64 {}, {}", raw_obj, obj_val, obj_offset));
+
+            self.temp_counter += 1;
+            let body_ptr = format!("%body_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", body_ptr, raw_obj));
+
+            self.temp_counter += 1;
+            let gc_word_ptr = format!("%gc_word_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -24", gc_word_ptr, body_ptr));
+            self.temp_counter += 1;
+            let gc_word_typed = format!("%gc_word_typed_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to i64*", gc_word_typed, gc_word_ptr));
+            self.temp_counter += 1;
+            let gc_word = format!("%gc_word_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i64, i64* {}, align 8, !alias.scope !3, !noalias !4", gc_word, gc_word_typed));
+            self.temp_counter += 1;
+            let fwd_bit = format!("%fwd_bit_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i64 {}, 2", fwd_bit, gc_word));
+            self.temp_counter += 1;
+            let not_fwd = format!("%not_fwd_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp eq i64 {}, 0", not_fwd, fwd_bit));
+
+            let elem_size = effective_elem_ty.size() as i64;
+            self.temp_counter += 1;
+            let flags_ptr = format!("%flags_load_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -14", flags_ptr, body_ptr));
+            self.temp_counter += 1;
+            let flags_typed = format!("%flags_load_typed_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to i16*", flags_typed, flags_ptr));
+            self.temp_counter += 1;
+            let flags_16 = format!("%flags_load_16_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i16, i16* {}, align 2, !alias.scope !3, !noalias !4", flags_16, flags_typed));
+            self.temp_counter += 1;
+            let elem_size_mask = format!("%elem_size_load_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i16 {}, 255", elem_size_mask, flags_16));
+            self.temp_counter += 1;
+            let size_matches = format!("%size_matches_load_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp eq i16 {}, {}", size_matches, elem_size_mask, elem_size));
+
+            self.temp_counter += 1;
+            let len_ptr = format!("%len_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -12", len_ptr, body_ptr));
+            self.temp_counter += 1;
+            let len_typed = format!("%len_typed_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to i32*", len_typed, len_ptr));
+            self.temp_counter += 1;
+            let len_32 = format!("%len_32_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i32, i32* {}, align 4, !alias.scope !3, !noalias !4", len_32, len_typed));
+            self.temp_counter += 1;
+            let len_64 = format!("%len_64_{}", self.temp_counter);
+            self.emit_line(&format!("{} = zext i32 {} to i64", len_64, len_32));
+
+            self.temp_counter += 1;
+            let in_bounds = format!("%in_bounds_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp ult i64 {}, {}", in_bounds, idx_val, len_64));
+
+            self.temp_counter += 1;
+            let can_fast_1 = format!("%can_fast_load_1_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i1 {}, {}", can_fast_1, not_fwd, size_matches));
+            self.temp_counter += 1;
+            let can_fast = format!("%can_fast_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i1 {}, {}", can_fast, can_fast_1, in_bounds));
+            self.emit_line(&format!("br i1 {}, label %{}, label %{}", can_fast, fast_label, slow_label));
+
+            // Fast path
+            self.emit(&format!("{}:\n", fast_label));
+            self.temp_counter += 1;
+            let typed_body = format!("%typed_body_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to {}*", typed_body, body_ptr, llvm_ty));
+            self.temp_counter += 1;
+            let elem_ptr = format!("%fast_elem_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, llvm_ty, llvm_ty, typed_body, idx_val));
+            self.temp_counter += 1;
+            let fast_loaded = format!("%fast_loaded_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load {}, {}* {}, !alias.scope !3, !noalias !4", fast_loaded, llvm_ty, llvm_ty, elem_ptr));
+            let fast_value = if llvm_ty == "i8" && matches!(effective_elem_ty, TejxType::Bool) {
+                self.emit_storage_to_value(&fast_loaded, effective_elem_ty)
+            } else {
+                fast_loaded
+            };
+            let fast_casted = self.emit_abi_cast(&fast_value, effective_elem_ty, dst_ty);
+            self.emit_store_variable(dst, &fast_casted, dst_ty);
+            self.emit_line(&format!("br label %{}", merge_label));
+
+            // Slow path
+            self.emit(&format!("{}:\n", slow_label));
+            self.declare_runtime_fn(
+                "rt_array_get_traced",
+                "i64 @rt_array_get_traced(i64, i64, i64, i64) nounwind",
+            );
+            let (file_ptr, line) = self
+                .runtime_location_args(line)
+                .unwrap_or_else(|| ("0".to_string(), 0));
+            self.temp_counter += 1;
+            let slow_res = format!("%slow_val_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_array_get_traced(i64 {}, i64 {}, i64 {}, i64 {})",
+                slow_res, obj_val, idx_val, file_ptr, line
+            ));
+            if effective_elem_ty.is_float() {
+                if matches!(effective_elem_ty, TejxType::Float32) {
+                    self.temp_counter += 1;
+                    let trunc_i32 = format!("%f_trunc_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = trunc i64 {} to i32", trunc_i32, slow_res));
+                    self.temp_counter += 1;
+                    let f_val = format!("%f_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast i32 {} to float", f_val, trunc_i32));
+                    let casted = self.emit_abi_cast(&f_val, &TejxType::Float32, dst_ty);
+                    self.emit_store_variable(dst, &casted, dst_ty);
+                } else {
+                    self.temp_counter += 1;
+                    let f_val = format!("%f_val_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast i64 {} to double", f_val, slow_res));
+                    let casted = self.emit_abi_cast(&f_val, &TejxType::Float64, dst_ty);
+                    self.emit_store_variable(dst, &casted, dst_ty);
+                }
+            } else {
+                let runtime_src_ty = if matches!(effective_elem_ty, TejxType::Any)
+                    || matches!(effective_elem_ty, TejxType::Class(name, _) if name == "Any")
+                {
+                    TejxType::Any
+                } else {
+                    TejxType::Int64
+                };
+                let casted = self.emit_abi_cast(&slow_res, &runtime_src_ty, dst_ty);
+                self.emit_store_variable(dst, &casted, dst_ty);
+            }
+            self.emit_line(&format!("br label %{}", merge_label));
+
+            // Merge
+            self.emit(&format!("{}:\n", merge_label));
+            return;
+        }
+
         self.declare_runtime_fn(
             "rt_array_get_traced",
             "i64 @rt_array_get_traced(i64, i64, i64, i64) nounwind",
@@ -578,7 +751,7 @@ impl CodeGen {
             self.temp_counter += 1;
             let elem_ptr = format!("%fixed_arr_store_elem_{}", self.temp_counter);
             self.emit_line(&format!(
-                "{} = getelementptr {}, {}* {}, i64 {}",
+                "{} = getelementptr inbounds {}, {}* {}, i64 {}",
                 elem_ptr, llvm_ty, llvm_ty, data_ptr, idx_val
             ));
 
@@ -589,7 +762,7 @@ impl CodeGen {
                 final_src
             };
             self.emit_line(&format!(
-                "store {} {}, {}* {}",
+                "store {} {}, {}* {}, !alias.scope !3, !noalias !4",
                 llvm_ty, store_val, llvm_ty, elem_ptr
             ));
             if Self::is_gc_managed(element_ty) {
@@ -657,6 +830,189 @@ impl CodeGen {
 
         let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
         let src_ty = src.get_type();
+
+        if matches!(obj.get_type(), TejxType::DynamicArray(_) | TejxType::Slice(_)) {
+            let effective_elem_ty = match obj.get_type() {
+                TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
+                    if matches!(inner.as_ref(), TejxType::Void) {
+                        element_ty
+                    } else {
+                        inner.as_ref()
+                    }
+                }
+                _ => element_ty,
+            };
+            let llvm_ty = Self::get_llvm_storage_type(effective_elem_ty);
+
+            self.temp_counter += 1;
+            let id_val = self.temp_counter;
+            let chk_label = format!("arr_chk_store_{}", id_val);
+            let fast_label = format!("arr_fast_store_{}", id_val);
+            let slow_label = format!("arr_slow_store_{}", id_val);
+            let merge_label = format!("arr_merge_store_{}", id_val);
+
+            const STACK_OFFSET_CONST: i64 = 1i64 << 48;
+            const HEAP_OFFSET_CONST: i64 = 1i64 << 50;
+
+            self.temp_counter += 1;
+            let is_valid = format!("%is_valid_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_valid, obj_val, STACK_OFFSET_CONST));
+            self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_valid, chk_label, slow_label));
+
+            // Check header
+            self.emit(&format!("{}:\n", chk_label));
+            self.temp_counter += 1;
+            let is_heap = format!("%is_heap_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, obj_val, HEAP_OFFSET_CONST));
+            self.temp_counter += 1;
+            let obj_offset = format!("%obj_offset_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = select i1 {}, i64 {}, i64 {}", obj_offset, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST));
+            self.temp_counter += 1;
+            let raw_obj = format!("%raw_obj_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = sub i64 {}, {}", raw_obj, obj_val, obj_offset));
+
+            self.temp_counter += 1;
+            let body_ptr = format!("%body_store_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", body_ptr, raw_obj));
+
+            self.temp_counter += 1;
+            let gc_word_ptr = format!("%gc_word_store_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -24", gc_word_ptr, body_ptr));
+            self.temp_counter += 1;
+            let gc_word_typed = format!("%gc_word_store_typed_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to i64*", gc_word_typed, gc_word_ptr));
+            self.temp_counter += 1;
+            let gc_word = format!("%gc_word_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i64, i64* {}, align 8, !alias.scope !3, !noalias !4", gc_word, gc_word_typed));
+            self.temp_counter += 1;
+            let fwd_bit = format!("%fwd_store_bit_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i64 {}, 2", fwd_bit, gc_word));
+            self.temp_counter += 1;
+            let not_fwd = format!("%not_fwd_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp eq i64 {}, 0", not_fwd, fwd_bit));
+
+            self.temp_counter += 1;
+            let flags_ptr = format!("%flags_store_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -14", flags_ptr, body_ptr));
+            self.temp_counter += 1;
+            let flags_typed = format!("%flags_store_typed_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to i16*", flags_typed, flags_ptr));
+            self.temp_counter += 1;
+            let flags_16 = format!("%flags_store_16_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i16, i16* {}, align 2, !alias.scope !3, !noalias !4", flags_16, flags_typed));
+            self.temp_counter += 1;
+            let const_bit = format!("%const_store_bit_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i16 {}, 4096", const_bit, flags_16));
+            self.temp_counter += 1;
+            let not_const = format!("%not_const_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp eq i16 {}, 0", not_const, const_bit));
+
+            self.temp_counter += 1;
+            let len_ptr = format!("%len_store_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -12", len_ptr, body_ptr));
+            self.temp_counter += 1;
+            let len_typed = format!("%len_store_typed_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to i32*", len_typed, len_ptr));
+            self.temp_counter += 1;
+            let len_32 = format!("%len_store_32_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i32, i32* {}, align 4, !alias.scope !3, !noalias !4", len_32, len_typed));
+            self.temp_counter += 1;
+            let len_64 = format!("%len_store_64_{}", self.temp_counter);
+            self.emit_line(&format!("{} = zext i32 {} to i64", len_64, len_32));
+
+            self.temp_counter += 1;
+            let in_bounds = format!("%in_bounds_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp ult i64 {}, {}", in_bounds, idx_val, len_64));
+
+            let elem_size = effective_elem_ty.size() as i64;
+            self.temp_counter += 1;
+            let elem_size_mask = format!("%elem_size_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i16 {}, 255", elem_size_mask, flags_16));
+            self.temp_counter += 1;
+            let size_matches = format!("%size_matches_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = icmp eq i16 {}, {}", size_matches, elem_size_mask, elem_size));
+
+            self.temp_counter += 1;
+            let can_fast_1 = format!("%can_fast_store_1_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i1 {}, {}", can_fast_1, not_fwd, not_const));
+            self.temp_counter += 1;
+            let can_fast_2 = format!("%can_fast_store_2_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i1 {}, {}", can_fast_2, can_fast_1, size_matches));
+            self.temp_counter += 1;
+            let can_fast = format!("%can_fast_store_{}", self.temp_counter);
+            self.emit_line(&format!("{} = and i1 {}, {}", can_fast, can_fast_2, in_bounds));
+            self.emit_line(&format!("br i1 {}, label %{}, label %{}", can_fast, fast_label, slow_label));
+
+            // Fast path
+            self.emit(&format!("{}:\n", fast_label));
+            let final_src = self.emit_abi_cast(&v_val, v_ty, effective_elem_ty);
+            let store_val = if llvm_ty == "i8" && matches!(effective_elem_ty, TejxType::Bool) {
+                self.emit_value_to_storage(&final_src, effective_elem_ty)
+            } else {
+                final_src
+            };
+            self.temp_counter += 1;
+            let typed_body = format!("%typed_store_body_{}", self.temp_counter);
+            self.emit_line(&format!("{} = bitcast i8* {} to {}*", typed_body, body_ptr, llvm_ty));
+            self.temp_counter += 1;
+            let elem_ptr = format!("%fast_store_elem_ptr_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, llvm_ty, llvm_ty, typed_body, idx_val));
+            self.emit_line(&format!("store {} {}, {}* {}, !alias.scope !3, !noalias !4", llvm_ty, store_val, llvm_ty, elem_ptr));
+            if Self::is_gc_managed(effective_elem_ty) {
+                let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
+                self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
+                self.emit_line(&format!(
+                    "call void @rt_write_barrier(i64 {}, i64 {})",
+                    obj_val, barrier_val
+                ));
+            }
+            self.emit_line(&format!("br label %{}", merge_label));
+
+            // Slow path
+            self.emit(&format!("{}:\n", slow_label));
+            let slow_val = if effective_elem_ty.is_float() {
+                if matches!(effective_elem_ty, TejxType::Float32) {
+                    let f_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Float32);
+                    self.temp_counter += 1;
+                    let bits_i32 = format!("%f_bits_store_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast float {} to i32", bits_i32, f_val));
+                    self.temp_counter += 1;
+                    let bits_i64 = format!("%f_bits64_store_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = zext i32 {} to i64", bits_i64, bits_i32));
+                    bits_i64
+                } else {
+                    let f_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Float64);
+                    self.temp_counter += 1;
+                    let bits_i64 = format!("%f_bits64_store_{}", self.temp_counter);
+                    self.emit_line(&format!("{} = bitcast double {} to i64", bits_i64, f_val));
+                    bits_i64
+                }
+            } else {
+                self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64)
+            };
+
+            self.declare_runtime_fn(
+                "rt_array_set_traced",
+                "i64 @rt_array_set_traced(i64, i64, i64, i64, i64) nounwind",
+            );
+            let (file_ptr, line) = self
+                .runtime_location_args(line)
+                .unwrap_or_else(|| ("0".to_string(), 0));
+            self.temp_counter += 1;
+            let updated_arr = format!("%arr_set_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_array_set_traced(i64 {}, i64 {}, i64 {}, i64 {}, i64 {})",
+                updated_arr, obj_val, idx_val, slow_val, file_ptr, line
+            ));
+            if let MIRValue::Variable { name, ty } = obj {
+                self.emit_store_variable(name, &updated_arr, ty);
+            }
+            self.emit_line(&format!("br label %{}", merge_label));
+
+            // Merge
+            self.emit(&format!("{}:\n", merge_label));
+            return;
+        }
         if element_ty.is_float() {
             if matches!(element_ty, TejxType::Float32) {
                 let f_val = self.emit_abi_cast(&v_val, src_ty, &TejxType::Float32);

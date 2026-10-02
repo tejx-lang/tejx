@@ -10,10 +10,68 @@ use std::sync::Mutex;
 // Works safely across virtual threads and OS worker threads without any thread-local
 // guard maps or lifetime transmutes.
 
+pub struct SpinMutex<T> {
+    lock: AtomicBool,
+    data: std::cell::UnsafeCell<T>,
+}
+
+unsafe impl<T: Send> Send for SpinMutex<T> {}
+unsafe impl<T: Send> Sync for SpinMutex<T> {}
+
+pub struct SpinMutexGuard<'a, T> {
+    mutex: &'a SpinMutex<T>,
+}
+
+impl<T> SpinMutex<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            lock: AtomicBool::new(false),
+            data: std::cell::UnsafeCell::new(data),
+        }
+    }
+
+    #[inline(always)]
+    pub fn lock(&self) -> SpinMutexGuard<'_, T> {
+        let mut backoff = 1;
+        while self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            while self.lock.load(Ordering::Relaxed) {
+                for _ in 0..backoff {
+                    std::hint::spin_loop();
+                }
+                backoff = (backoff << 1).min(64);
+            }
+        }
+        SpinMutexGuard { mutex: self }
+    }
+}
+
+impl<'a, T> std::ops::Deref for SpinMutexGuard<'a, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<'a, T> std::ops::DerefMut for SpinMutexGuard<'a, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'a, T> Drop for SpinMutexGuard<'a, T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.mutex.lock.store(false, Ordering::Release);
+    }
+}
+
 pub struct TejxMutex {
     state: AtomicBool,
     cvar: Condvar,
-    wait_lock: StdMutex<()>,
+    os_lock: StdMutex<()>,
+    wait_lock: SpinMutex<Vec<usize>>,
 }
 
 impl TejxMutex {
@@ -21,38 +79,67 @@ impl TejxMutex {
         Self {
             state: AtomicBool::new(false),
             cvar: Condvar::new(),
-            wait_lock: StdMutex::new(()),
+            os_lock: StdMutex::new(()),
+            wait_lock: SpinMutex::new(Vec::new()),
         }
     }
 
     pub fn lock(&self) {
-        let mut spins = 0;
-        loop {
-            if self.state.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        // Fast path: uncontended acquire
+        if self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            return;
+        }
+
+        // Short adaptive spin loop (for low contention)
+        for _ in 0..16 {
+            std::hint::spin_loop();
+            if !self.state.load(Ordering::Relaxed)
+                && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+            {
                 return;
             }
-            if crate::vthread::vt_is_vthread() {
-                spins += 1;
-                if spins < 8 {
-                    std::hint::spin_loop();
-                } else if spins < 16 {
-                    crate::vthread::vt_yield();
-                } else {
-                    crate::vthread::vt_sleep(1);
+        }
+
+        if crate::vthread::vt_is_vthread() {
+            let token = crate::vthread::vt_next_park_token();
+            loop {
+                {
+                    let mut waiters = self.wait_lock.lock();
+                    if self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                        return;
+                    }
+                    waiters.push(token);
                 }
-            } else {
-                let _guard = crate::ThreadIoGuard::new();
-                let mut guard = self.wait_lock.lock().unwrap();
-                while self.state.load(Ordering::Acquire) {
-                    guard = self.cvar.wait(guard).unwrap();
+                crate::vthread::vt_park(token);
+                if self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                    return;
                 }
+            }
+        } else {
+            let _guard = crate::ThreadIoGuard::new();
+            let mut guard = self.os_lock.lock().unwrap();
+            while self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                guard = self.cvar.wait(guard).unwrap();
             }
         }
     }
 
     pub fn unlock(&self) {
         self.state.store(false, Ordering::Release);
-        self.cvar.notify_one();
+        let waiter = {
+            let mut waiters = self.wait_lock.lock();
+            if !waiters.is_empty() {
+                Some(waiters.remove(0))
+            } else {
+                None
+            }
+        };
+        if let Some(token) = waiter {
+            crate::vthread::vt_unpark(token);
+        } else {
+            let _guard = self.os_lock.lock();
+            self.cvar.notify_one();
+        }
     }
 }
 
@@ -69,22 +156,16 @@ pub unsafe extern "C" fn rt_Mutex_free(mutex: i64) {
     let _ = Box::from_raw(mutex as *mut TejxMutex);
 }
 
-static LIVE_MUTEX_DATA: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static LIVE_MUTEX_DATA: Lazy<SpinMutex<HashSet<usize>>> = Lazy::new(|| SpinMutex::new(HashSet::new()));
 
 pub(crate) unsafe fn register_mutex_data(ptr: *mut TejxMutexArc) -> i64 {
     let addr = ptr as usize;
-    if let Ok(mut set) = LIVE_MUTEX_DATA.lock() {
-        set.insert(addr);
-    }
+    LIVE_MUTEX_DATA.lock().insert(addr);
     addr as i64
 }
 
 pub(crate) unsafe fn unregister_mutex_data(addr: usize) -> bool {
-    if let Ok(mut set) = LIVE_MUTEX_DATA.lock() {
-        set.remove(&addr)
-    } else {
-        false
-    }
+    LIVE_MUTEX_DATA.lock().remove(&addr)
 }
 
 #[no_mangle]
@@ -102,8 +183,7 @@ pub unsafe extern "C" fn rt_Mutex_acquire(this: i64) {
     if ptr.is_null() { return; }
     let mutex_ptr = *ptr.offset(0) as *const TejxMutexArc;
     if mutex_ptr.is_null() { return; }
-    let arc = (*mutex_ptr).clone();
-    arc.lock();
+    (&**mutex_ptr).lock();
 }
 
 #[no_mangle]
@@ -112,8 +192,7 @@ pub unsafe extern "C" fn rt_Mutex_release(this: i64) {
     if ptr.is_null() { return; }
     let mutex_ptr = *ptr.offset(0) as *const TejxMutexArc;
     if mutex_ptr.is_null() { return; }
-    let arc = (*mutex_ptr).clone();
-    arc.unlock();
+    (&**mutex_ptr).unlock();
 }
 
 #[no_mangle]

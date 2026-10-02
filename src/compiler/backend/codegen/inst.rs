@@ -385,6 +385,16 @@ impl CodeGen {
                     ));
                     l_str
                 }
+            } else if matches!(l_ty, TejxType::Char) {
+                self.declare_runtime_fn("rt_to_string_char", "i64 @rt_to_string_char(i32)");
+                let val_as_char = self.emit_abi_cast(&l, l_ty, &TejxType::Char);
+                self.temp_counter += 1;
+                let l_str = format!("%l_str{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_char(i32 {})",
+                    l_str, val_as_char
+                ));
+                l_str
             } else if matches!(l_ty, TejxType::Bool) {
                 self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
                 let val_as_bool = self.emit_abi_cast(&l, l_ty, &TejxType::Int64);
@@ -436,6 +446,16 @@ impl CodeGen {
                     ));
                     r_str
                 }
+            } else if matches!(r_ty, TejxType::Char) {
+                self.declare_runtime_fn("rt_to_string_char", "i64 @rt_to_string_char(i32)");
+                let val_as_char = self.emit_abi_cast(&r, r_ty, &TejxType::Char);
+                self.temp_counter += 1;
+                let r_str = format!("%r_str{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = call i64 @rt_to_string_char(i32 {})",
+                    r_str, val_as_char
+                ));
+                r_str
             } else if matches!(r_ty, TejxType::Bool) {
                 self.declare_runtime_fn("rt_to_string_boolean", "i64 @rt_to_string_boolean(i64)");
                 let val_as_bool = self.emit_abi_cast(&r, r_ty, &TejxType::Int64);

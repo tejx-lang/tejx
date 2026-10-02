@@ -410,8 +410,12 @@ pub unsafe extern "C" fn rt_array_ensure_capacity(id: i64, required: i64) -> i64
     let res = (new_body as i64) + HEAP_OFFSET;
     rt_pop_roots(1);
     rt_update_array_cache(res, new_body, (*new_header).length as i64, elem_size);
-    ARRAY_FORWARD_ACTIVE.store(true, Ordering::Release);
-    ARRAY_FORWARD.lock().unwrap().insert(current_id, res);
+    // In-header forwarding: set bit 1 (GC_FWD_BIT) so readers resolve lock-free
+    const GC_FWD_BIT: u64 = 0x2;
+    const GC_PTR_MASK: u64 = !(0x3 | (0xFFu64 << 56));
+    std::sync::atomic::fence(Ordering::Release);
+    (*header_res).gc_word = ((new_header as u64) & GC_PTR_MASK) | GC_FWD_BIT;
+
     res
 }
 #[no_mangle]

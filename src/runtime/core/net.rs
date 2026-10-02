@@ -255,12 +255,11 @@ fn stream_read_once(stream: &mut NetStream, buf: &mut [u8]) -> std::io::Result<u
 fn read_all(stream: &mut NetStream, chunk_size: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let size = if chunk_size == 0 { 4096 } else { chunk_size };
-    let mut buf = [0u8; 4096];
-    let buf_slice = &mut buf[..size.min(4096)];
+    let mut buf = vec![0u8; size.min(65536)];
     loop {
-        match stream_read_once(stream, buf_slice) {
+        match stream_read_once(stream, &mut buf) {
             Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&buf_slice[..n]),
+            Ok(n) => out.extend_from_slice(&buf[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(_) => break,
         }
@@ -397,10 +396,9 @@ pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
     let Some(ptr) = validate_stream_ptr(stream) else { return empty_string(); };
     let size = if max_len <= 0 { 4096 } else { max_len as usize };
     let socket = &mut *ptr;
-    let mut buf = [0u8; 8192];
-    let buf_slice = &mut buf[..size.min(8192)];
-    match stream_read_once(socket, buf_slice) {
-        Ok(n) => string_from_bytes(&buf_slice[..n]),
+    let mut buf = vec![0u8; size];
+    match stream_read_once(socket, &mut buf) {
+        Ok(n) => string_from_bytes(&buf[..n]),
         Err(_) => empty_string(),
     }
 }
@@ -627,7 +625,6 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
             }
             Err(e) if e.raw_os_error() == Some(libc::EMFILE)
                    || e.raw_os_error() == Some(libc::ENFILE) => {
-                // Temporary file descriptor exhaustion: sleep non-blocking to let active requests complete and close sockets
                 crate::vthread::vt_sleep(1);
             }
             Err(_) => {

@@ -12,22 +12,16 @@ pub struct ConditionData {
     pub lock: StdMutex<()>,
 }
 
-static LIVE_COND_DATA: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static LIVE_COND_DATA: Lazy<crate::SpinMutex<HashSet<usize>>> = Lazy::new(|| crate::SpinMutex::new(HashSet::new()));
 
 pub(crate) unsafe fn register_condition_data(ptr: *mut Arc<ConditionData>) -> i64 {
     let addr = ptr as usize;
-    if let Ok(mut set) = LIVE_COND_DATA.lock() {
-        set.insert(addr);
-    }
+    LIVE_COND_DATA.lock().insert(addr);
     addr as i64
 }
 
 pub(crate) unsafe fn unregister_condition_data(addr: usize) -> bool {
-    if let Ok(mut set) = LIVE_COND_DATA.lock() {
-        set.remove(&addr)
-    } else {
-        false
-    }
+    LIVE_COND_DATA.lock().remove(&addr)
 }
 
 #[no_mangle]

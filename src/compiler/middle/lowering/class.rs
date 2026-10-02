@@ -298,12 +298,14 @@ impl Lowering {
                 .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
                 .collect();
 
+            self.return_type_stack.borrow_mut().push(TejxType::Void);
             let mut hir_body =
                 self.lower_statement(&func_decl.body)
                     .unwrap_or(HIRStatement::Block {
                         line,
                         statements: vec![],
                     });
+            self.return_type_stack.borrow_mut().pop();
 
             if let HIRStatement::Block {
                 line,
@@ -405,12 +407,14 @@ impl Lowering {
                 .iter()
                 .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
                 .collect();
+            self.return_type_stack.borrow_mut().push(return_type.clone());
             let hir_body = self
                 .lower_statement(&getter._body)
                 .unwrap_or(HIRStatement::Block {
                     line,
                     statements: vec![],
                 });
+            self.return_type_stack.borrow_mut().pop();
             self._exit_scope();
             self.pop_env_owner();
             functions.push(HIRStatement::Function {
@@ -442,12 +446,14 @@ impl Lowering {
                 .iter()
                 .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
                 .collect();
+            self.return_type_stack.borrow_mut().push(TejxType::Void);
             let hir_body = self
                 .lower_statement(&setter._body)
                 .unwrap_or(HIRStatement::Block {
                     line,
                     statements: vec![],
                 });
+            self.return_type_stack.borrow_mut().pop();
             self._exit_scope();
             self.pop_env_owner();
             functions.push(HIRStatement::Function {
@@ -551,12 +557,14 @@ impl Lowering {
                 .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
                 .collect();
 
+            self.return_type_stack.borrow_mut().push(return_type.clone());
             let hir_body = self
                 .lower_statement(&func_decl.body)
                 .unwrap_or(HIRStatement::Block {
                     line,
                     statements: vec![],
                 });
+            self.return_type_stack.borrow_mut().pop();
 
             self._exit_scope();
             self.pop_env_owner();

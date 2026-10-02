@@ -8,24 +8,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo ">>> Building TejX Compiler..."
 
-# Build in release mode
-cargo build --release 2>&1
+# Build workspace in release mode (compiler + runtime staticlib)
+cargo build --release --workspace 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Compiler Build successful!"
     echo "   Binary:  $SCRIPT_DIR/target/release/tejxc"
 
-    # Find the runtime library (it might have a hash in the name like libtejx_rt-xxxx.a)
     PROFILE_DIR="$SCRIPT_DIR/target/release"
     [ ! -d "$PROFILE_DIR" ] && PROFILE_DIR="$SCRIPT_DIR/target/debug"
 
-    # Find the newest libtejx_rt*.a in deps/ and copy it to a predictable location
-    RT_FILE=$(ls -t "$PROFILE_DIR"/deps/libtejx_rt*.a 2>/dev/null | head -n 1)
-    if [ -n "$RT_FILE" ]; then
-        cp "$RT_FILE" "$PROFILE_DIR/tejx_rt.a"
+    if [ -f "$PROFILE_DIR/libtejx_rt.a" ]; then
+        cp "$PROFILE_DIR/libtejx_rt.a" "$PROFILE_DIR/tejx_rt.a"
         echo "   Runtime: $PROFILE_DIR/tejx_rt.a"
     else
-        echo "   ⚠️ Warning: Runtime library (libtejx_rt.a) not found in $PROFILE_DIR/deps"
+        echo "   ⚠️ Warning: Runtime library (libtejx_rt.a) not found in $PROFILE_DIR"
     fi
 else
     echo "❌ Compiler Build failed."

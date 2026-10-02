@@ -91,6 +91,7 @@ impl CodeGen {
         casted
     }
 
+
     pub(crate) fn emit_strip_heap_offset(&mut self, val: &str) -> String {
         // Handle management offsets (HEAP_OFFSET or STACK_OFFSET)
         self.temp_counter += 1;
@@ -98,31 +99,13 @@ impl CodeGen {
         self.temp_counter += 1;
         let is_stack = format!("%is_stack_{}", self.temp_counter);
 
-        if !self.declared_functions.contains("HEAP_OFFSET_GLOBAL") {
-            self.global_buffer
-                .push_str("@HEAP_OFFSET = external global i64\n");
-            self.declared_functions
-                .insert("HEAP_OFFSET_GLOBAL".to_string());
-        }
-        if !self.declared_functions.contains("STACK_OFFSET_GLOBAL") {
-            self.global_buffer
-                .push_str("@STACK_OFFSET = external global i64\n");
-            self.declared_functions
-                .insert("STACK_OFFSET_GLOBAL".to_string());
-        }
+        const HEAP_OFFSET_CONST: i64 = 1i64 << 50;
+        const STACK_OFFSET_CONST: i64 = 1i64 << 48;
 
-        self.temp_counter += 1;
-        let h_offset = format!("%h_offset_{}", self.temp_counter);
-        self.emit_line(&format!("{} = load i64, i64* @HEAP_OFFSET", h_offset));
-
-        self.temp_counter += 1;
-        let s_offset = format!("%s_offset_{}", self.temp_counter);
-        self.emit_line(&format!("{} = load i64, i64* @STACK_OFFSET", s_offset));
-
-        self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, val, h_offset));
+        self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, val, HEAP_OFFSET_CONST));
         self.emit_line(&format!(
             "{} = icmp uge i64 {}, {}",
-            is_stack, val, s_offset
+            is_stack, val, STACK_OFFSET_CONST
         ));
 
         self.temp_counter += 1;
@@ -130,7 +113,7 @@ impl CodeGen {
         // Prioritize HEAP_OFFSET if both are true (since HEAP_OFFSET > STACK_OFFSET)
         self.emit_line(&format!(
             "{} = select i1 {}, i64 {}, i64 {}",
-            sub_val, is_heap, h_offset, s_offset
+            sub_val, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST
         ));
 
         self.temp_counter += 1;
@@ -171,9 +154,14 @@ impl CodeGen {
         } else {
             ""
         };
+        let alias_meta = if ptr.starts_with('%') && !self.volatile_locals {
+            ", !alias.scope !4, !noalias !3"
+        } else {
+            ""
+        };
         self.buffer.push_str(&format!(
-            "  store{} {} {}, {}* {}\n",
-            volatile_kw, llvm_ty, val, llvm_ty, ptr
+            "  store{} {} {}, {}* {}{}\n",
+            volatile_kw, llvm_ty, val, llvm_ty, ptr, alias_meta
         ));
     }
 
@@ -184,9 +172,14 @@ impl CodeGen {
         } else {
             ""
         };
+        let alias_meta = if ptr.starts_with('%') && !self.volatile_locals {
+            ", !alias.scope !4, !noalias !3"
+        } else {
+            ""
+        };
         self.buffer.push_str(&format!(
-            "  {} = load{} {}, {}* {}\n",
-            dest_reg, volatile_kw, llvm_ty, llvm_ty, ptr
+            "  {} = load{} {}, {}* {}{}\n",
+            dest_reg, volatile_kw, llvm_ty, llvm_ty, ptr, alias_meta
         ));
     }
 
@@ -224,6 +217,17 @@ impl CodeGen {
                 char_val, val_name
             ));
             return char_val;
+        }
+
+        if matches!(src_ty, TejxType::Char) && matches!(dst_ty, TejxType::String) {
+            self.declare_runtime_fn("rt_to_string_char", "i64 @rt_to_string_char(i32)");
+            self.temp_counter += 1;
+            let str_val = format!("%char_to_str_{}", self.temp_counter);
+            self.emit_line(&format!(
+                "{} = call i64 @rt_to_string_char(i32 {})",
+                str_val, val_name
+            ));
+            return str_val;
         }
 
         if dst_is_any && matches!(src_ty, TejxType::String) && val_name.starts_with("ptrtoint") {
@@ -838,7 +842,7 @@ impl CodeGen {
                     return "0.0".to_string();
                 }
 
-                if value == "null" {
+                if value == "null" && !matches!(ty, TejxType::String) {
                     return "0".to_string();
                 }
 
