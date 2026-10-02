@@ -21,6 +21,7 @@ use crate::middle::lowering::Lowering;
 use crate::middle::mir::lowering::MIRLowering;
 use crate::middle::mir::opt as mir_opt;
 use crate::middle::semantic::TypeChecker;
+use tejx_rt::constants::MIN_VTHREAD_STACK_SIZE;
 
 // The runtime library is resolved at runtime from the filesystem
 
@@ -429,9 +430,9 @@ fn main() {
                 if i + 1 < args.len() {
                     let val = &args[i + 1];
                     if let Some(bytes) = parse_cli_size(val) {
-                        cli_vt_stack = Some(bytes.max(2048));
+                        cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                     } else {
-                        eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                        eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                         process::exit(1);
                     }
                     i += 1;
@@ -480,36 +481,36 @@ fn main() {
             _ if arg.starts_with("--vt-stack=") => {
                 let val = &arg["--vt-stack=".len()..];
                 if let Some(bytes) = parse_cli_size(val) {
-                    cli_vt_stack = Some(bytes.max(2048));
+                    cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
             _ if arg.starts_with("--vthread-stack=") => {
                 let val = &arg["--vthread-stack=".len()..];
                 if let Some(bytes) = parse_cli_size(val) {
-                    cli_vt_stack = Some(bytes.max(2048));
+                    cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
             _ if arg.starts_with("-Xss=") => {
                 let val = &arg["-Xss=".len()..];
                 if let Some(bytes) = parse_cli_size(val) {
-                    cli_vt_stack = Some(bytes.max(2048));
+                    cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
             _ if arg.starts_with("-Xss") && arg.len() > 4 => {
                 let val = &arg[4..];
                 if let Some(bytes) = parse_cli_size(val) {
-                    cli_vt_stack = Some(bytes.max(2048));
+                    cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k, 2048", val);
+                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }

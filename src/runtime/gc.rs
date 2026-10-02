@@ -16,63 +16,44 @@ use std::sync::{LazyLock, Mutex, Once};
 // All size strings accept: "16gb", "8192mb", "512kb", "1073741824" (raw bytes)
 // =============================================================================
 
-pub static mut YOUNG_GEN_SIZE: usize = 512 * 1024 * 1024; // 512MB Eden
-pub static mut SURVIVOR_SIZE: usize = 64 * 1024 * 1024; // dynamically sized in rt_init_gc
-pub const LARGE_OBJECT_THRESHOLD: usize = 128 * 1024; // 128KB LOS threshold
-pub const GC_MIN_HEAP: usize = 2 * 1024 * 1024 * 1024; // 2GB floor
-pub const GC_MAX_HEAP: usize = 128 * 1024 * 1024 * 1024; // 128GB ceiling
+use crate::constants::{
+    DEFAULT_ARENA_SIZE, DEFAULT_GC_ROOT_STACK_SIZE, DEFAULT_LOS_GC_TRIGGER_BYTES,
+    DEFAULT_OLD_GEN_SIZE, DEFAULT_SURVIVOR_SIZE, DEFAULT_YOUNG_GEN_SIZE,
+    LARGE_OBJECT_THRESHOLD as CONST_LARGE_OBJECT_THRESHOLD, MAX_HEAP_CEILING, MIN_OLD_GEN_SIZE,
+    NUM_FAST_BINS as CONST_NUM_FAST_BINS,
+};
+
+pub static mut YOUNG_GEN_SIZE: usize = DEFAULT_YOUNG_GEN_SIZE;
+pub static mut SURVIVOR_SIZE: usize = DEFAULT_SURVIVOR_SIZE;
+pub const LARGE_OBJECT_THRESHOLD: usize = CONST_LARGE_OBJECT_THRESHOLD;
+pub const GC_MIN_HEAP: usize = MIN_OLD_GEN_SIZE;
+pub const GC_MAX_HEAP: usize = MAX_HEAP_CEILING;
 
 /// Final old-gen size, set once at startup by `rt_init_gc()`.
 /// Default is overwritten to the detected value before mmap.
-pub static mut OLD_GEN_SIZE: usize = GC_MAX_HEAP;
+pub static mut OLD_GEN_SIZE: usize = DEFAULT_OLD_GEN_SIZE;
 
 /// Set by argv parsing (`-Xmx16g`, `--tejx-heap 16gb`) in `tejx_runtime_main`.
 /// 0 = not set (fall through to env/autodetect).
 pub static mut ARGV_GC_HEAP_LIMIT: usize = 0;
 
-extern "C" {
-    fn sysconf(name: i32) -> i64;
-}
-
-// sysconf constants — platform-specific
-#[cfg(target_os = "macos")]
-const SC_PHYS_PAGES: i32 = 200; // _SC_PHYS_PAGES on macOS (sys/unistd.h)
-#[cfg(target_os = "macos")]
-const SC_PAGESIZE: i32 = 29; // _SC_PAGESIZE on macOS
-
-#[cfg(not(target_os = "macos"))]
-const SC_PHYS_PAGES: i32 = 85; // _SC_PHYS_PAGES on Linux
-#[cfg(not(target_os = "macos"))]
-const SC_PAGESIZE: i32 = 30; // _SC_PAGESIZE on Linux
-
 /// Detect the optimal old-gen heap size at startup.
 /// Called once from `rt_init_gc()` after argv/env parsing is complete.
 pub(crate) unsafe fn detect_old_gen_size() -> usize {
-    const HARD_MIN: usize = 64 * 1024 * 1024; // 64MB absolute safety floor
-
     // Priority 1: -Xmx16g / --max-old-space-size / --tejx-heap runtime argument
     if ARGV_GC_HEAP_LIMIT > 0 {
-        return ARGV_GC_HEAP_LIMIT.max(HARD_MIN);
+        return ARGV_GC_HEAP_LIMIT.clamp(MIN_OLD_GEN_SIZE, GC_MAX_HEAP);
     }
 
     // Priority 2: TEJX_HEAP environment variable
     if let Ok(val) = std::env::var("TEJX_HEAP") {
         if let Some(bytes) = parse_size_str(&val) {
-            return bytes.max(HARD_MIN);
+            return bytes.clamp(MIN_OLD_GEN_SIZE, GC_MAX_HEAP);
         }
     }
 
-    // Priority 3: auto-detect — 50% of physical RAM, floor GC_MIN_HEAP (2GB), ceiling GC_MAX_HEAP (128GB)
-    let pages = sysconf(SC_PHYS_PAGES);
-    let page_size = sysconf(SC_PAGESIZE);
-    if pages > 0 && page_size > 0 {
-        let total_ram: usize = (pages as usize).saturating_mul(page_size as usize);
-        let half_ram = total_ram / 2;
-        return half_ram.clamp(GC_MIN_HEAP, GC_MAX_HEAP);
-    }
-
-    // Final fallback: 2GB (if sysconf fails)
-    GC_MIN_HEAP
+    // Priority 3: default initial old-gen size (512 MB)
+    DEFAULT_OLD_GEN_SIZE
 }
 
 /// Parse size strings: "16gb", "8192mb", "512kb", or raw bytes "1073741824".
@@ -207,14 +188,16 @@ pub static FINALIZER_CONDVAR: std::sync::LazyLock<std::sync::Condvar> =
 const FLAG_FINALIZED: u32 = 0x1;
 pub const FLAG_REMSET_DIRTY: u32 = 0x2;
 
-#[derive(Default)]
 struct StaticRoots {
     slots: Vec<Option<i64>>,
     free: Vec<usize>,
 }
 
-static STATIC_ROOTS: LazyLock<std::sync::RwLock<StaticRoots>> =
-    LazyLock::new(|| std::sync::RwLock::new(StaticRoots::default()));
+static STATIC_ROOTS: LazyLock<crate::mutex::SpinMutex<StaticRoots>> = LazyLock::new(|| {
+    let free = Vec::with_capacity(65536);
+    let slots = Vec::with_capacity(65536);
+    crate::mutex::SpinMutex::new(StaticRoots { slots, free })
+});
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -291,7 +274,7 @@ pub static mut OLD_BYTES_ALLOCATED: usize = 0;
 // but never drops below the 60% floor, ensuring maximum performance for small workloads.
 pub static mut OLD_GEN_GC_THRESHOLD: usize = 0; // set in rt_init_gc
 
-pub const NUM_FAST_BINS: usize = 256; // also defined in constants.rs (64 fast bins) — runtime uses 256 for finer granularity
+pub const NUM_FAST_BINS: usize = CONST_NUM_FAST_BINS;
 pub static FAST_FREE_LIST: std::sync::LazyLock<[Mutex<Vec<usize>>; NUM_FAST_BINS]> =
     std::sync::LazyLock::new(|| std::array::from_fn(|_| Mutex::new(Vec::new())));
 pub static LARGE_FREE_LIST: std::sync::LazyLock<
@@ -322,7 +305,7 @@ pub fn get_gc_growth_factor() -> f64 {
 }
 // --- Large Object Space (LOS) ---
 pub const MAX_LOS_OBJECTS: usize = 4096;
-const MIN_LOS_GC_TRIGGER_BYTES: usize = MIN_LOS_GC_TRIGGER_BYTES_CONST;
+const MIN_LOS_GC_TRIGGER_BYTES: usize = DEFAULT_LOS_GC_TRIGGER_BYTES;
 static LOS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 #[no_mangle]
 pub static mut LOS_OBJECTS: [*mut u8; MAX_LOS_OBJECTS] = [0 as *mut u8; MAX_LOS_OBJECTS];
@@ -399,7 +382,7 @@ pub unsafe extern "C" fn rt_register_type(
 }
 
 pub unsafe fn rt_add_static_root(val: i64) -> usize {
-    let mut roots = STATIC_ROOTS.write().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     if let Some(slot) = roots.free.pop() {
         roots.slots[slot] = Some(val);
         return slot;
@@ -409,7 +392,7 @@ pub unsafe fn rt_add_static_root(val: i64) -> usize {
 }
 
 pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
-    let roots = STATIC_ROOTS.read().unwrap();
+    let roots = STATIC_ROOTS.lock();
     roots.slots.get(slot).and_then(|root| *root).unwrap_or(0)
 }
 
@@ -419,14 +402,14 @@ pub unsafe fn rt_pin_static_root(slot: usize, out: *mut i64) {
     }
 
     {
-        let roots = STATIC_ROOTS.read().unwrap();
+        let roots = STATIC_ROOTS.lock();
         *out = roots.slots.get(slot).and_then(|root| *root).unwrap_or(0);
     }
     rt_push_root(out);
 }
 
 pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
-    let mut roots = STATIC_ROOTS.write().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     if let Some(root) = roots.slots.get_mut(slot) {
         if root.is_some() {
             *root = Some(val);
@@ -435,7 +418,7 @@ pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
 }
 
 pub unsafe fn rt_release_static_root(slot: usize) {
-    let mut roots = STATIC_ROOTS.write().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     if let Some(root) = roots.slots.get_mut(slot) {
         if root.take().is_some() {
             roots.free.push(slot);
@@ -444,7 +427,7 @@ pub unsafe fn rt_release_static_root(slot: usize) {
 }
 
 unsafe fn mark_static_roots() {
-    let roots = STATIC_ROOTS.read().unwrap();
+    let roots = STATIC_ROOTS.lock();
     for root in roots.slots.iter().flatten() {
         let mut tmp = *root;
         mark_object(&mut tmp);
@@ -453,14 +436,14 @@ unsafe fn mark_static_roots() {
 
 #[allow(dead_code)]
 unsafe fn update_static_roots() {
-    let mut roots = STATIC_ROOTS.write().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     for root in roots.slots.iter_mut().flatten() {
         rt_update_ptr(root as *mut i64);
     }
 }
 
 unsafe fn copy_static_roots() {
-    let mut roots = STATIC_ROOTS.write().unwrap();
+    let mut roots = STATIC_ROOTS.lock();
     for root in roots.slots.iter_mut().flatten() {
         copy_object(root as *mut i64);
     }
@@ -635,7 +618,7 @@ pub unsafe extern "C" fn rt_clear_tlab() {
 }
 
 pub unsafe fn clear_all_tlabs() {
-    let registry = THREAD_REGISTRY.lock().unwrap();
+    let registry = lock_registry();
     for &ctx_wrapper in registry.iter() {
         let ctx = ctx_wrapper.0;
         if !ctx.is_null() {
@@ -646,7 +629,7 @@ pub unsafe fn clear_all_tlabs() {
 }
 
 // --- Arena Manager ---
-pub const ARENA_DEFAULT_SIZE: usize = 512 * 1024 * 1024; // 512MB
+pub const ARENA_DEFAULT_SIZE: usize = DEFAULT_ARENA_SIZE;
 
 #[repr(C)]
 pub struct Arena {
@@ -722,7 +705,7 @@ pub unsafe extern "C" fn rt_arena_destroy(arena: *mut Arena) {
 // Each virtual thread owns one root stack. 4k slots (32 KiB) comfortably
 // covers generated request handlers while avoiding a 512 KiB allocation per
 // idle connection under high-concurrency servers.
-pub const GC_STACK_SIZE: usize = 1024 * 64;
+pub const GC_STACK_SIZE: usize = DEFAULT_GC_ROOT_STACK_SIZE;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -735,6 +718,11 @@ unsafe impl Sync for ThreadContextPtr {}
 // Global registry of all active thread contexts
 pub static THREAD_REGISTRY: std::sync::LazyLock<Mutex<Vec<ThreadContextPtr>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[inline]
+pub(crate) fn lock_registry() -> std::sync::MutexGuard<'static, Vec<ThreadContextPtr>> {
+    THREAD_REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // Global Safepoint flags
 pub static SAFEPOINT_REQUEST: AtomicBool = AtomicBool::new(false);
@@ -799,7 +787,7 @@ struct ThreadRegistrationGuard {
 
 unsafe fn unregister_thread_context(ctx_ptr: *mut ThreadContext) {
     let removed = {
-        let mut registry = THREAD_REGISTRY.lock().unwrap();
+        let mut registry = lock_registry();
         if let Some(pos) = registry.iter().position(|entry| entry.0 == ctx_ptr) {
             registry.swap_remove(pos);
             true
@@ -813,7 +801,7 @@ unsafe fn unregister_thread_context(ctx_ptr: *mut ThreadContext) {
         && !(*ctx_ptr).in_safepoint.load(Ordering::SeqCst)
     {
         let (lock, cvar) = &**SAFEPOINT_ACK;
-        let mut count = lock.lock().unwrap();
+        let mut count = lock.lock().unwrap_or_else(|e| e.into_inner());
         *count += 1;
         cvar.notify_one();
     }
@@ -868,7 +856,7 @@ unsafe fn ensure_thread_registered() {
                 return;
             }
 
-            let mut registry = THREAD_REGISTRY.lock().unwrap();
+            let mut registry = lock_registry();
             if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
                 registry.push(ThreadContextPtr(ctx_ptr));
             }
@@ -900,7 +888,7 @@ pub(crate) unsafe fn current_thread_context() -> *mut ThreadContext {
                 return;
             }
 
-            let mut registry = THREAD_REGISTRY.lock().unwrap();
+            let mut registry = lock_registry();
             if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
                 registry.push(ThreadContextPtr(ctx_ptr));
             }
@@ -1087,6 +1075,15 @@ extern "C" fn tejx_crash_handler(
     } else {
         std::ptr::null_mut()
     };
+
+    // If this is a page fault (SIGSEGV / SIGBUS), check if it's a growable vthread stack hitting guard pages!
+    if (sig == libc::SIGSEGV || sig == libc::SIGBUS) && !fault_addr.is_null() {
+        if unsafe { crate::vthread::try_grow_stack_at(fault_addr as usize) } {
+            // Stack grew successfully! Transparently resume execution at the faulting instruction.
+            return;
+        }
+    }
+
     eprintln!(
         "\n💥 CRASH CAUGHT: signal {} on thread {:?} at fault_addr={:p}",
         sig, std::thread::current().name().unwrap_or("unnamed"), fault_addr
@@ -1209,10 +1206,10 @@ pub unsafe extern "C" fn rt_init_gc() {
         libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut());
         libc::sigaction(libc::SIGTRAP, &sa, std::ptr::null_mut());
 
-        // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > 50% of RAM (≥2GB)
+        // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > default 512MB
         OLD_GEN_SIZE = (detect_old_gen_size() + 0xFFFF) & !0xFFFF;
-        YOUNG_GEN_SIZE = ((OLD_GEN_SIZE / 3) + 0xFFFF) & !0xFFFF;
-        SURVIVOR_SIZE = ((YOUNG_GEN_SIZE / 8).clamp(64 * 1024 * 1024, 512 * 1024 * 1024) + 0xFFFF) & !0xFFFF;
+        YOUNG_GEN_SIZE = crate::constants::DEFAULT_YOUNG_GEN_SIZE;
+        SURVIVOR_SIZE = crate::constants::DEFAULT_SURVIVOR_SIZE;
 
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
         EDEN_START = mmap(
@@ -1639,7 +1636,6 @@ pub unsafe fn process_mark_queue() {
 }
 
 unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: bool) {
-    eprintln!("*** MAJOR GC TRIGGERED ***");
     if GC_BACKGROUND_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
         // A GC is already running in the background. Don't start another one.
         // If we really need memory, we could spinloop here, but returning is safer to prevent deadlocks.
@@ -1664,7 +1660,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     let los_before_sweep = los_snapshot();
 
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
@@ -1699,7 +1695,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
 
     // Trace roots again to catch any missed updates
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
@@ -1714,7 +1710,7 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
 
     // 4.5 Filter RemSets to remove dead objects before Sweep
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx = &*ctx_wrapper.0;
             let mut remset = ctx.remset.lock().unwrap();
@@ -2616,7 +2612,6 @@ unsafe fn resume_safepoint() {
 }
 
 pub unsafe fn minor_gc_locked() {
-    eprintln!("*** MINOR GC TRIGGERED ***");
     // minor_gc_locked: called under GC lock, evacuates young gen
     crate::rt_gc_prepare_array_forward();
     clear_all_tlabs();
@@ -2629,7 +2624,7 @@ pub unsafe fn minor_gc_locked() {
 
     // 1. Scan roots
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx_ptr = ctx_wrapper.0;
             let top = (*ctx_ptr).roots_top;
@@ -2650,7 +2645,7 @@ pub unsafe fn minor_gc_locked() {
 
     // 1b. Scan RemSets
     {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         for &ctx_wrapper in registry.iter() {
             let ctx = &*ctx_wrapper.0;
             let mut remset = ctx.remset.lock().unwrap();
@@ -2728,7 +2723,7 @@ pub unsafe fn minor_gc_locked() {
 
     // Removed CARD_TABLE reset
     if !new_remset.is_empty() {
-        let registry = THREAD_REGISTRY.lock().unwrap();
+        let registry = lock_registry();
         if let Some(&ctx_wrapper) = registry.iter().next() {
             let ctx = &*ctx_wrapper.0;
             ctx.remset.lock().unwrap().extend(new_remset);

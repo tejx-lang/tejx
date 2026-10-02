@@ -6,8 +6,6 @@ use std::cell::{Cell, RefCell};
 use std::sync::Mutex;
 use std::thread;
 use mio::{Events, Poll, Registry, Token, Interest};
-use std::alloc::{alloc, dealloc, Layout};
-use std::ptr::NonNull;
 use crate::constants::*;
 use crate::context::{init_fiber_stack, tejx_context_switch};
 use crate::SpinMutex;
@@ -56,145 +54,420 @@ pub fn get_main_vt_stack_size() -> usize {
     DEFAULT_MAIN_THREAD_STACK_SIZE
 }
 
-/// Truly dynamic heap-allocated stack for TejX virtual threads.
+/// Go-like growable stack for TejX virtual threads using mmap.
 ///
-/// Unlike OS-backed mmap stacks (which require 32 KB minimum on Apple Silicon due to 16 KB pages)
-/// and involve kernel syscalls (`mmap`, `mprotect`, `munmap`), `DynamicStack` is:
-/// 1. Allocated directly from the heap with 16-byte alignment (matching Go's user-space mcache stack allocation).
-/// 2. Sized dynamically (default 2 KB, matching Go's goroutines, or dynamically configured).
-/// 3. Protected with an inline canary magic number at the limit address to catch stack overflows.
-/// 4. Reused across virtual threads via thread-local caches with 0 kernel syscalls and 0 lock contention.
-pub struct DynamicStack {
-    ptr: NonNull<u8>,
-    layout: Layout,
+/// How it works (identical concept to Go goroutines):
+/// 1. Reserve MAX_VTHREAD_STACK_SIZE (1 MB) of virtual address space via mmap(PROT_NONE).
+///    This costs ZERO physical memory — it's just address space reservation.
+/// 2. Commit only the initial portion (1 page = 16 KB on ARM64) at the TOP of the range
+///    by mprotect'ing it to PROT_READ|PROT_WRITE.
+/// 3. The uncommitted pages below act as automatic guard pages.
+/// 4. When SP grows into the guard region → SIGSEGV → signal handler commits more pages
+///    → execution resumes transparently. The stack "grows" without copying or moving.
+/// 5. Maximum growth is capped at MAX_VTHREAD_STACK_SIZE (1 MB) to prevent runaway recursion.
+///
+/// Memory layout (stack grows downward, high → low address):
+///
+///   [base]     ← highest address, SP starts here
+///   |  committed pages (initially 1 page, grows on demand)  |
+///   [committed_low] ← lowest committed address
+///   |  guard pages (PROT_NONE, triggers SIGSEGV on access)  |
+///   [limit]    ← lowest address of the reserved region
+///
+pub struct GrowableStack {
+    /// Lowest address of the entire mmap'd region (PROT_NONE initially).
+    mmap_base: *mut u8,
+    /// Total size of the mmap'd region (= MAX_VTHREAD_STACK_SIZE).
+    mmap_size: usize,
+    /// Lowest committed (PROT_READ|PROT_WRITE) address. 
+    /// Everything from committed_low..base is accessible.
+    /// Everything from mmap_base..committed_low is guard (PROT_NONE).
+    committed_low: Arc<AtomicUsize>,
+    /// OS page size cached for growth operations.
+    page_size: usize,
 }
 
-unsafe impl Send for DynamicStack {}
-unsafe impl Sync for DynamicStack {}
+unsafe impl Send for GrowableStack {}
+unsafe impl Sync for GrowableStack {}
 
-const CANARY_OFFSET: usize = 16;
+/// Global registry of live growable stacks so the SIGSEGV / SIGBUS handler can find
+/// which stack a fault address belongs to and grow it on demand.
+use std::sync::atomic::AtomicPtr;
+static STACK_REGISTRY_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+static STACK_REGISTRY_INIT: std::sync::Once = std::sync::Once::new();
 
-impl DynamicStack {
-    pub fn new(size: usize) -> Result<Self, ()> {
-        let size = size.max(MIN_VTHREAD_STACK_SIZE);
-        let aligned_size = (size + STACK_ALIGNMENT - 1) & !(STACK_ALIGNMENT - 1);
-        let total_size = aligned_size + STACK_REDZONE_SIZE;
-        let layout = Layout::from_size_align(total_size, STACK_ALIGNMENT).map_err(|_| ())?;
-        let raw = unsafe { alloc(layout) };
-        if raw.is_null() {
+struct StackRegistryEntry {
+    mmap_base: usize,             // lowest address of reserved region
+    mmap_end: usize,              // highest address (mmap_base + mmap_size)
+    committed_low: Arc<AtomicUsize>, // current committed boundary (atomic for signal handler access)
+    page_size: usize,
+    max_committed_low: usize,     // = mmap_base (absolute bottom, can't grow past this)
+}
+
+struct StackRegistry {
+    entries: SpinMutex<Vec<StackRegistryEntry>>,
+}
+
+fn get_stack_registry() -> &'static StackRegistry {
+    STACK_REGISTRY_INIT.call_once(|| {
+        let registry = Box::new(StackRegistry {
+            entries: SpinMutex::new(Vec::with_capacity(1024)),
+        });
+        STACK_REGISTRY_PTR.store(Box::into_raw(registry) as *mut (), Ordering::Release);
+    });
+    unsafe { &*(STACK_REGISTRY_PTR.load(Ordering::Acquire) as *const StackRegistry) }
+}
+
+/// Called from the SIGSEGV / SIGBUS signal handler (async-signal-safe).
+/// Returns true if the fault address was in a growable stack's guard region
+/// and the stack was successfully grown.
+#[inline(never)]
+pub unsafe fn try_grow_stack_at(fault_addr: usize) -> bool {
+    let ptr = STACK_REGISTRY_PTR.load(Ordering::Acquire);
+    if ptr.is_null() {
+        return false;
+    }
+    let registry = &*(ptr as *const StackRegistry);
+    // Non-blocking try_lock with a small spin to avoid signal-handler deadlock
+    let mut entries = None;
+    for _ in 0..100 {
+        if let Some(guard) = registry.entries.try_lock() {
+            entries = Some(guard);
+            break;
+        }
+        std::hint::spin_loop();
+    }
+    let entries = match entries {
+        Some(guard) => guard,
+        None => return false,
+    };
+    
+    for entry in entries.iter() {
+        if fault_addr >= entry.mmap_base && fault_addr < entry.mmap_end {
+            // This fault is within this stack's reserved region.
+            let current_low = entry.committed_low.load(Ordering::Acquire);
+            if fault_addr >= current_low {
+                // Fault in already committed region — this is a real memory error, not stack growth
+                return false;
+            }
+            // Fault is below committed_low → need to grow.
+            // Grow in chunks of at least 16 KB (or page_size if larger) to minimize page faults.
+            let chunk_size = entry.page_size.max(16 * 1024);
+            let mut new_low = current_low;
+            while new_low > fault_addr && new_low > entry.max_committed_low {
+                new_low = new_low.saturating_sub(chunk_size);
+            }
+            if new_low < entry.max_committed_low {
+                new_low = entry.max_committed_low;
+            }
+            if new_low >= current_low {
+                // Can't grow anymore — true stack overflow
+                return false;
+            }
+            // Commit the new pages
+            let grow_size = current_low - new_low;
+            let result = libc::mprotect(
+                new_low as *mut libc::c_void,
+                grow_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+            );
+            if result != 0 {
+                return false;
+            }
+            entry.committed_low.store(new_low, Ordering::Release);
+            return true;
+        }
+    }
+    false
+}
+
+fn os_page_size() -> usize {
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
+
+/// Round up to the nearest multiple of page_size.
+fn page_align_up(size: usize, page_size: usize) -> usize {
+    (size + page_size - 1) & !(page_size - 1)
+}
+
+impl GrowableStack {
+    /// Allocate a new growable stack.
+    /// `initial_commit` is the amount of usable stack space initially committed.
+    /// The total reserved virtual address space is MAX_VTHREAD_STACK_SIZE.
+    pub fn new(initial_commit: usize) -> Result<Self, ()> {
+        let page_size = os_page_size();
+        let total_reserved = page_align_up(MAX_VTHREAD_STACK_SIZE, page_size);
+        let initial = page_align_up(initial_commit.max(page_size), page_size);
+        
+        // Step 1: Reserve the full virtual address space with PROT_NONE (no physical memory used)
+        let mmap_base = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                total_reserved,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        if mmap_base == libc::MAP_FAILED {
             return Err(());
         }
-        let ptr = NonNull::new(raw).ok_or(())?;
-        // Plant stack canary at offset 16 within the bottom redzone to isolate from malloc boundary
-        unsafe {
-            (raw.add(CANARY_OFFSET) as *mut u64).write(STACK_CANARY_MAGIC);
+        let mmap_base = mmap_base as *mut u8;
+        
+        // Step 2: Commit the top `initial` bytes (stack grows downward, so commit the high end)
+        // Layout: [mmap_base ... committed_low ... base(=mmap_base+total_reserved)]
+        let committed_low_ptr = unsafe { mmap_base.add(total_reserved - initial) };
+        let result = unsafe {
+            libc::mprotect(
+                committed_low_ptr as *mut libc::c_void,
+                initial,
+                libc::PROT_READ | libc::PROT_WRITE,
+            )
+        };
+        if result != 0 {
+            unsafe { libc::munmap(mmap_base as *mut libc::c_void, total_reserved); }
+            return Err(());
         }
-        Ok(Self { ptr, layout })
-    }
+        
+        let committed_low = Arc::new(AtomicUsize::new(committed_low_ptr as usize));
 
-    #[inline]
-    pub fn check_canary(&self) -> bool {
-        unsafe {
-            (self.ptr.as_ptr().add(CANARY_OFFSET) as *const u64).read() == STACK_CANARY_MAGIC
-        }
+        // Step 3: Register in the global stack registry for signal handler lookup
+        let registry = get_stack_registry();
+        let entry = StackRegistryEntry {
+            mmap_base: mmap_base as usize,
+            mmap_end: mmap_base as usize + total_reserved,
+            committed_low: Arc::clone(&committed_low),
+            page_size,
+            max_committed_low: mmap_base as usize, // can grow all the way down
+        };
+        registry.entries.lock().push(entry);
+        
+        Ok(GrowableStack {
+            mmap_base,
+            mmap_size: total_reserved,
+            committed_low,
+            page_size,
+        })
     }
-
-    #[inline]
-    pub fn reset_canary(&self) {
-        unsafe {
-            (self.ptr.as_ptr().add(CANARY_OFFSET) as *mut u64).write(STACK_CANARY_MAGIC);
-        }
-    }
-
+    
+    /// Returns the committed capacity (usable stack space).
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.layout.size() - STACK_REDZONE_SIZE
+        (self.base() as usize).saturating_sub(self.committed_low.load(Ordering::Acquire))
     }
 
+    /// Base = highest address of the stack (SP starts here).
     #[inline]
     pub fn base(&self) -> *mut u8 {
-        // Base is the highest address since stacks grow downwards towards limit
-        (self.ptr.as_ptr() as usize + self.layout.size()) as *mut u8
+        unsafe { self.mmap_base.add(self.mmap_size) }
     }
 
+    /// Limit = lowest address of the reserved region.
     #[inline]
     pub fn limit(&self) -> *mut u8 {
-        // Limit is the lowest address of the allocated stack buffer including redzone
-        self.ptr.as_ptr()
+        self.mmap_base
+    }
+    
+    /// Check canary — for GrowableStack, always true (guard pages handle overflow).
+    #[inline]
+    pub fn check_canary(&self) -> bool {
+        true // mmap guard pages replace canary checking
+    }
+    
+    /// Reset canary — no-op for GrowableStack.
+    #[inline]
+    pub fn reset_canary(&self) {}
+    
+    /// Decommit extra pages to save memory when returning to pool.
+    /// Keeps only `keep_committed` bytes committed at the top.
+    fn shrink_to(&mut self, keep_committed: usize) {
+        let current_committed_low = self.committed_low.load(Ordering::Acquire);
+        let keep = page_align_up(keep_committed.max(self.page_size), self.page_size);
+        let new_committed_low = (self.mmap_base as usize) + self.mmap_size - keep;
+        
+        if new_committed_low > current_committed_low {
+            // Decommit pages below the new boundary
+            let decommit_size = new_committed_low - current_committed_low;
+            unsafe {
+                // MADV_DONTNEED releases physical pages back to the OS without unmapping
+                libc::madvise(
+                    current_committed_low as *mut libc::c_void,
+                    decommit_size,
+                    libc::MADV_DONTNEED,
+                );
+                // Re-protect as PROT_NONE so they act as guard pages again
+                libc::mprotect(
+                    current_committed_low as *mut libc::c_void,
+                    decommit_size,
+                    libc::PROT_NONE,
+                );
+            }
+            self.committed_low.store(new_committed_low, Ordering::Release);
+        }
     }
 }
 
-impl Drop for DynamicStack {
+impl Drop for GrowableStack {
     fn drop(&mut self) {
+        // Unregister from the stack registry
+        let registry = get_stack_registry();
+        {
+            let mut entries = registry.entries.lock();
+            let mmap_base = self.mmap_base as usize;
+            if let Some(pos) = entries.iter().position(|e| e.mmap_base == mmap_base) {
+                entries.swap_remove(pos);
+            }
+        }
+        // Release all virtual address space back to the OS
         unsafe {
-            dealloc(self.ptr.as_ptr(), self.layout);
+            libc::munmap(self.mmap_base as *mut libc::c_void, self.mmap_size);
+        }
+    }
+}
+
+pub struct SlabStack {
+    ptr: *mut u8,
+    size: usize,
+}
+unsafe impl Send for SlabStack {}
+
+impl SlabStack {
+    #[inline]
+    pub fn new(size: usize) -> Self {
+        let layout = std::alloc::Layout::from_size_align(size, STACK_ALIGNMENT).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            panic!("Out of memory allocating stack slab");
+        }
+        unsafe {
+            *(ptr as *mut u64) = STACK_CANARY_MAGIC;
+        }
+        SlabStack { ptr, size }
+    }
+
+    #[inline(always)]
+    pub fn base(&self) -> *mut u8 {
+        unsafe { self.ptr.add(self.size) }
+    }
+
+    #[inline(always)]
+    pub fn limit(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn check_canary(&self) -> bool {
+        unsafe { *(self.ptr as *const u64) == STACK_CANARY_MAGIC }
+    }
+
+    #[inline(always)]
+    pub fn reset_canary(&self) {
+        unsafe {
+            *(self.ptr as *mut u64) = STACK_CANARY_MAGIC;
+        }
+    }
+}
+
+impl Drop for SlabStack {
+    fn drop(&mut self) {
+        let layout = std::alloc::Layout::from_size_align(self.size, STACK_ALIGNMENT).unwrap();
+        unsafe {
+            std::alloc::dealloc(self.ptr, layout);
+        }
+    }
+}
+
+pub enum StackKind {
+    Slab(SlabStack),
+    Growable(GrowableStack),
+}
+
+pub struct PooledStack {
+    inner: Option<StackKind>,
+}
+
+impl PooledStack {
+    #[inline(always)]
+    pub fn base(&self) -> *mut u8 {
+        match self.inner.as_ref().unwrap() {
+            StackKind::Slab(s) => s.base(),
+            StackKind::Growable(g) => g.base(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn limit(&self) -> *mut u8 {
+        match self.inner.as_ref().unwrap() {
+            StackKind::Slab(s) => s.limit(),
+            StackKind::Growable(g) => g.limit(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn check_canary(&self) -> bool {
+        match self.inner.as_ref().unwrap() {
+            StackKind::Slab(s) => s.check_canary(),
+            StackKind::Growable(_) => true,
         }
     }
 }
 
 thread_local! {
-    static STACK_POOL: RefCell<Vec<DynamicStack>> = RefCell::new(Vec::with_capacity(64));
+    static SLAB_POOL: RefCell<Vec<SlabStack>> = RefCell::new(Vec::new());
+    static GROWABLE_POOL: RefCell<Vec<GrowableStack>> = RefCell::new(Vec::new());
 }
 
-pub struct PooledStack {
-    inner: Option<DynamicStack>,
-}
-
-impl PooledStack {
-    #[inline]
-    pub fn base(&self) -> *mut u8 {
-        self.inner.as_ref().unwrap().base()
-    }
-
-    #[inline]
-    pub fn limit(&self) -> *mut u8 {
-        self.inner.as_ref().unwrap().limit()
-    }
-
-    #[inline]
-    pub fn check_canary(&self) -> bool {
-        self.inner.as_ref().map(|s| s.check_canary()).unwrap_or(true)
-    }
-}
+static GLOBAL_SLAB_POOL: SpinMutex<Vec<SlabStack>> = SpinMutex::new(Vec::new());
+static GLOBAL_GROWABLE_POOL: SpinMutex<Vec<GrowableStack>> = SpinMutex::new(Vec::new());
 
 impl Drop for PooledStack {
     fn drop(&mut self) {
-        if let Some(stack) = self.inner.take() {
-            if stack.check_canary() {
-                STACK_POOL.with(|pool| {
-                    let mut p = pool.borrow_mut();
-                    if p.len() < 64 {
-                        p.push(stack);
-                    }
-                });
+        if let Some(kind) = self.inner.take() {
+            match kind {
+                StackKind::Slab(s) => {
+                    s.reset_canary();
+                    let _ = SLAB_POOL.try_with(|pool| {
+                        pool.borrow_mut().push(s);
+                    });
+                }
+                StackKind::Growable(mut g) => {
+                    g.shrink_to(os_page_size());
+                    let _ = GROWABLE_POOL.try_with(|pool| {
+                        pool.borrow_mut().push(g);
+                    });
+                }
             }
         }
     }
 }
 
 pub fn vt_trim_stack_pool() {
-    STACK_POOL.with(|pool| {
+    let _ = SLAB_POOL.try_with(|pool| {
         pool.borrow_mut().clear();
     });
+    let _ = GROWABLE_POOL.try_with(|pool| {
+        pool.borrow_mut().clear();
+    });
+    GLOBAL_SLAB_POOL.lock().clear();
+    GLOBAL_GROWABLE_POOL.lock().clear();
 }
 
 fn acquire_stack(stack_size: usize) -> PooledStack {
-    let target_size = stack_size.max(MIN_VTHREAD_STACK_SIZE);
-    let pooled = STACK_POOL.with(|pool| {
-        let mut p = pool.borrow_mut();
-        // Look for a stack with suitable capacity
-        if let Some(pos) = p.iter().position(|s| s.capacity() >= target_size) {
-            Some(p.swap_remove(pos))
-        } else {
-            None
-        }
-    });
-    if let Some(stack) = pooled {
-        stack.reset_canary();
-        return PooledStack { inner: Some(stack) };
+    let target_size = stack_size.max(get_vt_stack_size());
+    let growable = GROWABLE_POOL.try_with(|pool| pool.borrow_mut().pop()).unwrap_or(None);
+    if let Some(g) = growable {
+        return PooledStack { inner: Some(StackKind::Growable(g)) };
     }
-    let stack = DynamicStack::new(target_size).expect("Failed to allocate dynamic stack for virtual thread");
-    PooledStack { inner: Some(stack) }
+    {
+        let mut global = GLOBAL_GROWABLE_POOL.lock();
+        if let Some(g) = global.pop() {
+            return PooledStack { inner: Some(StackKind::Growable(g)) };
+        }
+    }
+    let stack = GrowableStack::new(target_size)
+        .expect("Failed to allocate growable stack for virtual thread");
+    PooledStack { inner: Some(StackKind::Growable(stack)) }
 }
 
 static START_INSTANT: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
@@ -210,9 +483,10 @@ pub struct YieldReason(u64);
 
 impl YieldReason {
     pub const TAG_COOPERATIVE: u64 = 0;
-    pub const TAG_IOPARK: u64 = 1;
+    pub const TAG_IOPARK_READ: u64 = 1;
     pub const TAG_SLEEP: u64 = 2;
     pub const TAG_PARK: u64 = 3;
+    pub const TAG_IOPARK_WRITE: u64 = 4;
     pub const PAYLOAD_MASK: u64 = (1 << 60) - 1;
 
     #[inline(always)]
@@ -221,8 +495,18 @@ impl YieldReason {
     }
 
     #[inline(always)]
+    pub fn io_park_read(token: usize) -> Self {
+        YieldReason((Self::TAG_IOPARK_READ << 60) | ((token as u64) & Self::PAYLOAD_MASK))
+    }
+
+    #[inline(always)]
+    pub fn io_park_write(token: usize) -> Self {
+        YieldReason((Self::TAG_IOPARK_WRITE << 60) | ((token as u64) & Self::PAYLOAD_MASK))
+    }
+
+    #[inline(always)]
     pub fn io_park(token: usize) -> Self {
-        YieldReason((Self::TAG_IOPARK << 60) | ((token as u64) & Self::PAYLOAD_MASK))
+        Self::io_park_read(token)
     }
 
     #[inline(always)]
@@ -255,12 +539,26 @@ impl YieldReason {
     }
 
     #[inline(always)]
-    pub fn as_io_park(&self) -> Option<usize> {
-        if self.tag() == Self::TAG_IOPARK {
+    pub fn as_io_park_read(&self) -> Option<usize> {
+        if self.tag() == Self::TAG_IOPARK_READ {
             Some((self.0 & Self::PAYLOAD_MASK) as usize)
         } else {
             None
         }
+    }
+
+    #[inline(always)]
+    pub fn as_io_park_write(&self) -> Option<usize> {
+        if self.tag() == Self::TAG_IOPARK_WRITE {
+            Some((self.0 & Self::PAYLOAD_MASK) as usize)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_io_park(&self) -> Option<usize> {
+        self.as_io_park_read()
     }
 
     #[inline(always)]
@@ -282,7 +580,7 @@ pub struct VThread {
     entry: Option<Box<dyn FnOnce() + Send + 'static>>,
     yield_reason: YieldReason,
     gc_state: Arc<SpinMutex<Option<crate::gc::GcContextState>>>,
-    local_state: Option<crate::VThreadLocalState>,
+    local_state: crate::VThreadLocalState,
     slot_live: Arc<AtomicBool>,
 }
 
@@ -290,20 +588,17 @@ unsafe impl Send for VThread {}
 
 const NUM_GC_SHARDS: usize = 16;
 static NEXT_VT_ID: AtomicUsize = AtomicUsize::new(1);
-static VTHREAD_GC_SHARDS: Lazy<[SpinMutex<Vec<(usize, Arc<SpinMutex<Option<crate::gc::GcContextState>>>)>>; NUM_GC_SHARDS]> =
-    Lazy::new(|| std::array::from_fn(|_| SpinMutex::new(Vec::new())));
+static VTHREAD_GC_SHARDS: Lazy<Vec<SpinMutex<std::collections::HashMap<usize, Arc<SpinMutex<Option<crate::gc::GcContextState>>>>>>> =
+    Lazy::new(|| (0..NUM_GC_SHARDS).map(|_| SpinMutex::new(std::collections::HashMap::new())).collect());
 
 fn register_vthread_gc(id: usize, gc_state: Arc<SpinMutex<Option<crate::gc::GcContextState>>>) {
     let shard_idx = id % NUM_GC_SHARDS;
-    VTHREAD_GC_SHARDS[shard_idx].lock().push((id, gc_state));
+    VTHREAD_GC_SHARDS[shard_idx].lock().insert(id, gc_state);
 }
 
 fn unregister_vthread_gc(id: usize) {
     let shard_idx = id % NUM_GC_SHARDS;
-    let mut shard = VTHREAD_GC_SHARDS[shard_idx].lock();
-    if let Some(pos) = shard.iter().position(|(k, _)| *k == id) {
-        shard.swap_remove(pos);
-    }
+    VTHREAD_GC_SHARDS[shard_idx].lock().remove(&id);
 }
 
 #[inline]
@@ -320,7 +615,7 @@ impl Drop for VThread {
 pub unsafe fn vt_gc_scan_roots_minor() {
     for shard in VTHREAD_GC_SHARDS.iter() {
         let registry = shard.lock();
-        for (_id, gc_arc) in registry.iter() {
+        for gc_arc in registry.values() {
             let mut guard = gc_arc.lock();
             if let Some(ref mut state) = *guard {
                 for root in &state.roots {
@@ -334,7 +629,7 @@ pub unsafe fn vt_gc_scan_roots_minor() {
 pub unsafe fn vt_gc_mark_roots_major() {
     for shard in VTHREAD_GC_SHARDS.iter() {
         let registry = shard.lock();
-        for (_id, gc_arc) in registry.iter() {
+        for gc_arc in registry.values() {
             let mut guard = gc_arc.lock();
             if let Some(ref mut state) = *guard {
                 for root in &state.roots {
@@ -348,7 +643,7 @@ pub unsafe fn vt_gc_mark_roots_major() {
 pub unsafe fn vt_gc_update_roots() {
     for shard in VTHREAD_GC_SHARDS.iter() {
         let registry = shard.lock();
-        for (_id, gc_arc) in registry.iter() {
+        for gc_arc in registry.values() {
             let mut guard = gc_arc.lock();
             if let Some(ref mut state) = *guard {
                 for root in &state.roots {
@@ -359,28 +654,22 @@ pub unsafe fn vt_gc_update_roots() {
     }
 }
 
-const NUM_IO_SHARDS: usize = 64;
+const NUM_IO_SHARDS: usize = 256;
 
 struct IoShardData {
-    parked: Vec<(usize, Box<VThread>)>,
-    ready_tokens: Vec<usize>,
+    parked_read: std::collections::HashMap<usize, Box<VThread>>,
+    parked_write: std::collections::HashMap<usize, Box<VThread>>,
+    ready_read: std::collections::HashSet<usize>,
+    ready_write: std::collections::HashSet<usize>,
 }
 
 impl IoShardData {
-    fn take_ready(&mut self, token: usize) -> bool {
-        if let Some(pos) = self.ready_tokens.iter().position(|t| *t == token) {
-            self.ready_tokens.swap_remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn pop_parked(&mut self, token: usize) -> Option<Box<VThread>> {
-        if let Some(pos) = self.parked.iter().position(|(t, _)| *t == token) {
-            Some(self.parked.swap_remove(pos).1)
-        } else {
-            None
+    fn new() -> Self {
+        Self {
+            parked_read: std::collections::HashMap::new(),
+            parked_write: std::collections::HashMap::new(),
+            ready_read: std::collections::HashSet::new(),
+            ready_write: std::collections::HashSet::new(),
         }
     }
 }
@@ -392,47 +681,39 @@ struct IoShard {
 impl IoShard {
     fn new() -> Self {
         Self {
-            data: SpinMutex::new(IoShardData {
-                parked: Vec::new(),
-                ready_tokens: Vec::new(),
-            }),
+            data: SpinMutex::new(IoShardData::new()),
         }
     }
 }
 
-const NUM_PARK_SHARDS: usize = 64;
+const NUM_PARK_SHARDS: usize = 256;
 
 struct ParkShard {
-    parked: Vec<(usize, Box<VThread>)>,
-    unparked: Vec<usize>,
+    parked: std::collections::HashMap<usize, Box<VThread>>,
+    unparked: std::collections::HashSet<usize>,
 }
 
 impl ParkShard {
-    fn take_unparked(&mut self, token: usize) -> bool {
-        if let Some(pos) = self.unparked.iter().position(|t| *t == token) {
-            self.unparked.swap_remove(pos);
-            true
-        } else {
-            false
+    fn new() -> Self {
+        Self {
+            parked: std::collections::HashMap::new(),
+            unparked: std::collections::HashSet::new(),
         }
+    }
+
+    fn take_unparked(&mut self, token: usize) -> bool {
+        self.unparked.remove(&token)
     }
 
     fn pop_parked(&mut self, token: usize) -> Option<Box<VThread>> {
-        if let Some(pos) = self.parked.iter().position(|(t, _)| *t == token) {
-            Some(self.parked.swap_remove(pos).1)
-        } else {
-            None
-        }
+        self.parked.remove(&token)
     }
 }
 
-static PARK_SHARDS: Lazy<[SpinMutex<ParkShard>; NUM_PARK_SHARDS]> = Lazy::new(|| {
-    std::array::from_fn(|_| {
-        SpinMutex::new(ParkShard {
-            parked: Vec::new(),
-            unparked: Vec::new(),
-        })
-    })
+static PARK_SHARDS: Lazy<Vec<SpinMutex<ParkShard>>> = Lazy::new(|| {
+    (0..NUM_PARK_SHARDS).map(|_| {
+        SpinMutex::new(ParkShard::new())
+    }).collect()
 });
 
 static NEXT_PARK_TOKEN: AtomicUsize = AtomicUsize::new(1);
@@ -442,31 +723,51 @@ pub fn vt_next_park_token() -> usize {
 }
 
 struct Scheduler {
+    priority_queue: Injector<Box<VThread>>,
     global_queue: Injector<Box<VThread>>,
     stealers: once_cell::sync::OnceCell<Vec<Stealer<Box<VThread>>>>,
-    io_shards: [IoShard; NUM_IO_SHARDS],
+    io_shards: Vec<IoShard>,
     registry: Registry,
     next_token: AtomicUsize,
     timers: SpinMutex<Vec<(u64, Box<VThread>)>>,
     idle_workers: AtomicUsize,
+    idle_condvar: std::sync::Condvar,
+    idle_lock: std::sync::Mutex<()>,
 }
 
 static POLL: Lazy<Mutex<Option<Poll>>> = Lazy::new(|| Mutex::new(Some(Poll::new().unwrap())));
 
 static SCHEDULER: Lazy<Scheduler> = Lazy::new(|| Scheduler {
+    priority_queue: Injector::new(),
     global_queue: Injector::new(),
     stealers: once_cell::sync::OnceCell::new(),
-    io_shards: std::array::from_fn(|_| IoShard::new()),
+    io_shards: (0..NUM_IO_SHARDS).map(|_| IoShard::new()).collect(),
     registry: POLL.lock().unwrap().as_ref().unwrap().registry().try_clone().unwrap(),
     next_token: AtomicUsize::new(1),
     timers: SpinMutex::new(Vec::new()),
     idle_workers: AtomicUsize::new(0),
+    idle_condvar: std::sync::Condvar::new(),
+    idle_lock: std::sync::Mutex::new(()),
 });
 
 impl Scheduler {
+    #[inline(always)]
     pub fn notify_worker(&self) {
+        let idle = self.idle_workers.load(Ordering::Relaxed);
+        if idle > 1 {
+            self.idle_condvar.notify_all();
+        } else {
+            self.idle_condvar.notify_one();
+        }
     }
 
+    #[inline(always)]
+    pub fn push_priority(&self, vt: Box<VThread>) {
+        self.priority_queue.push(vt);
+        self.notify_worker();
+    }
+
+    #[inline(always)]
     pub fn push_global(&self, vt: Box<VThread>) {
         self.global_queue.push(vt);
         self.notify_worker();
@@ -538,8 +839,10 @@ pub fn vt_init(num_workers: usize) {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
-    // Force SCHEDULER initialization before start_netpoller takes the Poll instance
+    // Force SCHEDULER, PARK_SHARDS, and VTHREAD_GC_SHARDS initialization on OS stack
     let _ = SCHEDULER.next_token.load(Ordering::SeqCst);
+    let _ = PARK_SHARDS.len();
+    let _ = VTHREAD_GC_SHARDS.len();
     
     let mut stealers = Vec::with_capacity(num_workers);
     let mut workers = Vec::with_capacity(num_workers);
@@ -568,7 +871,7 @@ pub fn start_netpoller() {
                 libc::signal(libc::SIGPIPE, libc::SIG_IGN);
             }
             let mut poll = POLL.lock().unwrap().take().unwrap();
-            let mut events = Events::with_capacity(16384);
+            let mut events = Events::with_capacity(4096);
             loop {
                 let timeout = SCHEDULER.next_timer_timeout();
                 let _ = poll.poll(&mut events, timeout);
@@ -577,11 +880,23 @@ pub fn start_netpoller() {
                     let shard_idx = token_id % NUM_IO_SHARDS;
                     let shard = &SCHEDULER.io_shards[shard_idx];
                     let mut data = shard.data.lock();
-                    if let Some(vt) = data.pop_parked(token_id) {
-                        drop(data);
-                        SCHEDULER.push_global(vt);
-                    } else if !data.ready_tokens.contains(&token_id) {
-                        data.ready_tokens.push(token_id);
+
+                    let is_readable = event.is_readable() || event.is_read_closed();
+                    let is_writable = event.is_writable() || event.is_write_closed();
+
+                    if is_readable {
+                        if let Some(vt) = data.parked_read.remove(&token_id) {
+                            SCHEDULER.push_priority(vt);
+                        } else {
+                            data.ready_read.insert(token_id);
+                        }
+                    }
+                    if is_writable {
+                        if let Some(vt) = data.parked_write.remove(&token_id) {
+                            SCHEDULER.push_priority(vt);
+                        } else {
+                            data.ready_write.insert(token_id);
+                        }
                     }
                 }
                 SCHEDULER.drain_expired_timers();
@@ -600,18 +915,30 @@ pub fn vt_register_io<S: mio::event::Source>(source: &mut S) -> usize {
     token_id
 }
 
+pub fn vt_register_io_read<S: mio::event::Source>(source: &mut S) -> usize {
+    let token_id = SCHEDULER.next_token.fetch_add(1, Ordering::SeqCst);
+    let token = Token(token_id);
+    let _ = SCHEDULER.registry.register(
+        source,
+        token,
+        Interest::READABLE
+    );
+    token_id
+}
+
 pub fn vt_deregister_io<S: mio::event::Source>(source: &mut S, token_id: usize) {
     let _ = SCHEDULER.registry.deregister(source);
     let shard_idx = token_id % NUM_IO_SHARDS;
     let shard = &SCHEDULER.io_shards[shard_idx];
     let mut data = shard.data.lock();
-    data.take_ready(token_id);
-    data.pop_parked(token_id);
+    data.ready_read.remove(&token_id);
+    data.ready_write.remove(&token_id);
+    data.parked_read.remove(&token_id);
+    data.parked_write.remove(&token_id);
 }
 
 #[inline(never)]
-unsafe fn vthread_terminate() -> ! {
-    let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+unsafe fn vthread_terminate(vt_ptr: *mut VThread) -> ! {
     if !vt_ptr.is_null() {
         let vt = &mut *vt_ptr;
         vt.done = true;
@@ -619,36 +946,33 @@ unsafe fn vthread_terminate() -> ! {
         if !worker_sp.is_null() {
             let mut dummy_sp: *mut u8 = std::ptr::null_mut();
             tejx_context_switch(&mut dummy_sp, worker_sp);
+        } else {
+            eprintln!("[VT_ABORT] worker_sp is NULL for vt id={}", vt.id);
         }
+    } else {
+        eprintln!("[VT_ABORT] passed vt_ptr is NULL!");
     }
 
-    #[cfg(unix)]
-    libc::pthread_exit(std::ptr::null_mut());
-    #[cfg(not(unix))]
-    std::process::exit(0);
+    std::process::abort();
 }
 
 extern "C" fn vthread_entry_trampoline() -> ! {
-    let entry = {
-        let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
-        if !vt_ptr.is_null() {
-            let vt = unsafe { &mut *vt_ptr };
-            vt.entry.take()
-        } else {
-            None
-        }
-    };
+    let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
+    if vt_ptr.is_null() {
+        std::process::abort();
+    }
+    let entry = unsafe { (&mut *vt_ptr).entry.take() };
 
     if let Some(f) = entry {
         f();
     }
 
     unsafe {
-        vthread_terminate();
+        vthread_terminate(vt_ptr);
     }
 }
 
-#[inline(always)]
+#[inline(never)]
 pub unsafe fn vthread_suspend(reason: YieldReason) {
     let vt_ptr = CURRENT_VTHREAD.with(|v| v.get());
     if vt_ptr.is_null() {
@@ -662,20 +986,23 @@ pub unsafe fn vthread_suspend(reason: YieldReason) {
         return;
     }
 
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
     tejx_context_switch(&mut vt.sp, worker_sp);
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
 }
 
-pub fn vt_wait_io(token_id: usize) {
+#[inline(never)]
+pub fn vt_wait_io_read(token_id: usize) {
     let shard_idx = token_id % NUM_IO_SHARDS;
     let shard = &SCHEDULER.io_shards[shard_idx];
     {
         let mut data = shard.data.lock();
-        if data.take_ready(token_id) {
+        if data.ready_read.remove(&token_id) {
             return;
         }
     }
     if vt_is_vthread() {
-        unsafe { vthread_suspend(YieldReason::io_park(token_id)) };
+        unsafe { vthread_suspend(YieldReason::io_park_read(token_id)) };
     } else {
         unsafe {
             if crate::gc::is_safepoint_requested() {
@@ -686,21 +1013,47 @@ pub fn vt_wait_io(token_id: usize) {
     }
 }
 
+#[inline(never)]
+pub fn vt_wait_io_write(token_id: usize) {
+    let shard_idx = token_id % NUM_IO_SHARDS;
+    let shard = &SCHEDULER.io_shards[shard_idx];
+    {
+        let mut data = shard.data.lock();
+        if data.ready_write.remove(&token_id) {
+            return;
+        }
+    }
+    if vt_is_vthread() {
+        unsafe { vthread_suspend(YieldReason::io_park_write(token_id)) };
+    } else {
+        unsafe {
+            if crate::gc::is_safepoint_requested() {
+                crate::gc::rt_safepoint_poll_slow();
+            }
+        }
+        thread::yield_now();
+    }
+}
+
+#[inline(never)]
+pub fn vt_wait_io(token_id: usize) {
+    vt_wait_io_read(token_id);
+}
+
 fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
     unsafe { crate::gc::rt_register_thread(); }
     let local_box = Box::new(local);
     let local_ptr: *const Worker<Box<VThread>> = &*local_box;
     LOCAL_WORKER.with(|w| w.set(local_ptr));
 
-    let ctx_ptr = unsafe { crate::gc::current_thread_context() };
     unsafe {
-        (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+        (*crate::gc::current_thread_context()).in_blocking_io.store(true, Ordering::SeqCst);
     }
 
     loop {
         let mut task = None;
         loop {
-            match SCHEDULER.global_queue.steal() {
+            match SCHEDULER.priority_queue.steal() {
                 Steal::Success(t) => {
                     task = Some(t);
                     break;
@@ -711,7 +1064,6 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
         }
 
         if task.is_none() {
-            SCHEDULER.drain_expired_timers();
             loop {
                 match SCHEDULER.global_queue.steal() {
                     Steal::Success(t) => {
@@ -724,11 +1076,38 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
             }
         }
 
+        if task.is_none() {
+            SCHEDULER.drain_expired_timers();
+            loop {
+                match SCHEDULER.priority_queue.steal() {
+                    Steal::Success(t) => {
+                        task = Some(t);
+                        break;
+                    }
+                    Steal::Empty => break,
+                    Steal::Retry => continue,
+                }
+            }
+            if task.is_none() {
+                loop {
+                    match SCHEDULER.global_queue.steal() {
+                        Steal::Success(t) => {
+                            task = Some(t);
+                            break;
+                        }
+                        Steal::Empty => break,
+                        Steal::Retry => continue,
+                    }
+                }
+            }
+        }
+
         if let Some(mut t) = task {
             unsafe {
                 // Ensure worker has no leftover roots from previous tasks before entering safepoints
-                (*ctx_ptr).roots_top = 0;
-                (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                let ctx = crate::gc::current_thread_context();
+                (*ctx).roots_top = 0;
+                (*ctx).in_blocking_io.store(false, Ordering::SeqCst);
                 if crate::gc::is_safepoint_requested() {
                     crate::gc::rt_safepoint_poll_slow();
                 }
@@ -739,61 +1118,54 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
                 if let Some(state) = saved_gc {
                     unsafe { crate::gc::rt_restore_gc_context(state); }
                 } else {
-                    unsafe { (*ctx_ptr).roots_top = 0; }
+                    unsafe { (*crate::gc::current_thread_context()).roots_top = 0; }
                 }
 
-                if let Some(state) = t.local_state.take() {
-                    crate::restore_vthread_local_state(state);
-                } else {
-                    crate::clear_vthread_local_state();
-                }
+                crate::restore_vthread_local_state(&mut t.local_state);
 
                 PREEMPT_LAST_MS.with(|c| c.set(current_time_ms()));
                 PREEMPT_TICK.with(|c| c.set(0));
 
                 let vt_raw: *mut VThread = &mut *t;
-                CURRENT_VTHREAD.with(|v| v.set(vt_raw));
-
-                if !t._stack.check_canary() {
-                    let limit = t._stack.limit() as usize;
-                    let canary_val = unsafe { *((limit + CANARY_OFFSET) as *const u64) };
-                    eprintln!("CANARY CORRUPTED BEFORE RESUMING! task {} canary={:#x}", t.id, canary_val);
-                }
+                CURRENT_VTHREAD.with(|cell| {
+                    cell.set(vt_raw);
+                });
 
                 unsafe {
                     tejx_context_switch(&mut (*vt_raw).worker_sp, (*vt_raw).sp);
                 }
 
-                CURRENT_VTHREAD.with(|v| v.set(std::ptr::null_mut()));
-
-                if !t._stack.check_canary() {
-                    let base = t._stack.base() as usize;
-                    let limit = t._stack.limit() as usize;
-                    let sp = t.sp as usize;
-                    let canary_val = unsafe { *((limit + CANARY_OFFSET) as *const u64) };
-                    eprintln!(
-                        "STACK OVERFLOW DETECTED: task {} (used={} sp={:#x} base={:#x} limit={:#x} canary={:#x})",
-                        t.id, base.saturating_sub(sp), sp, base, limit, canary_val
-                    );
-                }
+                CURRENT_VTHREAD.with(|cell| {
+                    cell.set(std::ptr::null_mut());
+                });
 
                 if !t.done {
                     let r = t.yield_reason;
                     *lock_gc_state(&t.gc_state) = Some(unsafe { crate::gc::rt_save_gc_context() });
-                    t.local_state = Some(crate::save_vthread_local_state());
+                    crate::save_vthread_local_state(&mut t.local_state);
                     if r.is_cooperative() {
                         SCHEDULER.push_global(t);
                     } else if let Some(until) = r.as_sleep() {
                         SCHEDULER.add_timer(until, t);
-                    } else if let Some(token_id) = r.as_io_park() {
+                    } else if let Some(token_id) = r.as_io_park_read() {
                         let shard_idx = token_id % NUM_IO_SHARDS;
                         let shard = &SCHEDULER.io_shards[shard_idx];
                         let mut data = shard.data.lock();
-                        if data.take_ready(token_id) {
+                        if data.ready_read.remove(&token_id) {
                             drop(data);
-                            SCHEDULER.push_global(t);
+                            SCHEDULER.push_priority(t);
                         } else {
-                            data.parked.push((token_id, t));
+                            data.parked_read.insert(token_id, t);
+                        }
+                    } else if let Some(token_id) = r.as_io_park_write() {
+                        let shard_idx = token_id % NUM_IO_SHARDS;
+                        let shard = &SCHEDULER.io_shards[shard_idx];
+                        let mut data = shard.data.lock();
+                        if data.ready_write.remove(&token_id) {
+                            drop(data);
+                            SCHEDULER.push_priority(t);
+                        } else {
+                            data.parked_write.insert(token_id, t);
                         }
                     } else if let Some(token) = r.as_park() {
                         let shard_idx = token % NUM_PARK_SHARDS;
@@ -802,41 +1174,55 @@ fn worker_loop(worker_id: usize, local: Worker<Box<VThread>>) {
                             drop(shard);
                             SCHEDULER.push_global(t);
                         } else {
-                            shard.parked.push((token, t));
+                            shard.parked.insert(token, t);
                         }
                     }
                 } else {
-                    unregister_vthread_gc(t.id);
                     *lock_gc_state(&t.gc_state) = None;
-                    t.local_state = None;
                     crate::clear_vthread_local_state();
-                    unsafe { (*ctx_ptr).roots_top = 0; }
+                    unsafe { (*crate::gc::current_thread_context()).roots_top = 0; }
                     let slot_live = t.slot_live.clone();
                     drop(t);
                     slot_live.store(false, Ordering::SeqCst);
                 }
             } else {
-                unregister_vthread_gc(t.id);
                 *lock_gc_state(&t.gc_state) = None;
-                t.local_state = None;
                 crate::clear_vthread_local_state();
-                unsafe { (*ctx_ptr).roots_top = 0; }
-                t.slot_live.store(false, Ordering::SeqCst);
+                unsafe { (*crate::gc::current_thread_context()).roots_top = 0; }
+                let slot_live = t.slot_live.clone();
+                drop(t);
+                slot_live.store(false, Ordering::SeqCst);
             }
 
             unsafe {
                 crate::gc::rt_clear_tlab();
-                (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+                let ctx = crate::gc::current_thread_context();
+                (*ctx).in_blocking_io.store(true, Ordering::SeqCst);
                 if crate::gc::is_safepoint_requested() {
-                    (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                    (*ctx).in_blocking_io.store(false, Ordering::SeqCst);
                     crate::gc::rt_safepoint_poll_slow();
-                    (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
+                    (*ctx).in_blocking_io.store(true, Ordering::SeqCst);
                 }
             }
         } else {
-            SCHEDULER.idle_workers.fetch_add(1, Ordering::Relaxed);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            SCHEDULER.idle_workers.fetch_sub(1, Ordering::Relaxed);
+            SCHEDULER.idle_workers.fetch_add(1, Ordering::SeqCst);
+            // Spin briefly before sleeping — keeps wakeup latency sub-microsecond
+            // under load while being well-behaved when idle.
+            let mut found = false;
+            for _ in 0..128 {
+                if !SCHEDULER.priority_queue.is_empty() || !SCHEDULER.global_queue.is_empty() {
+                    found = true;
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            if !found {
+                SCHEDULER.drain_expired_timers();
+                // Wait on condvar — wakes up in <2µs when a task is pushed to global_queue!
+                let guard = SCHEDULER.idle_lock.lock().unwrap();
+                let _ = SCHEDULER.idle_condvar.wait_timeout(guard, std::time::Duration::from_millis(1));
+            }
+            SCHEDULER.idle_workers.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -868,50 +1254,47 @@ where
         entry: Some(Box::new(f)),
         yield_reason: YieldReason::cooperative(),
         gc_state,
-        local_state: None,
+        local_state: crate::VThreadLocalState::default(),
         slot_live,
     });
-
-    if !vt._stack.check_canary() {
-        let limit = vt._stack.limit() as usize;
-        let canary_val = unsafe { *((limit + CANARY_OFFSET) as *const u64) };
-        eprintln!("CANARY CORRUPTED AT SPAWN! task {} canary={:#x}", vt.id, canary_val);
-    }
 
     SCHEDULER.push_global(vt);
 }
 
-#[inline(always)]
+#[inline(never)]
 pub fn vt_sleep(ms: u64) {
     if vt_is_vthread() {
         let until = current_time_ms().saturating_add(ms);
         unsafe { vthread_suspend(YieldReason::sleep(until)) };
     } else {
         let _guard = crate::ThreadIoGuard::new();
-        std::thread::sleep(std::time::Duration::from_millis(ms));
+        let start_ms = unsafe { crate::rt_time_now_ms() };
+        let target_ms = start_ms.saturating_add(ms as i64);
+        loop {
+            let now_ms = unsafe { crate::rt_time_now_ms() };
+            if now_ms >= target_ms {
+                break;
+            }
+            let diff = (target_ms - now_ms).max(1) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(diff));
+        }
     }
 }
 
 pub fn vt_join(slot_live: &Arc<AtomicBool>) {
     if vt_is_vthread() {
-        let mut spins = 0;
         while slot_live.load(Ordering::Acquire) {
-            if spins < 8 {
-                vt_yield();
-                spins += 1;
-            } else {
-                vt_sleep(1);
-            }
+            vt_yield();
         }
     } else {
         let _guard = crate::ThreadIoGuard::new();
         while slot_live.load(Ordering::Acquire) {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::yield_now();
         }
     }
 }
 
-#[inline(always)]
+#[inline(never)]
 pub fn vt_yield() {
     if vt_is_vthread() {
         unsafe { vthread_suspend(YieldReason::cooperative()) };
@@ -920,6 +1303,7 @@ pub fn vt_yield() {
     }
 }
 
+#[inline(never)]
 pub fn vt_park(token: usize) {
     let shard_idx = token % NUM_PARK_SHARDS;
     {
@@ -941,8 +1325,8 @@ pub fn vt_unpark(token: usize) {
     if let Some(vt) = shard.pop_parked(token) {
         drop(shard);
         SCHEDULER.push_global(vt);
-    } else if !shard.unparked.contains(&token) {
-        shard.unparked.push(token);
+    } else {
+        shard.unparked.insert(token);
     }
 }
 
@@ -953,6 +1337,7 @@ where
     f()
 }
 
+#[inline(never)]
 pub fn vt_is_vthread() -> bool {
     CURRENT_VTHREAD.with(|v| !v.get().is_null())
 }
@@ -963,7 +1348,7 @@ pub fn vt_preempt_tick() {
         cell.set(count);
         count
     });
-    if (count & 0x3fff) != 0 {
+    if (count & 0x7f) != 0 {
         return;
     }
     if !vt_is_vthread() {
@@ -971,7 +1356,7 @@ pub fn vt_preempt_tick() {
     }
     let now = current_time_ms();
     let last = PREEMPT_LAST_MS.with(|c| c.get());
-    if now.saturating_sub(last) >= 10 {
+    if now.saturating_sub(last) >= 2 {
         PREEMPT_LAST_MS.with(|c| c.set(now));
         vt_yield();
     }
@@ -982,14 +1367,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dynamic_stack_allocation_and_alignment() {
-        let stack = DynamicStack::new(4096).expect("allocate 4KB stack");
-        assert_eq!(stack.capacity(), 4096);
-        assert!(stack.check_canary());
+    fn test_growable_stack_allocation_and_alignment() {
+        let stack = GrowableStack::new(DEFAULT_VTHREAD_STACK_SIZE).expect("allocate growable stack");
+        assert!(stack.capacity() >= DEFAULT_VTHREAD_STACK_SIZE);
         assert_eq!(stack.base() as usize % STACK_ALIGNMENT, 0);
         assert_eq!(stack.limit() as usize % STACK_ALIGNMENT, 0);
         assert!(stack.base() > stack.limit());
-        assert_eq!(stack.base() as usize - stack.limit() as usize, 4096 + STACK_REDZONE_SIZE);
+        assert_eq!(stack.base() as usize - stack.limit() as usize, MAX_VTHREAD_STACK_SIZE);
     }
 
     #[test]
@@ -997,7 +1381,7 @@ mod tests {
         static mut COMPLETED: bool = false;
         static mut TEST_WORKER_SP: *mut u8 = std::ptr::null_mut();
         unsafe { COMPLETED = false; }
-        let stack = acquire_stack(4096);
+        let stack = acquire_stack(DEFAULT_VTHREAD_STACK_SIZE);
 
         extern "C" fn test_fiber_entry() -> ! {
             unsafe {
@@ -1016,7 +1400,6 @@ mod tests {
         }
 
         assert!(unsafe { COMPLETED });
-        assert!(stack.check_canary());
     }
 
     #[test]
@@ -1025,7 +1408,7 @@ mod tests {
         static mut TEST_WORKER_SP: *mut u8 = std::ptr::null_mut();
         static mut FIBER_SP: *mut u8 = std::ptr::null_mut();
         unsafe { STEP = 0; }
-        let stack = acquire_stack(4096);
+        let stack = acquire_stack(DEFAULT_VTHREAD_STACK_SIZE);
 
         extern "C" fn test_yield_entry() -> ! {
             unsafe {
@@ -1053,19 +1436,32 @@ mod tests {
             tejx_context_switch(&raw mut TEST_WORKER_SP, FIBER_SP);
         }
         assert_eq!(unsafe { STEP }, 2);
-        assert!(stack.check_canary());
     }
 
     #[test]
-    fn test_stack_canary_integrity() {
-        let stack = DynamicStack::new(8192).expect("allocate 8KB stack");
-        assert!(stack.check_canary());
-        // Corrupt canary intentionally
+    fn test_growable_stack_growth_and_shrink() {
+        let mut stack = GrowableStack::new(DEFAULT_VTHREAD_STACK_SIZE).expect("allocate growable stack");
+        let initial_cap = stack.capacity();
+        assert!(initial_cap >= DEFAULT_VTHREAD_STACK_SIZE);
+
+        // Simulate stack growth via fault address below committed_low
+        let current_low = stack.committed_low.load(Ordering::Acquire);
+        let fault_addr = current_low - 8;
+        let grew = unsafe { try_grow_stack_at(fault_addr) };
+        assert!(grew, "try_grow_stack_at should succeed for guard page access");
+
+        let new_cap = stack.capacity();
+        assert!(new_cap > initial_cap, "stack capacity should have increased");
+
+        // Verify the newly grown page is actually readable/writable without faulting
         unsafe {
-            (stack.ptr.as_ptr() as *mut u64).write(0);
+            let ptr = fault_addr as *mut u64;
+            ptr.write(0x1234_5678_9ABC_DEF0);
+            assert_eq!(ptr.read(), 0x1234_5678_9ABC_DEF0);
         }
-        assert!(!stack.check_canary());
-        stack.reset_canary();
-        assert!(stack.check_canary());
+
+        // Test shrink_to releases the page and resets committed_low
+        stack.shrink_to(DEFAULT_VTHREAD_STACK_SIZE);
+        assert_eq!(stack.capacity(), initial_cap);
     }
 }

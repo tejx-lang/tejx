@@ -62,8 +62,8 @@ struct ConstStringRoots {
     slots_by_ptr: HashMap<usize, usize>,
 }
 
-static CONST_STRING_ROOTS: LazyLock<RwLock<ConstStringRoots>> =
-    LazyLock::new(|| RwLock::new(ConstStringRoots::default()));
+static CONST_STRING_ROOTS: LazyLock<crate::mutex::SpinMutex<ConstStringRoots>> =
+    LazyLock::new(|| crate::mutex::SpinMutex::new(ConstStringRoots::default()));
 static RNG_STATE: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
 static RAW_ATOMIC_OBJECTS: LazyLock<Mutex<HashMap<usize, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -1507,7 +1507,8 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
         }
     }
 
-    if let Ok(guard) = CONST_STRING_ROOTS.read() {
+    {
+        let guard = CONST_STRING_ROOTS.lock();
         if let Some(&slot) = guard.slots_by_ptr.get(&ptr_key) {
             cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
             cache_entry.ptr.store(ptr_key, Ordering::Release);
@@ -1518,7 +1519,8 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
     let len = strlen(s);
     let bytes = std::slice::from_raw_parts(s as *const u8, len);
 
-    if let Ok(guard) = CONST_STRING_ROOTS.read() {
+    {
+        let guard = CONST_STRING_ROOTS.lock();
         if let Some(&slot) = guard.slots_by_bytes.get(bytes) {
             cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
             cache_entry.ptr.store(ptr_key, Ordering::Release);
@@ -1543,7 +1545,7 @@ pub unsafe extern "C" fn rt_string_from_c_str_const(s: *const std::ffi::c_char) 
     let res = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(res, body_ptr, len as i64, 1);
 
-    let mut roots = CONST_STRING_ROOTS.write().unwrap();
+    let mut roots = CONST_STRING_ROOTS.lock();
     if let Some(&slot) = roots.slots_by_bytes.get(bytes) {
         roots.slots_by_ptr.insert(ptr_key, slot);
         cache_entry.slot_plus_one.store(slot + 1, Ordering::Relaxed);
@@ -3247,7 +3249,11 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
         let slot_live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let main_stack = crate::vthread::get_main_vt_stack_size();
         crate::vthread::vt_spawn_closure_with_stack(
-            || tejx_main(),
+            || {
+                eprintln!("[DEBUG] tejx_main started!");
+                tejx_main();
+                eprintln!("[DEBUG] tejx_main RETURNED!");
+            },
             0,
             slot_live.clone(),
             main_stack,
@@ -3617,12 +3623,12 @@ pub unsafe extern "C" fn f_any_unlock(m: i64) {
 
 // --- Thread Operations ---
 
-struct ThreadData {
-    handle: Option<()>,   // VThreads are fire-and-forget; join uses slot_live
-    started: bool,
-    cb_slot: usize,
-    slot_live: std::sync::Arc<AtomicBool>,
-    cb_released: std::sync::Arc<AtomicBool>,
+pub(crate) struct ThreadData {
+    pub(crate) handle: Option<()>,   // VThreads are fire-and-forget; join uses slot_live
+    pub(crate) started: AtomicBool,
+    pub(crate) cb_slot: usize,
+    pub(crate) slot_live: std::sync::Arc<AtomicBool>,
+    pub(crate) cb_released: std::sync::Arc<AtomicBool>,
 }
 
 struct ThreadRunGuard {
@@ -3702,20 +3708,18 @@ unsafe extern "C" fn rt_thread_object_finalizer(obj: i64) {
     if reclaimed == 0 || !thread::unregister_thread_data(reclaimed as usize) {
         return;
     }
-    let data_ptr = reclaimed as *mut ThreadData;
     *ptr.offset(1) = 0;
-    let mut data = Box::from_raw(data_ptr);
-    if !data.started {
+    let arc_ptr = reclaimed as *mut std::sync::Arc<ThreadData>;
+    let arc_data = Box::from_raw(arc_ptr);
+    if !arc_data.started.load(Ordering::Acquire) {
         // Never started: safe to release the GC root immediately.
-        rt_release_thread_cb_slot(data.cb_slot, &data.cb_released);
+        rt_release_thread_cb_slot(arc_data.cb_slot, &arc_data.cb_released);
     } else {
         // slot_live is set to false when the virtual thread exits.
-        let finished = !data.slot_live.load(Ordering::Acquire);
+        let finished = !arc_data.slot_live.load(Ordering::Acquire);
         if finished {
-            rt_release_thread_cb_slot(data.cb_slot, &data.cb_released);
+            rt_release_thread_cb_slot(arc_data.cb_slot, &arc_data.cb_released);
         }
-        // Drop the JoinHandle without blocking
-        let _ = data.handle.take();
     }
 }
 
@@ -4151,21 +4155,17 @@ pub struct VThreadLocalState {
     pub(crate) current_exception: i64,
 }
 
-pub fn save_vthread_local_state() -> VThreadLocalState {
-    let exception_stack = EXCEPTION_STACK.with(|s| std::mem::take(&mut *s.borrow_mut()));
-    let call_stack = RUNTIME_CALL_STACK.with(|s| std::mem::take(&mut *s.borrow_mut()));
-    let current_exception = CURRENT_EXCEPTION.with(|c| c.replace(0));
-    VThreadLocalState {
-        exception_stack,
-        call_stack,
-        current_exception,
-    }
+pub fn save_vthread_local_state(state: &mut VThreadLocalState) {
+    EXCEPTION_STACK.with(|s| std::mem::swap(&mut *s.borrow_mut(), &mut state.exception_stack));
+    RUNTIME_CALL_STACK.with(|s| std::mem::swap(&mut *s.borrow_mut(), &mut state.call_stack));
+    state.current_exception = CURRENT_EXCEPTION.with(|c| c.replace(0));
 }
 
-pub fn restore_vthread_local_state(state: VThreadLocalState) {
-    EXCEPTION_STACK.with(|s| *s.borrow_mut() = state.exception_stack);
-    RUNTIME_CALL_STACK.with(|s| *s.borrow_mut() = state.call_stack);
+pub fn restore_vthread_local_state(state: &mut VThreadLocalState) {
+    EXCEPTION_STACK.with(|s| std::mem::swap(&mut *s.borrow_mut(), &mut state.exception_stack));
+    RUNTIME_CALL_STACK.with(|s| std::mem::swap(&mut *s.borrow_mut(), &mut state.call_stack));
     CURRENT_EXCEPTION.with(|c| c.set(state.current_exception));
+    state.current_exception = 0;
 }
 
 pub fn clear_vthread_local_state() {

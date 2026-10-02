@@ -8,45 +8,20 @@ use once_cell::sync::Lazy;
 use mio::net::{TcpListener, TcpStream};
 use native_tls::{TlsConnector, TlsStream};
 
-use std::sync::RwLock;
-
-const NUM_STREAM_SHARDS: usize = 64;
-static STREAM_SHARDS: Lazy<[RwLock<HashSet<usize>>; NUM_STREAM_SHARDS]> = Lazy::new(|| {
-    std::array::from_fn(|_| RwLock::new(HashSet::new()))
-});
-static LIVE_LISTENERS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+#[inline(always)]
+fn register_stream_ptr(ptr: *mut NetStream) -> i64 {
+    ptr as i64
+}
 
 #[inline(always)]
-fn stream_shard(addr: usize) -> &'static RwLock<HashSet<usize>> {
-    let hash = (addr ^ (addr >> 6)) % NUM_STREAM_SHARDS;
-    &STREAM_SHARDS[hash]
-}
-
-fn register_stream_ptr(ptr: *mut NetStream) -> i64 {
-    let addr = ptr as usize;
-    if let Ok(mut set) = stream_shard(addr).write() {
-        set.insert(addr);
-    }
-    addr as i64
-}
-
 fn register_listener_ptr(ptr: *mut NetListener) -> i64 {
-    let addr = ptr as usize;
-    if let Ok(mut set) = LIVE_LISTENERS.lock() {
-        set.insert(addr);
-    }
-    addr as i64
+    ptr as i64
 }
 
+#[inline(always)]
 fn validate_stream_ptr(stream: i64) -> Option<*mut NetStream> {
     if stream <= 0 { return None; }
-    let addr = stream as usize;
-    if let Ok(set) = stream_shard(addr).read() {
-        if set.contains(&addr) {
-            return Some(stream as *mut NetStream);
-        }
-    }
-    None
+    Some(stream as *mut NetStream)
 }
 
 enum NetStream {
@@ -108,8 +83,8 @@ fn connect_host_port(host: &str, port: i64) -> Option<(TcpStream, usize)> {
                 }
             }
             let token = crate::vthread::vt_register_io(&mut stream);
-            // wait for the connection to establish
-            crate::vthread::vt_wait_io(token);
+            // wait for the connection to establish (socket is writable upon connect completion)
+            crate::vthread::vt_wait_io_write(token);
             if let Ok(Some(_err)) = stream.take_error() {
                 crate::vthread::vt_deregister_io(&mut stream, token);
                 continue;
@@ -216,6 +191,15 @@ fn set_stream_timeout(_stream: &mut NetStream, _ms: i64) -> std::io::Result<()> 
     Ok(())
 }
 
+fn stream_read_into<F, R>(stream: &mut NetStream, size: usize, f: F) -> std::io::Result<R>
+where
+    F: FnOnce(&[u8]) -> R,
+{
+    let mut buf = vec![0u8; size];
+    let n = stream_read_once(stream, &mut buf)?;
+    Ok(f(&buf[..n]))
+}
+
 fn stream_write_all(stream: &mut NetStream, data: &[u8]) -> std::io::Result<usize> {
     let mut written = 0;
     while written < data.len() {
@@ -228,7 +212,7 @@ fn stream_write_all(stream: &mut NetStream, data: &[u8]) -> std::io::Result<usiz
             Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "failed to write whole buffer")),
             Ok(n) => written += n,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                crate::vthread::vt_wait_io(token);
+                crate::vthread::vt_wait_io_write(token);
             }
             Err(e) => return Err(e),
         }
@@ -245,7 +229,7 @@ fn stream_read_once(stream: &mut NetStream, buf: &mut [u8]) -> std::io::Result<u
         };
         match res {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                crate::vthread::vt_wait_io(token);
+                crate::vthread::vt_wait_io_read(token);
             }
             other => return other,
         }
@@ -396,9 +380,8 @@ pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
     let Some(ptr) = validate_stream_ptr(stream) else { return empty_string(); };
     let size = if max_len <= 0 { 4096 } else { max_len as usize };
     let socket = &mut *ptr;
-    let mut buf = vec![0u8; size];
-    match stream_read_once(socket, &mut buf) {
-        Ok(n) => string_from_bytes(&buf[..n]),
+    match stream_read_into(socket, size, |bytes| string_from_bytes(bytes)) {
+        Ok(s) => s,
         Err(_) => empty_string(),
     }
 }
@@ -408,9 +391,8 @@ pub unsafe extern "C" fn rt_net_receive_bytes(stream: i64, max_len: i64) -> i64 
     let Some(ptr) = validate_stream_ptr(stream) else { return rt_Array_new(0, 4); };
     let size = if max_len <= 0 { 4096 } else { max_len as usize };
     let socket = &mut *ptr;
-    let mut buf = vec![0u8; size];
-    match stream_read_once(socket, &mut buf) {
-        Ok(n) => int_array_from_bytes(&buf[..n]),
+    match stream_read_into(socket, size, |bytes| int_array_from_bytes(bytes)) {
+        Ok(arr) => arr,
         Err(_) => rt_Array_new(0, 4),
     }
 }
@@ -573,7 +555,7 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
 
         let std_listener = std::net::TcpListener::from_raw_fd(fd);
         let mut listener = TcpListener::from_std(std_listener);
-        let token = crate::vthread::vt_register_io(&mut listener);
+        let token = crate::vthread::vt_register_io_read(&mut listener);
         let net_listener = NetListener { listener, token };
         return register_listener_ptr(Box::into_raw(Box::new(net_listener)));
     }
@@ -613,11 +595,12 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
                     );
                 }
                 let token = crate::vthread::vt_register_io(&mut stream);
-                return register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
+                let id = register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
+                return id;
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted
                    || e.kind() == std::io::ErrorKind::WouldBlock => {
-                crate::vthread::vt_wait_io(net_listener.token);
+                crate::vthread::vt_wait_io_read(net_listener.token);
             }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted
                    || e.kind() == std::io::ErrorKind::ConnectionReset => {
@@ -638,13 +621,6 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_close_listener(listener_ptr: i64) -> i64 {
     if listener_ptr <= 0 { return -1; }
-    let addr = listener_ptr as usize;
-    let removed = if let Ok(mut set) = LIVE_LISTENERS.lock() {
-        set.remove(&addr)
-    } else {
-        false
-    };
-    if !removed { return 0; }
     let mut net_listener = Box::from_raw(listener_ptr as *mut NetListener);
     crate::vthread::vt_deregister_io(&mut net_listener.listener, net_listener.token);
     0
@@ -665,13 +641,6 @@ fn close_net_stream(stream: NetStream) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_close(stream: i64) -> i64 {
     if stream <= 0 { return -1; }
-    let addr = stream as usize;
-    let removed = if let Ok(mut set) = stream_shard(addr).write() {
-        set.remove(&addr)
-    } else {
-        false
-    };
-    if !removed { return 0; }
     let ptr = stream as *mut NetStream;
     let old = std::mem::replace(&mut *ptr, NetStream::Closed);
     close_net_stream(old);
@@ -713,4 +682,90 @@ pub unsafe extern "C" fn rt_TcpListener_constructor(this: i64, id: i64) {
     if ptr.is_null() { if id > 0 { let _ = rt_net_close_listener(id); } return; }
     rt_ensure_type_finalizer(this, rt_tcp_listener_object_finalizer);
     *ptr.offset(0) = id;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_http_send_fast_response(
+    stream_obj: i64,
+    status: i64,
+    content_type_ptr: i64,
+    body_ptr: i64,
+    keep_alive: bool,
+    cors_origin_ptr: i64,
+) -> i64 {
+    let stream_ptr = rt_obj_ptr(stream_obj);
+    if stream_ptr.is_null() {
+        return -1;
+    }
+    let stream_id = *stream_ptr.offset(0);
+    let Some(ptr) = validate_stream_ptr(stream_id) else {
+        return -1;
+    };
+    let socket = &mut *ptr;
+
+    let body_bytes = if body_ptr >= HEAP_OFFSET {
+        let (bytes, len) = get_str_parts(body_ptr).unwrap_or((std::ptr::null(), 0));
+        if bytes.is_null() { &[] } else { std::slice::from_raw_parts(bytes, len as usize) }
+    } else {
+        &[]
+    };
+
+    let ct_bytes = if content_type_ptr >= HEAP_OFFSET {
+        let (bytes, len) = get_str_parts(content_type_ptr).unwrap_or((std::ptr::null(), 0));
+        if bytes.is_null() { b"text/plain; charset=utf-8" as &[u8] } else { std::slice::from_raw_parts(bytes, len as usize) }
+    } else {
+        b"text/plain; charset=utf-8"
+    };
+
+    let status_str = match status {
+        200 => "200 OK",
+        201 => "201 Created",
+        204 => "204 No Content",
+        301 => "301 Moved Permanently",
+        302 => "302 Found",
+        304 => "304 Not Modified",
+        400 => "400 Bad Request",
+        401 => "401 Unauthorized",
+        403 => "403 Forbidden",
+        404 => "404 Not Found",
+        405 => "405 Method Not Allowed",
+        500 => "500 Internal Server Error",
+        502 => "502 Bad Gateway",
+        503 => "503 Service Unavailable",
+        _ => "200 OK",
+    };
+
+    let conn_str = if keep_alive { "keep-alive" } else { "close" };
+
+    use std::io::Write;
+    let mut buf = Vec::with_capacity(512 + body_bytes.len());
+    let _ = write!(
+        buf,
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\nX-Powered-By: TejX\r\n",
+        status_str,
+        std::str::from_utf8_unchecked(ct_bytes),
+        body_bytes.len(),
+        conn_str,
+    );
+
+    if cors_origin_ptr >= HEAP_OFFSET {
+        if let Some((bytes, len)) = get_str_parts(cors_origin_ptr) {
+            if !bytes.is_null() && len > 0 {
+                let origin_str = std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len as usize));
+                let _ = write!(
+                    buf,
+                    "Access-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n",
+                    origin_str
+                );
+            }
+        }
+    }
+
+    buf.extend_from_slice(b"\r\n");
+    buf.extend_from_slice(body_bytes);
+
+    match stream_write_all(socket, &buf) {
+        Ok(n) => n as i64,
+        Err(_) => -1,
+    }
 }

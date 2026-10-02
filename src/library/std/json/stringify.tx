@@ -1,4 +1,7 @@
 function _json_escape_string(str: string): string {
+    if (str.indexOf("\"") < 0 && str.indexOf("\\") < 0 && str.indexOf("\n") < 0 && str.indexOf("\r") < 0 && str.indexOf("\t") < 0) {
+        return "\"" + str + "\"";
+    }
     let res = "\"";
     let len = str.length();
     for (let i = 0; i < len; i++) {

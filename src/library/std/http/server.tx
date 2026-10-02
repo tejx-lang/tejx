@@ -4,6 +4,8 @@ import std:json;
 import std:time;
 import std:collections;
 
+extern function rt_http_send_fast_response(stream: TcpStream, status: int, content_type: string, body: string, keep_alive: bool, cors_origin: string): int;
+
 // ── Utility ───────────────────────────────────────────────────────────────────
 
 export function parseDecimalIntServer(text: string): int {
@@ -59,10 +61,17 @@ export class PathParams {
 ///   - Params:      "/user/:id"  matches "/user/42" → {id: "42"}
 ///   - Wildcard:    "*"          matches everything
 ///   - Suffix wild: "/files/*"   matches "/files/any/path/here"
+let _EMPTY_PATH_PARAMS: PathParams = new PathParams();
+
 function _matchRoute(pattern: string, requestPath: string): Optional<PathParams> {
     // Universal wildcard
     if (pattern == "*") {
-        return new PathParams();
+        return _EMPTY_PATH_PARAMS;
+    }
+
+    // Fast exact match (bypasses substring and splits)
+    if (pattern == requestPath) {
+        return _EMPTY_PATH_PARAMS;
     }
 
     // Strip query string from request path for matching
@@ -74,7 +83,7 @@ function _matchRoute(pattern: string, requestPath: string): Optional<PathParams>
 
     // Exact match
     if (pattern == path) {
-        return new PathParams();
+        return _EMPTY_PATH_PARAMS;
     }
 
     // Suffix wildcard: "/files/*" matches "/files/anything"
@@ -147,7 +156,7 @@ export class ServerRequest {
         this.rawPath = "/";
         this.headers = new Map<string, string>();
         this.body = "";
-        this.params = new PathParams();
+        this.params = _EMPTY_PATH_PARAMS;
         this.query = new Map<string, string>();
 
         let headerEnd = rawRequest.indexOf("\r\n\r\n");
@@ -156,13 +165,19 @@ export class ServerRequest {
         let headerText = rawRequest.substring(0, headerEnd);
         this.body = rawRequest.substring(headerEnd + 4, rawRequest.length());
 
-        let lines = headerText.split("\r\n");
-        if (lines.length() == 0) return;
+        let firstLineEnd = headerText.indexOf("\r\n");
+        let firstLine = firstLineEnd >= 0 ? headerText.substring(0, firstLineEnd) : headerText;
 
-        let parts = lines[0].split(" ");
-        if (parts.length() >= 1) this.method = parts[0].toUpperCase();
-        if (parts.length() >= 2) {
-            this.rawPath = parts[1];
+        let firstSpace = firstLine.indexOf(" ");
+        if (firstSpace > 0) {
+            this.method = firstLine.substring(0, firstSpace).toUpperCase();
+            let restOfFirstLine = firstLine.substring(firstSpace + 1, firstLine.length());
+            let secondSpaceRel = restOfFirstLine.indexOf(" ");
+            if (secondSpaceRel > 0) {
+                this.rawPath = restOfFirstLine.substring(0, secondSpaceRel);
+            } else {
+                this.rawPath = restOfFirstLine;
+            }
             let qIdx = this.rawPath.indexOf("?");
             if (qIdx >= 0) {
                 this.path = this.rawPath.substring(0, qIdx);
@@ -172,15 +187,19 @@ export class ServerRequest {
             }
         }
 
-        // Parse headers (lowercase keys for case-insensitive lookup)
-        for (let i = 1; i < lines.length(); i++) {
-            let line = lines[i];
+        // Parse headers directly by scanning "\r\n" without allocating an intermediate array
+        let remaining = firstLineEnd >= 0 ? headerText.substring(firstLineEnd + 2, headerText.length()) : "";
+        while (remaining.length() > 0) {
+            let nextLineEnd = remaining.indexOf("\r\n");
+            let line = nextLineEnd >= 0 ? remaining.substring(0, nextLineEnd) : remaining;
             let sep = line.indexOf(":");
             if (sep > 0) {
                 let key = line.substring(0, sep).trim().toLowerCase();
                 let value = line.substring(sep + 1, line.length()).trim();
                 this.headers.set(key, value);
             }
+            if (nextLineEnd < 0) break;
+            remaining = remaining.substring(nextLineEnd + 2, remaining.length());
         }
     }
 
@@ -204,6 +223,7 @@ export class ServerResponse {
     body: string;
     stream: TcpStream;
     sent: bool;
+    hasCustomHeaders: bool;
 
     constructor(stream: TcpStream) {
         this.status = 200;
@@ -211,10 +231,11 @@ export class ServerResponse {
         this.body = "";
         this.stream = stream;
         this.sent = false;
+        this.hasCustomHeaders = false;
 
         // Default headers
         this.headers.set("Content-Type", "text/plain; charset=utf-8");
-        this.headers.set("Connection", "close");
+        this.headers.set("Connection", "keep-alive");
         this.headers.set("X-Powered-By", "TejX");
     }
 
@@ -225,6 +246,7 @@ export class ServerResponse {
 
     setHeader(name: string, value: string): ServerResponse {
         this.headers.set(name, value);
+        this.hasCustomHeaders = true;
         return this;
     }
 
@@ -317,22 +339,14 @@ export class ServerResponse {
     }
 
     private flush(): void {
-        let text = "HTTP/1.1 " + String(this.status) + " " + this.statusText(this.status) + "\r\n";
+        let contentType = this.headers.get("Content-Type");
+        let ctStr = contentType != None ? (contentType as string) : "text/plain; charset=utf-8";
+        let conn = this.headers.get("Connection");
+        let keepAlive = conn == None || (conn as string).toLowerCase().indexOf("close") < 0;
+        let origin = this.headers.get("Access-Control-Allow-Origin");
+        let originStr = origin != None ? (origin as string) : "";
 
-        if (this.headers.get("Content-Length") == None) {
-            this.headers.set("Content-Length", String(this.body.length()));
-        }
-
-        let keys = this.headers.keys();
-        for (let i = 0; i < keys.length(); i++) {
-            let key = keys[i];
-            let value = this.headers.get(key);
-            if (value != None) {
-                text = text + key + ": " + (value as string) + "\r\n";
-            }
-        }
-        text = text + "\r\n" + this.body;
-        this.stream.write(text);
+        rt_http_send_fast_response(this.stream, this.status, ctStr, this.body, keepAlive, originStr);
         this.sent = true;
     }
 }
@@ -425,46 +439,19 @@ export class HttpServer {
 
     private runAcceptLoop(listener: TcpListener): void {
         while (true) {
-            try {
-                let client: Optional<TcpStream> = None;
-                try {
-                    client = listener.tryAccept();
-                } catch (e) {
-                    continue;
-                }
-                if (client == None) {
-                    continue;
-                }
-                let conn = client as TcpStream;
-
-                // Backpressure: reject with 503 if over connection limit
-                if (this.activeConns.load() >= this.maxConns) {
-                    conn.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                    conn.close();
-                    continue;
-                }
-
-                this.activeConns.increment();
-                spawn(() => {
-                    try {
-                        this.handleConnection(conn);
-                    } catch (e) {
-                        // Swallow per-connection errors — never crash the accept loop
-                    } finally {
-                        this.activeConns.decrement();
-                    }
-                });
-            } catch (err) {
-                // Outer loop protection: the accept loop must never terminate
+            let client: Optional<TcpStream> = listener.tryAccept();
+            if (client == None) {
+                continue;
             }
+            let conn = client as TcpStream;
+            Thread.spawn(() => {
+                this.handleConnection(conn);
+            });
         }
     }
 
-    /// Starts listening on the given port. `callback` is called once the server is bound.
-    /// Throws if the port is already in use (EADDRINUSE) with a descriptive error message.
     listen(port: int, callback: () => void): void {
-        let addr = "0.0.0.0:" + String(port);
-        let listener: TcpListener = net.listen(addr);
+        let listener: TcpListener = net.listen("127.0.0.1:" + String(port));
         this.listener = listener;
 
         callback();
@@ -474,11 +461,10 @@ export class HttpServer {
 
     private readHttpRequest(client: TcpStream, buffer: string): any {
         let rawRequest = buffer;
-        let keepReading = true;
         let contentLength = -1;
         let headerEndIndex = -1;
 
-        while (keepReading) {
+        while (true) {
             if (headerEndIndex < 0) {
                 headerEndIndex = rawRequest.indexOf("\r\n\r\n");
             }
@@ -501,108 +487,100 @@ export class HttpServer {
 
                 let bodyLength = rawRequest.length() - (headerEndIndex + 4);
                 if (bodyLength >= contentLength) {
-                    keepReading = false;
                     break;
                 }
             }
 
-            let chunk = client.read(2048);
+            let chunk = client.read(8192);
             if (chunk == "") {
-                keepReading = false;
                 break;
             }
             rawRequest = rawRequest + chunk;
         }
 
+        if (rawRequest.trim() == "") {
+            return None;
+        }
+
         let totalLength = (headerEndIndex >= 0)
             ? (headerEndIndex + 4 + (contentLength > 0 ? contentLength : 0))
             : rawRequest.length();
-        let requestStr = rawRequest;
-        let remainingStr = "";
+        let currentRequestStr = rawRequest;
+        let remaining = "";
 
         if (totalLength < rawRequest.length()) {
-            requestStr = rawRequest.substring(0, totalLength);
-            remainingStr = rawRequest.substring(totalLength, rawRequest.length());
+            currentRequestStr = rawRequest.substring(0, totalLength);
+            remaining = rawRequest.substring(totalLength, rawRequest.length());
         }
 
         return {
-            "request": requestStr,
-            "remaining": remainingStr
+            "request": currentRequestStr,
+            "remaining": remaining
         };
     }
 
-    private handleConnection(client: TcpStream): void {
-        try {
-            let buffer = "";
+    private matchAndRunRoute(req: ServerRequest, res: ServerResponse): bool {
+        let routeCount = this.routes.length();
+        for (let i = 0; i < routeCount; i++) {
+            let route = this.routes[i];
+            if (route.method != req.method && route.method != "*") continue;
+            let matchResult = _matchRoute(route.path, req.path);
+            if (matchResult == None) continue;
 
-            while (true) {
-                let requestResult: any = this.readHttpRequest(client, buffer);
-                let rawRequest: string = requestResult.request as string;
-                buffer = requestResult.remaining as string;
-
-                if (rawRequest.trim() == "") {
-                    break;
-                }
-
-                let req = new ServerRequest(rawRequest);
-                let res = new ServerResponse(client);
-
-                // Apply global CORS headers if enabled
-                if (this.corsOrigin != None) {
-                    res.cors(this.corsOrigin as string);
-                }
-
-                let keepAlive = true;
-                let connHeader = req.getHeader("connection");
-                if (connHeader != None) {
-                    if ((connHeader as string).toLowerCase().indexOf("close") >= 0) {
-                        keepAlive = false;
-                    }
-                }
-
-                if (keepAlive) {
-                    res.headers.set("Connection", "keep-alive");
-                } else {
-                    res.headers.set("Connection", "close");
-                }
-
-                let handled = false;
-                for (let i = 0; i < this.routes.length(); i++) {
-                    let route = this.routes[i];
-                    // Match HTTP method (wildcard "*" matches all)
-                    if (route.method != req.method && route.method != "*") continue;
-                    // Match path with parameter extraction
-                    let matchResult = _matchRoute(route.path, req.path);
-                    if (matchResult == None) continue;
-
-                    // Inject extracted path params into request before calling handler
-                    req.params = matchResult as PathParams;
-
-                    try {
-                        route.handler(req, res);
-                    } catch (e) {
-                        if (!res.sent) {
-                            res.setStatus(500).json({ "error": "Internal Server Error" });
-                        }
-                    }
-                    handled = true;
-                    break;
-                }
-
-                if (!handled) {
-                    res.setStatus(404).json({ "error": "Not Found", "path": req.path });
-                }
-
-                if (!res.sent) {
-                    res.send("");
-                }
-
-                if (!keepAlive) {
-                    break;
-                }
-            }
-        } finally {
-            client.close();
+            req.params = matchResult as PathParams;
+            route.handler(req, res);
+            return true;
         }
+        return false;
+    }
+
+    private dispatchRequest(client: TcpStream, currentRequestStr: string): bool {
+        let req = new ServerRequest(currentRequestStr);
+        let res = new ServerResponse(client);
+
+        if (this.corsOrigin != None) {
+            res.cors(this.corsOrigin as string);
+        }
+
+        let keepAlive = true;
+        let connHeader = req.getHeader("connection");
+        if (connHeader != None) {
+            if ((connHeader as string).toLowerCase().indexOf("close") >= 0) {
+                keepAlive = false;
+            }
+        }
+
+        if (keepAlive) {
+            res.headers.set("Connection", "keep-alive");
+        } else {
+            res.headers.set("Connection", "close");
+        }
+
+        let handled = this.matchAndRunRoute(req, res);
+        if (!handled) {
+            res.setStatus(404).json({ "error": "Not Found", "path": req.path });
+        }
+
+        if (!res.sent) {
+            res.send("");
+        }
+
+        return keepAlive;
+    }
+
+    private handleConnection(client: TcpStream): void {
+        let buffer = "";
+        while (true) {
+            let reqResult: any = this.readHttpRequest(client, buffer);
+            if (reqResult == None) {
+                break;
+            }
+            buffer = reqResult.remaining as string;
+            let keepAlive: bool = this.dispatchRequest(client, reqResult.request as string);
+            if (!keepAlive) {
+                break;
+            }
+        }
+        client.close();
     }
 }

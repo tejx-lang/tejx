@@ -10,90 +10,54 @@ use std::sync::Mutex;
 // Works safely across virtual threads and OS worker threads without any thread-local
 // guard maps or lifetime transmutes.
 
-pub struct SpinMutex<T> {
-    lock: AtomicBool,
-    data: std::cell::UnsafeCell<T>,
-}
+pub struct SpinMutex<T>(std::sync::Mutex<T>);
 
-unsafe impl<T: Send> Send for SpinMutex<T> {}
-unsafe impl<T: Send> Sync for SpinMutex<T> {}
-
-pub struct SpinMutexGuard<'a, T> {
-    mutex: &'a SpinMutex<T>,
-}
+pub type SpinMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
 
 impl<T> SpinMutex<T> {
     pub const fn new(data: T) -> Self {
-        Self {
-            lock: AtomicBool::new(false),
-            data: std::cell::UnsafeCell::new(data),
-        }
+        Self(std::sync::Mutex::new(data))
     }
 
     #[inline(always)]
     pub fn lock(&self) -> SpinMutexGuard<'_, T> {
-        let mut backoff = 1;
-        while self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            while self.lock.load(Ordering::Relaxed) {
-                for _ in 0..backoff {
-                    std::hint::spin_loop();
-                }
-                backoff = (backoff << 1).min(64);
-            }
-        }
-        SpinMutexGuard { mutex: self }
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
-}
 
-impl<'a, T> std::ops::Deref for SpinMutexGuard<'a, T> {
-    type Target = T;
     #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.mutex.data.get() }
-    }
-}
-
-impl<'a, T> std::ops::DerefMut for SpinMutexGuard<'a, T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.mutex.data.get() }
-    }
-}
-
-impl<'a, T> Drop for SpinMutexGuard<'a, T> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.mutex.lock.store(false, Ordering::Release);
+    pub fn try_lock(&self) -> Option<SpinMutexGuard<'_, T>> {
+        self.0.try_lock().ok()
     }
 }
 
 pub struct TejxMutex {
     state: AtomicBool,
-    cvar: Condvar,
-    os_lock: StdMutex<()>,
     wait_lock: SpinMutex<Vec<usize>>,
+    granted_token: std::sync::atomic::AtomicUsize,
 }
 
 impl TejxMutex {
     pub fn new() -> Self {
         Self {
             state: AtomicBool::new(false),
-            cvar: Condvar::new(),
-            os_lock: StdMutex::new(()),
             wait_lock: SpinMutex::new(Vec::new()),
+            granted_token: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     pub fn lock(&self) {
-        // Fast path: uncontended acquire
-        if self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        // Fast path: uncontended acquire when no handoff is pending
+        if self.granted_token.load(Ordering::Relaxed) == 0
+            && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+        {
             return;
         }
 
         // Short adaptive spin loop (for low contention)
-        for _ in 0..16 {
+        for _ in 0..32 {
             std::hint::spin_loop();
-            if !self.state.load(Ordering::Relaxed)
+            if self.granted_token.load(Ordering::Relaxed) == 0
+                && !self.state.load(Ordering::Relaxed)
                 && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
             {
                 return;
@@ -101,31 +65,59 @@ impl TejxMutex {
         }
 
         if crate::vthread::vt_is_vthread() {
-            let token = crate::vthread::vt_next_park_token();
             loop {
+                let token = crate::vthread::vt_next_park_token();
                 {
                     let mut waiters = self.wait_lock.lock();
-                    if self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                    if self.granted_token.load(Ordering::Relaxed) == 0
+                        && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+                    {
                         return;
                     }
                     waiters.push(token);
                 }
+
                 crate::vthread::vt_park(token);
-                if self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+
+                // Check if lock was handed off to us
+                if self.granted_token.load(Ordering::Acquire) == token {
+                    self.granted_token.store(0, Ordering::Release);
                     return;
+                }
+
+                // Or if lock became free
+                if self.granted_token.load(Ordering::Relaxed) == 0
+                    && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+                {
+                    let mut waiters = self.wait_lock.lock();
+                    waiters.retain(|&t| t != token);
+                    return;
+                }
+
+                // If not acquired, clean up old token before getting a new one
+                {
+                    let mut waiters = self.wait_lock.lock();
+                    waiters.retain(|&t| t != token);
                 }
             }
         } else {
-            let _guard = crate::ThreadIoGuard::new();
-            let mut guard = self.os_lock.lock().unwrap();
-            while self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                guard = self.cvar.wait(guard).unwrap();
+            let mut backoff = 1;
+            while self.granted_token.load(Ordering::Relaxed) != 0
+                || self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err()
+            {
+                for _ in 0..backoff {
+                    std::hint::spin_loop();
+                }
+                if backoff < 64 {
+                    backoff <<= 1;
+                } else {
+                    std::thread::yield_now();
+                }
             }
         }
     }
 
     pub fn unlock(&self) {
-        self.state.store(false, Ordering::Release);
         let waiter = {
             let mut waiters = self.wait_lock.lock();
             if !waiters.is_empty() {
@@ -135,10 +127,12 @@ impl TejxMutex {
             }
         };
         if let Some(token) = waiter {
+            // Direct handoff: keep state = true, grant ownership directly to token
+            self.granted_token.store(token, Ordering::Release);
             crate::vthread::vt_unpark(token);
         } else {
-            let _guard = self.os_lock.lock();
-            self.cvar.notify_one();
+            self.granted_token.store(0, Ordering::Relaxed);
+            self.state.store(false, Ordering::Release);
         }
     }
 }
@@ -156,16 +150,12 @@ pub unsafe extern "C" fn rt_Mutex_free(mutex: i64) {
     let _ = Box::from_raw(mutex as *mut TejxMutex);
 }
 
-static LIVE_MUTEX_DATA: Lazy<SpinMutex<HashSet<usize>>> = Lazy::new(|| SpinMutex::new(HashSet::new()));
-
 pub(crate) unsafe fn register_mutex_data(ptr: *mut TejxMutexArc) -> i64 {
-    let addr = ptr as usize;
-    LIVE_MUTEX_DATA.lock().insert(addr);
-    addr as i64
+    ptr as i64
 }
 
 pub(crate) unsafe fn unregister_mutex_data(addr: usize) -> bool {
-    LIVE_MUTEX_DATA.lock().remove(&addr)
+    addr != 0
 }
 
 #[no_mangle]
