@@ -28,7 +28,13 @@ impl Parser {
 
     pub fn previous(&self) -> &Token {
         if self.current == 0 {
-            panic!("No previous token");
+            static DEFAULT_TOKEN: Token = Token {
+                token_type: TokenType::EndOfFile,
+                value: String::new(),
+                line: 1,
+                column: 1,
+            };
+            return self.tokens.first().unwrap_or(&DEFAULT_TOKEN);
         }
         &self.tokens[self.current - 1]
     }
@@ -1204,7 +1210,7 @@ impl Parser {
                             );
                             TypeNode::Any
                         } else {
-                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
+                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap_or(TypeNode::Any)))
                         }
                     }
                     "Option" => {
@@ -1216,7 +1222,7 @@ impl Parser {
                             "Rename this type to Optional<T>.",
                         );
                         if generic_args.len() == 1 {
-                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap()))
+                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap_or(TypeNode::Any)))
                         } else {
                             TypeNode::Any
                         }
@@ -2271,7 +2277,7 @@ impl Parser {
                 } else {
                     // Very simple escape handling for char
                     if token.value.starts_with('\\') && token.value.len() == 2 {
-                        match token.value.chars().nth(1).unwrap() {
+                        match token.value.chars().nth(1).unwrap_or('\0') {
                             'n' => '\n',
                             'r' => '\r',
                             't' => '\t',
@@ -2371,10 +2377,16 @@ impl Parser {
     }
 
     fn peek_offset(&self, offset: usize) -> &Token {
+        static DEFAULT_EOF: Token = Token {
+            token_type: TokenType::EndOfFile,
+            value: String::new(),
+            line: 1,
+            column: 1,
+        };
         if self.is_at_offset_end(offset) {
             match self.tokens.last() {
                 Some(t) => t,
-                None => panic!("No tokens available"),
+                None => &DEFAULT_EOF,
             }
         } else {
             &self.tokens[self.current + offset]

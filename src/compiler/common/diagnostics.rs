@@ -106,16 +106,34 @@ impl Diagnostic {
             let line_num_str = self.line.to_string();
             let pad = " ".repeat(line_num_str.len());
 
+            let tab_width = 4;
+            let mut rendered_line = String::new();
+            let mut visual_col = 0;
+            let mut current_char_idx = 1;
+
+            for ch in line_content.chars() {
+                if ch == '\t' {
+                    let spaces = tab_width - (rendered_line.len() % tab_width);
+                    rendered_line.push_str(&" ".repeat(spaces));
+                    if current_char_idx < self.col {
+                        visual_col += spaces;
+                    }
+                } else {
+                    rendered_line.push(ch);
+                    if current_char_idx < self.col {
+                        visual_col += 1;
+                    }
+                }
+                current_char_idx += 1;
+            }
+
             eprintln!("  \x1b[34m{} |\x1b[0m", pad);
 
             // Error line
-            eprintln!("  \x1b[34m{} |\x1b[0m {}", line_num_str, line_content);
+            eprintln!("  \x1b[34m{} |\x1b[0m {}", line_num_str, rendered_line);
 
             // Pointer line with carets
-            let mut pointer = String::new();
-            for _ in 0..self.col.saturating_sub(1) {
-                pointer.push(' ');
-            }
+            let mut pointer = " ".repeat(visual_col);
             for _ in 0..self.length.max(1) {
                 pointer.push('^');
             }

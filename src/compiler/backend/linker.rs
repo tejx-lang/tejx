@@ -90,39 +90,15 @@ impl Linker {
 
         let mut final_objects = Vec::new();
 
-        fn cleanup_file_and_stray_temps(path: &std::path::Path) {
+        fn cleanup_file(path: &std::path::Path) {
             let _ = std::fs::remove_file(path);
-            if let Some(parent) = path.parent() {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let prefix = format!("{}-", stem);
-                    let exact_tmp = format!("{}.tmp", stem);
-                    let exact_s_tmp = format!("{}.s.tmp", stem);
-                    let exact_o_tmp = format!("{}.o.tmp", stem);
-                    if let Ok(entries) = std::fs::read_dir(parent) {
-                        for entry in entries.flatten() {
-                            let name = entry.file_name();
-                            let name_str = name.to_string_lossy();
-                            if name_str == exact_tmp
-                                || name_str == exact_s_tmp
-                                || name_str == exact_o_tmp
-                                || (name_str.starts_with(&prefix)
-                                    && (name_str.ends_with(".tmp")
-                                        || name_str.ends_with(".s.tmp")
-                                        || name_str.ends_with(".o.tmp")))
-                            {
-                                let _ = std::fs::remove_file(entry.path());
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         struct ObjectCleanupGuard(Vec<std::path::PathBuf>);
         impl Drop for ObjectCleanupGuard {
             fn drop(&mut self) {
                 for obj in &self.0 {
-                    cleanup_file_and_stray_temps(obj);
+                    cleanup_file(obj);
                 }
             }
         }
@@ -147,6 +123,7 @@ impl Linker {
                     asm_cmd.arg(obj);
                     asm_cmd.arg("-o");
                     asm_cmd.arg(&out_asm);
+                    asm_cmd.arg("-fno-temp-file");
 
                     if self.verbose {
                         eprintln!("[linker] Executing: {:?}", asm_cmd);
@@ -157,7 +134,7 @@ impl Linker {
                         .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
                     if !output_asm.status.success() {
                         let stderr = String::from_utf8_lossy(&output_asm.stderr);
-                        cleanup_file_and_stray_temps(obj);
+                        cleanup_file(obj);
                         return Err(format!(
                             "LLVM assembly generation failed for {}:\n{}",
                             obj.display(),
@@ -183,6 +160,7 @@ impl Linker {
                 obj_cmd.arg(obj);
                 obj_cmd.arg("-o");
                 obj_cmd.arg(&out_obj);
+                obj_cmd.arg("-fno-temp-file");
 
                 if self.verbose {
                     eprintln!("[linker] Executing: {:?}", obj_cmd);
@@ -194,8 +172,8 @@ impl Linker {
 
                 if !output_obj.status.success() {
                     let stderr = String::from_utf8_lossy(&output_obj.stderr);
-                    cleanup_file_and_stray_temps(&out_obj);
-                    cleanup_file_and_stray_temps(obj);
+                    cleanup_file(&out_obj);
+                    cleanup_file(obj);
                     return Err(format!(
                         "Assembly failed for {}:\n{}",
                         obj.display(),
@@ -271,35 +249,11 @@ impl Linker {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            cleanup_file_and_stray_temps(&self.output_path);
+            cleanup_file(&self.output_path);
             return Err(format!("Linker failed:\n{}", stderr));
         }
 
-        // Clean up any stray temporary files created by the linker
-        if let Some(parent) = self.output_path.parent() {
-            if let Some(stem) = self.output_path.file_stem().and_then(|s| s.to_str()) {
-                let prefix = format!("{}-", stem);
-                let exact_tmp = format!("{}.tmp", stem);
-                let exact_s_tmp = format!("{}.s.tmp", stem);
-                let exact_o_tmp = format!("{}.o.tmp", stem);
-                if let Ok(entries) = std::fs::read_dir(parent) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        let name_str = name.to_string_lossy();
-                        if name_str == exact_tmp
-                            || name_str == exact_s_tmp
-                            || name_str == exact_o_tmp
-                            || (name_str.starts_with(&prefix)
-                                && (name_str.ends_with(".tmp")
-                                    || name_str.ends_with(".s.tmp")
-                                    || name_str.ends_with(".o.tmp")))
-                        {
-                            let _ = std::fs::remove_file(entry.path());
-                        }
-                    }
-                }
-            }
-        }
+
 
         Ok(())
     }

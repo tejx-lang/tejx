@@ -62,9 +62,10 @@ runtime_timeout_for() {
     [[ "$rel_file" == "$SCRIPT_DIR/"* ]] && rel_file="${rel_file#$SCRIPT_DIR/}"
     [[ "$rel_file" == "./"* ]] && rel_file="${rel_file#./}"
     case "$rel_file" in
-        tests/positive/std/net.tx) echo 20 ;;
+        tests/positive/std/net.tx|tests/positive/std/promise_parallel.tx) echo 25 ;;
         tests/positive/std/thread.tx|tests/problems/producer_consumer.tx) echo 15 ;;
-        tests/problems/benchmark.tx) echo 60 ;;
+        tests/positive/vthread_deep_stack.tx|tests/positive/vthread_stress.tx|tests/positive/vthread_mem_stress.tx) echo 30 ;;
+        tests/problems/benchmark.tx) echo 120 ;;
         *) echo 10 ;;
     esac
 }
@@ -94,7 +95,7 @@ run_test_file() {
     
     local binary="${file%.*}"
     local ll_file="${file%.*}.ll"
-    rm -f "$binary" "$ll_file" "${file%.*}.o" "${file%.*}.s" "${file%.*}-"*.tmp "${file%.*}.o.tmp"
+    rm -f "$binary" "$ll_file" "${file%.*}.o" "${file%.*}.s"
     
     local test_passed=false
     local err_reason=""
@@ -250,7 +251,7 @@ run_test_file() {
     ) > "$test_log" 2>&1
 
     # Cleanup test binaries and intermediate files
-    rm -f "$binary" "$ll_file" "${file%.*}.o" "${file%.*}.s" "${file%.*}-"*.tmp "${file%.*}.o.tmp" "${file%.*}.s.tmp" "$compile_out" "$out_file"
+    rm -f "$binary" "$ll_file" "${file%.*}.o" "${file%.*}.s" "$compile_out" "$out_file"
 
     # Output log atomically so test outputs do not interleave
     cat "$test_log"

@@ -69,8 +69,10 @@ fn report_diagnostics(
         };
         let source = if let Some(source) = loaded_source.as_deref() {
             Some(source)
-        } else {
+        } else if d.file == primary_file || d.file.is_empty() {
             Some(primary_source)
+        } else {
+            None
         };
         d.report_with_source(source);
     }
@@ -404,7 +406,7 @@ fn main() {
                     output_name = Some(args[i + 1].clone());
                     i += 1;
                 } else {
-                    eprintln!("Error: -o/--output requires an argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: -o/--output requires an argument");
                     process::exit(1);
                 }
             }
@@ -413,7 +415,7 @@ fn main() {
                     cli_stdlib_path = Some(args[i + 1].clone());
                     i += 1;
                 } else {
-                    eprintln!("Error: --stdlib-path requires an argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: --stdlib-path requires an argument");
                     process::exit(1);
                 }
             }
@@ -422,7 +424,7 @@ fn main() {
                     cli_runtime_path = Some(args[i + 1].clone());
                     i += 1;
                 } else {
-                    eprintln!("Error: --runtime-path requires an argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: --runtime-path requires an argument");
                     process::exit(1);
                 }
             }
@@ -432,12 +434,12 @@ fn main() {
                     if let Some(bytes) = parse_cli_size(val) {
                         cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                     } else {
-                        eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
+                        eprintln!("\x1b[31;1merror\x1b[0m: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                         process::exit(1);
                     }
                     i += 1;
                 } else {
-                    eprintln!("Error: {} requires a size argument (e.g. 2k, 4k, 64k)", arg);
+                    eprintln!("\x1b[31;1merror\x1b[0m: {} requires a size argument (e.g. 2k, 4k, 64k)", arg);
                     process::exit(1);
                 }
             }
@@ -446,7 +448,7 @@ fn main() {
                     cli_include_dirs.push(std::path::PathBuf::from(&args[i + 1]));
                     i += 1;
                 } else {
-                    eprintln!("Error: -I requires a directory argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: -I requires a directory argument");
                     process::exit(1);
                 }
             }
@@ -455,7 +457,7 @@ fn main() {
                     cli_lib_dirs.push(std::path::PathBuf::from(&args[i + 1]));
                     i += 1;
                 } else {
-                    eprintln!("Error: -L requires a directory argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: -L requires a directory argument");
                     process::exit(1);
                 }
             }
@@ -464,7 +466,7 @@ fn main() {
                     cli_libs.push(args[i + 1].clone());
                     i += 1;
                 } else {
-                    eprintln!("Error: -l requires a library name argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: -l requires a library name argument");
                     process::exit(1);
                 }
             }
@@ -473,7 +475,7 @@ fn main() {
                     cli_target = Some(args[i + 1].clone());
                     i += 1;
                 } else {
-                    eprintln!("Error: --target requires a target triple argument");
+                    eprintln!("\x1b[31;1merror\x1b[0m: --target requires a target triple argument");
                     process::exit(1);
                 }
             }
@@ -483,7 +485,7 @@ fn main() {
                 if let Some(bytes) = parse_cli_size(val) {
                     cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
+                    eprintln!("\x1b[31;1merror\x1b[0m: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
@@ -492,7 +494,7 @@ fn main() {
                 if let Some(bytes) = parse_cli_size(val) {
                     cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
+                    eprintln!("\x1b[31;1merror\x1b[0m: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
@@ -501,7 +503,7 @@ fn main() {
                 if let Some(bytes) = parse_cli_size(val) {
                     cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
+                    eprintln!("\x1b[31;1merror\x1b[0m: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
@@ -510,7 +512,7 @@ fn main() {
                 if let Some(bytes) = parse_cli_size(val) {
                     cli_vt_stack = Some(bytes.max(MIN_VTHREAD_STACK_SIZE));
                 } else {
-                    eprintln!("Error: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
+                    eprintln!("\x1b[31;1merror\x1b[0m: invalid stack size '{}'. Expected e.g. 2k, 4kb, 64k", val);
                     process::exit(1);
                 }
             }
@@ -539,12 +541,12 @@ fn main() {
                 ];
                 if let Some(sugg) = crate::common::diagnostics::find_best_match(arg, valid_options) {
                     eprintln!(
-                        "Unknown option: '{}'. Did you mean '{}'? Run 'tejxc --help' for all options.",
+                        "\x1b[31;1merror\x1b[0m: unknown option '{}'. Did you mean '{}'? Run 'tejxc --help' for all options.",
                         arg, sugg
                     );
                 } else {
                     eprintln!(
-                        "Unknown option: '{}'. Run 'tejxc --help' for all options.",
+                        "\x1b[31;1merror\x1b[0m: unknown option '{}'. Run 'tejxc --help' for all options.",
                         arg
                     );
                 }
@@ -558,7 +560,7 @@ fn main() {
     }
 
     if input_files.is_empty() {
-        eprintln!("Error: No input files specified.");
+        eprintln!("\x1b[31;1merror\x1b[0m: no input files specified");
         print_help();
         process::exit(1);
     }
@@ -567,7 +569,7 @@ fn main() {
     let filename = input_files[0].clone();
 
     let contents = fs::read_to_string(&filename).unwrap_or_else(|err| {
-        eprintln!("Error reading file {}: {}", filename, err);
+        eprintln!("\x1b[31;1merror\x1b[0m: could not read file '{}': {}", filename, err);
         process::exit(1);
     });
 
@@ -763,7 +765,7 @@ fn main() {
 
     let temp_ll_file = format!("{}.ll", output_name);
     fs::write(&temp_ll_file, &llvm_code).unwrap_or_else(|err| {
-        eprintln!("Error writing LLVM IR: {}", err);
+        eprintln!("\x1b[31;1merror\x1b[0m: failed to write LLVM IR: {}", err);
         process::exit(1);
     });
 
@@ -787,7 +789,7 @@ fn main() {
     // Use the resolved runtime path
     let runtime_path = crate::common::paths::resolve_runtime_path(cli_runtime_path.as_deref());
     if !runtime_path.exists() {
-        eprintln!("Error: Runtime library not found at {:?}", runtime_path);
+        eprintln!("\x1b[31;1merror\x1b[0m: runtime library not found at {:?}", runtime_path);
         process::exit(1);
     }
     linker.add_object(&runtime_path);
@@ -801,41 +803,17 @@ fn main() {
         linker.set_compile_only(true);
     }
 
-    fn cleanup_temp_file_and_temps(path: &Path) {
+    fn cleanup_temp_file(path: &Path) {
         let _ = fs::remove_file(path);
-        if let Some(parent) = path.parent() {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let prefix = format!("{}-", stem);
-                let exact_tmp = format!("{}.tmp", stem);
-                let exact_s_tmp = format!("{}.s.tmp", stem);
-                let exact_o_tmp = format!("{}.o.tmp", stem);
-                if let Ok(entries) = fs::read_dir(parent) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        let name_str = name.to_string_lossy();
-                        if name_str == exact_tmp
-                            || name_str == exact_s_tmp
-                            || name_str == exact_o_tmp
-                            || (name_str.starts_with(&prefix)
-                                && (name_str.ends_with(".tmp")
-                                    || name_str.ends_with(".s.tmp")
-                                    || name_str.ends_with(".o.tmp")))
-                        {
-                            let _ = fs::remove_file(entry.path());
-                        }
-                    }
-                }
-            }
-        }
     }
 
     match linker.link() {
         Ok(_) => {
-            cleanup_temp_file_and_temps(Path::new(&temp_ll_file));
+            cleanup_temp_file(Path::new(&temp_ll_file));
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
-            cleanup_temp_file_and_temps(Path::new(&temp_ll_file));
+            eprintln!("\x1b[31;1merror\x1b[0m: {}", e);
+            cleanup_temp_file(Path::new(&temp_ll_file));
             process::exit(1);
         }
     }
@@ -870,7 +848,7 @@ fn main() {
                 process::exit(status.code().unwrap_or(0));
             }
             Err(e) => {
-                eprintln!("Error executing binary {}: {}", binary_path, e);
+                eprintln!("\x1b[31;1merror\x1b[0m: failed to execute binary '{}': {}", binary_path, e);
                 process::exit(1);
             }
         }

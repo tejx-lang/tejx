@@ -1,0 +1,4 @@
+// Description: Verify unclosed template literal produces a diagnostic error.
+function main() {
+    let s = `unterminated template literal;
+}
