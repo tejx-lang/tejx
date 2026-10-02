@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "tejx-rt"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "crossbeam-deque",
  "hmac",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "tejxc"
-version = "1.0.7"
+version = "2.0.0"
 dependencies = [
  "cc",
  "colored",
