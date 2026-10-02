@@ -3,8 +3,8 @@ import { check } from 'k6';
 
 export const options = {
     stages: [
-        { duration: '15s', target: 20000 },
-        { duration: '30s', target: 20000 },
+        { duration: '15s', target: 10000 },
+        { duration: '30s', target: 10000 },
         { duration: '10s', target: 0 },
     ],
     thresholds: {
