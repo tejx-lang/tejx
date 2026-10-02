@@ -1070,7 +1070,7 @@ extern "C" fn tejx_crash_handler(
     _ucontext: *mut libc::c_void,
 ) {
     let fault_addr = if !info.is_null() {
-        unsafe { (*info).si_addr }
+        unsafe { (*info).si_addr() }
     } else {
         std::ptr::null_mut()
     };
