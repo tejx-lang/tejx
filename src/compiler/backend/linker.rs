@@ -90,14 +90,44 @@ impl Linker {
 
         let mut final_objects = Vec::new();
 
-        struct CleanupGuard<'a>(&'a std::path::Path);
-        impl<'a> Drop for CleanupGuard<'a> {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_file(self.0);
+        fn cleanup_file_and_stray_temps(path: &std::path::Path) {
+            let _ = std::fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let prefix = format!("{}-", stem);
+                    let exact_tmp = format!("{}.tmp", stem);
+                    let exact_s_tmp = format!("{}.s.tmp", stem);
+                    let exact_o_tmp = format!("{}.o.tmp", stem);
+                    if let Ok(entries) = std::fs::read_dir(parent) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name();
+                            let name_str = name.to_string_lossy();
+                            if name_str == exact_tmp
+                                || name_str == exact_s_tmp
+                                || name_str == exact_o_tmp
+                                || (name_str.starts_with(&prefix)
+                                    && (name_str.ends_with(".tmp")
+                                        || name_str.ends_with(".s.tmp")
+                                        || name_str.ends_with(".o.tmp")))
+                            {
+                                let _ = std::fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        let mut generated_objects = Vec::new();
+        struct ObjectCleanupGuard(Vec<std::path::PathBuf>);
+        impl Drop for ObjectCleanupGuard {
+            fn drop(&mut self) {
+                for obj in &self.0 {
+                    cleanup_file_and_stray_temps(obj);
+                }
+            }
+        }
+
+        let mut generated_objects_guard = ObjectCleanupGuard(Vec::new());
 
         // Step 1: Compile any .ll files to .s (assembly) to bypass Apple Clang object emitter bugs, then assemble to .o
         for obj in &self.obj_paths {
@@ -127,6 +157,7 @@ impl Linker {
                         .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
                     if !output_asm.status.success() {
                         let stderr = String::from_utf8_lossy(&output_asm.stderr);
+                        cleanup_file_and_stray_temps(obj);
                         return Err(format!(
                             "LLVM assembly generation failed for {}:\n{}",
                             obj.display(),
@@ -163,6 +194,8 @@ impl Linker {
 
                 if !output_obj.status.success() {
                     let stderr = String::from_utf8_lossy(&output_obj.stderr);
+                    cleanup_file_and_stray_temps(&out_obj);
+                    cleanup_file_and_stray_temps(obj);
                     return Err(format!(
                         "Assembly failed for {}:\n{}",
                         obj.display(),
@@ -170,7 +203,9 @@ impl Linker {
                     ));
                 }
 
-                generated_objects.push(out_obj.clone());
+                if !self.compile_only {
+                    generated_objects_guard.0.push(out_obj.clone());
+                }
                 final_objects.push(out_obj);
             } else {
                 final_objects.push(obj.to_path_buf());
@@ -232,14 +267,38 @@ impl Linker {
             .output()
             .map_err(|e| format!("Failed to execute linker {}: {}", compiler, e))?;
 
-        // Cleanup intermediate .o files to prevent disk clutter
-        for obj in &generated_objects {
-            let _ = std::fs::remove_file(obj);
-        }
+        drop(generated_objects_guard);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            cleanup_file_and_stray_temps(&self.output_path);
             return Err(format!("Linker failed:\n{}", stderr));
+        }
+
+        // Clean up any stray temporary files created by the linker
+        if let Some(parent) = self.output_path.parent() {
+            if let Some(stem) = self.output_path.file_stem().and_then(|s| s.to_str()) {
+                let prefix = format!("{}-", stem);
+                let exact_tmp = format!("{}.tmp", stem);
+                let exact_s_tmp = format!("{}.s.tmp", stem);
+                let exact_o_tmp = format!("{}.o.tmp", stem);
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name_str = name.to_string_lossy();
+                        if name_str == exact_tmp
+                            || name_str == exact_s_tmp
+                            || name_str == exact_o_tmp
+                            || (name_str.starts_with(&prefix)
+                                && (name_str.ends_with(".tmp")
+                                    || name_str.ends_with(".s.tmp")
+                                    || name_str.ends_with(".o.tmp")))
+                        {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())

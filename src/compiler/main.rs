@@ -783,13 +783,41 @@ fn main() {
         linker.set_compile_only(true);
     }
 
+    fn cleanup_temp_file_and_temps(path: &Path) {
+        let _ = fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let prefix = format!("{}-", stem);
+                let exact_tmp = format!("{}.tmp", stem);
+                let exact_s_tmp = format!("{}.s.tmp", stem);
+                let exact_o_tmp = format!("{}.o.tmp", stem);
+                if let Ok(entries) = fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name_str = name.to_string_lossy();
+                        if name_str == exact_tmp
+                            || name_str == exact_s_tmp
+                            || name_str == exact_o_tmp
+                            || (name_str.starts_with(&prefix)
+                                && (name_str.ends_with(".tmp")
+                                    || name_str.ends_with(".s.tmp")
+                                    || name_str.ends_with(".o.tmp")))
+                        {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     match linker.link() {
         Ok(_) => {
-            let _ = fs::remove_file(&temp_ll_file);
+            cleanup_temp_file_and_temps(Path::new(&temp_ll_file));
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            let _ = fs::remove_file(&temp_ll_file);
+            cleanup_temp_file_and_temps(Path::new(&temp_ll_file));
             process::exit(1);
         }
     }

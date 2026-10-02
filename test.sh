@@ -250,7 +250,7 @@ run_test_file() {
     ) > "$test_log" 2>&1
 
     # Cleanup test binaries and intermediate files
-    rm -f "$binary" "$ll_file" "${file%.*}.o" "${file%.*}.s" "${file%.*}-"*.tmp "${file%.*}.o.tmp" "$compile_out" "$out_file"
+    rm -f "$binary" "$ll_file" "${file%.*}.o" "${file%.*}.s" "${file%.*}-"*.tmp "${file%.*}.o.tmp" "${file%.*}.s.tmp" "$compile_out" "$out_file"
 
     # Output log atomically so test outputs do not interleave
     cat "$test_log"
@@ -300,6 +300,8 @@ cleanup() {
     trap - INT TERM EXIT
     kill $(jobs -p) 2>/dev/null
     exec 3>&- 2>/dev/null
+    find "$BUILD_DIR" -type f \( -name "*.ll" -o -name "*.tmp" -o -name "*.s.tmp" -o -name "*.o.tmp" -o -name "*.o" -o -name "*.s" \) -delete 2>/dev/null
+    find "$SCRIPT_DIR/tests" -type f \( -name "*.ll" -o -name "*.tmp" -o -name "*.s.tmp" -o -name "*.o.tmp" -o -name "*.o" -o -name "*.s" \) -delete 2>/dev/null
     rm -rf "$RESULTS_DIR" 2>/dev/null
     exit 1
 }
@@ -407,5 +409,7 @@ else
 fi
 
 rm -rf "$RESULTS_DIR"
+find "$BUILD_DIR" -type f \( -name "*.ll" -o -name "*.tmp" -o -name "*.s.tmp" -o -name "*.o.tmp" -o -name "*.o" -o -name "*.s" \) -delete 2>/dev/null
+find "$SCRIPT_DIR/tests" -type f \( -name "*.ll" -o -name "*.tmp" -o -name "*.s.tmp" -o -name "*.o.tmp" -o -name "*.o" -o -name "*.s" \) -delete 2>/dev/null
 
 [ "$FAILED" -eq 0 ] && exit 0 || exit 1
