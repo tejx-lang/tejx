@@ -27,12 +27,6 @@ jobs:
             bin: tejxc
             asset_name: tejxc-macos-arm64
             ext: .tar.gz
-          - os: macos-latest
-            os-name: macOS-x64
-            target: x86_64-apple-darwin
-            bin: tejxc
-            asset_name: tejxc-macos-x64
-            ext: .tar.gz
 
     steps:
       - name: Checkout code
