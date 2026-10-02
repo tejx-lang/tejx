@@ -220,6 +220,8 @@ impl Linker {
             cmd.arg("-lm");
             cmd.arg("-lpthread");
             cmd.arg("-ldl");
+            cmd.arg("-lssl");
+            cmd.arg("-lcrypto");
         } else if cfg!(target_os = "macos") {
             cmd.arg("-framework");
             cmd.arg("Security");

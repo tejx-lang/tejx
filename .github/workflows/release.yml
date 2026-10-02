@@ -37,11 +37,11 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
-      - name: Install LLVM (Linux)
+      - name: Install Dependencies (Linux)
         if: matrix.platform.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang
+          sudo apt-get install -y llvm clang pkg-config libssl-dev
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.platform.target }}
