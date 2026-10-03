@@ -123,7 +123,6 @@ impl Linker {
                     asm_cmd.arg(obj);
                     asm_cmd.arg("-o");
                     asm_cmd.arg(&out_asm);
-                    asm_cmd.arg("-fno-temp-file");
 
                     if self.verbose {
                         eprintln!("[linker] Executing: {:?}", asm_cmd);
@@ -160,7 +159,6 @@ impl Linker {
                 obj_cmd.arg(obj);
                 obj_cmd.arg("-o");
                 obj_cmd.arg(&out_obj);
-                obj_cmd.arg("-fno-temp-file");
 
                 if self.verbose {
                     eprintln!("[linker] Executing: {:?}", obj_cmd);
@@ -266,8 +264,17 @@ impl Linker {
             return Ok(cc);
         }
 
-        // Check for compilers in order of preference
-        let candidates = ["cc", "clang", "gcc"];
+        // Check for compilers in order of preference (clang is preferred for LLVM IR .ll support)
+        let candidates = [
+            "clang",
+            "clang-19",
+            "clang-18",
+            "clang-17",
+            "clang-16",
+            "clang-15",
+            "cc",
+            "gcc",
+        ];
         for bin in candidates {
             if self.check_command(bin) {
                 return Ok(bin.to_string());
