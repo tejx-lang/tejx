@@ -1187,13 +1187,57 @@ extern "C" fn tejx_crash_handler(
             }
         }
     }
-    let mut bt = [std::ptr::null_mut(); 32];
-    let size = unsafe { libc::backtrace(bt.as_mut_ptr(), 32) };
-    let symbols = unsafe { libc::backtrace_symbols(bt.as_ptr(), size) };
-    if !symbols.is_null() {
-        for i in 0..size {
-            let sym = unsafe { std::ffi::CStr::from_ptr(*symbols.offset(i as isize)) };
-            eprintln!("  [{}] {}", i, sym.to_string_lossy());
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    unsafe {
+        let uc = _ucontext as *mut libc::ucontext_t;
+        if !uc.is_null() {
+            let mc = &(*uc).uc_mcontext;
+            let pc = mc.pc;
+            let sp = mc.sp;
+            let lr = mc.regs[30];
+            let fp = mc.regs[29];
+            eprintln!("  PC={:#x} LR={:#x} SP={:#x} FP={:#x}", pc, lr, sp, fp);
+
+            let mut dlinfo: libc::Dl_info = std::mem::zeroed();
+            if libc::dladdr(pc as *const libc::c_void, &mut dlinfo) != 0 && !dlinfo.dli_sname.is_null() {
+                eprintln!("  PC symbol: {}", std::ffi::CStr::from_ptr(dlinfo.dli_sname).to_string_lossy());
+            }
+            if libc::dladdr(lr as *const libc::c_void, &mut dlinfo) != 0 && !dlinfo.dli_sname.is_null() {
+                eprintln!("  LR symbol: {}", std::ffi::CStr::from_ptr(dlinfo.dli_sname).to_string_lossy());
+            }
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    unsafe {
+        let uc = _ucontext as *mut libc::ucontext_t;
+        if !uc.is_null() {
+            let gregs = &(*uc).uc_mcontext.gregs;
+            let rip = gregs[libc::REG_RIP as usize] as u64;
+            let rsp = gregs[libc::REG_RSP as usize] as u64;
+            let rbp = gregs[libc::REG_RBP as usize] as u64;
+            eprintln!("  RIP={:#x} RSP={:#x} RBP={:#x}", rip, rsp, rbp);
+
+            let mut dlinfo: libc::Dl_info = std::mem::zeroed();
+            if libc::dladdr(rip as *const libc::c_void, &mut dlinfo) != 0 && !dlinfo.dli_sname.is_null() {
+                eprintln!("  RIP symbol: {}", std::ffi::CStr::from_ptr(dlinfo.dli_sname).to_string_lossy());
+            }
+        }
+    }
+
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+    let _ = std::io::stdout().flush();
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut bt = [std::ptr::null_mut(); 32];
+        let size = unsafe { libc::backtrace(bt.as_mut_ptr(), 32) };
+        let symbols = unsafe { libc::backtrace_symbols(bt.as_ptr(), size) };
+        if !symbols.is_null() {
+            for i in 0..size {
+                let sym = unsafe { std::ffi::CStr::from_ptr(*symbols.offset(i as isize)) };
+                eprintln!("  [{}] {}", i, sym.to_string_lossy());
+            }
         }
     }
     unsafe {
