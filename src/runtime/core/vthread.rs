@@ -123,14 +123,23 @@ fn get_stack_registry() -> &'static StackRegistry {
 /// and the stack was successfully grown.
 #[inline(never)]
 pub unsafe fn try_grow_stack_at(fault_addr: usize) -> bool {
+    // 1. Lockless Fast Path: check the currently running virtual thread on this OS thread.
+    // Stack guard hits occur exclusively on the thread executing that stack.
+    let vt_ptr = VTHREAD_CTX.with(|c| c.get().current);
+    if !vt_ptr.is_null() {
+        if (*vt_ptr)._stack.try_grow_at(fault_addr) {
+            return true;
+        }
+    }
+
+    // 2. Fallback Path: Check the global stack registry with adaptive spinning.
     let ptr = STACK_REGISTRY_PTR.load(Ordering::Acquire);
     if ptr.is_null() {
         return false;
     }
     let registry = &*(ptr as *const StackRegistry);
-    // Non-blocking try_lock with a small spin to avoid signal-handler deadlock
     let mut entries = None;
-    for _ in 0..100 {
+    for _ in 0..10_000 {
         if let Some(guard) = registry.entries.try_lock() {
             entries = Some(guard);
             break;
@@ -151,8 +160,9 @@ pub unsafe fn try_grow_stack_at(fault_addr: usize) -> bool {
                 return false;
             }
             // Fault is below committed_low → need to grow.
-            // Grow in chunks of at least 16 KB (or page_size if larger) to minimize page faults.
-            let chunk_size = entry.page_size.max(16 * 1024);
+            // Grow in chunks of at least 64 KB (or page_size if larger) to minimize page faults.
+            let page_size = entry.page_size.max(4096);
+            let chunk_size = page_align_up(page_size.max(64 * 1024), page_size);
             let mut new_low = current_low;
             while new_low > fault_addr && new_low > entry.max_committed_low {
                 new_low = new_low.saturating_sub(chunk_size);
@@ -292,7 +302,15 @@ impl GrowableStack {
             // Decommit pages below the new boundary
             let decommit_size = new_committed_low - current_committed_low;
             unsafe {
-                // MADV_DONTNEED releases physical pages back to the OS without unmapping
+                // On macOS, MADV_FREE marks pages so physical memory is reclaimed right away.
+                // On Linux, MADV_DONTNEED releases physical pages back to the kernel immediately.
+                #[cfg(target_os = "macos")]
+                libc::madvise(
+                    current_committed_low as *mut libc::c_void,
+                    decommit_size,
+                    libc::MADV_FREE,
+                );
+                #[cfg(not(target_os = "macos"))]
                 libc::madvise(
                     current_committed_low as *mut libc::c_void,
                     decommit_size,
@@ -308,6 +326,46 @@ impl GrowableStack {
             self.committed_low
                 .store(new_committed_low, Ordering::Release);
         }
+    }
+
+    /// Attempt to grow this stack if `fault_addr` falls within its reserved guard region.
+    /// Returns true if grown successfully.
+    pub fn try_grow_at(&self, fault_addr: usize) -> bool {
+        let mmap_base = self.mmap_base as usize;
+        let mmap_end = mmap_base + self.mmap_size;
+        if fault_addr >= mmap_base && fault_addr < mmap_end {
+            let current_low = self.committed_low.load(Ordering::Acquire);
+            if fault_addr >= current_low {
+                // Real memory fault in an already committed stack page — not a guard page hit.
+                return false;
+            }
+            let page_size = self.page_size.max(4096);
+            let chunk_size = page_align_up(page_size.max(64 * 1024), page_size);
+            let mut new_low = current_low;
+            while new_low > fault_addr && new_low > mmap_base {
+                new_low = new_low.saturating_sub(chunk_size);
+            }
+            if new_low < mmap_base {
+                new_low = mmap_base;
+            }
+            if new_low >= current_low {
+                return false;
+            }
+            let grow_size = current_low - new_low;
+            let result = unsafe {
+                libc::mprotect(
+                    new_low as *mut libc::c_void,
+                    grow_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                )
+            };
+            if result != 0 {
+                return false;
+            }
+            self.committed_low.store(new_low, Ordering::Release);
+            return true;
+        }
+        false
     }
 }
 
@@ -414,6 +472,14 @@ impl PooledStack {
             StackKind::Growable(_) => true,
         }
     }
+
+    #[inline(always)]
+    pub fn try_grow_at(&self, fault_addr: usize) -> bool {
+        match self.inner.as_ref() {
+            Some(StackKind::Growable(g)) => g.try_grow_at(fault_addr),
+            _ => false,
+        }
+    }
 }
 
 thread_local! {
@@ -431,14 +497,31 @@ impl Drop for PooledStack {
                 StackKind::Slab(s) => {
                     s.reset_canary();
                     let _ = SLAB_POOL.try_with(|pool| {
-                        pool.borrow_mut().push(s);
+                        let mut p = pool.borrow_mut();
+                        if p.len() < 32 {
+                            p.push(s);
+                        }
                     });
                 }
                 StackKind::Growable(mut g) => {
                     g.shrink_to(os_page_size());
-                    let _ = GROWABLE_POOL.try_with(|pool| {
-                        pool.borrow_mut().push(g);
+                    let res = GROWABLE_POOL.try_with(|pool| {
+                        let mut p = pool.borrow_mut();
+                        if p.len() < 32 {
+                            p.push(g);
+                            None
+                        } else {
+                            Some(g)
+                        }
                     });
+                    if let Ok(Some(g)) = res {
+                        let mut global = GLOBAL_GROWABLE_POOL.lock();
+                        if global.len() < 64 {
+                            global.push(g);
+                        }
+                        // If both pools are at capacity, `g` is dropped here,
+                        // calling munmap and returning all virtual address space and physical pages to OS!
+                    }
                 }
             }
         }
@@ -462,6 +545,26 @@ fn acquire_stack(stack_size: usize) -> PooledStack {
         .try_with(|pool| pool.borrow_mut().pop())
         .unwrap_or(None);
     if let Some(g) = growable {
+        let current_cap = g.capacity();
+        if current_cap < target_size {
+            let needed = target_size - current_cap;
+            let current_low = g.committed_low.load(Ordering::Acquire);
+            let grow_bytes = page_align_up(needed, g.page_size);
+            let new_low = current_low.saturating_sub(grow_bytes).max(g.mmap_base as usize);
+            if new_low < current_low {
+                let actual_grow = current_low - new_low;
+                let res = unsafe {
+                    libc::mprotect(
+                        new_low as *mut libc::c_void,
+                        actual_grow,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                    )
+                };
+                if res == 0 {
+                    g.committed_low.store(new_low, Ordering::Release);
+                }
+            }
+        }
         return PooledStack {
             inner: Some(StackKind::Growable(g)),
         };
@@ -469,6 +572,26 @@ fn acquire_stack(stack_size: usize) -> PooledStack {
     {
         let mut global = GLOBAL_GROWABLE_POOL.lock();
         if let Some(g) = global.pop() {
+            let current_cap = g.capacity();
+            if current_cap < target_size {
+                let needed = target_size - current_cap;
+                let current_low = g.committed_low.load(Ordering::Acquire);
+                let grow_bytes = page_align_up(needed, g.page_size);
+                let new_low = current_low.saturating_sub(grow_bytes).max(g.mmap_base as usize);
+                if new_low < current_low {
+                    let actual_grow = current_low - new_low;
+                    let res = unsafe {
+                        libc::mprotect(
+                            new_low as *mut libc::c_void,
+                            actual_grow,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                        )
+                    };
+                    if res == 0 {
+                        g.committed_low.store(new_low, Ordering::Release);
+                    }
+                }
+            }
             return PooledStack {
                 inner: Some(StackKind::Growable(g)),
             };
