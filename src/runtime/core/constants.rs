@@ -33,17 +33,17 @@ pub const STACK_CANARY_MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;
 // Memory & Garbage Collector Configuration
 // =============================================================================
 
-/// Default initial Young Generation (Eden) size (64 MB).
-pub const DEFAULT_YOUNG_GEN_SIZE: usize = 64 * 1024 * 1024;
+/// Default initial Young Generation (Eden) size (512 MB).
+pub const DEFAULT_YOUNG_GEN_SIZE: usize = 512 * 1024 * 1024;
 
-/// Default Survivor Space size (16 MB per survivor space; 2 survivor spaces).
-pub const DEFAULT_SURVIVOR_SIZE: usize = 16 * 1024 * 1024;
+/// Default Survivor Space size (64 MB per survivor space; 2 survivor spaces).
+pub const DEFAULT_SURVIVOR_SIZE: usize = 64 * 1024 * 1024;
 
 /// Minimum Young Generation size (16 MB).
 pub const MIN_YOUNG_GEN_SIZE: usize = 16 * 1024 * 1024;
 
-/// Default initial Old Generation size (512 MB).
-pub const DEFAULT_OLD_GEN_SIZE: usize = 512 * 1024 * 1024;
+/// Default initial Old Generation size (2048 MB).
+pub const DEFAULT_OLD_GEN_SIZE: usize = 2048 * 1024 * 1024;
 
 /// Minimum Old Generation floor (64 MB).
 pub const MIN_OLD_GEN_SIZE: usize = 64 * 1024 * 1024;

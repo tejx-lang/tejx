@@ -465,16 +465,35 @@ pub unsafe extern "C" fn rt_write_barrier(obj: i64, value: i64) {
         return;
     }
 
+    let obj_ptr = (obj - HEAP_OFFSET) as *mut u8;
+
+    // Ultra fast path: if GC is not currently in the marking phase:
+    // 1) If the target object is in the Young Generation, no old->young remembered set
+    //    entry is needed, nor is concurrent mark tracking required.
+    // 2) If the target object is in Old/LOS generation but already marked dirty in remset,
+    //    it is already tracked and does not need to be added again.
+    if GC_PHASE.load(std::sync::atomic::Ordering::Relaxed) != GC_PHASE_MARK {
+        if in_young_gen(obj_ptr) {
+            return;
+        }
+        let header = rt_get_header(obj_ptr);
+        if ((*header).gc_flags & FLAG_REMSET_DIRTY) != 0 {
+            return;
+        }
+    }
+
+    rt_write_barrier_slow(obj_ptr, value);
+}
+
+#[cold]
+unsafe fn rt_write_barrier_slow(obj_ptr: *mut u8, value: i64) {
     // 1. Concurrent Mark Write Barrier (Incremental Update)
     if GC_PHASE.load(std::sync::atomic::Ordering::Relaxed) == GC_PHASE_MARK {
-        MY_CONTEXT.with(|ctx_cell| {
-            let ctx = &*ctx_cell.get();
-            ctx.mark_queue.lock().unwrap().push(value);
-        });
+        let ctx = current_thread_context();
+        (*ctx).mark_queue.lock().unwrap().push(value);
     }
 
     // 2. Old -> Young Remembered Set
-    let obj_ptr = (obj - HEAP_OFFSET) as *mut u8;
     let value_ptr = (value - HEAP_OFFSET) as *mut u8;
 
     if !in_young_gen(obj_ptr) {
@@ -482,20 +501,17 @@ pub unsafe extern "C" fn rt_write_barrier(obj: i64, value: i64) {
             let header = rt_get_header(obj_ptr);
             if ((*header).gc_flags & FLAG_REMSET_DIRTY) == 0 {
                 (*header).gc_flags |= FLAG_REMSET_DIRTY;
-                MY_CONTEXT.with(|ctx_cell| {
-                    let ctx = &*ctx_cell.get();
-                    ctx.remset.lock().unwrap().push(obj_ptr);
-                });
+                let ctx = current_thread_context();
+                (*ctx).remset.lock().unwrap().push(obj_ptr);
             }
         }
     }
 }
 
+#[inline(always)]
 pub fn in_young_gen(ptr: *mut u8) -> bool {
     unsafe {
-        (ptr >= EDEN_START && ptr < EDEN_END)
-            || (ptr >= FROM_SURVIVOR && ptr < FROM_SURVIVOR.add(SURVIVOR_SIZE))
-            || (ptr >= TO_SURVIVOR && ptr < TO_SURVIVOR.add(SURVIVOR_SIZE))
+        ptr >= EDEN_START && ptr < TO_SURVIVOR.add(SURVIVOR_SIZE)
     }
 }
 
@@ -600,7 +616,7 @@ pub unsafe extern "C" fn rt_is_gc_body_ptr_exact(ptr: *mut u8) -> bool {
 }
 
 // --- Thread Local Allocation Buffer (TLAB) ---
-pub const TLAB_SIZE: usize = 64 * 1024; // 64KB
+pub const TLAB_SIZE: usize = 2 * 1024 * 1024; // 2MB
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -639,9 +655,35 @@ pub struct Arena {
     pub capacity: usize,
 }
 
+struct ArenaPool {
+    arenas: Vec<*mut Arena>,
+}
+
+impl Drop for ArenaPool {
+    fn drop(&mut self) {
+        unsafe {
+            for arena in self.arenas.drain(..) {
+                munmap((*arena).base as *mut _, (*arena).capacity);
+                free(arena as *mut std::ffi::c_void);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_ARENA_POOL: std::cell::RefCell<ArenaPool> = const { std::cell::RefCell::new(ArenaPool { arenas: Vec::new() }) };
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rt_arena_create(size: usize) -> *mut Arena {
     let actual_size = if size == 0 { ARENA_DEFAULT_SIZE } else { size };
+    if actual_size <= ARENA_DEFAULT_SIZE {
+        if let Ok(Some(arena)) = THREAD_ARENA_POOL.try_with(|p| p.borrow_mut().arenas.pop()) {
+            (*arena).offset = 0;
+            return arena;
+        }
+    }
+
     let base = mmap(
         std::ptr::null_mut(),
         actual_size,
@@ -660,6 +702,7 @@ pub unsafe extern "C" fn rt_arena_create(size: usize) -> *mut Arena {
         exit(1);
     }
 
+    libc::madvise(base as *mut _, actual_size, libc::MADV_WILLNEED);
     let arena_obj = malloc(std::mem::size_of::<Arena>()) as *mut Arena;
     (*arena_obj).base = base;
     (*arena_obj).offset = 0;
@@ -671,8 +714,22 @@ pub unsafe extern "C" fn rt_arena_create(size: usize) -> *mut Arena {
 pub unsafe extern "C" fn rt_arena_alloc_raw(arena: *mut Arena, size: usize) -> *mut u8 {
     let aligned_size = (size + 7) & !7;
     if (*arena).offset + aligned_size > (*arena).capacity {
-        //printf("FATAL: Arena overflow\n\0".as_ptr() as *const _);
-        exit(1);
+        let new_cap = ((*arena).capacity * 2).max((*arena).capacity + aligned_size + 64 * 1024 * 1024);
+        let new_base = mmap(
+            std::ptr::null_mut(),
+            new_cap,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANON,
+            -1,
+            0,
+        ) as *mut u8;
+        if new_base as isize != -1 {
+            (*arena).base = new_base;
+            (*arena).offset = 0;
+            (*arena).capacity = new_cap;
+        } else {
+            exit(1);
+        }
     }
     let ptr = (*arena).base.add((*arena).offset);
     (*arena).offset += aligned_size;
@@ -684,12 +741,15 @@ pub unsafe extern "C" fn rt_arena_alloc(arena: *mut Arena, type_id: i32, body_si
     // Total size = 24 bytes header + body_size
     let total_size = 24 + body_size as usize;
     let obj_ptr = rt_arena_alloc_raw(arena, total_size);
-    std::ptr::write_bytes(obj_ptr, 0, total_size);
 
     // Initialise header (type_id, etc.)
     let header = obj_ptr as *mut ObjectHeader;
+    (*header).gc_word = 0;
     (*header).type_id = type_id as u16;
+    (*header).flags = 0;
     (*header).length = body_size as u32;
+    (*header).capacity = 0;
+    (*header).gc_flags = 0;
 
     // Tag arena objects like stack objects so GC/runtime scan them but never move them.
     (obj_ptr as i64) + 24 + STACK_OFFSET
@@ -702,6 +762,24 @@ pub unsafe extern "C" fn rt_arena_reset(arena: *mut Arena) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_arena_destroy(arena: *mut Arena) {
+    if arena.is_null() {
+        return;
+    }
+    if (*arena).capacity == ARENA_DEFAULT_SIZE {
+        let recycled = THREAD_ARENA_POOL.try_with(|p| {
+            let mut pool = p.borrow_mut();
+            if pool.arenas.len() < 4 {
+                (*arena).offset = 0;
+                pool.arenas.push(arena);
+                true
+            } else {
+                false
+            }
+        }).unwrap_or(false);
+        if recycled {
+            return;
+        }
+    }
     munmap((*arena).base as *mut _, (*arena).capacity);
     free(arena as *mut std::ffi::c_void);
 }
@@ -1451,7 +1529,6 @@ pub unsafe extern "C" fn gc_allocate(size: usize) -> *mut u8 {
 
 #[inline(always)]
 unsafe fn gc_allocate_impl(size: usize) -> *mut u8 {
-    ensure_thread_registered();
     let header_size = std::mem::size_of::<ObjectHeader>();
     let total_size = size + header_size;
     let aligned_size = (total_size + 7) & !7;
@@ -1468,23 +1545,26 @@ unsafe fn gc_allocate_impl(size: usize) -> *mut u8 {
     let tlab_top = (*ctx_ptr).tlab_top;
     let tlab_end = (*ctx_ptr).tlab_end;
 
-    // Try TLAB allocation
+    // Fast path: TLAB bump allocation
     if !tlab_top.is_null() && tlab_top.add(aligned_size) <= tlab_end {
         let p = tlab_top;
         (*ctx_ptr).tlab_top = tlab_top.add(aligned_size);
 
-        let header = p as *mut ObjectHeader;
-        (*header).gc_word = 0;
-        (*header).type_id = 0;
-        (*header).flags = 0;
-        (*header).length = 0;
-        (*header).capacity = 0;
-        (*header).gc_flags = 0;
-        let body_ptr = p.add(header_size);
-        memset(body_ptr as *mut _, 0, size);
-        return body_ptr;
+        // Zero 24-byte ObjectHeader (3 x 64-bit words)
+        let h = p as *mut u64;
+        *h = 0;
+        *h.add(1) = 0;
+        *h.add(2) = 0;
+
+        return p.add(header_size);
     }
 
+    gc_allocate_slow(size, aligned_size, ctx_ptr)
+}
+
+#[cold]
+unsafe fn gc_allocate_slow(_size: usize, aligned_size: usize, ctx_ptr: *mut ThreadContext) -> *mut u8 {
+    let header_size = std::mem::size_of::<ObjectHeader>();
     // TLAB refill or slow path (atomic global allocation)
     let refill_size = if aligned_size > TLAB_SIZE / 2 {
         aligned_size // Too large for TLAB, allocate directly
@@ -1541,34 +1621,20 @@ unsafe fn gc_allocate_impl(size: usize) -> *mut u8 {
             )
             .is_ok()
         {
+            memset(current_top as *mut _, 0, refill_size);
+            let p = current_top;
+            let h = p as *mut u64;
+            *h = 0;
+            *h.add(1) = 0;
+            *h.add(2) = 0;
+
             if refill_size == aligned_size {
-                memset(current_top as *mut _, 0, refill_size);
-                let header = current_top as *mut ObjectHeader;
-                (*header).gc_word = 0;
-                (*header).type_id = 0;
-                (*header).flags = 0;
-                (*header).length = 0;
-                (*header).capacity = 0;
-                (*header).gc_flags = 0;
-                let body_ptr = current_top.add(header_size);
-                memset(body_ptr as *mut _, 0, size);
-                return body_ptr;
+                return current_top.add(header_size);
             } else {
                 // Refill TLAB
-                memset(current_top as *mut _, 0, refill_size);
                 (*ctx_ptr).tlab_top = current_top.add(aligned_size);
                 (*ctx_ptr).tlab_end = current_top.add(refill_size);
-
-                let header = current_top as *mut ObjectHeader;
-                (*header).gc_word = 0;
-                (*header).type_id = 0;
-                (*header).flags = 0;
-                (*header).length = 0;
-                (*header).capacity = 0;
-                (*header).gc_flags = 0;
-                let body_ptr = current_top.add(header_size);
-                memset(body_ptr as *mut _, 0, size);
-                return body_ptr;
+                return current_top.add(header_size);
             }
         }
     }

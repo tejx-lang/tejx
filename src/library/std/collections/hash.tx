@@ -90,14 +90,15 @@ export class Map<K, V> {
 
     private hashKey(key: K): int {
         let mode = this.keyMode;
+        if (mode == 1) {
+            return (key as int) & 2147483647;
+        }
         if (mode == 0) {
             mode = this.detectKeyMode(key);
             this.keyMode = mode;
+            if (mode == 1) return (key as int) & 2147483647;
         }
 
-        if (mode == 1) {
-            return this.hashInt(key as int);
-        }
         if (mode == 2) {
             return (key as bool) ? 1 : 0;
         }
@@ -238,9 +239,19 @@ export class Map<K, V> {
             this.reservedStoreCapacity = entries;
         }
 
-        let firstLive = this.firstLiveIndex();
-        if (firstLive >= 0) {
-            this.ensureStoreCapacity(entries, this.keysStore[firstLive], this.valuesStore[firstLive]);
+        if (entries > this.storeCapacity) {
+            if (this.storeCapacity == 0) {
+                this.keysStore = rt_array_new<K>(entries, 8);
+                this.valuesStore = rt_array_new<V>(entries, 8);
+                this.hashStore = rt_array_new<int>(entries, 4);
+                this.liveStore = rt_array_new<bool>(entries, 1);
+                this.storeCapacity = entries;
+            } else {
+                let firstLive = this.firstLiveIndex();
+                if (firstLive >= 0) {
+                    this.ensureStoreCapacity(entries, this.keysStore[firstLive], this.valuesStore[firstLive]);
+                }
+            }
         }
 
         let desired = ((entries * 10) / 7) + 1;
@@ -270,77 +281,106 @@ export class Map<K, V> {
     }
 
     set(key: K, val: V): void {
-        let hash = this.hashKey(key);
-        if (this.shouldGrow(this.liveCount + 1)) {
+        let mode = this.keyMode;
+        let hash = (mode == 1) ? ((key as int) & 2147483647) : this.hashKey(key);
+        if (this.liveCount + 1 + this.tombstoneCount >= this.growthLimit) {
             this.rehash(this.buckets.length() * 2);
         }
 
-        let capacity = this.buckets.length();
-        let index = hash & this.bucketMask;
+        let mask = this.bucketMask;
+        let buckets = this.buckets;
+        let capacity = buckets.length();
+        let index = hash & mask;
         let firstDeleted = -1;
         let bucket = -1;
 
-        for (let probed = 0; probed < capacity; probed++) {
-            let slot = this.buckets[index];
-            if (slot == 0) {
-                bucket = firstDeleted >= 0 ? firstDeleted : index;
-                break;
-            }
-            if (slot > 0) {
+        let keysStore = this.keysStore;
+        let valuesStore = this.valuesStore;
+        let hashStore = this.hashStore;
+        let liveStore = this.liveStore;
+
+        if (this.tombstoneCount == 0) {
+            for (let probed = 0; probed < capacity; probed++) {
+                let slot = buckets[index];
+                if (slot == 0) {
+                    bucket = index;
+                    break;
+                }
                 let entryIndex = slot - 1;
-                if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
-                    this.valuesStore[entryIndex] = val;
+                if (hashStore[entryIndex] == hash && keysStore[entryIndex] == key) {
+                    valuesStore[entryIndex] = val;
                     return;
                 }
-            } else if (firstDeleted < 0) {
-                firstDeleted = index;
+                index = (index + 1) & mask;
             }
-
-            index = index + 1;
-            if (index == capacity) index = 0;
-        }
-
-        if (bucket < 0) {
-            this.rehash(capacity * 2);
-            capacity = this.buckets.length();
-            index = hash & this.bucketMask;
-            firstDeleted = -1;
+        } else {
             for (let probed = 0; probed < capacity; probed++) {
-                let slot = this.buckets[index];
+                let slot = buckets[index];
                 if (slot == 0) {
                     bucket = firstDeleted >= 0 ? firstDeleted : index;
                     break;
                 }
                 if (slot > 0) {
                     let entryIndex = slot - 1;
-                    if (this.hashStore[entryIndex] == hash && this.keysStore[entryIndex] == key) {
-                        this.valuesStore[entryIndex] = val;
+                    if (hashStore[entryIndex] == hash && keysStore[entryIndex] == key) {
+                        valuesStore[entryIndex] = val;
                         return;
                     }
                 } else if (firstDeleted < 0) {
                     firstDeleted = index;
                 }
 
-                index = index + 1;
-                if (index == capacity) index = 0;
+                index = (index + 1) & mask;
             }
         }
 
-        if (this.buckets[bucket] < 0) {
+        if (bucket < 0) {
+            this.rehash(capacity * 2);
+            capacity = this.buckets.length();
+            buckets = this.buckets;
+            mask = this.bucketMask;
+            index = hash & mask;
+            firstDeleted = -1;
+            for (let probed = 0; probed < capacity; probed++) {
+                let slot = buckets[index];
+                if (slot == 0) {
+                    bucket = firstDeleted >= 0 ? firstDeleted : index;
+                    break;
+                }
+                if (slot > 0) {
+                    let entryIndex = slot - 1;
+                    if (hashStore[entryIndex] == hash && keysStore[entryIndex] == key) {
+                        valuesStore[entryIndex] = val;
+                        return;
+                    }
+                } else if (firstDeleted < 0) {
+                    firstDeleted = index;
+                }
+
+                index = (index + 1) & mask;
+            }
+        }
+
+        if (this.tombstoneCount > 0 && buckets[bucket] < 0) {
             this.tombstoneCount = this.tombstoneCount - 1;
         }
 
-        if (this.storageCount == this.storeCapacity) {
-            this.ensureStoreCapacity(this.storageCount + 1, key, val);
+        let entryIndex = this.storageCount;
+        if (entryIndex == this.storeCapacity) {
+            this.ensureStoreCapacity(entryIndex + 1, key, val);
+            buckets = this.buckets;
+            keysStore = this.keysStore;
+            valuesStore = this.valuesStore;
+            hashStore = this.hashStore;
+            liveStore = this.liveStore;
         }
 
-        let entryIndex = this.storageCount;
-        this.keysStore[entryIndex] = key;
-        this.valuesStore[entryIndex] = val;
-        this.hashStore[entryIndex] = hash;
-        this.liveStore[entryIndex] = true;
-        this.storageCount = this.storageCount + 1;
-        this.buckets[bucket] = entryIndex + 1;
+        keysStore[entryIndex] = key;
+        valuesStore[entryIndex] = val;
+        hashStore[entryIndex] = hash;
+        liveStore[entryIndex] = true;
+        this.storageCount = entryIndex + 1;
+        buckets[bucket] = entryIndex + 1;
         this.liveCount = this.liveCount + 1;
     }
 
@@ -350,11 +390,13 @@ export class Map<K, V> {
 
     get(key: K): V {
         let hash = this.hashKey(key);
-        let capacity = this.buckets.length();
-        let index = hash & this.bucketMask;
+        let mask = this.bucketMask;
+        let buckets = this.buckets;
+        let capacity = buckets.length();
+        let index = hash & mask;
 
         for (let probed = 0; probed < capacity; probed++) {
-            let slot = this.buckets[index];
+            let slot = buckets[index];
             if (slot == 0) return None;
             if (slot > 0) {
                 let entryIndex = slot - 1;
@@ -362,8 +404,7 @@ export class Map<K, V> {
                     return this.valuesStore[entryIndex];
                 }
             }
-            index = index + 1;
-            if (index == capacity) index = 0;
+            index = (index + 1) & mask;
         }
 
         return None;

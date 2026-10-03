@@ -1,0 +1,86 @@
+import { assert_eq_int, assert_true } from "../utils.tx";
+
+function test_dynamic_3d_array() {
+    print("--- Dynamic 3D Array Tests ---");
+
+    // Create a 2x2x2 dynamic 3D array
+    let arr: int[][][] = [
+        [
+            [1, 2],
+            [3, 4]
+        ],
+        [
+            [5, 6],
+            [7, 8]
+        ]
+    ];
+
+    assert_eq_int(2, arr.length, "arr.length is 2");
+    assert_eq_int(2, arr[0].length, "arr[0].length is 2");
+    assert_eq_int(2, arr[0][0].length, "arr[0][0].length is 2");
+
+    assert_eq_int(1, arr[0][0][0], "arr[0][0][0] == 1");
+    assert_eq_int(2, arr[0][0][1], "arr[0][0][1] == 2");
+    assert_eq_int(3, arr[0][1][0], "arr[0][1][0] == 3");
+    assert_eq_int(4, arr[0][1][1], "arr[0][1][1] == 4");
+    assert_eq_int(5, arr[1][0][0], "arr[1][0][0] == 5");
+    assert_eq_int(6, arr[1][0][1], "arr[1][0][1] == 6");
+    assert_eq_int(7, arr[1][1][0], "arr[1][1][0] == 7");
+    assert_eq_int(8, arr[1][1][1], "arr[1][1][1] == 8");
+
+    // Mutate an element
+    arr[1][1][1] = 99;
+    assert_eq_int(99, arr[1][1][1], "Mutated arr[1][1][1] to 99");
+
+    // Sum using nested loops
+    let sum: int = 0;
+    for (let i: int = 0; i < arr.length; i = i + 1) {
+        for (let j: int = 0; j < arr[i].length; j = j + 1) {
+            for (let k: int = 0; k < arr[i][j].length; k = k + 1) {
+                sum = sum + arr[i][j][k];
+            }
+        }
+    }
+    // 1+2+3+4+5+6+7+99 = 127
+    assert_eq_int(127, sum, "Sum of elements is 127");
+}
+
+function test_fixed_3d_array() {
+    print("--- Fixed-size 3D Array Tests ---");
+
+    // 2 x 3 x 2 fixed array
+    let grid: int[2][3][2];
+
+    let counter: int = 1;
+    for (let i: int = 0; i < 2; i = i + 1) {
+        for (let j: int = 0; j < 3; j = j + 1) {
+            for (let k: int = 0; k < 2; k = k + 1) {
+                grid[i][j][k] = counter;
+                counter = counter + 1;
+            }
+        }
+    }
+
+    assert_eq_int(1, grid[0][0][0], "grid[0][0][0] == 1");
+    assert_eq_int(2, grid[0][0][1], "grid[0][0][1] == 2");
+    assert_eq_int(3, grid[0][1][0], "grid[0][1][0] == 3");
+    assert_eq_int(12, grid[1][2][1], "grid[1][2][1] == 12");
+
+    let total: int = 0;
+    for (let i: int = 0; i < 2; i = i + 1) {
+        for (let j: int = 0; j < 3; j = j + 1) {
+            for (let k: int = 0; k < 2; k = k + 1) {
+                total = total + grid[i][j][k];
+            }
+        }
+    }
+    // Sum from 1 to 12 = 12 * 13 / 2 = 78
+    assert_eq_int(78, total, "Sum of fixed 3D array elements is 78");
+}
+
+function main() {
+    print("=== 3D ARRAY TESTS START ===");
+    test_dynamic_3d_array();
+    test_fixed_3d_array();
+    print("=== 3D ARRAY TESTS COMPLETE ===");
+}

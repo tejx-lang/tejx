@@ -73,6 +73,128 @@ impl Lowering {
         }
     }
 
+    pub(crate) fn default_fixed_array_init(&self, line: usize, ty: &TejxType) -> HIRExpression {
+        match ty {
+            TejxType::FixedArray(inner, size) => {
+                if !inner.is_array() {
+                    return HIRExpression::ArrayLiteral {
+                        line,
+                        elements: vec![],
+                        ty: ty.clone(),
+                        sized_allocation: None,
+                    };
+                }
+                let mut elements = Vec::with_capacity(*size);
+                for _ in 0..*size {
+                    elements.push(self.default_fixed_array_init(line, inner));
+                }
+                HIRExpression::ArrayLiteral {
+                    line,
+                    elements,
+                    ty: ty.clone(),
+                    sized_allocation: None,
+                }
+            }
+            TejxType::DynamicArray(_) => HIRExpression::ArrayLiteral {
+                line,
+                elements: vec![],
+                ty: ty.clone(),
+                sized_allocation: None,
+            },
+            TejxType::Bool => HIRExpression::Literal {
+                line,
+                value: "false".to_string(),
+                ty: TejxType::Bool,
+            },
+            TejxType::Int8
+            | TejxType::UInt8
+            | TejxType::Int16
+            | TejxType::UInt16
+            | TejxType::Int32
+            | TejxType::UInt32
+            | TejxType::Int64
+            | TejxType::UInt64
+            | TejxType::Int128
+            | TejxType::UInt128 => HIRExpression::Literal {
+                line,
+                value: "0".to_string(),
+                ty: ty.clone(),
+            },
+            TejxType::Float32 | TejxType::Float64 => HIRExpression::Literal {
+                line,
+                value: "0.0".to_string(),
+                ty: ty.clone(),
+            },
+            TejxType::Char => HIRExpression::Literal {
+                line,
+                value: "\0".to_string(),
+                ty: TejxType::Char,
+            },
+            TejxType::String => HIRExpression::Literal {
+                line,
+                value: "".to_string(),
+                ty: TejxType::String,
+            },
+            _ => HIRExpression::NoneLiteral { line },
+        }
+    }
+
+    pub(crate) fn pad_fixed_array_literal(
+        &self,
+        _line: usize,
+        expr: HIRExpression,
+        ty: &TejxType,
+    ) -> HIRExpression {
+        match (expr, ty) {
+            (
+                HIRExpression::ArrayLiteral {
+                    line: l,
+                    elements,
+                    ty: arr_ty,
+                    sized_allocation,
+                },
+                TejxType::FixedArray(inner, size),
+            ) => {
+                let mut padded_elements = Vec::with_capacity(elements.len().min(*size));
+                for elem in elements {
+                    padded_elements.push(self.pad_fixed_array_literal(l, elem, inner));
+                }
+                if inner.is_array() {
+                    while padded_elements.len() < *size {
+                        padded_elements.push(self.default_fixed_array_init(l, inner));
+                    }
+                }
+                HIRExpression::ArrayLiteral {
+                    line: l,
+                    elements: padded_elements,
+                    ty: arr_ty,
+                    sized_allocation,
+                }
+            }
+            (
+                HIRExpression::ArrayLiteral {
+                    line: l,
+                    elements,
+                    ty: arr_ty,
+                    sized_allocation,
+                },
+                TejxType::DynamicArray(inner),
+            ) => {
+                let mut padded_elements = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    padded_elements.push(self.pad_fixed_array_literal(l, elem, inner));
+                }
+                HIRExpression::ArrayLiteral {
+                    line: l,
+                    elements: padded_elements,
+                    ty: arr_ty,
+                    sized_allocation,
+                }
+            }
+            (other, _) => other,
+        }
+    }
+
     pub(crate) fn lower_statement(&self, stmt: &Statement) -> Option<HIRStatement> {
         let line = stmt.get_line();
         match stmt {
@@ -182,6 +304,9 @@ impl Lowering {
 
                 if init.is_none() {
                     match &ty {
+                        TejxType::FixedArray(_, _) => {
+                            init = Some(self.default_fixed_array_init(line, &ty));
+                        }
                         TejxType::DynamicArray(_) => {
                             init = Some(HIRExpression::ArrayLiteral {
                                 line,
@@ -249,6 +374,10 @@ impl Lowering {
                     {
                         *sized_allocation = Some(Box::new(size_expr));
                     }
+                }
+
+                if let Some(init_expr) = init {
+                    init = Some(self.pad_fixed_array_literal(line, init_expr, &ty));
                 }
 
                 // Sized allocations are now handled during AST parsing/transforming where possible,

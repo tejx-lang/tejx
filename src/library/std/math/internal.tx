@@ -1,42 +1,42 @@
-extern function std_math_sin(x: float): float;
-extern function std_math_cos(x: float): float;
+extern function std_math_sin(x: float64): float64;
+extern function std_math_cos(x: float64): float64;
 extern function std_math_tan(x: float): float;
 extern function std_math_asin(x: float): float;
 extern function std_math_acos(x: float): float;
 extern function std_math_atan(x: float): float;
-extern function std_math_sqrt(x: float): float;
-extern function std_math_floor(x: float): float;
-extern function std_math_ceil(x: float): float;
-extern function std_math_round(x: float): float;
-extern function std_math_pow(base: float, exp: float): float;
-extern function std_math_powi(base: float, exp: int): float;
-extern function std_math_abs(x: float): float;
-extern function std_math_exp(x: float): float;
-extern function std_math_log(x: float): float;
-extern function std_math_min(a: float, b: float): float;
-extern function std_math_max(a: float, b: float): float;
+extern function std_math_sqrt(x: float64): float64;
+extern function std_math_floor(x: float64): float64;
+extern function std_math_ceil(x: float64): float64;
+extern function std_math_round(x: float64): float64;
+extern function std_math_pow(base: float64, exp: float64): float64;
+extern function std_math_powi(base: float64, exp: int): float64;
+extern function std_math_abs(x: float64): float64;
+extern function std_math_exp(x: float64): float64;
+extern function std_math_log(x: float64): float64;
+extern function std_math_min(a: float64, b: float64): float64;
+extern function std_math_max(a: float64, b: float64): float64;
 extern function rt_random_seed(seed: int64): void;
 extern function rt_random(): float;
 extern function rt_random_int(lower: int, upper: int): int;
 
-function _math_abs(x: float): float {
+function _math_abs(x: float64): float64 {
     return std_math_abs(x);
 }
 
-function _math_is_integer(x: float): bool {
+function _math_is_integer(x: float64): bool {
     let whole: int = x as int;
-    return (whole as float) == x;
+    return (whole as float64) == x;
 }
 
-function _math_min(a: float, b: float): float {
+function _math_min(a: float64, b: float64): float64 {
     return std_math_min(a, b);
 }
 
-function _math_max(a: float, b: float): float {
+function _math_max(a: float64, b: float64): float64 {
     return std_math_max(a, b);
 }
 
-function _math_clamp(value: float, lower: float, upper: float): float {
+function _math_clamp(value: float64, lower: float64, upper: float64): float64 {
     let lo = lower;
     let hi = upper;
     if (lo > hi) {
@@ -49,52 +49,52 @@ function _math_clamp(value: float, lower: float, upper: float): float {
     return value;
 }
 
-function _math_sign(value: float): int {
+function _math_sign(value: float64): int {
     if (value > 0.0) return 1;
     if (value < 0.0) return -1;
     return 0;
 }
 
-function _math_lerp(start: float, end: float, amount: float): float {
+function _math_lerp(start: float64, end: float64, amount: float64): float64 {
     return start + (end - start) * amount;
 }
 
-function _math_trunc(x: float): float {
+function _math_trunc(x: float64): float64 {
     let whole: int = x as int;
-    return whole as float;
+    return whole as float64;
 }
 
-function _math_floor(x: float): float {
+function _math_floor(x: float64): float64 {
     return std_math_floor(x);
 }
 
-function _math_ceil(x: float): float {
+function _math_ceil(x: float64): float64 {
     return std_math_ceil(x);
 }
 
-function _math_round(x: float): float {
+function _math_round(x: float64): float64 {
     return std_math_round(x);
 }
 
-function _math_sqrt(x: float): float {
+function _math_sqrt(x: float64): float64 {
     if (x < 0.0) {
         throw new Error("sqrt() domain error");
     }
     return std_math_sqrt(x);
 }
 
-function _math_exp(x: float): float {
+function _math_exp(x: float64): float64 {
     return std_math_exp(x);
 }
 
-function _math_ln(x: float): float {
+function _math_ln(x: float64): float64 {
     if (x <= 0.0) {
         throw new Error("ln() domain error");
     }
     return std_math_log(x);
 }
 
-function _math_pow(base: float, exponent: float): float {
+function _math_pow(base: float64, exponent: float64): float64 {
     if (exponent == 0.0) return 1.0;
     if (base == 0.0) {
         if (exponent < 0.0) {
@@ -118,7 +118,7 @@ function _math_pow(base: float, exponent: float): float {
     return std_math_pow(base, exponent);
 }
 
-function _math_powi(base: float, exponent: int): float {
+function _math_powi(base: float64, exponent: int): float64 {
     if (exponent == 0) return 1.0;
     if (base == 0.0) {
         if (exponent < 0) {
@@ -130,11 +130,11 @@ function _math_powi(base: float, exponent: int): float {
     return std_math_powi(base, exponent);
 }
 
-function _math_sin(x: float): float {
+function _math_sin(x: float64): float64 {
     return std_math_sin(x);
 }
 
-function _math_cos(x: float): float {
+function _math_cos(x: float64): float64 {
     return std_math_cos(x);
 }
 

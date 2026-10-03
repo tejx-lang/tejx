@@ -41,4 +41,10 @@ function main() {
     let s2 = "Hello";
     assert_eq_int(5, s2.length(), "String.length()");
     assert_ne_int(0, s2.length(), "String.length() not zero");
+
+    let testStr = "abcabcabc";
+    assert_eq_int(0, testStr.indexOf("abc"), "indexOf first");
+    assert_eq_int(3, testStr.indexOfFrom("abc", 1), "indexOfFrom 1");
+    assert_eq_int(6, testStr.indexOfFrom("abc", 4), "indexOfFrom 4");
+    assert_eq_int(-1, testStr.indexOfFrom("abc", 7), "indexOfFrom 7");
 }

@@ -1,10 +1,10 @@
 import "./internal.tx";
 
-export function sin(x: float): float {
+export function sin(x: float64): float64 {
     return _math_sin(x);
 }
 
-export function cos(x: float): float {
+export function cos(x: float64): float64 {
     return _math_cos(x);
 }
 

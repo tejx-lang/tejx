@@ -6,6 +6,9 @@ core::arch::global_asm!(
     ".global _tejx_context_switch",
     ".balign 4",
     "_tejx_context_switch:",
+    // Full data memory barrier before saving context — ensures all stores
+    // from this fiber are globally visible before we switch away.
+    "dmb ish",
     "stp d14, d15, [sp, #-16]!",
     "stp d12, d13, [sp, #-16]!",
     "stp d10, d11, [sp, #-16]!",
@@ -29,6 +32,9 @@ core::arch::global_asm!(
     "ldp d10, d11, [sp], #16",
     "ldp d12, d13, [sp], #16",
     "ldp d14, d15, [sp], #16",
+    // Full data memory barrier after restoring — ensures we see all stores
+    // from the core that previously ran this fiber.
+    "dmb ish",
     "ret",
 );
 
@@ -38,6 +44,8 @@ core::arch::global_asm!(
     ".type tejx_context_switch, %function",
     ".balign 4",
     "tejx_context_switch:",
+    // Full data memory barrier before saving context.
+    "dmb ish",
     "stp d14, d15, [sp, #-16]!",
     "stp d12, d13, [sp, #-16]!",
     "stp d10, d11, [sp, #-16]!",
@@ -61,6 +69,8 @@ core::arch::global_asm!(
     "ldp d10, d11, [sp], #16",
     "ldp d12, d13, [sp], #16",
     "ldp d14, d15, [sp], #16",
+    // Full data memory barrier after restoring.
+    "dmb ish",
     "ret",
 );
 

@@ -8,6 +8,7 @@ export function split(s: string, sep: string): string[] { return rt_String_split
 export function startsWith(s: string, prefix: string): bool { return rt_String_startsWith(s, prefix); }
 export function endsWith(s: string, suffix: string): bool { return rt_String_endsWith(s, suffix); }
 export function indexOf(s: string, search: string): int { return rt_String_indexOf(s, search) as int; }
+export function indexOfFrom(s: string, search: string, fromIndex: int): int { return rt_String_indexOfFrom(s, search, fromIndex) as int; }
 export function padStart(s: string, len: int, pad: string): string { return rt_String_padStart(s, len, pad); }
 export function padEnd(s: string, len: int, pad: string): string { return rt_String_padEnd(s, len, pad); }
 export function repeat(s: string, count: int): string { return rt_String_repeat(s, count); }

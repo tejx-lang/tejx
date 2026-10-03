@@ -92,50 +92,10 @@ impl CodeGen {
     }
 
     pub(crate) fn emit_strip_heap_offset(&mut self, val: &str) -> String {
-        // Handle management offsets (HEAP_OFFSET or STACK_OFFSET)
-        self.temp_counter += 1;
-        let is_heap = format!("%is_heap_{}", self.temp_counter);
-        self.temp_counter += 1;
-        let is_stack = format!("%is_stack_{}", self.temp_counter);
-
-        const HEAP_OFFSET_CONST: i64 = 1i64 << 50;
-        const STACK_OFFSET_CONST: i64 = 1i64 << 48;
-
-        self.emit_line(&format!(
-            "{} = icmp uge i64 {}, {}",
-            is_heap, val, HEAP_OFFSET_CONST
-        ));
-        self.emit_line(&format!(
-            "{} = icmp uge i64 {}, {}",
-            is_stack, val, STACK_OFFSET_CONST
-        ));
-
-        self.temp_counter += 1;
-        let sub_val = format!("%sub_val_{}", self.temp_counter);
-        // Prioritize HEAP_OFFSET if both are true (since HEAP_OFFSET > STACK_OFFSET)
-        self.emit_line(&format!(
-            "{} = select i1 {}, i64 {}, i64 {}",
-            sub_val, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST
-        ));
-
-        self.temp_counter += 1;
-        let effectively_obj = format!("%eff_obj_{}", self.temp_counter);
-        self.emit_line(&format!(
-            "{} = or i1 {}, {}",
-            effectively_obj, is_heap, is_stack
-        ));
-
-        self.temp_counter += 1;
-        let real_sub = format!("%real_sub_{}", self.temp_counter);
-        self.emit_line(&format!(
-            "{} = select i1 {}, i64 {}, i64 0",
-            real_sub, effectively_obj, sub_val
-        ));
-
         self.temp_counter += 1;
         let stripped = format!("%stripped_{}", self.temp_counter);
-        self.emit_line(&format!("{} = sub i64 {}, {}", stripped, val, real_sub));
-
+        const PTR_MASK: i64 = (1i64 << 48) - 1; // 0x0000_ffff_ffff_ffff
+        self.emit_line(&format!("{} = and i64 {}, {}", stripped, val, PTR_MASK));
         stripped
     }
 

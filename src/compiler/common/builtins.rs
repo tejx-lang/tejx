@@ -23,6 +23,7 @@ const STRING_METHOD_NAMES: &[&str] = &[
     "startsWith",
     "endsWith",
     "indexOf",
+    "indexOfFrom",
     "toUpperCase",
     "toLowerCase",
     "trim",
@@ -104,6 +105,10 @@ fn string_method_info(name: &str) -> Option<BuiltinMethodInfo> {
         },
         "indexOf" => BuiltinMethodInfo {
             callee: "rt_String_indexOf",
+            ret: Some(BuiltinRet::Int32),
+        },
+        "indexOfFrom" => BuiltinMethodInfo {
+            callee: "rt_String_indexOfFrom",
             ret: Some(BuiltinRet::Int32),
         },
         "toUpperCase" => BuiltinMethodInfo {

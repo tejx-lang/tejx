@@ -495,6 +495,34 @@ impl MIRLowering {
                     line: 0,
                 });
             }
+            HIRExpression::IndexAccess { target, index, ty, .. } => {
+                let obj_val = self.lower_expression(target);
+                let mut idx_val = self.lower_expression(index);
+                if idx_val.get_type().is_float() {
+                    let temp_idx = self.new_temp(TejxType::Int32);
+                    self.emit(MIRInstruction::Cast {
+                        line: 0,
+                        dst: temp_idx.clone(),
+                        src: idx_val,
+                        ty: TejxType::Int32,
+                    });
+                    idx_val = MIRValue::Variable {
+                        name: temp_idx,
+                        ty: TejxType::Int32,
+                    };
+                }
+                let val = self.auto_box(updated_array, ty);
+                self.emit(MIRInstruction::StoreIndex {
+                    line: 0,
+                    obj: obj_val.clone(),
+                    index: idx_val,
+                    src: val,
+                    element_ty: ty.clone(),
+                });
+                if matches!(target.as_ref(), HIRExpression::MemberAccess { ty, .. } | HIRExpression::IndexAccess { ty, .. } if ty.is_array()) {
+                    self.emit_array_receiver_storeback(target, obj_val);
+                }
+            }
             _ => {}
         }
     }
@@ -1754,7 +1782,9 @@ impl MIRLowering {
 
                             if !matches!(
                                 first_arg,
-                                HIRExpression::Variable { .. } | HIRExpression::MemberAccess { .. }
+                                HIRExpression::Variable { .. }
+                                    | HIRExpression::MemberAccess { .. }
+                                    | HIRExpression::IndexAccess { .. }
                             ) {
                                 if let MIRValue::Variable { name, .. } = &arr_val {
                                     self.emit(MIRInstruction::Move {
@@ -2009,6 +2039,11 @@ impl MIRLowering {
 
                 let initial_size = if let Some(size_hir) = sized_allocation {
                     self.lower_expression(size_hir)
+                } else if let TejxType::FixedArray(_, size) = ty {
+                    MIRValue::Constant {
+                        value: size.to_string(),
+                        ty: TejxType::Int64,
+                    }
                 } else {
                     MIRValue::Constant {
                         value: elements.len().to_string(),

@@ -1,49 +1,75 @@
-import { assert_eq_int, assert_eq_string, assert_true } from "../utils.tx";
+import { assert_eq_int, assert_eq_string, assert_false, assert_true } from "../utils.tx";
 
-function test_numeric_conversions() {
-    print("--- Numeric Conversions ---");
+function test_boolean_conversions() {
+    print("--- Boolean Conversions ---");
     
-    // Int to Float (Implicit)
-    let i: int = 42;
-    let f: float = i; // Should be implicit
-    print("int to float implicit:", f);
-    
-    // Int to Float (Explicit)
-    let f2: float = i as float;
-    print("int to float explicit:", f2);
-    
-    // Float to Int (Explicit Casting)
-    let f3: float = 3.14;
-    let i2: int = f3 as int;
-    print("float to int explicit:", i2); // Should be 3
-    assert_eq_int(3, i2, "Float to int truncated");
+    // Only accepts string: returns true if text is 'true' (case-insensitive/trimmed), otherwise false
+    assert_true(Boolean("true"), "Boolean(\"true\")");
+    assert_true(Boolean("True"), "Boolean(\"True\")");
+    assert_true(Boolean("TRUE"), "Boolean(\"TRUE\")");
+    assert_true(Boolean(" true "), "Boolean(\" true \")");
+
+    assert_false(Boolean("false"), "Boolean(\"false\")");
+    assert_false(Boolean("False"), "Boolean(\"False\")");
+    assert_false(Boolean("FALSE"), "Boolean(\"FALSE\")");
+    assert_false(Boolean(""), "Boolean(\"\")");
+    assert_false(Boolean("   "), "Boolean(\"   \")");
+    assert_false(Boolean("0"), "Boolean(\"0\")");
+    assert_false(Boolean("1"), "Boolean(\"1\")");
+    assert_false(Boolean("hello"), "Boolean(\"hello\")");
+    assert_false(Boolean("random text"), "Boolean(\"random text\")");
 }
 
 function test_string_conversions() {
     print("--- String Conversions ---");
     
-    // Float to String (Using String or implicit via print)
-    let f: float = 123.45;
-    let s: string = String(f);
-    print("float to string:", s);
-    assert_eq_string("123.45", s, "Float to string conversion");
-    
-    // Int to String
-    let i: int = 999;
-    let s2: string = String(i);
-    print("int to string:", s2);
-    assert_eq_string("999", s2, "Int to string conversion");
-    
-    // String to Float (Number.Float, Number.Float64)
-    let s3: string = "45.67";
-    let f2: float = Number.Float(s3);
-    print("string to float:", f2);
-    let f64_val: float64 = Number.Float64("123.45");
-    assert_true(f64_val > 123.0 && f64_val < 124.0, "Number.Float64 conversion");
+    // Primitives
+    assert_eq_string("true", String(true), "String(true)");
+    assert_eq_string("false", String(false), "String(false)");
+    assert_eq_string("None", String(None), "String(None)");
 
-    // String to Int (Number.Int, Number.Int8, Number.Int16, Number.Int64, Number.UInt32)
-    let int_val: int = Number.Int("42");
-    assert_eq_int(42, int_val, "Number.Int conversion");
+    // Numbers
+    assert_eq_string("0", String(0), "String(0)");
+    assert_eq_string("42", String(42), "String(42)");
+    assert_eq_string("-10", String(-10), "String(-10)");
+    assert_eq_string("0", String(0.0), "String(0.0)");
+    assert_eq_string("3.14", String(3.14), "String(3.14)");
+
+    // Strings
+    assert_eq_string("", String(""), "String(\"\")");
+    assert_eq_string("hello", String("hello"), "String(\"hello\")");
+
+    // Arrays
+    assert_eq_string("[]", String([]), "String([])");
+    assert_eq_string("[1, 2, 3]", String([1, 2, 3]), "String([1, 2, 3])");
+}
+
+function test_number_class_conversions() {
+    print("--- Number Class Conversions ---");
+    
+    // String to Float & Int
+    assert_true(Number.Float("123.45") > 123.0 && Number.Float("123.45") < 124.0, "Number.Float(\"123.45\")");
+    assert_eq_int(42, Number.Int("42"), "Number.Int(\"42\")");
+    assert_eq_int(0, Number.Int("0"), "Number.Int(\"0\")");
+    assert_true(Number.Float("0") == 0.0, "Number.Float(\"0\")");
+    assert_true(Number.Float("") == 0.0, "Number.Float(\"\")");
+
+    // Boolean to Number
+    assert_true(Number.Float(true) == 1.0, "Number.Float(true)");
+    assert_true(Number.Float(false) == 0.0, "Number.Float(false)");
+    assert_eq_int(1, Number.Int(true), "Number.Int(true)");
+    assert_eq_int(0, Number.Int(false), "Number.Int(false)");
+
+    // None to Number
+    assert_true(Number.Float(None) == 0.0, "Number.Float(None)");
+    assert_eq_int(0, Number.Int(None), "Number.Int(None)");
+
+    // Numeric primitives
+    assert_eq_int(42, Number.Int(42), "Number.Int(42)");
+    assert_eq_int(3, Number.Int(3.14), "Number.Int(3.14)");
+    assert_true(Number.Float(42) == 42.0, "Number.Float(42)");
+
+    // Width-specific variants
     let int8_val: int8 = Number.Int8("120");
     assert_eq_int(120, int8_val as int, "Number.Int8 conversion");
     let int16_val: int16 = Number.Int16("30000");
@@ -56,7 +82,8 @@ function test_string_conversions() {
 
 function main() {
     print("=== CONVERSION TESTS START ===");
-    test_numeric_conversions();
+    test_boolean_conversions();
     test_string_conversions();
+    test_number_class_conversions();
     print("=== CONVERSION TESTS COMPLETE ===");
 }
