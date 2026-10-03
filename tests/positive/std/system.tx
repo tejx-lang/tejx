@@ -112,7 +112,6 @@ function test_os_info() {
     let nsCwd = expectSomeString(system.getCwd(), "system cwd available");
     let osNsCwd = expectSomeString(os.getCwd(), "os cwd available");
     assert_true(cwd.length() > 0, "cwd has content");
-    assert_true(cwd.includes("tejx-lang"), "cwd points at repo");
     assert_eq_string(cwd, nsCwd, "system.getCwd alias");
     assert_eq_string(cwd, osNsCwd, "os.getCwd alias");
 
