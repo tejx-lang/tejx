@@ -4,17 +4,31 @@
 # TejX Toolchain - Uninstallation Script
 # ============================================
 
+set -e
+
 TEJX_HOME="$HOME/.tejx"
 
 echo ">>> Uninstalling TejX Toolchain from $TEJX_HOME..."
-rm -rf "$TEJX_HOME"
+if [ -d "$TEJX_HOME" ]; then
+    rm -rf "$TEJX_HOME"
+    echo ">>> Removed $TEJX_HOME"
+else
+    echo ">>> $TEJX_HOME not found, skipping."
+fi
+
+echo ">>> Removing extension links..."
+rm -f "$HOME/.vscode/extensions/tejx-antigravity" 2>/dev/null || true
+rm -f "$HOME/.antigravity/extensions/tejx-antigravity" 2>/dev/null || true
 
 echo ">>> Removing from PATH..."
 for config in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
     if [ -f "$config" ]; then
-        # Remove the lines added by install.sh (using a robust pattern)
-        sed -i '' '/# TejX Toolchain/d' "$config" 2>/dev/null || sed -i '/# TejX Toolchain/d' "$config"
-        sed -i '' '/\.tejx\/bin/d' "$config" 2>/dev/null || sed -i '/\.tejx\/bin/d' "$config"
+        if grep -q "\.tejx/bin" "$config" 2>/dev/null || grep -q "# TejX Toolchain" "$config" 2>/dev/null; then
+            TMP_CONFIG="$(mktemp)"
+            grep -v "# TejX Toolchain" "$config" | grep -v "\.tejx/bin" > "$TMP_CONFIG" && cat "$TMP_CONFIG" > "$config"
+            rm -f "$TMP_CONFIG"
+            echo ">>> Cleaned PATH from $config"
+        fi
     fi
 done
 
