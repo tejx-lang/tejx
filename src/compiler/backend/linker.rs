@@ -304,9 +304,11 @@ impl Linker {
             }
         }
 
-        // Add user-specified libraries
-        for lib in &self.libs {
-            cmd.arg(format!("-l{}", lib));
+        cmd.arg("-o");
+        cmd.arg(&self.output_path);
+
+        if self.verbose {
+            eprintln!("[linker] Executing: {:?}", cmd);
         }
 
         let output = cmd
