@@ -2,7 +2,6 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-
 // ── Mutex ─────────────────────────────────────────────────────────────────────
 // VThread-aware Mutex:
 // Works safely across virtual threads and OS worker threads without any thread-local
@@ -46,7 +45,10 @@ impl TejxMutex {
     pub fn lock(&self) {
         // Fast path: uncontended acquire when no handoff is pending
         if self.granted_token.load(Ordering::Relaxed) == 0
-            && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+            && self
+                .state
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
         {
             return;
         }
@@ -56,7 +58,10 @@ impl TejxMutex {
             std::hint::spin_loop();
             if self.granted_token.load(Ordering::Relaxed) == 0
                 && !self.state.load(Ordering::Relaxed)
-                && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+                && self
+                    .state
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
             {
                 return;
             }
@@ -68,7 +73,10 @@ impl TejxMutex {
                 {
                     let mut waiters = self.wait_lock.lock();
                     if self.granted_token.load(Ordering::Relaxed) == 0
-                        && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+                        && self
+                            .state
+                            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                            .is_ok()
                     {
                         return;
                     }
@@ -85,7 +93,10 @@ impl TejxMutex {
 
                 // Or if lock became free
                 if self.granted_token.load(Ordering::Relaxed) == 0
-                    && self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+                    && self
+                        .state
+                        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
                 {
                     let mut waiters = self.wait_lock.lock();
                     waiters.retain(|&t| t != token);
@@ -101,7 +112,10 @@ impl TejxMutex {
         } else {
             let mut backoff = 1;
             while self.granted_token.load(Ordering::Relaxed) != 0
-                || self.state.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err()
+                || self
+                    .state
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_err()
             {
                 for _ in 0..backoff {
                     std::hint::spin_loop();
@@ -144,7 +158,9 @@ pub unsafe extern "C" fn rt_Mutex_new() -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_free(mutex: i64) {
-    if mutex <= 0 { return; }
+    if mutex <= 0 {
+        return;
+    }
     let _ = Box::from_raw(mutex as *mut TejxMutex);
 }
 
@@ -159,7 +175,9 @@ pub(crate) unsafe fn unregister_mutex_data(addr: usize) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_constructor(this: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     rt_ensure_type_finalizer(this, rt_mutex_object_finalizer);
     let mutex: Box<TejxMutexArc> = Box::new(Arc::new(TejxMutex::new()));
     *ptr.offset(0) = register_mutex_data(Box::into_raw(mutex));
@@ -168,25 +186,37 @@ pub unsafe extern "C" fn rt_Mutex_constructor(this: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_acquire(this: i64) {
     let ptr = rt_obj_ptr(this) as *const i64;
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let mutex_ptr = *ptr.offset(0) as *const TejxMutexArc;
-    if mutex_ptr.is_null() { return; }
+    if mutex_ptr.is_null() {
+        return;
+    }
     (&**mutex_ptr).lock();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_release(this: i64) {
     let ptr = rt_obj_ptr(this) as *const i64;
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let mutex_ptr = *ptr.offset(0) as *const TejxMutexArc;
-    if mutex_ptr.is_null() { return; }
+    if mutex_ptr.is_null() {
+        return;
+    }
     (&**mutex_ptr).unlock();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_Mutex_lock(mutex: i64) {
-    if mutex <= 0 { return; }
+    if mutex <= 0 {
+        return;
+    }
     let mutex_ptr = mutex as *const TejxMutex;
-    if mutex_ptr.is_null() { return; }
+    if mutex_ptr.is_null() {
+        return;
+    }
     (*mutex_ptr).lock();
 }

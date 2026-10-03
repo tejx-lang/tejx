@@ -27,7 +27,9 @@ pub(crate) unsafe fn unregister_thread_data(addr: usize) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     rt_ensure_type_finalizer(this, rt_thread_object_finalizer);
     rt_store_ref_slot(this, ptr.offset(1), cb);
     let slot_live = std::sync::Arc::new(AtomicBool::new(true));
@@ -46,14 +48,20 @@ pub unsafe extern "C" fn rt_Thread_constructor(this: i64, cb: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_start(this: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let arc_ptr = *ptr.offset(0) as *mut Arc<ThreadData>;
-    if arc_ptr.is_null() { return; }
+    if arc_ptr.is_null() {
+        return;
+    }
     let data = (*arc_ptr).clone();
-    if data.started.swap(true, Ordering::SeqCst) { return; }
+    if data.started.swap(true, Ordering::SeqCst) {
+        return;
+    }
 
-    let cb_slot     = data.cb_slot;
-    let slot_live   = data.slot_live.clone();
+    let cb_slot = data.cb_slot;
+    let slot_live = data.slot_live.clone();
     let cb_released = data.cb_released.clone();
 
     // Spawn a VThread via the TejX M:N scheduler.
@@ -62,7 +70,10 @@ pub unsafe extern "C" fn rt_Thread_start(this: i64) {
         move || {
             // Worker thread is already registered by worker_loop().
             // Just run the closure and release the GC cb_slot on exit exactly once.
-            let _guard = ThreadRunGuard { cb_slot, cb_released };
+            let _guard = ThreadRunGuard {
+                cb_slot,
+                cb_released,
+            };
             let closure = rt_get_static_root(cb_slot);
             if closure != 0 {
                 rt_call_closure_no_args(closure);
@@ -76,9 +87,13 @@ pub unsafe extern "C" fn rt_Thread_start(this: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_Thread_join(mut this: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let arc_ptr = *ptr.offset(0) as *mut Arc<ThreadData>;
-    if arc_ptr.is_null() { return; }
+    if arc_ptr.is_null() {
+        return;
+    }
     let data = (*arc_ptr).clone();
 
     if !data.started.load(Ordering::Acquire) {

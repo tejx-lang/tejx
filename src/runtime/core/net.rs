@@ -1,9 +1,9 @@
 use super::*;
+use mio::net::{TcpListener, TcpStream};
+use native_tls::{TlsConnector, TlsStream};
 use std::io::{Read, Write};
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicI64, Ordering};
-use mio::net::{TcpListener, TcpStream};
-use native_tls::{TlsConnector, TlsStream};
 
 #[inline(always)]
 fn register_stream_ptr(ptr: *mut NetStream) -> i64 {
@@ -17,7 +17,9 @@ fn register_listener_ptr(ptr: *mut NetListener) -> i64 {
 
 #[inline(always)]
 fn validate_stream_ptr(stream: i64) -> Option<*mut NetStream> {
-    if stream <= 0 { return None; }
+    if stream <= 0 {
+        return None;
+    }
     Some(stream as *mut NetStream)
 }
 
@@ -100,7 +102,7 @@ fn connect_tls_host(host: &str, port: i64, verify: bool) -> Option<(TlsStream<Tc
         builder.danger_accept_invalid_hostnames(true);
     }
     let connector = builder.build().ok()?;
-    
+
     let mut res = connector.connect(host, stream);
     loop {
         match res {
@@ -159,18 +161,26 @@ fn start_tls_stream(stream: &mut NetStream, host: &str, verify: bool) -> bool {
     let current = std::mem::replace(stream, NetStream::Closed);
     match current {
         NetStream::Closed => false,
-        NetStream::Tls(socket, token) => { *stream = NetStream::Tls(socket, token); true }
+        NetStream::Tls(socket, token) => {
+            *stream = NetStream::Tls(socket, token);
+            true
+        }
         NetStream::Tcp(socket, token) => {
             let mut builder = TlsConnector::builder();
             if !verify {
                 builder.danger_accept_invalid_certs(true);
                 builder.danger_accept_invalid_hostnames(true);
             }
-            let Ok(connector) = builder.build() else { return false; };
+            let Ok(connector) = builder.build() else {
+                return false;
+            };
             let mut res = connector.connect(host, socket);
             loop {
                 match res {
-                    Ok(tls) => { *stream = NetStream::Tls(tls, token); return true; }
+                    Ok(tls) => {
+                        *stream = NetStream::Tls(tls, token);
+                        return true;
+                    }
                     Err(native_tls::HandshakeError::WouldBlock(mid)) => {
                         crate::vthread::vt_wait_io(token);
                         res = mid.handshake();
@@ -201,12 +211,22 @@ fn stream_write_all(stream: &mut NetStream, data: &[u8]) -> std::io::Result<usiz
     let mut written = 0;
     while written < data.len() {
         let (res, token) = match stream {
-            NetStream::Closed => return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "closed")),
+            NetStream::Closed => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "closed",
+                ))
+            }
             NetStream::Tcp(s, token) => (s.write(&data[written..]), *token),
             NetStream::Tls(s, token) => (s.write(&data[written..]), *token),
         };
         match res {
-            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "failed to write whole buffer")),
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ))
+            }
             Ok(n) => written += n,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 crate::vthread::vt_wait_io_write(token);
@@ -220,7 +240,12 @@ fn stream_write_all(stream: &mut NetStream, data: &[u8]) -> std::io::Result<usiz
 fn stream_read_once(stream: &mut NetStream, buf: &mut [u8]) -> std::io::Result<usize> {
     loop {
         let (res, token) = match stream {
-            NetStream::Closed => return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "closed")),
+            NetStream::Closed => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "closed",
+                ))
+            }
             NetStream::Tcp(s, token) => (s.read(buf), *token),
             NetStream::Tls(s, token) => (s.read(buf), *token),
         };
@@ -253,10 +278,21 @@ fn read_exact(stream: &mut NetStream, expected_len: usize) -> Vec<u8> {
     let mut offset = 0;
     while offset < expected_len {
         match stream_read_once(stream, &mut out[offset..]) {
-            Ok(0) => { out.truncate(offset); break; }
-            Ok(n) => { offset += n; }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => { out.truncate(offset); break; }
-            Err(_) => { out.truncate(offset); break; }
+            Ok(0) => {
+                out.truncate(offset);
+                break;
+            }
+            Ok(n) => {
+                offset += n;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                out.truncate(offset);
+                break;
+            }
+            Err(_) => {
+                out.truncate(offset);
+                break;
+            }
         }
     }
     out
@@ -287,7 +323,9 @@ pub unsafe extern "C" fn rt_net_lookup(host_ptr: i64) -> i64 {
             }
             0
         })
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -301,7 +339,12 @@ pub unsafe extern "C" fn rt_net_lookup_all(host_ptr: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_connect(addr_ptr: i64) -> i64 {
     if let Some(addr_str) = i64_to_rust_str(addr_ptr) {
-        if let Some(addr) = addr_str.as_str().to_socket_addrs().ok().and_then(|mut iter| iter.next()) {
+        if let Some(addr) = addr_str
+            .as_str()
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut iter| iter.next())
+        {
             if let Ok(mut stream) = TcpStream::connect(addr) {
                 let _ = stream.set_nodelay(true);
                 let token = crate::vthread::vt_register_io(&mut stream);
@@ -349,7 +392,9 @@ pub unsafe extern "C" fn rt_net_connect_tls_insecure(host_ptr: i64, port: i64) -
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_send(stream: i64, data: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return -1; };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return -1;
+    };
     if let Some((bytes, len)) = get_str_parts(data) {
         let payload = std::slice::from_raw_parts(bytes, len as usize);
         let socket = &mut *ptr;
@@ -363,8 +408,12 @@ pub unsafe extern "C" fn rt_net_send(stream: i64, data: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_send_bytes(stream: i64, data: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return -1; };
-    let Some(bytes) = bytes_from_int_array(data) else { return -1; };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return -1;
+    };
+    let Some(bytes) = bytes_from_int_array(data) else {
+        return -1;
+    };
     let socket = &mut *ptr;
     match stream_write_all(socket, &bytes) {
         Ok(n) => n as i64,
@@ -374,7 +423,9 @@ pub unsafe extern "C" fn rt_net_send_bytes(stream: i64, data: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return empty_string(); };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return empty_string();
+    };
     let size = if max_len <= 0 { 4096 } else { max_len as usize };
     let socket = &mut *ptr;
     match stream_read_into(socket, size, |bytes| string_from_bytes(bytes)) {
@@ -385,7 +436,9 @@ pub unsafe extern "C" fn rt_net_receive(stream: i64, max_len: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_receive_bytes(stream: i64, max_len: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return rt_Array_new(0, 4); };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return rt_Array_new(0, 4);
+    };
     let size = if max_len <= 0 { 4096 } else { max_len as usize };
     let socket = &mut *ptr;
     match stream_read_into(socket, size, |bytes| int_array_from_bytes(bytes)) {
@@ -396,61 +449,113 @@ pub unsafe extern "C" fn rt_net_receive_bytes(stream: i64, max_len: i64) -> i64 
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_read_all(stream: i64, chunk_size: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return empty_string(); };
-    let size = if chunk_size <= 0 { 4096 } else { chunk_size as usize };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return empty_string();
+    };
+    let size = if chunk_size <= 0 {
+        4096
+    } else {
+        chunk_size as usize
+    };
     let socket = &mut *ptr;
     string_from_bytes(&read_all(socket, size))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_read_all_bytes(stream: i64, chunk_size: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return rt_Array_new(0, 4); };
-    let size = if chunk_size <= 0 { 4096 } else { chunk_size as usize };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return rt_Array_new(0, 4);
+    };
+    let size = if chunk_size <= 0 {
+        4096
+    } else {
+        chunk_size as usize
+    };
     let socket = &mut *ptr;
     int_array_from_bytes(&read_all(socket, size))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_read_exact_bytes(stream: i64, expected_len: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return rt_Array_new(0, 4); };
-    if expected_len <= 0 { return rt_Array_new(0, 4); }
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return rt_Array_new(0, 4);
+    };
+    if expected_len <= 0 {
+        return rt_Array_new(0, 4);
+    }
     let socket = &mut *ptr;
     int_array_from_bytes(&read_exact(socket, expected_len as usize))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_set_timeout(stream: i64, timeout_ms: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return -1; };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return -1;
+    };
     let socket = &mut *ptr;
-    match set_stream_timeout(socket, timeout_ms) { Ok(_) => 0, Err(_) => -1 }
+    match set_stream_timeout(socket, timeout_ms) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_start_tls(stream: i64, host_ptr: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return -1; };
-    let Some(host) = i64_to_rust_str(host_ptr) else { return -1; };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return -1;
+    };
+    let Some(host) = i64_to_rust_str(host_ptr) else {
+        return -1;
+    };
     let socket = &mut *ptr;
-    if start_tls_stream(socket, &host, true) { 0 } else { -1 }
+    if start_tls_stream(socket, &host, true) {
+        0
+    } else {
+        -1
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_start_tls_insecure(stream: i64, host_ptr: i64) -> i64 {
-    let Some(ptr) = validate_stream_ptr(stream) else { return -1; };
-    let Some(host) = i64_to_rust_str(host_ptr) else { return -1; };
+    let Some(ptr) = validate_stream_ptr(stream) else {
+        return -1;
+    };
+    let Some(host) = i64_to_rust_str(host_ptr) else {
+        return -1;
+    };
     let socket = &mut *ptr;
-    if start_tls_stream(socket, &host, false) { 0 } else { -1 }
+    if start_tls_stream(socket, &host, false) {
+        0
+    } else {
+        -1
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_http_fetch(
-    host_ptr: i64, port: i64, use_tls: i64,
-    request_ptr: i64, timeout_ms: i64, insecure_tls: i64,
+    host_ptr: i64,
+    port: i64,
+    use_tls: i64,
+    request_ptr: i64,
+    timeout_ms: i64,
+    insecure_tls: i64,
 ) -> i64 {
-    let Some(host)    = i64_to_rust_str(host_ptr)    else { return http_result_array("err", b"Invalid host"); };
-    let Some(request) = i64_to_rust_str(request_ptr) else { return http_result_array("err", b"Invalid request"); };
-    match blocking_http_fetch(host, port, use_tls != 0, request, timeout_ms, insecure_tls != 0) {
+    let Some(host) = i64_to_rust_str(host_ptr) else {
+        return http_result_array("err", b"Invalid host");
+    };
+    let Some(request) = i64_to_rust_str(request_ptr) else {
+        return http_result_array("err", b"Invalid request");
+    };
+    match blocking_http_fetch(
+        host,
+        port,
+        use_tls != 0,
+        request,
+        timeout_ms,
+        insecure_tls != 0,
+    ) {
         Ok(bytes) => http_result_array("ok", &bytes),
-        Err(err)  => http_result_array("err", err.as_bytes()),
+        Err(err) => http_result_array("err", err.as_bytes()),
     }
 }
 
@@ -474,7 +579,10 @@ pub unsafe extern "C" fn rt_net_last_error() -> i64 {
         if !cur.is_empty() {
             cur
         } else {
-            GLOBAL_LAST_NET_ERROR.lock().map(|g| g.clone()).unwrap_or_default()
+            GLOBAL_LAST_NET_ERROR
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default()
         }
     });
     rt_string_from_owned_string(s)
@@ -486,7 +594,10 @@ pub unsafe extern "C" fn rt_net_last_error() -> i64 {
 pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
     #[cfg(unix)]
     {
-        let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let mut rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 {
             let target = rl.rlim_max.min(65535);
             if rl.rlim_cur < target {
@@ -500,15 +611,24 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
         set_last_net_error("Invalid address argument");
         return -1;
     };
-    let Some(addr) = addr_str.as_str().to_socket_addrs().ok().and_then(|mut iter| iter.next()) else {
+    let Some(addr) = addr_str
+        .as_str()
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut iter| iter.next())
+    else {
         set_last_net_error(&format!("Invalid socket address: '{}'", addr_str));
         return -1;
     };
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;
-        let domain = if addr.is_ipv4() { libc::AF_INET } else { libc::AF_INET6 };
+        let domain = if addr.is_ipv4() {
+            libc::AF_INET
+        } else {
+            libc::AF_INET6
+        };
         let fd = libc::socket(domain, libc::SOCK_STREAM, 0);
         if fd < 0 {
             let err = std::io::Error::last_os_error();
@@ -517,7 +637,13 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
         }
 
         let one: libc::c_int = 1;
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &one as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
         // Do NOT set SO_REUSEPORT: standard servers fail with EADDRINUSE if another process is already listening.
 
         let res = match addr {
@@ -526,14 +652,22 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
                 sin.sin_family = libc::AF_INET as libc::sa_family_t;
                 sin.sin_port = v4.port().to_be();
                 sin.sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
-                libc::bind(fd, &sin as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
+                libc::bind(
+                    fd,
+                    &sin as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
             }
             std::net::SocketAddr::V6(v6) => {
                 let mut sin6 = std::mem::zeroed::<libc::sockaddr_in6>();
                 sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
                 sin6.sin6_port = v6.port().to_be();
                 sin6.sin6_addr.s6_addr = v6.ip().octets();
-                libc::bind(fd, &sin6 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
+                libc::bind(
+                    fd,
+                    &sin6 as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                )
             }
         };
 
@@ -542,7 +676,10 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
             let desc = if err.raw_os_error() == Some(libc::EADDRINUSE) {
                 format!("Address already in use: Port {} is already in use by another service (EADDRINUSE)", addr.port())
             } else if err.raw_os_error() == Some(libc::EACCES) {
-                format!("Permission denied: Cannot bind to port {} (EACCES)", addr.port())
+                format!(
+                    "Permission denied: Cannot bind to port {} (EACCES)",
+                    addr.port()
+                )
             } else {
                 format!("Bind failed on {}: {}", addr, err)
             };
@@ -586,7 +723,9 @@ pub unsafe extern "C" fn rt_net_listen(addr_ptr: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
-    if listener_ptr <= 0 { return -1; }
+    if listener_ptr <= 0 {
+        return -1;
+    }
     let net_listener = &*(listener_ptr as *const NetListener);
     loop {
         match net_listener.listener.accept() {
@@ -606,7 +745,8 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
                     );
                 }
                 let token = crate::vthread::vt_register_io(&mut stream);
-                let id = register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
+                let id =
+                    register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
                 return id;
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
@@ -615,12 +755,16 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 crate::vthread::vt_wait_io_read(net_listener.token);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted
-                   || e.kind() == std::io::ErrorKind::ConnectionReset => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ConnectionAborted
+                    || e.kind() == std::io::ErrorKind::ConnectionReset =>
+            {
                 continue;
             }
-            Err(e) if e.raw_os_error() == Some(libc::EMFILE)
-                   || e.raw_os_error() == Some(libc::ENFILE) => {
+            Err(e)
+                if e.raw_os_error() == Some(libc::EMFILE)
+                    || e.raw_os_error() == Some(libc::ENFILE) =>
+            {
                 crate::vthread::vt_sleep(1);
             }
             Err(_) => {
@@ -632,7 +776,9 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_close_listener(listener_ptr: i64) -> i64 {
-    if listener_ptr <= 0 { return -1; }
+    if listener_ptr <= 0 {
+        return -1;
+    }
     let mut net_listener = Box::from_raw(listener_ptr as *mut NetListener);
     crate::vthread::vt_deregister_io(&mut net_listener.listener, net_listener.token);
     0
@@ -652,7 +798,9 @@ fn close_net_stream(stream: NetStream) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_close(stream: i64) -> i64 {
-    if stream <= 0 { return -1; }
+    if stream <= 0 {
+        return -1;
+    }
     let ptr = stream as *mut NetStream;
     let old = std::mem::replace(&mut *ptr, NetStream::Closed);
     close_net_stream(old);
@@ -663,27 +811,40 @@ pub unsafe extern "C" fn rt_net_close(stream: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_close_stream_obj(this: i64) -> i64 {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { return -1; }
+    if ptr.is_null() {
+        return -1;
+    }
     let atomic_slot = ptr.offset(0) as *const AtomicI64;
     let id = (*atomic_slot).swap(0, Ordering::AcqRel);
-    if id <= 0 { return 0; }
+    if id <= 0 {
+        return 0;
+    }
     rt_net_close(id)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_net_close_listener_obj(this: i64) -> i64 {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { return -1; }
+    if ptr.is_null() {
+        return -1;
+    }
     let atomic_slot = ptr.offset(0) as *const AtomicI64;
     let id = (*atomic_slot).swap(0, Ordering::AcqRel);
-    if id <= 0 { return 0; }
+    if id <= 0 {
+        return 0;
+    }
     rt_net_close_listener(id)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_TcpStream_constructor(this: i64, id: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { if id > 0 { let _ = rt_net_close(id); } return; }
+    if ptr.is_null() {
+        if id > 0 {
+            let _ = rt_net_close(id);
+        }
+        return;
+    }
     rt_ensure_type_finalizer(this, rt_tcp_stream_object_finalizer);
     *ptr.offset(0) = id;
 }
@@ -691,7 +852,12 @@ pub unsafe extern "C" fn rt_TcpStream_constructor(this: i64, id: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_TcpListener_constructor(this: i64, id: i64) {
     let ptr = rt_obj_ptr(this);
-    if ptr.is_null() { if id > 0 { let _ = rt_net_close_listener(id); } return; }
+    if ptr.is_null() {
+        if id > 0 {
+            let _ = rt_net_close_listener(id);
+        }
+        return;
+    }
     rt_ensure_type_finalizer(this, rt_tcp_listener_object_finalizer);
     *ptr.offset(0) = id;
 }
@@ -717,14 +883,22 @@ pub unsafe extern "C" fn rt_http_send_fast_response(
 
     let body_bytes = if body_ptr >= HEAP_OFFSET {
         let (bytes, len) = get_str_parts(body_ptr).unwrap_or((std::ptr::null(), 0));
-        if bytes.is_null() { &[] } else { std::slice::from_raw_parts(bytes, len as usize) }
+        if bytes.is_null() {
+            &[]
+        } else {
+            std::slice::from_raw_parts(bytes, len as usize)
+        }
     } else {
         &[]
     };
 
     let ct_bytes = if content_type_ptr >= HEAP_OFFSET {
         let (bytes, len) = get_str_parts(content_type_ptr).unwrap_or((std::ptr::null(), 0));
-        if bytes.is_null() { b"text/plain; charset=utf-8" as &[u8] } else { std::slice::from_raw_parts(bytes, len as usize) }
+        if bytes.is_null() {
+            b"text/plain; charset=utf-8" as &[u8]
+        } else {
+            std::slice::from_raw_parts(bytes, len as usize)
+        }
     } else {
         b"text/plain; charset=utf-8"
     };
@@ -763,7 +937,8 @@ pub unsafe extern "C" fn rt_http_send_fast_response(
     if cors_origin_ptr >= HEAP_OFFSET {
         if let Some((bytes, len)) = get_str_parts(cors_origin_ptr) {
             if !bytes.is_null() && len > 0 {
-                let origin_str = std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len as usize));
+                let origin_str =
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len as usize));
                 let _ = write!(
                     buf,
                     "Access-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n",

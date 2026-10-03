@@ -1,7 +1,7 @@
 use super::*; // Extracted \n
+use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
 
 static LIVE_ATOMICS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 

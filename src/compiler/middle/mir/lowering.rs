@@ -351,8 +351,6 @@ impl MIRLowering {
         name
     }
 
-
-
     fn new_finally_id(&mut self) -> usize {
         let id = self.finally_counter;
         self.finally_counter += 1;
@@ -1094,9 +1092,7 @@ impl MIRLowering {
             | TejxType::Optional(_)
             | TejxType::Function(_, _)
             | TejxType::Object(_)
-            | TejxType::Any => {
-                true
-            }
+            | TejxType::Any => true,
             TejxType::Class(name, _) => {
                 let lookup_name = if name.contains('<') {
                     name.split('<').next().unwrap()
@@ -2152,7 +2148,9 @@ impl MIRLowering {
                     TokenType::Minus
                 };
                 match target.as_ref() {
-                    HIRExpression::Variable { name, ty: var_ty, .. } => {
+                    HIRExpression::Variable {
+                        name, ty: var_ty, ..
+                    } => {
                         let unique_name = self.resolve_variable(name);
                         let old_val = self.new_temp(var_ty.clone());
                         self.emit(MIRInstruction::Move {

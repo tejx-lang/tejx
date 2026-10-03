@@ -159,9 +159,9 @@ impl Linker {
                         eprintln!("[linker] Executing: {:?}", asm_cmd);
                     }
 
-                    let output_asm = asm_cmd
-                        .output()
-                        .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
+                    let output_asm = asm_cmd.output().map_err(|e| {
+                        format!("Failed to generate assembly {}: {}", obj.display(), e)
+                    })?;
                     if !output_asm.status.success() {
                         let stderr = String::from_utf8_lossy(&output_asm.stderr);
                         cleanup_file(obj);
@@ -304,11 +304,9 @@ impl Linker {
             }
         }
 
-        cmd.arg("-o");
-        cmd.arg(&self.output_path);
-
-        if self.verbose {
-            eprintln!("[linker] Executing: {:?}", cmd);
+        // Add user-specified libraries
+        for lib in &self.libs {
+            cmd.arg(format!("-l{}", lib));
         }
 
         let output = cmd
@@ -352,14 +350,7 @@ impl Linker {
 
         // Check for compilers in order of preference (clang is preferred for LLVM IR .ll support)
         let candidates = [
-            "clang",
-            "clang-19",
-            "clang-18",
-            "clang-17",
-            "clang-16",
-            "clang-15",
-            "cc",
-            "gcc",
+            "clang", "clang-19", "clang-18", "clang-17", "clang-16", "clang-15", "cc", "gcc",
         ];
         for bin in candidates {
             if self.check_command(bin) {
@@ -390,18 +381,8 @@ impl Linker {
 
     fn find_llvm_assembler(&self) -> Option<String> {
         let candidates = [
-            "clang",
-            "clang-19",
-            "clang-18",
-            "clang-17",
-            "clang-16",
-            "clang-15",
-            "llc",
-            "llc-19",
-            "llc-18",
-            "llc-17",
-            "llc-16",
-            "llc-15",
+            "clang", "clang-19", "clang-18", "clang-17", "clang-16", "clang-15", "llc", "llc-19",
+            "llc-18", "llc-17", "llc-16", "llc-15",
         ];
         for bin in candidates {
             if self.check_command(bin) {

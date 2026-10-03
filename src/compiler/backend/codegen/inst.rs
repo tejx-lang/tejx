@@ -1300,7 +1300,8 @@ impl CodeGen {
                 let body_size = elem_size.saturating_mul(*len);
                 let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
                 let can_stack_allocate = false;
-                if can_stack_allocate && func.name != "tejx_main" && !is_escaped && body_size <= 256 {
+                if can_stack_allocate && func.name != "tejx_main" && !is_escaped && body_size <= 256
+                {
                     let stack_arr = format!("%stack_arr_{}", dst.replace('.', "_"));
                     let total_size = body_size + 24;
                     self.alloca_buffer.push_str(&format!(
@@ -1944,8 +1945,9 @@ impl CodeGen {
 
                             self.temp_counter += 1;
                             let reloaded = format!("%arg_reloaded_{}", self.temp_counter);
-                            reload_instructions.push(format!("  {} = load i64, i64* {}", reloaded, tmp_root));
-                            
+                            reload_instructions
+                                .push(format!("  {} = load i64, i64* {}", reloaded, tmp_root));
+
                             call_args_info.push((arg_mir, reloaded.clone()));
                             llvm_args.push(format!("{} {}", target_llvm_ty, reloaded));
                         } else {
@@ -2099,8 +2101,9 @@ impl CodeGen {
 
                     self.temp_counter += 1;
                     let reloaded = format!("%arg_reloaded_{}", self.temp_counter);
-                    reload_instructions.push(format!("  {} = load i64, i64* {}", reloaded, tmp_root));
-                    
+                    reload_instructions
+                        .push(format!("  {} = load i64, i64* {}", reloaded, tmp_root));
+
                     call_args_info.push((arg.clone(), reloaded.clone()));
                     llvm_args.push(format!("{} {}", target_llvm_ty, reloaded));
                 } else {

@@ -51,7 +51,6 @@ impl Parser {
         Program { statements }
     }
 
-
     fn push_parse_error(&mut self, message: impl Into<String>, line: usize, col: usize) {
         let msg = message.into();
         let hint = if msg.contains("';'") {
@@ -90,8 +89,6 @@ impl Parser {
             .with_label(&message),
         );
     }
-
-
 
     // --- Declarations ---
 
@@ -409,10 +406,7 @@ impl Parser {
         if !self.check(TokenType::CloseParen) {
             loop {
                 let is_rest = self.match_token(TokenType::Ellipsis);
-                let p_name = self
-                    .consume_identifier("Expected param name")
-                    .value
-                    .clone();
+                let p_name = self.consume_identifier("Expected param name").value.clone();
                 let mut p_type = TypeNode::Named("".to_string());
                 if self.match_token(TokenType::Colon) {
                     p_type = self.parse_type_annotation();
@@ -556,10 +550,7 @@ impl Parser {
                 let mut params = Vec::new();
                 if !self.check(TokenType::CloseParen) {
                     loop {
-                        let name = self
-                            .consume_identifier("Expected param name")
-                            .value
-                            .clone();
+                        let name = self.consume_identifier("Expected param name").value.clone();
                         let mut type_name = TypeNode::Named("".to_string());
                         if self.match_token(TokenType::Colon) {
                             type_name = self.parse_type_annotation();
@@ -651,10 +642,7 @@ impl Parser {
                 let mut params = Vec::new();
                 if !self.check(TokenType::CloseParen) {
                     loop {
-                        let p_name = self
-                            .consume_identifier("Expected param")
-                            .value
-                            .clone();
+                        let p_name = self.consume_identifier("Expected param").value.clone();
                         let mut p_type = TypeNode::Named("".to_string());
                         if self.match_token(TokenType::Colon) {
                             p_type = self.parse_type_annotation();
@@ -976,10 +964,7 @@ impl Parser {
                 let mut params = Vec::new();
                 if !self.check(TokenType::CloseParen) {
                     loop {
-                        let p_name = self
-                            .consume_identifier("Param name")
-                            .value
-                            .clone();
+                        let p_name = self.consume_identifier("Param name").value.clone();
                         self.consume(TokenType::Colon, "Expected ':'");
                         let p_type = self.parse_type_annotation();
                         params.push(Parameter {
@@ -1082,11 +1067,10 @@ impl Parser {
             params_str.push('(');
             if !self.check(TokenType::CloseParen) {
                 loop {
-                    if (self.check(TokenType::Identifier) || self.is_keyword_identifier()) && self.check_next(TokenType::Colon) {
-                        let name = self
-                            .consume_identifier("Param name")
-                            .value
-                            .clone();
+                    if (self.check(TokenType::Identifier) || self.is_keyword_identifier())
+                        && self.check_next(TokenType::Colon)
+                    {
+                        let name = self.consume_identifier("Param name").value.clone();
                         self.consume(TokenType::Colon, "Expected ':'");
                         let p_type = self.parse_type_annotation();
                         params_str.push_str(&format!("{}: {}", name, p_type.to_string()));
@@ -1210,7 +1194,9 @@ impl Parser {
                             );
                             TypeNode::Any
                         } else {
-                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap_or(TypeNode::Any)))
+                            TypeNode::Optional(Box::new(
+                                generic_args.into_iter().next().unwrap_or(TypeNode::Any),
+                            ))
                         }
                     }
                     "Option" => {
@@ -1222,7 +1208,9 @@ impl Parser {
                             "Rename this type to Optional<T>.",
                         );
                         if generic_args.len() == 1 {
-                            TypeNode::Optional(Box::new(generic_args.into_iter().next().unwrap_or(TypeNode::Any)))
+                            TypeNode::Optional(Box::new(
+                                generic_args.into_iter().next().unwrap_or(TypeNode::Any),
+                            ))
                         } else {
                             TypeNode::Any
                         }
@@ -2400,10 +2388,7 @@ impl Parser {
 
         if self.check(TokenType::Identifier) || self.is_keyword_identifier() {
             // Single param: x => ...
-            let name = self
-                .consume_identifier("Expected param name")
-                .value
-                .clone();
+            let name = self.consume_identifier("Expected param name").value.clone();
             params.push(Parameter {
                 name,
                 type_name: TypeNode::Any,
@@ -2416,10 +2401,7 @@ impl Parser {
             if !self.check(TokenType::CloseParen) {
                 loop {
                     let is_rest = self.match_token(TokenType::Ellipsis);
-                    let name = self
-                        .consume_identifier("Expected param name")
-                        .value
-                        .clone();
+                    let name = self.consume_identifier("Expected param name").value.clone();
                     let mut type_name = TypeNode::Any;
                     if self.match_token(TokenType::Colon) {
                         type_name = self.parse_type_annotation();

@@ -200,7 +200,11 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     for i in 1..=m {
         curr_row[0] = i;
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
             curr_row[j] = (prev_row[j] + 1)
                 .min(curr_row[j - 1] + 1)
                 .min(prev_row[j - 1] + cost);
@@ -227,7 +231,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    find_best_match_internal(target, candidates.into_iter().map(|s| s.as_ref().to_string()))
+    find_best_match_internal(
+        target,
+        candidates.into_iter().map(|s| s.as_ref().to_string()),
+    )
 }
 
 /// Alias for find_best_match.
@@ -292,10 +299,18 @@ mod tests {
     #[test]
     fn test_find_best_match() {
         let candidates = ["println", "print", "panic", "sizeof", "length"];
-        assert_eq!(find_best_match("pringln", candidates), Some("println".to_string()));
-        assert_eq!(find_best_match("lengh", candidates), Some("length".to_string()));
-        assert_eq!(find_best_match("Print", candidates), Some("print".to_string()));
+        assert_eq!(
+            find_best_match("pringln", candidates),
+            Some("println".to_string())
+        );
+        assert_eq!(
+            find_best_match("lengh", candidates),
+            Some("length".to_string())
+        );
+        assert_eq!(
+            find_best_match("Print", candidates),
+            Some("print".to_string())
+        );
         assert_eq!(find_best_match("completely_unrelated", candidates), None);
     }
 }
-

@@ -122,7 +122,9 @@ impl Lowering {
                         filename.to_string(),
                     )
                     .with_code("E0202");
-                    if let Some(best) = crate::common::diagnostics::find_best_match_str(&item.name, exported_names) {
+                    if let Some(best) =
+                        crate::common::diagnostics::find_best_match_str(&item.name, exported_names)
+                    {
                         diag = diag.with_hint(&format!("Did you mean '{}'?", best));
                     }
                     self.diagnostics.borrow_mut().push(diag);
@@ -337,13 +339,32 @@ impl Lowering {
                     let hint = if source_str.starts_with("std:") {
                         let mod_name = source_str.trim_start_matches("std:");
                         let known_std = [
-                            "binary", "collections", "crypto", "dns", "fs", "gc", "http",
-                            "json", "math", "net", "runtime", "system", "thread", "time", "url",
+                            "binary",
+                            "collections",
+                            "crypto",
+                            "dns",
+                            "fs",
+                            "gc",
+                            "http",
+                            "json",
+                            "math",
+                            "net",
+                            "runtime",
+                            "system",
+                            "thread",
+                            "time",
+                            "url",
                         ];
-                        if let Some(best) = crate::common::diagnostics::find_best_match(mod_name, known_std.iter().copied()) {
+                        if let Some(best) = crate::common::diagnostics::find_best_match(
+                            mod_name,
+                            known_std.iter().copied(),
+                        ) {
                             Some(format!("Did you mean 'std:{}'?", best))
                         } else {
-                            Some(format!("Available standard modules include: {}", known_std.join(", ")))
+                            Some(format!(
+                                "Available standard modules include: {}",
+                                known_std.join(", ")
+                            ))
                         }
                     } else {
                         Some(format!("Ensure the file '{}' exists relative to this file or in an include path", source_str))

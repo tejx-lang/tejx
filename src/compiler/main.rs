@@ -84,7 +84,12 @@ fn report_diagnostics(
         );
     }
     let suffix = if count == 1 { "" } else { "s" };
-    eprintln!("\x1b[31;1merror\x1b[0m: {} failed with {} error{}", stage.to_lowercase(), count, suffix);
+    eprintln!(
+        "\x1b[31;1merror\x1b[0m: {} failed with {} error{}",
+        stage.to_lowercase(),
+        count,
+        suffix
+    );
 }
 
 fn apply_inferred_function_return_annotation(
@@ -439,7 +444,10 @@ fn main() {
                     }
                     i += 1;
                 } else {
-                    eprintln!("\x1b[31;1merror\x1b[0m: {} requires a size argument (e.g. 2k, 4k, 64k)", arg);
+                    eprintln!(
+                        "\x1b[31;1merror\x1b[0m: {} requires a size argument (e.g. 2k, 4k, 64k)",
+                        arg
+                    );
                     process::exit(1);
                 }
             }
@@ -531,15 +539,48 @@ fn main() {
 
             _ if arg.starts_with("-") => {
                 let valid_options = [
-                    "-h", "--help", "-v", "--version", "--check", "-r", "--run",
-                    "-S", "--emit-asm", "-O0", "-O1", "-O2", "-O3", "-Os",
-                    "-g", "--debug", "-Wall", "-Wextra", "-Werror", "--stats",
-                    "--verbose", "--emit-ast", "--emit-tokens", "--unsafe-arrays",
-                    "--emit-mir", "--emit-llvm", "-c", "--compile", "-o", "--output",
-                    "--stdlib-path", "--runtime-path", "--vt-stack", "--vthread-stack",
-                    "-Xss", "-I", "-L", "-l", "--target",
+                    "-h",
+                    "--help",
+                    "-v",
+                    "--version",
+                    "--check",
+                    "-r",
+                    "--run",
+                    "-S",
+                    "--emit-asm",
+                    "-O0",
+                    "-O1",
+                    "-O2",
+                    "-O3",
+                    "-Os",
+                    "-g",
+                    "--debug",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "--stats",
+                    "--verbose",
+                    "--emit-ast",
+                    "--emit-tokens",
+                    "--unsafe-arrays",
+                    "--emit-mir",
+                    "--emit-llvm",
+                    "-c",
+                    "--compile",
+                    "-o",
+                    "--output",
+                    "--stdlib-path",
+                    "--runtime-path",
+                    "--vt-stack",
+                    "--vthread-stack",
+                    "-Xss",
+                    "-I",
+                    "-L",
+                    "-l",
+                    "--target",
                 ];
-                if let Some(sugg) = crate::common::diagnostics::find_best_match(arg, valid_options) {
+                if let Some(sugg) = crate::common::diagnostics::find_best_match(arg, valid_options)
+                {
                     eprintln!(
                         "\x1b[31;1merror\x1b[0m: unknown option '{}'. Did you mean '{}'? Run 'tejxc --help' for all options.",
                         arg, sugg
@@ -569,7 +610,10 @@ fn main() {
     let filename = input_files[0].clone();
 
     let contents = fs::read_to_string(&filename).unwrap_or_else(|err| {
-        eprintln!("\x1b[31;1merror\x1b[0m: could not read file '{}': {}", filename, err);
+        eprintln!(
+            "\x1b[31;1merror\x1b[0m: could not read file '{}': {}",
+            filename, err
+        );
         process::exit(1);
     });
 
@@ -668,7 +712,10 @@ fn main() {
             eprintln!("  Import Resolution:          {:>8.2?}", t_imports);
             eprintln!("  Semantic Analysis / Types:  {:>8.2?}", t_typecheck);
             eprintln!("  --------------------------------------");
-            eprintln!("  Total Time:                 {:>8.2?}", total_timer.elapsed());
+            eprintln!(
+                "  Total Time:                 {:>8.2?}",
+                total_timer.elapsed()
+            );
             eprintln!("==========================================\n");
         }
         if verbose {
@@ -789,7 +836,10 @@ fn main() {
     // Use the resolved runtime path
     let runtime_path = crate::common::paths::resolve_runtime_path(cli_runtime_path.as_deref());
     if !runtime_path.exists() {
-        eprintln!("\x1b[31;1merror\x1b[0m: runtime library not found at {:?}", runtime_path);
+        eprintln!(
+            "\x1b[31;1merror\x1b[0m: runtime library not found at {:?}",
+            runtime_path
+        );
         process::exit(1);
     }
     linker.add_object(&runtime_path);
@@ -828,7 +878,10 @@ fn main() {
         eprintln!("  LLVM Code Generation:       {:>8.2?}", t_codegen);
         eprintln!("  Assembly & Linking:         {:>8.2?}", t_link);
         eprintln!("  --------------------------------------");
-        eprintln!("  Total Build Time:           {:>8.2?}", total_timer.elapsed());
+        eprintln!(
+            "  Total Build Time:           {:>8.2?}",
+            total_timer.elapsed()
+        );
         eprintln!("==============================\n");
     }
 
@@ -848,7 +901,10 @@ fn main() {
                 process::exit(status.code().unwrap_or(0));
             }
             Err(e) => {
-                eprintln!("\x1b[31;1merror\x1b[0m: failed to execute binary '{}': {}", binary_path, e);
+                eprintln!(
+                    "\x1b[31;1merror\x1b[0m: failed to execute binary '{}': {}",
+                    binary_path, e
+                );
                 process::exit(1);
             }
         }
@@ -860,7 +916,9 @@ fn print_help() {
     println!("Usage: tejxc [options] <file.tx> [-- <run_args>...]");
     println!();
     println!("Actions:");
-    println!("  --check                 Perform syntax and type checking only without code generation");
+    println!(
+        "  --check                 Perform syntax and type checking only without code generation"
+    );
     println!("  -r, --run               Compile and immediately execute the output program");
     println!("  -c, --compile           Compile to object file (.o); do not link");
     println!("  -S, --emit-asm          Emit assembly (.s); do not assemble or link");
@@ -905,7 +963,11 @@ fn print_help() {
 }
 
 fn print_version() {
-    println!("tejxc {} ({})", crate::common::version::VERSION, std::env::consts::ARCH);
+    println!(
+        "tejxc {} ({})",
+        crate::common::version::VERSION,
+        std::env::consts::ARCH
+    );
     println!("LLVM backend: clang/cc toolchain");
     println!("Host: {}-{}", std::env::consts::ARCH, std::env::consts::OS);
     println!();

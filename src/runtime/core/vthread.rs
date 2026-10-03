@@ -1,14 +1,14 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use crossbeam_deque::{Injector, Steal, Stealer, Worker};
-use once_cell::sync::Lazy;
-use std::cell::{Cell, RefCell};
-use std::sync::Mutex;
-use std::thread;
-use mio::{Events, Poll, Registry, Token, Interest};
 use crate::constants::*;
 use crate::context::{init_fiber_stack, tejx_context_switch};
 use crate::SpinMutex;
+use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+use mio::{Events, Interest, Poll, Registry, Token};
+use once_cell::sync::Lazy;
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread;
 
 /// Set at startup by runtime CLI arguments (`--vt-stack`, `--vthread-stack`, `-Xss`).
 pub static mut ARGV_VT_STACK_SIZE: usize = 0;
@@ -79,7 +79,7 @@ pub struct GrowableStack {
     mmap_base: *mut u8,
     /// Total size of the mmap'd region (= MAX_VTHREAD_STACK_SIZE).
     mmap_size: usize,
-    /// Lowest committed (PROT_READ|PROT_WRITE) address. 
+    /// Lowest committed (PROT_READ|PROT_WRITE) address.
     /// Everything from committed_low..base is accessible.
     /// Everything from mmap_base..committed_low is guard (PROT_NONE).
     committed_low: Arc<AtomicUsize>,
@@ -97,11 +97,11 @@ static STACK_REGISTRY_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static STACK_REGISTRY_INIT: std::sync::Once = std::sync::Once::new();
 
 struct StackRegistryEntry {
-    mmap_base: usize,             // lowest address of reserved region
-    mmap_end: usize,              // highest address (mmap_base + mmap_size)
+    mmap_base: usize,                // lowest address of reserved region
+    mmap_end: usize,                 // highest address (mmap_base + mmap_size)
     committed_low: Arc<AtomicUsize>, // current committed boundary (atomic for signal handler access)
     page_size: usize,
-    max_committed_low: usize,     // = mmap_base (absolute bottom, can't grow past this)
+    max_committed_low: usize, // = mmap_base (absolute bottom, can't grow past this)
 }
 
 struct StackRegistry {
@@ -141,7 +141,7 @@ pub unsafe fn try_grow_stack_at(fault_addr: usize) -> bool {
         Some(guard) => guard,
         None => return false,
     };
-    
+
     for entry in entries.iter() {
         if fault_addr >= entry.mmap_base && fault_addr < entry.mmap_end {
             // This fault is within this stack's reserved region.
@@ -198,7 +198,7 @@ impl GrowableStack {
         let page_size = os_page_size();
         let total_reserved = page_align_up(MAX_VTHREAD_STACK_SIZE, page_size);
         let initial = page_align_up(initial_commit.max(page_size), page_size);
-        
+
         // Step 1: Reserve the full virtual address space with PROT_NONE (no physical memory used)
         let mmap_base = unsafe {
             libc::mmap(
@@ -214,7 +214,7 @@ impl GrowableStack {
             return Err(());
         }
         let mmap_base = mmap_base as *mut u8;
-        
+
         // Step 2: Commit the top `initial` bytes (stack grows downward, so commit the high end)
         // Layout: [mmap_base ... committed_low ... base(=mmap_base+total_reserved)]
         let committed_low_ptr = unsafe { mmap_base.add(total_reserved - initial) };
@@ -226,10 +226,12 @@ impl GrowableStack {
             )
         };
         if result != 0 {
-            unsafe { libc::munmap(mmap_base as *mut libc::c_void, total_reserved); }
+            unsafe {
+                libc::munmap(mmap_base as *mut libc::c_void, total_reserved);
+            }
             return Err(());
         }
-        
+
         let committed_low = Arc::new(AtomicUsize::new(committed_low_ptr as usize));
 
         // Step 3: Register in the global stack registry for signal handler lookup
@@ -242,7 +244,7 @@ impl GrowableStack {
             max_committed_low: mmap_base as usize, // can grow all the way down
         };
         registry.entries.lock().push(entry);
-        
+
         Ok(GrowableStack {
             mmap_base,
             mmap_size: total_reserved,
@@ -250,7 +252,7 @@ impl GrowableStack {
             page_size,
         })
     }
-    
+
     /// Returns the committed capacity (usable stack space).
     #[inline]
     pub fn capacity(&self) -> usize {
@@ -268,24 +270,24 @@ impl GrowableStack {
     pub fn limit(&self) -> *mut u8 {
         self.mmap_base
     }
-    
+
     /// Check canary — for GrowableStack, always true (guard pages handle overflow).
     #[inline]
     pub fn check_canary(&self) -> bool {
         true // mmap guard pages replace canary checking
     }
-    
+
     /// Reset canary — no-op for GrowableStack.
     #[inline]
     pub fn reset_canary(&self) {}
-    
+
     /// Decommit extra pages to save memory when returning to pool.
     /// Keeps only `keep_committed` bytes committed at the top.
     fn shrink_to(&mut self, keep_committed: usize) {
         let current_committed_low = self.committed_low.load(Ordering::Acquire);
         let keep = page_align_up(keep_committed.max(self.page_size), self.page_size);
         let new_committed_low = (self.mmap_base as usize) + self.mmap_size - keep;
-        
+
         if new_committed_low > current_committed_low {
             // Decommit pages below the new boundary
             let decommit_size = new_committed_low - current_committed_low;
@@ -303,7 +305,8 @@ impl GrowableStack {
                     libc::PROT_NONE,
                 );
             }
-            self.committed_low.store(new_committed_low, Ordering::Release);
+            self.committed_low
+                .store(new_committed_low, Ordering::Release);
         }
     }
 }
@@ -455,19 +458,27 @@ pub fn vt_trim_stack_pool() {
 
 fn acquire_stack(stack_size: usize) -> PooledStack {
     let target_size = stack_size.max(get_vt_stack_size());
-    let growable = GROWABLE_POOL.try_with(|pool| pool.borrow_mut().pop()).unwrap_or(None);
+    let growable = GROWABLE_POOL
+        .try_with(|pool| pool.borrow_mut().pop())
+        .unwrap_or(None);
     if let Some(g) = growable {
-        return PooledStack { inner: Some(StackKind::Growable(g)) };
+        return PooledStack {
+            inner: Some(StackKind::Growable(g)),
+        };
     }
     {
         let mut global = GLOBAL_GROWABLE_POOL.lock();
         if let Some(g) = global.pop() {
-            return PooledStack { inner: Some(StackKind::Growable(g)) };
+            return PooledStack {
+                inner: Some(StackKind::Growable(g)),
+            };
         }
     }
     let stack = GrowableStack::new(target_size)
         .expect("Failed to allocate growable stack for virtual thread");
-    PooledStack { inner: Some(StackKind::Growable(stack)) }
+    PooledStack {
+        inner: Some(StackKind::Growable(stack)),
+    }
 }
 
 static START_INSTANT: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
@@ -588,8 +599,17 @@ unsafe impl Send for VThread {}
 
 const NUM_GC_SHARDS: usize = 16;
 static NEXT_VT_ID: AtomicUsize = AtomicUsize::new(1);
-static VTHREAD_GC_SHARDS: Lazy<Vec<SpinMutex<std::collections::HashMap<usize, Arc<SpinMutex<Option<crate::gc::GcContextState>>>>>>> =
-    Lazy::new(|| (0..NUM_GC_SHARDS).map(|_| SpinMutex::new(std::collections::HashMap::new())).collect());
+static VTHREAD_GC_SHARDS: Lazy<
+    Vec<
+        SpinMutex<
+            std::collections::HashMap<usize, Arc<SpinMutex<Option<crate::gc::GcContextState>>>>,
+        >,
+    >,
+> = Lazy::new(|| {
+    (0..NUM_GC_SHARDS)
+        .map(|_| SpinMutex::new(std::collections::HashMap::new()))
+        .collect()
+});
 
 fn register_vthread_gc(id: usize, gc_state: Arc<SpinMutex<Option<crate::gc::GcContextState>>>) {
     let shard_idx = id % NUM_GC_SHARDS;
@@ -602,7 +622,9 @@ fn unregister_vthread_gc(id: usize) {
 }
 
 #[inline]
-fn lock_gc_state(m: &SpinMutex<Option<crate::gc::GcContextState>>) -> crate::mutex::SpinMutexGuard<'_, Option<crate::gc::GcContextState>> {
+fn lock_gc_state(
+    m: &SpinMutex<Option<crate::gc::GcContextState>>,
+) -> crate::mutex::SpinMutexGuard<'_, Option<crate::gc::GcContextState>> {
     m.lock()
 }
 
@@ -711,9 +733,9 @@ impl ParkShard {
 }
 
 static PARK_SHARDS: Lazy<Vec<SpinMutex<ParkShard>>> = Lazy::new(|| {
-    (0..NUM_PARK_SHARDS).map(|_| {
-        SpinMutex::new(ParkShard::new())
-    }).collect()
+    (0..NUM_PARK_SHARDS)
+        .map(|_| SpinMutex::new(ParkShard::new()))
+        .collect()
 });
 
 static NEXT_PARK_TOKEN: AtomicUsize = AtomicUsize::new(1);
@@ -742,7 +764,14 @@ static SCHEDULER: Lazy<Scheduler> = Lazy::new(|| Scheduler {
     global_queue: Injector::new(),
     stealers: once_cell::sync::OnceCell::new(),
     io_shards: (0..NUM_IO_SHARDS).map(|_| IoShard::new()).collect(),
-    registry: POLL.lock().unwrap().as_ref().unwrap().registry().try_clone().unwrap(),
+    registry: POLL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .registry()
+        .try_clone()
+        .unwrap(),
     next_token: AtomicUsize::new(1),
     timers: SpinMutex::new(Vec::new()),
     idle_workers: AtomicUsize::new(0),
@@ -852,7 +881,7 @@ pub fn vt_init(num_workers: usize) {
     let _ = SCHEDULER.next_token.load(Ordering::SeqCst);
     let _ = PARK_SHARDS.len();
     let _ = VTHREAD_GC_SHARDS.len();
-    
+
     let mut stealers = Vec::with_capacity(num_workers);
     let mut workers = Vec::with_capacity(num_workers);
     for _ in 0..num_workers {
@@ -910,28 +939,25 @@ pub fn start_netpoller() {
                 }
                 SCHEDULER.drain_expired_timers();
             }
-        }).unwrap();
+        })
+        .unwrap();
 }
 
 pub fn vt_register_io<S: mio::event::Source>(source: &mut S) -> usize {
     let token_id = SCHEDULER.next_token.fetch_add(1, Ordering::SeqCst);
     let token = Token(token_id);
-    let _ = SCHEDULER.registry.register(
-        source,
-        token,
-        Interest::READABLE | Interest::WRITABLE
-    );
+    let _ = SCHEDULER
+        .registry
+        .register(source, token, Interest::READABLE | Interest::WRITABLE);
     token_id
 }
 
 pub fn vt_register_io_read<S: mio::event::Source>(source: &mut S) -> usize {
     let token_id = SCHEDULER.next_token.fetch_add(1, Ordering::SeqCst);
     let token = Token(token_id);
-    let _ = SCHEDULER.registry.register(
-        source,
-        token,
-        Interest::READABLE
-    );
+    let _ = SCHEDULER
+        .registry
+        .register(source, token, Interest::READABLE);
     token_id
 }
 
@@ -976,7 +1002,10 @@ extern "C" fn vthread_entry_trampoline() -> ! {
     if let Some(f) = entry {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         if let Err(e) = result {
-            eprintln!("💥 [TejX Runtime Error] Unhandled panic in virtual thread: {:?}", e);
+            eprintln!(
+                "💥 [TejX Runtime Error] Unhandled panic in virtual thread: {:?}",
+                e
+            );
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
@@ -1058,13 +1087,17 @@ pub fn vt_wait_io(token_id: usize) {
 }
 
 fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
-    unsafe { crate::gc::rt_register_thread(); }
+    unsafe {
+        crate::gc::rt_register_thread();
+    }
     let local_box = Box::new(local);
     let local_ptr: *const Worker<Box<VThread>> = &*local_box;
     LOCAL_WORKER.with(|w| w.set(local_ptr));
 
     unsafe {
-        (*crate::gc::current_thread_context()).in_blocking_io.store(true, Ordering::SeqCst);
+        (*crate::gc::current_thread_context())
+            .in_blocking_io
+            .store(true, Ordering::SeqCst);
     }
 
     loop {
@@ -1133,9 +1166,13 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
             if !t.done {
                 let saved_gc = lock_gc_state(&t.gc_state).take();
                 if let Some(state) = saved_gc {
-                    unsafe { crate::gc::rt_restore_gc_context(state); }
+                    unsafe {
+                        crate::gc::rt_restore_gc_context(state);
+                    }
                 } else {
-                    unsafe { (*crate::gc::current_thread_context()).roots_top = 0; }
+                    unsafe {
+                        (*crate::gc::current_thread_context()).roots_top = 0;
+                    }
                 }
 
                 crate::restore_vthread_local_state(&mut t.local_state);
@@ -1202,7 +1239,9 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
                 } else {
                     *lock_gc_state(&t.gc_state) = None;
                     crate::clear_vthread_local_state();
-                    unsafe { (*crate::gc::current_thread_context()).roots_top = 0; }
+                    unsafe {
+                        (*crate::gc::current_thread_context()).roots_top = 0;
+                    }
                     let slot_live = t.slot_live.clone();
                     drop(t);
                     slot_live.store(false, Ordering::SeqCst);
@@ -1210,7 +1249,9 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
             } else {
                 *lock_gc_state(&t.gc_state) = None;
                 crate::clear_vthread_local_state();
-                unsafe { (*crate::gc::current_thread_context()).roots_top = 0; }
+                unsafe {
+                    (*crate::gc::current_thread_context()).roots_top = 0;
+                }
                 let slot_live = t.slot_live.clone();
                 drop(t);
                 slot_live.store(false, Ordering::SeqCst);
@@ -1242,7 +1283,9 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
                 SCHEDULER.drain_expired_timers();
                 // Wait on condvar — wakes up in <2µs when a task is pushed to global_queue!
                 let guard = SCHEDULER.idle_lock.lock().unwrap();
-                let _ = SCHEDULER.idle_condvar.wait_timeout(guard, std::time::Duration::from_millis(1));
+                let _ = SCHEDULER
+                    .idle_condvar
+                    .wait_timeout(guard, std::time::Duration::from_millis(1));
             }
             SCHEDULER.idle_workers.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1256,8 +1299,12 @@ where
     vt_spawn_closure_with_stack(f, cb_slot, slot_live, get_vt_stack_size())
 }
 
-pub fn vt_spawn_closure_with_stack<F>(f: F, _cb_slot: usize, slot_live: Arc<AtomicBool>, stack_size: usize)
-where
+pub fn vt_spawn_closure_with_stack<F>(
+    f: F,
+    _cb_slot: usize,
+    slot_live: Arc<AtomicBool>,
+    stack_size: usize,
+) where
     F: FnOnce() + Send + 'static,
 {
     let id = NEXT_VT_ID.fetch_add(1, Ordering::SeqCst);
@@ -1394,19 +1441,25 @@ mod tests {
 
     #[test]
     fn test_growable_stack_allocation_and_alignment() {
-        let stack = GrowableStack::new(DEFAULT_VTHREAD_STACK_SIZE).expect("allocate growable stack");
+        let stack =
+            GrowableStack::new(DEFAULT_VTHREAD_STACK_SIZE).expect("allocate growable stack");
         assert!(stack.capacity() >= DEFAULT_VTHREAD_STACK_SIZE);
         assert_eq!(stack.base() as usize % STACK_ALIGNMENT, 0);
         assert_eq!(stack.limit() as usize % STACK_ALIGNMENT, 0);
         assert!(stack.base() > stack.limit());
-        assert_eq!(stack.base() as usize - stack.limit() as usize, MAX_VTHREAD_STACK_SIZE);
+        assert_eq!(
+            stack.base() as usize - stack.limit() as usize,
+            MAX_VTHREAD_STACK_SIZE
+        );
     }
 
     #[test]
     fn test_native_context_switch_roundtrip() {
         static mut COMPLETED: bool = false;
         static mut TEST_WORKER_SP: *mut u8 = std::ptr::null_mut();
-        unsafe { COMPLETED = false; }
+        unsafe {
+            COMPLETED = false;
+        }
         let stack = acquire_stack(DEFAULT_VTHREAD_STACK_SIZE);
 
         extern "C" fn test_fiber_entry() -> ! {
@@ -1433,7 +1486,9 @@ mod tests {
         static mut STEP: usize = 0;
         static mut TEST_WORKER_SP: *mut u8 = std::ptr::null_mut();
         static mut FIBER_SP: *mut u8 = std::ptr::null_mut();
-        unsafe { STEP = 0; }
+        unsafe {
+            STEP = 0;
+        }
         let stack = acquire_stack(DEFAULT_VTHREAD_STACK_SIZE);
 
         extern "C" fn test_yield_entry() -> ! {
@@ -1466,7 +1521,8 @@ mod tests {
 
     #[test]
     fn test_growable_stack_growth_and_shrink() {
-        let mut stack = GrowableStack::new(DEFAULT_VTHREAD_STACK_SIZE).expect("allocate growable stack");
+        let mut stack =
+            GrowableStack::new(DEFAULT_VTHREAD_STACK_SIZE).expect("allocate growable stack");
         let initial_cap = stack.capacity();
         assert!(initial_cap >= DEFAULT_VTHREAD_STACK_SIZE);
 
@@ -1474,10 +1530,16 @@ mod tests {
         let current_low = stack.committed_low.load(Ordering::Acquire);
         let fault_addr = current_low - 8;
         let grew = unsafe { try_grow_stack_at(fault_addr) };
-        assert!(grew, "try_grow_stack_at should succeed for guard page access");
+        assert!(
+            grew,
+            "try_grow_stack_at should succeed for guard page access"
+        );
 
         let new_cap = stack.capacity();
-        assert!(new_cap > initial_cap, "stack capacity should have increased");
+        assert!(
+            new_cap > initial_cap,
+            "stack capacity should have increased"
+        );
 
         // Verify the newly grown page is actually readable/writable without faulting
         unsafe {

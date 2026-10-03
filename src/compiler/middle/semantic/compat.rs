@@ -177,7 +177,6 @@ impl TypeChecker {
             return true;
         }
 
-
         // Generic wildcard: single uppercase letter mapped via Class
         let is_generic_wildcard = |t: &TejxType| -> bool {
             if let TejxType::Class(name, gen) = t {
@@ -347,7 +346,9 @@ impl TypeChecker {
             let expected_base = self.base_class_name(expected_name);
             if let TejxType::Class(actual_name, _) = actual {
                 let actual_base = self.base_class_name(actual_name);
-                if expected_base != actual_base && self.is_same_or_subclass(actual_base, expected_base) {
+                if expected_base != actual_base
+                    && self.is_same_or_subclass(actual_base, expected_base)
+                {
                     return true;
                 }
             }

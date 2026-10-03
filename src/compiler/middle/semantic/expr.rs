@@ -604,7 +604,8 @@ impl TypeChecker {
                     } else if let Some(sugg) = self.suggest_similar_identifier(name) {
                         format!("Did you mean '{}'?", sugg)
                     } else {
-                        "Check the spelling or ensure the variable is declared before use".to_string()
+                        "Check the spelling or ensure the variable is declared before use"
+                            .to_string()
                     };
                     self.report_error_detailed(
                         format!("Undefined variable '{}'", name),
@@ -894,7 +895,10 @@ impl TypeChecker {
                                         "class"
                                     };
                                     let available = self.collect_member_names(name, true);
-                                    let hint = if let Some(best) = crate::common::diagnostics::find_best_match(member, &available) {
+                                    let hint = if let Some(best) =
+                                        crate::common::diagnostics::find_best_match(
+                                            member, &available,
+                                        ) {
                                         Some(format!("Did you mean '{}'?", best))
                                     } else if available.is_empty() {
                                         None
@@ -1039,7 +1043,9 @@ impl TypeChecker {
 
                 if !obj_type.is_empty() && obj_type != "<inferred>" && !obj_type.starts_with("{") {
                     let available = self.collect_member_names(&obj_type, false);
-                    let hint = if let Some(best) = crate::common::diagnostics::find_best_match(member, &available) {
+                    let hint = if let Some(best) =
+                        crate::common::diagnostics::find_best_match(member, &available)
+                    {
                         Some(format!("Did you mean '.{}'?", best))
                     } else if !available.is_empty() {
                         Some(format!("Available members: {}", available.join(", ")))
@@ -1186,9 +1192,16 @@ impl TypeChecker {
                             } else if let Some(sugg) = self.suggest_similar_identifier(name) {
                                 format!("Did you mean '{}'?", sugg)
                             } else {
-                                "Check the spelling or ensure the variable is declared before use".to_string()
+                                "Check the spelling or ensure the variable is declared before use"
+                                    .to_string()
                             };
-                            self.report_error_detailed(format!("Undefined variable '{}'", name), *_line, *_col, "E0102", Some(&hint));
+                            self.report_error_detailed(
+                                format!("Undefined variable '{}'", name),
+                                *_line,
+                                *_col,
+                                "E0102",
+                                Some(&hint),
+                            );
                             Ok(TejxType::from_name("<inferred>"))
                         }
                     }
@@ -1897,7 +1910,9 @@ impl TypeChecker {
                                     *_line,
                                     *_col,
                                     "E0101",
-                                    Some(&self.type_suggestion_or_default_hint(&concrete.to_name())),
+                                    Some(
+                                        &self.type_suggestion_or_default_hint(&concrete.to_name()),
+                                    ),
                                 );
                                 explicit_type_args_valid = false;
                                 break;
@@ -2930,7 +2945,11 @@ impl TypeChecker {
                                     *_line,
                                     *_col,
                                     "E0101",
-                                    Some(&self.type_suggestion_or_default_hint(&concrete_ty.to_name())),
+                                    Some(
+                                        &self.type_suggestion_or_default_hint(
+                                            &concrete_ty.to_name(),
+                                        ),
+                                    ),
                                 );
                             }
                             if let Some(bound) = &gp.bound {

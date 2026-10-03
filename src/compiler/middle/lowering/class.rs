@@ -123,12 +123,35 @@ impl Lowering {
                 *e.clone()
             } else {
                 match &ty {
-                    TejxType::Bool => Expression::BooleanLiteral { value: false, _line: 0, _col: 0 },
-                    TejxType::String => Expression::StringLiteral { value: "".to_string(), _line: 0, _col: 0 },
-                    TejxType::Float32 | TejxType::Float64 => Expression::NumberLiteral { value: 0.0, _is_float: true, _line: 0, _col: 0 },
+                    TejxType::Bool => Expression::BooleanLiteral {
+                        value: false,
+                        _line: 0,
+                        _col: 0,
+                    },
+                    TejxType::String => Expression::StringLiteral {
+                        value: "".to_string(),
+                        _line: 0,
+                        _col: 0,
+                    },
+                    TejxType::Float32 | TejxType::Float64 => Expression::NumberLiteral {
+                        value: 0.0,
+                        _is_float: true,
+                        _line: 0,
+                        _col: 0,
+                    },
                     TejxType::Optional(_) => Expression::NoneLiteral { _line: 0, _col: 0 },
-                    TejxType::DynamicArray(_) => Expression::ArrayLiteral { elements: vec![], ty: std::cell::RefCell::new(None), _line: 0, _col: 0 },
-                    _ => Expression::NumberLiteral { value: 0.0, _is_float: false, _line: 0, _col: 0 },
+                    TejxType::DynamicArray(_) => Expression::ArrayLiteral {
+                        elements: vec![],
+                        ty: std::cell::RefCell::new(None),
+                        _line: 0,
+                        _col: 0,
+                    },
+                    _ => Expression::NumberLiteral {
+                        value: 0.0,
+                        _is_float: false,
+                        _line: 0,
+                        _col: 0,
+                    },
                 }
             };
             if member._is_static {
@@ -386,9 +409,10 @@ impl Lowering {
             self.function_source_files
                 .borrow_mut()
                 .insert(mangled_name.clone(), self.current_file.borrow().clone());
-            self.function_source_files
-                .borrow_mut()
-                .insert(format!("{}_{}", class_decl.name, func_decl.name), self.current_file.borrow().clone());
+            self.function_source_files.borrow_mut().insert(
+                format!("{}_{}", class_decl.name, func_decl.name),
+                self.current_file.borrow().clone(),
+            );
             functions.push(HIRStatement::Function {
                 line,
                 name: mangled_name,
@@ -413,7 +437,9 @@ impl Lowering {
                 .iter()
                 .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
                 .collect();
-            self.return_type_stack.borrow_mut().push(return_type.clone());
+            self.return_type_stack
+                .borrow_mut()
+                .push(return_type.clone());
             let hir_body = self
                 .lower_statement(&getter._body)
                 .unwrap_or(HIRStatement::Block {
@@ -569,7 +595,9 @@ impl Lowering {
                 .map(|(pname, pty)| (self.define(pname.clone(), pty.clone()), pty.clone()))
                 .collect();
 
-            self.return_type_stack.borrow_mut().push(return_type.clone());
+            self.return_type_stack
+                .borrow_mut()
+                .push(return_type.clone());
             let hir_body = self
                 .lower_statement(&func_decl.body)
                 .unwrap_or(HIRStatement::Block {

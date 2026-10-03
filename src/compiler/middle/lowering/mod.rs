@@ -535,7 +535,10 @@ impl Lowering {
                 else {
                     continue;
                 };
-                let origin_file = merged_statement_files.get(t_idx).cloned().unwrap_or_default();
+                let origin_file = merged_statement_files
+                    .get(t_idx)
+                    .cloned()
+                    .unwrap_or_default();
 
                 if class_decl.generic_params.len() != concrete_args.len() {
                     continue;
@@ -594,7 +597,10 @@ impl Lowering {
                 else {
                     continue;
                 };
-                let origin_file = merged_statement_files.get(t_idx).cloned().unwrap_or_default();
+                let origin_file = merged_statement_files
+                    .get(t_idx)
+                    .cloned()
+                    .unwrap_or_default();
 
                 if func_decl.generic_params.len() != concrete_args.len() {
                     continue;
@@ -1012,9 +1018,10 @@ impl Lowering {
             }
         }
 
-        self.function_source_files
-            .borrow_mut()
-            .insert(crate::common::intrinsics::TEJX_MAIN.to_string(), default_file.clone());
+        self.function_source_files.borrow_mut().insert(
+            crate::common::intrinsics::TEJX_MAIN.to_string(),
+            default_file.clone(),
+        );
 
         LoweringResult {
             functions,

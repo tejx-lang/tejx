@@ -614,7 +614,8 @@ impl Lowering {
                 }
             }
             Expression::StringLiteral { value, .. } => {
-                let (val, ty) = if let Some(expected) = self.current_expected_type.borrow().clone() {
+                let (val, ty) = if let Some(expected) = self.current_expected_type.borrow().clone()
+                {
                     if matches!(expected, TejxType::Char) {
                         let c = value.chars().next().unwrap_or('\0') as u32;
                         (c.to_string(), TejxType::Char)
@@ -840,7 +841,8 @@ impl Lowering {
                     ),
                     Expression::MemberAccessExpr { object, member, .. } => {
                         let lowered_obj = self.lower_expression(object);
-                        let lowered_member = self.lower_member_access_with_obj(line, "", lowered_obj, member);
+                        let lowered_member =
+                            self.lower_member_access_with_obj(line, "", lowered_obj, member);
                         Some(lowered_member.get_type())
                     }
                     _ => None,
@@ -1104,7 +1106,10 @@ impl Lowering {
                             ty = TejxType::String;
                         } else {
                             // Extract precise static type string
-                            fn type_str_precise(ty: &TejxType, disp_map: &std::collections::HashMap<String, String>) -> String {
+                            fn type_str_precise(
+                                ty: &TejxType,
+                                disp_map: &std::collections::HashMap<String, String>,
+                            ) -> String {
                                 match ty {
                                     TejxType::Int8 => "int8".to_string(),
                                     TejxType::UInt8 => "uint8".to_string(),
@@ -1929,7 +1934,9 @@ impl Lowering {
                         .cloned()
                         .unwrap_or(TejxType::Void)
                 });
-                self.return_type_stack.borrow_mut().push(lambda_ret_type.clone());
+                self.return_type_stack
+                    .borrow_mut()
+                    .push(lambda_ret_type.clone());
 
                 let hir_body = self.lower_statement(body).unwrap_or(HIRStatement::Block {
                     line,
@@ -2106,10 +2113,7 @@ impl Lowering {
                     .cloned()
                     .or_else(|| {
                         if let TejxType::Class(ref base, _) = class_ty {
-                            self.constructor_param_defaults
-                                .borrow()
-                                .get(base)
-                                .cloned()
+                            self.constructor_param_defaults.borrow().get(base).cloned()
                         } else {
                             None
                         }
