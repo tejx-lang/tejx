@@ -498,7 +498,7 @@ impl Drop for PooledStack {
                     s.reset_canary();
                     let _ = SLAB_POOL.try_with(|pool| {
                         let mut p = pool.borrow_mut();
-                        if p.len() < 32 {
+                        if p.len() < 256 {
                             p.push(s);
                         }
                     });
@@ -507,7 +507,7 @@ impl Drop for PooledStack {
                     g.shrink_to(os_page_size());
                     let res = GROWABLE_POOL.try_with(|pool| {
                         let mut p = pool.borrow_mut();
-                        if p.len() < 32 {
+                        if p.len() < 2048 {
                             p.push(g);
                             None
                         } else {
@@ -516,7 +516,7 @@ impl Drop for PooledStack {
                     });
                     if let Ok(Some(g)) = res {
                         let mut global = GLOBAL_GROWABLE_POOL.lock();
-                        if global.len() < 64 {
+                        if global.len() < 32768 {
                             global.push(g);
                         }
                         // If both pools are at capacity, `g` is dropped here,
@@ -875,6 +875,8 @@ struct Scheduler {
     registry: Registry,
     next_token: AtomicUsize,
     timers: SpinMutex<Vec<(u64, Box<VThread>)>>,
+    timer_count: AtomicUsize,
+    min_timer_deadline: std::sync::atomic::AtomicU64,
     idle_workers: AtomicUsize,
     idle_condvar: std::sync::Condvar,
     idle_lock: std::sync::Mutex<()>,
@@ -897,6 +899,8 @@ static SCHEDULER: Lazy<Scheduler> = Lazy::new(|| Scheduler {
         .unwrap(),
     next_token: AtomicUsize::new(1),
     timers: SpinMutex::new(Vec::new()),
+    timer_count: AtomicUsize::new(0),
+    min_timer_deadline: std::sync::atomic::AtomicU64::new(u64::MAX),
     idle_workers: AtomicUsize::new(0),
     idle_condvar: std::sync::Condvar::new(),
     idle_lock: std::sync::Mutex::new(()),
@@ -906,10 +910,12 @@ impl Scheduler {
     #[inline(always)]
     pub fn notify_worker(&self) {
         let idle = self.idle_workers.load(Ordering::Relaxed);
-        if idle > 1 {
-            self.idle_condvar.notify_all();
-        } else {
-            self.idle_condvar.notify_one();
+        if idle > 0 {
+            if idle > 1 {
+                self.idle_condvar.notify_all();
+            } else {
+                self.idle_condvar.notify_one();
+            }
         }
     }
 
@@ -928,6 +934,9 @@ impl Scheduler {
     pub fn add_timer(&self, until: u64, vt: Box<VThread>) {
         let mut timers = self.timers.lock();
         timers.push((until, vt));
+        self.timer_count.store(timers.len(), Ordering::Release);
+        let min = timers.iter().map(|(u, _)| *u).min().unwrap_or(u64::MAX);
+        self.min_timer_deadline.store(min, Ordering::Release);
         drop(timers);
         self.notify_worker();
     }
@@ -957,8 +966,15 @@ impl Scheduler {
         }
     }
 
+    #[inline(always)]
     pub fn drain_expired_timers(&self) {
+        if self.timer_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
         let now = current_time_ms();
+        if now < self.min_timer_deadline.load(Ordering::Relaxed) {
+            return;
+        }
         let mut expired = Vec::new();
         {
             let mut timers = self.timers.lock();
@@ -971,6 +987,9 @@ impl Scheduler {
                     i += 1;
                 }
             }
+            self.timer_count.store(timers.len(), Ordering::Release);
+            let min = timers.iter().map(|(u, _)| *u).min().unwrap_or(u64::MAX);
+            self.min_timer_deadline.store(min, Ordering::Release);
         }
         for vt in expired {
             self.push_global(vt);
@@ -1102,6 +1121,10 @@ unsafe fn vthread_terminate(vt_ptr: *mut VThread) -> ! {
         vt.done = true;
         let worker_sp = vt.worker_sp;
         if !worker_sp.is_null() {
+            // Full CPU memory fence: ensures all stores (e.g. results[idx] = val)
+            // are globally visible before we context-switch back to the worker.
+            // On ARM, compiler_fence is NOT enough — we need dmb ish.
+            core::sync::atomic::fence(Ordering::SeqCst);
             let mut dummy_sp: *mut u8 = std::ptr::null_mut();
             tejx_context_switch(&mut dummy_sp, worker_sp);
         } else {
@@ -1155,9 +1178,14 @@ pub unsafe fn vthread_suspend(reason: YieldReason) {
         return;
     }
 
-    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    // Full CPU memory fence (not just compiler_fence!) to ensure all stores
+    // from this vthread are globally visible before yielding to the worker.
+    // Critical on ARM/Linux where the CPU has a weak memory model.
+    core::sync::atomic::fence(Ordering::SeqCst);
     tejx_context_switch(&mut vt.sp, worker_sp);
-    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    // Acquire fence after resuming: ensures we see all stores from other
+    // workers that ran between our suspend and resume.
+    core::sync::atomic::fence(Ordering::SeqCst);
 }
 
 #[inline(never)]
@@ -1224,21 +1252,12 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
     }
 
     loop {
-        let mut task = None;
-        loop {
-            match SCHEDULER.priority_queue.steal() {
-                Steal::Success(t) => {
-                    task = Some(t);
-                    break;
-                }
-                Steal::Empty => break,
-                Steal::Retry => continue,
-            }
-        }
+        SCHEDULER.drain_expired_timers();
+        let mut task = unsafe { (*local_ptr).pop() };
 
         if task.is_none() {
             loop {
-                match SCHEDULER.global_queue.steal() {
+                match SCHEDULER.priority_queue.steal_batch_and_pop(unsafe { &*local_ptr }) {
                     Steal::Success(t) => {
                         task = Some(t);
                         break;
@@ -1250,9 +1269,8 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
         }
 
         if task.is_none() {
-            SCHEDULER.drain_expired_timers();
             loop {
-                match SCHEDULER.priority_queue.steal() {
+                match SCHEDULER.global_queue.steal_batch_and_pop(unsafe { &*local_ptr }) {
                     Steal::Success(t) => {
                         task = Some(t);
                         break;
@@ -1261,15 +1279,31 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
                     Steal::Retry => continue,
                 }
             }
-            if task.is_none() {
-                loop {
-                    match SCHEDULER.global_queue.steal() {
-                        Steal::Success(t) => {
-                            task = Some(t);
-                            break;
+        }
+
+        if task.is_none() {
+            if let Some(stealers) = SCHEDULER.stealers.get() {
+                let n = stealers.len();
+                if n > 1 {
+                    let rng = STEAL_RNG.with(|r| {
+                        let mut v = r.get();
+                        v ^= v << 13;
+                        v ^= v >> 17;
+                        v ^= v << 5;
+                        r.set(v);
+                        v as usize
+                    });
+                    for i in 0..n {
+                        let idx = (rng + i) % n;
+                        if idx != _worker_id {
+                            match stealers[idx].steal_batch_and_pop(unsafe { &*local_ptr }) {
+                                Steal::Success(t) => {
+                                    task = Some(t);
+                                    break;
+                                }
+                                _ => {}
+                            }
                         }
-                        Steal::Empty => break,
-                        Steal::Retry => continue,
                     }
                 }
             }
@@ -1310,7 +1344,12 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
                 });
 
                 unsafe {
+                    // Full CPU fence before/after resuming a vthread on this worker.
+                    // Ensures the vthread sees all stores from other workers, and
+                    // our stores are visible when the vthread migrates away.
+                    core::sync::atomic::fence(Ordering::SeqCst);
                     tejx_context_switch(&mut (*vt_raw).worker_sp, (*vt_raw).sp);
+                    core::sync::atomic::fence(Ordering::SeqCst);
                 }
 
                 VTHREAD_CTX.with(|cell| {
@@ -1326,7 +1365,7 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
                     *lock_gc_state(&t.gc_state) = Some(unsafe { crate::gc::rt_save_gc_context() });
                     crate::save_vthread_local_state(&mut t.local_state);
                     if r.is_cooperative() {
-                        SCHEDULER.push_global(t);
+                        unsafe { (*local_ptr).push(t); }
                     } else if let Some(until) = r.as_sleep() {
                         SCHEDULER.add_timer(until, t);
                     } else if let Some(token_id) = r.as_io_park_read() {
@@ -1381,7 +1420,6 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
             }
 
             unsafe {
-                crate::gc::rt_clear_tlab();
                 let ctx = crate::gc::current_thread_context();
                 (*ctx).in_blocking_io.store(true, Ordering::SeqCst);
                 if crate::gc::is_safepoint_requested() {
@@ -1396,7 +1434,10 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
             // under load while being well-behaved when idle.
             let mut found = false;
             for _ in 0..128 {
-                if !SCHEDULER.priority_queue.is_empty() || !SCHEDULER.global_queue.is_empty() {
+                if !unsafe { (*local_ptr).is_empty() }
+                    || !SCHEDULER.priority_queue.is_empty()
+                    || !SCHEDULER.global_queue.is_empty()
+                {
                     found = true;
                     break;
                 }

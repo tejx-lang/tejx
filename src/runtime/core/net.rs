@@ -202,9 +202,15 @@ fn stream_read_into<F, R>(stream: &mut NetStream, size: usize, f: F) -> std::io:
 where
     F: FnOnce(&[u8]) -> R,
 {
-    let mut buf = vec![0u8; size];
-    let n = stream_read_once(stream, &mut buf)?;
-    Ok(f(&buf[..n]))
+    if size <= 8192 {
+        let mut buf = [0u8; 8192];
+        let n = stream_read_once(stream, &mut buf[..size])?;
+        Ok(f(&buf[..n]))
+    } else {
+        let mut buf = vec![0u8; size];
+        let n = stream_read_once(stream, &mut buf)?;
+        Ok(f(&buf[..n]))
+    }
 }
 
 fn stream_write_all(stream: &mut NetStream, data: &[u8]) -> std::io::Result<usize> {
@@ -923,27 +929,36 @@ pub unsafe extern "C" fn rt_http_send_fast_response(
 
     let conn_str = if keep_alive { "keep-alive" } else { "close" };
 
-    use std::io::Write;
-    let mut buf = Vec::with_capacity(512 + body_bytes.len());
-    let _ = write!(
-        buf,
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\nX-Powered-By: TejX\r\n",
-        status_str,
-        std::str::from_utf8_unchecked(ct_bytes),
-        body_bytes.len(),
-        conn_str,
-    );
+    let mut buf = Vec::with_capacity(256 + body_bytes.len() + ct_bytes.len());
+    buf.extend_from_slice(b"HTTP/1.1 ");
+    buf.extend_from_slice(status_str.as_bytes());
+    buf.extend_from_slice(b"\r\nContent-Type: ");
+    buf.extend_from_slice(ct_bytes);
+    buf.extend_from_slice(b"\r\nContent-Length: ");
+    let mut len_digits = [0u8; 20];
+    let mut len_val = body_bytes.len();
+    if len_val == 0 {
+        buf.push(b'0');
+    } else {
+        let mut pos = 20;
+        while len_val > 0 {
+            pos -= 1;
+            len_digits[pos] = b'0' + (len_val % 10) as u8;
+            len_val /= 10;
+        }
+        buf.extend_from_slice(&len_digits[pos..]);
+    }
+    buf.extend_from_slice(b"\r\nConnection: ");
+    buf.extend_from_slice(conn_str.as_bytes());
+    buf.extend_from_slice(b"\r\nX-Powered-By: TejX\r\n");
 
     if cors_origin_ptr >= HEAP_OFFSET {
         if let Some((bytes, len)) = get_str_parts(cors_origin_ptr) {
             if !bytes.is_null() && len > 0 {
-                let origin_str =
-                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len as usize));
-                let _ = write!(
-                    buf,
-                    "Access-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n",
-                    origin_str
-                );
+                let origin_bytes = std::slice::from_raw_parts(bytes, len as usize);
+                buf.extend_from_slice(b"Access-Control-Allow-Origin: ");
+                buf.extend_from_slice(origin_bytes);
+                buf.extend_from_slice(b"\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n");
             }
         }
     }

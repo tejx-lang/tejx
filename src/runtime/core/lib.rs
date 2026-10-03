@@ -1412,34 +1412,40 @@ pub extern "C" fn rt_f64_to_i8(n: f64) -> i8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_number(val: i64) -> f64 {
-    if val < HEAP_OFFSET {
-        return val as f64;
-    }
-    let body = (val - HEAP_OFFSET) as *mut u8;
-    if !rt_is_gc_ptr(body) {
-        return f64::from_bits(val as u64);
-    }
-    let header = rt_get_header(body);
-    let tag = (*header).type_id as i64;
-    let ptr = body as *const i64;
-    if tag == TAG_FLOAT {
-        return *(body as *const f64);
-    }
-    if tag == TAG_INT {
-        return *ptr as f64;
-    }
-    if tag == TAG_CHAR {
-        return *ptr as f64;
-    }
-    if tag == TAG_BOOLEAN {
-        return *ptr as f64;
-    }
-    if tag == TAG_STRING {
-        return atof(body as *const _);
+    if let Some((body, tag)) = rt_value_body_and_tag(val) {
+        let ptr = body as *const i64;
+        if tag == TAG_FLOAT {
+            return *(body as *const f64);
+        }
+        if tag == TAG_INT {
+            return *ptr as f64;
+        }
+        if tag == TAG_CHAR {
+            return *ptr as f64;
+        }
+        if tag == TAG_BOOLEAN {
+            return *ptr as f64;
+        }
+        if tag == TAG_STRING {
+            if let Some(s) = i64_to_rust_str(val) {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return 0.0;
+                }
+                if let Ok(f) = trimmed.parse::<f64>() {
+                    return f;
+                }
+            }
+            return atof(body as *const _);
+        }
+        return 0.0;
     }
 
-    // Fallback for other objects: return pointer bits as a double
-    f64::from_bits(val as u64)
+    if looks_like_unboxed_float_bits(val) {
+        return f64::from_bits(val as u64);
+    }
+
+    val as f64
 }
 
 // --- Memory Management ---
@@ -1780,8 +1786,8 @@ fn rt_float_to_rust_string(v: f64) -> String {
         };
     }
 
-    let eps = 1e-5_f64.max(v.abs() * 1e-7);
-    for decimals in 0..=6 {
+    let eps = 1e-5_f64;
+    for decimals in 0..=8 {
         let factor = 10_f64.powi(decimals);
         let rounded = (v * factor).round() / factor;
         if (v - rounded).abs() <= eps {
@@ -2217,7 +2223,31 @@ pub unsafe extern "C" fn rt_class_new(
         return stack_ptr + STACK_OFFSET;
     }
     let size = body_size as usize;
-    let obj = gc_allocate(size) as *mut i64;
+    let header_size = std::mem::size_of::<gc::ObjectHeader>();
+    let total_size = size + header_size;
+    let aligned_size = (total_size + 7) & !7;
+
+    let ctx_ptr = gc::current_thread_context();
+    let tlab_top = (*ctx_ptr).tlab_top;
+    let tlab_end = (*ctx_ptr).tlab_end;
+
+    if !tlab_top.is_null() && tlab_top.add(aligned_size) <= tlab_end {
+        (*ctx_ptr).tlab_top = tlab_top.add(aligned_size);
+        let h = tlab_top as *mut u64;
+        *h = 0;
+        let header = tlab_top as *mut gc::ObjectHeader;
+        (*header).type_id = type_id as u16;
+        (*header).flags = 0;
+        (*header).length = 0;
+        (*header).capacity = 0;
+        (*header).gc_flags = 0;
+        let body = tlab_top.add(header_size);
+        std::ptr::write_bytes(body, 0, size);
+        return (body as i64) + HEAP_OFFSET;
+    }
+
+    let obj = gc::gc_allocate(size) as *mut i64;
+    std::ptr::write_bytes(obj as *mut u8, 0, size);
     let header = rt_get_header(obj as *mut u8);
     (*header).type_id = type_id as u16;
     (obj as i64) + HEAP_OFFSET
@@ -3709,16 +3739,45 @@ pub unsafe extern "C" fn rt_not(val: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_to_boolean(val: i64) -> i64 {
-    if val < HEAP_OFFSET {
-        return if val != 0 { 1 } else { 0 };
+    if let Some((body_ptr, tag)) = rt_value_body_and_tag(val) {
+        if tag == TAG_BOOLEAN {
+            return if *(body_ptr as *const i64) != 0 { 1 } else { 0 };
+        }
+        if tag == TAG_INT {
+            return if *(body_ptr as *const i64) != 0 { 1 } else { 0 };
+        }
+        if tag == TAG_FLOAT {
+            let f = *(body_ptr as *const f64);
+            return if f != 0.0 && !f.is_nan() { 1 } else { 0 };
+        }
+        if tag == TAG_CHAR {
+            return if *(body_ptr as *const i64) != 0 { 1 } else { 0 };
+        }
+        if tag == TAG_STRING {
+            let header = rt_get_header(body_ptr);
+            let len = (*header).length as usize;
+            let slice = std::slice::from_raw_parts(body_ptr, len);
+            let s = String::from_utf8_lossy(slice);
+            let trimmed = s.trim();
+            if trimmed.eq_ignore_ascii_case("false") || trimmed == "0" {
+                return 0;
+            }
+            if trimmed.eq_ignore_ascii_case("true") || trimmed == "1" {
+                return 1;
+            }
+            return if !trimmed.is_empty() { 1 } else { 0 };
+        }
+        return 1; // Other objects (arrays, structs, classes, functions) are truthy
     }
-    let body = (val - HEAP_OFFSET) as *mut i64;
-    let header = rt_get_header(body as *mut u8);
-    let tag = (*header).type_id as i64;
-    if tag == TAG_BOOLEAN {
-        return if *body != 0 { 1 } else { 0 };
+
+    if val == 0 {
+        return 0;
     }
-    1 // Other objects are truthy
+    if looks_like_unboxed_float_bits(val) {
+        let f = f64::from_bits(val as u64);
+        return if f != 0.0 && !f.is_nan() { 1 } else { 0 };
+    }
+    if val != 0 { 1 } else { 0 }
 }
 // --- Atomic Operations ---
 // Atomic objects store an AtomicI64 at offset 0 (as a boxed pointer)

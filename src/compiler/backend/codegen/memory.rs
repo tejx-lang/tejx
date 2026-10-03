@@ -3,6 +3,45 @@ use crate::common::types::TejxType;
 use crate::middle::mir::*;
 
 impl CodeGen {
+    pub(crate) fn emit_write_barrier_if_heap(&mut self, obj_val: &str, val_val: &str) {
+        if val_val == "0" || val_val == "null" {
+            return;
+        }
+        self.temp_counter += 1;
+        let id = self.temp_counter;
+        let obj_heap = format!("%wb_obj_heap_{}", id);
+        let val_heap = format!("%wb_val_heap_{}", id);
+        let both_heap = format!("%wb_both_heap_{}", id);
+        let do_wb_lbl = format!("do_wb_{}", id);
+        let skip_wb_lbl = format!("skip_wb_{}", id);
+
+        const HEAP_OFFSET_CONST: i64 = 1i64 << 50; // 1125899906842624
+        self.emit_line(&format!(
+            "{} = icmp uge i64 {}, {}",
+            obj_heap, obj_val, HEAP_OFFSET_CONST
+        ));
+        self.emit_line(&format!(
+            "{} = icmp uge i64 {}, {}",
+            val_heap, val_val, HEAP_OFFSET_CONST
+        ));
+        self.emit_line(&format!(
+            "{} = and i1 {}, {}",
+            both_heap, obj_heap, val_heap
+        ));
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            both_heap, do_wb_lbl, skip_wb_lbl
+        ));
+        self.emit(&format!("{}:\n", do_wb_lbl));
+        self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
+        self.emit_line(&format!(
+            "call void @rt_write_barrier(i64 {}, i64 {})",
+            obj_val, val_val
+        ));
+        self.emit_line(&format!("br label %{}", skip_wb_lbl));
+        self.emit(&format!("{}:\n", skip_wb_lbl));
+    }
+
     pub(crate) fn resolve_fixed_field_info(
         &self,
         obj_ty: &TejxType,
@@ -260,12 +299,15 @@ impl CodeGen {
                     llvm_ty, store_val, llvm_ty, typed_field_ptr
                 ));
                 if Self::is_gc_managed(&field_ty) {
-                    let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
-                    self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
-                    self.emit_line(&format!(
-                        "call void @rt_write_barrier(i64 {}, i64 {})",
-                        obj_val, barrier_val
-                    ));
+                    let is_arena_obj = if let MIRValue::Variable { name, .. } = obj {
+                        self.arena_allocated_vars.contains(name)
+                    } else {
+                        false
+                    };
+                    if !is_arena_obj {
+                        let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
+                        self.emit_write_barrier_if_heap(&obj_val, &barrier_val);
+                    }
                 }
                 used_fast_store = true;
             }
@@ -647,22 +689,26 @@ impl CodeGen {
                 in_bounds, idx_val, len_64
             ));
 
-            self.temp_counter += 1;
-            let can_fast_1 = format!("%can_fast_load_1_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = and i1 {}, {}",
-                can_fast_1, not_fwd, size_matches
-            ));
-            self.temp_counter += 1;
-            let can_fast = format!("%can_fast_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = and i1 {}, {}",
-                can_fast, can_fast_1, in_bounds
-            ));
-            self.emit_line(&format!(
-                "br i1 {}, label %{}, label %{}",
-                can_fast, fast_label, slow_label
-            ));
+            if self.unsafe_arrays {
+                self.emit_line(&format!("br label %{}", fast_label));
+            } else {
+                self.temp_counter += 1;
+                let can_fast_1 = format!("%can_fast_load_1_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = and i1 {}, {}",
+                    can_fast_1, not_fwd, size_matches
+                ));
+                self.temp_counter += 1;
+                let can_fast = format!("%can_fast_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = and i1 {}, {}",
+                    can_fast, can_fast_1, in_bounds
+                ));
+                self.emit_line(&format!(
+                    "br i1 {}, label %{}, label %{}",
+                    can_fast, fast_label, slow_label
+                ));
+            }
 
             // Fast path
             self.emit(&format!("{}:\n", fast_label));
@@ -832,12 +878,15 @@ impl CodeGen {
                 llvm_ty, store_val, llvm_ty, elem_ptr
             ));
             if Self::is_gc_managed(element_ty) {
-                let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
-                self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
-                self.emit_line(&format!(
-                    "call void @rt_write_barrier(i64 {}, i64 {})",
-                    obj_val, barrier_val
-                ));
+                let is_stack_or_arena = if let MIRValue::Variable { name, .. } = obj {
+                    self.stack_arrays.contains(name) || self.arena_allocated_vars.contains(name)
+                } else {
+                    false
+                };
+                if !is_stack_or_arena {
+                    let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
+                    self.emit_write_barrier_if_heap(&obj_val, &barrier_val);
+                }
             }
             return;
         }
@@ -1046,28 +1095,32 @@ impl CodeGen {
                 size_matches, elem_size_mask, elem_size
             ));
 
-            self.temp_counter += 1;
-            let can_fast_1 = format!("%can_fast_store_1_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = and i1 {}, {}",
-                can_fast_1, not_fwd, not_const
-            ));
-            self.temp_counter += 1;
-            let can_fast_2 = format!("%can_fast_store_2_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = and i1 {}, {}",
-                can_fast_2, can_fast_1, size_matches
-            ));
-            self.temp_counter += 1;
-            let can_fast = format!("%can_fast_store_{}", self.temp_counter);
-            self.emit_line(&format!(
-                "{} = and i1 {}, {}",
-                can_fast, can_fast_2, in_bounds
-            ));
-            self.emit_line(&format!(
-                "br i1 {}, label %{}, label %{}",
-                can_fast, fast_label, slow_label
-            ));
+            if self.unsafe_arrays {
+                self.emit_line(&format!("br label %{}", fast_label));
+            } else {
+                self.temp_counter += 1;
+                let can_fast_1 = format!("%can_fast_store_1_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = and i1 {}, {}",
+                    can_fast_1, not_fwd, not_const
+                ));
+                self.temp_counter += 1;
+                let can_fast_2 = format!("%can_fast_store_2_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = and i1 {}, {}",
+                    can_fast_2, can_fast_1, size_matches
+                ));
+                self.temp_counter += 1;
+                let can_fast = format!("%can_fast_store_{}", self.temp_counter);
+                self.emit_line(&format!(
+                    "{} = and i1 {}, {}",
+                    can_fast, can_fast_2, in_bounds
+                ));
+                self.emit_line(&format!(
+                    "br i1 {}, label %{}, label %{}",
+                    can_fast, fast_label, slow_label
+                ));
+            }
 
             // Fast path
             self.emit(&format!("{}:\n", fast_label));
@@ -1094,12 +1147,15 @@ impl CodeGen {
                 llvm_ty, store_val, llvm_ty, elem_ptr
             ));
             if Self::is_gc_managed(effective_elem_ty) {
-                let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
-                self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
-                self.emit_line(&format!(
-                    "call void @rt_write_barrier(i64 {}, i64 {})",
-                    obj_val, barrier_val
-                ));
+                let is_stack_or_arena = if let MIRValue::Variable { name, .. } = obj {
+                    self.stack_arrays.contains(name) || self.arena_allocated_vars.contains(name)
+                } else {
+                    false
+                };
+                if !is_stack_or_arena {
+                    let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
+                    self.emit_write_barrier_if_heap(&obj_val, &barrier_val);
+                }
             }
             self.emit_line(&format!("br label %{}", merge_label));
 

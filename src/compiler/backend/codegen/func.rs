@@ -64,6 +64,25 @@ impl CodeGen {
                     | "rt_str_concat_v2"
                     | "rt_str_append_local"
                     | "rt_str_clear_local"
+                    | "rt_class_new"
+                    | "rt_object_new"
+                    | "rt_Array_new"
+                    | "rt_Array_new_fixed"
+                    | "rt_Array_constructor_v2"
+                    | "rt_write_barrier"
+                    | "rt_push_root"
+                    | "rt_pop_roots"
+                    | "rt_safepoint_poll"
+                    | "rt_box_int"
+                    | "rt_box_number"
+                    | "rt_box_boolean"
+                    | "rt_box_char"
+                    | "rt_closure_new"
+                    | "rt_closure_from_ptr"
+                    | "rt_closure_create"
+                    | "rt_arena_create"
+                    | "rt_arena_alloc"
+                    | "rt_arena_destroy"
             )
     }
 
@@ -348,17 +367,11 @@ impl CodeGen {
                                 }
                             }
                         }
-                        MIRInstruction::StoreIndex { obj, src, .. }
-                        | MIRInstruction::StoreMember { obj, src, .. } => {
+                        MIRInstruction::StoreIndex { src, .. }
+                        | MIRInstruction::StoreMember { src, .. } => {
                             if let MIRValue::Variable { name, .. } = src {
                                 if name == &current_var {
-                                    if let MIRValue::Variable { name: obj_name, .. } = obj {
-                                        if !check_vars.contains(obj_name) {
-                                            check_vars.push(obj_name.clone());
-                                        }
-                                    } else {
-                                        return true;
-                                    }
+                                    return true;
                                 }
                             }
                         }
@@ -759,6 +772,52 @@ impl CodeGen {
                     {
                         return true;
                     }
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn function_can_trigger_gc(&self, func: &MIRFunction) -> bool {
+        if self.current_function_needs_loop_safepoints {
+            return true;
+        }
+        for bb in &func.blocks {
+            for inst in &bb.instructions {
+                match inst {
+                    MIRInstruction::Call { callee, dst, .. } => {
+                        let is_non_gc = callee.starts_with("llvm.")
+                            || callee.starts_with("std_math_")
+                            || matches!(
+                                callee.as_str(),
+                                "rt_time_now_ms"
+                                    | "rt_random"
+                                    | "rt_random_int"
+                                    | "rt_random_seed"
+                                    | "rt_len"
+                                    | "rt_strlen"
+                                    | "rt_is_array"
+                                    | "rt_write_barrier"
+                                    | "rt_push_root"
+                                    | "rt_pop_roots"
+                                    | "rt_enter_frame"
+                                    | "rt_leave_frame"
+                                    | "rt_set_location"
+                                    | "rt_arena_create"
+                                    | "rt_arena_destroy"
+                                    | "rt_arena_alloc"
+                                    | "rt_array_fill"
+                            )
+                            || (callee == "rt_object_new"
+                                && !dst.is_empty()
+                                && !self.does_escape(func, dst)
+                                && self.current_arena.is_some());
+                        if !is_non_gc {
+                            return true;
+                        }
+                    }
+                    MIRInstruction::IndirectCall { .. } => return true,
+                    _ => {}
                 }
             }
         }
@@ -1308,6 +1367,11 @@ update:\n\
         self.local_vars.clear();
         self.current_env = None;
         self.current_arena = None;
+        self.current_arena_base = None;
+        self.current_arena_off_ptr = None;
+        self.current_arena_off_alloca = None;
+        self.current_arena_cap = None;
+        self.arena_allocated_vars.clear();
         self.current_function_needs_loop_safepoints = Self::function_needs_loop_safepoints(func);
         self.entry_init_buffer.clear();
         self.num_roots = 0;
@@ -1398,7 +1462,59 @@ update:\n\
                 "{} = call i64 @{}(i64 0)",
                 arena_reg, RT_ARENA_CREATE
             ));
+
+            self.temp_counter += 1;
+            let arena_p = format!("%arena_p_{}", self.temp_counter);
+            self.emit_line(&format!("{} = inttoptr i64 {} to i8*", arena_p, arena_reg));
+            self.temp_counter += 1;
+            let base_p_i8 = format!("%arena_base_p_i8_{}", self.temp_counter);
+            let base_p = format!("%arena_base_p_{}", self.temp_counter);
+            let base_val = format!("%arena_base_val_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr inbounds i8, i8* {}, i64 0", base_p_i8, arena_p));
+            self.emit_line(&format!("{} = bitcast i8* {} to i8**", base_p, base_p_i8));
+            self.emit_line(&format!("{} = load i8*, i8** {}", base_val, base_p));
+
+            self.temp_counter += 1;
+            let off_p_i8 = format!("%arena_off_p_i8_{}", self.temp_counter);
+            let off_p = format!("%arena_off_p_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr inbounds i8, i8* {}, i64 8", off_p_i8, arena_p));
+            self.emit_line(&format!("{} = bitcast i8* {} to i64*", off_p, off_p_i8));
+
+            self.temp_counter += 1;
+            let cap_p_i8 = format!("%arena_cap_p_i8_{}", self.temp_counter);
+            let cap_p = format!("%arena_cap_p_{}", self.temp_counter);
+            let cap_val = format!("%arena_cap_val_{}", self.temp_counter);
+            self.emit_line(&format!("{} = getelementptr inbounds i8, i8* {}, i64 16", cap_p_i8, arena_p));
+            self.emit_line(&format!("{} = bitcast i8* {} to i64*", cap_p, cap_p_i8));
+            self.emit_line(&format!("{} = load i64, i64* {}", cap_val, cap_p));
+
             self.current_arena = Some(arena_reg);
+            self.current_arena_base = Some(base_val);
+            self.current_arena_off_ptr = Some(off_p);
+            self.current_arena_cap = Some(cap_val);
+
+            self.temp_counter += 1;
+            let local_off_alloca = format!("%arena_local_off_{}", self.temp_counter);
+            self.alloca_buffer.push_str(&format!("  {} = alloca i64, align 8\n", local_off_alloca));
+            self.emit_line(&format!("store i64 0, i64* {}", local_off_alloca));
+            self.current_arena_off_alloca = Some(local_off_alloca);
+
+            for bb in &func.blocks {
+                for inst in &bb.instructions {
+                    if let MIRInstruction::Call { callee, dst, .. } = inst {
+                        if callee == "rt_object_new" && !dst.is_empty() && !self.does_escape(func, dst) {
+                            self.arena_allocated_vars.insert(dst.clone());
+                        }
+                    }
+                    if let MIRInstruction::Move { dst, src, .. } = inst {
+                        if let MIRValue::Variable { name, .. } = src {
+                            if self.arena_allocated_vars.contains(name) {
+                                self.arena_allocated_vars.insert(dst.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // 1. Scan for all local variables
@@ -1454,11 +1570,13 @@ update:\n\
             self.value_map.insert(name.clone(), reg_name.clone());
         }
 
+        let can_trigger_gc = self.function_can_trigger_gc(func);
+
         // GC roots must start as null. Otherwise a safepoint during heavy allocation can
         // scan uninitialized stack garbage as live heap pointers.
         for name in &sorted_alloca_vars {
             let ty = func.variables.get(name).unwrap_or(&TejxType::Void);
-            if Self::needs_gc_root(name, ty) {
+            if can_trigger_gc && self.needs_gc_root(name, ty) {
                 if let Some(reg_name) = self.value_map.get(name) {
                     self.emit_line(&format!("store i64 0, i64* {}", reg_name));
                 }
@@ -1515,17 +1633,21 @@ update:\n\
         }
 
         // 5. GC Root Registration: Emit managed variables deterministically
-        let mut sorted_managed_vars: Vec<String> = sorted_alloca_vars
-            .iter()
-            .filter(|name| {
-                if let Some(ty) = func.variables.get(*name) {
-                    Self::needs_gc_root(name, ty)
-                } else {
-                    false
-                }
-            })
-            .cloned()
-            .collect();
+        let mut sorted_managed_vars: Vec<String> = if can_trigger_gc {
+            sorted_alloca_vars
+                .iter()
+                .filter(|name| {
+                    if let Some(ty) = func.variables.get(*name) {
+                        self.needs_gc_root(name, ty)
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         sorted_managed_vars.sort();
 
         for name in sorted_managed_vars {

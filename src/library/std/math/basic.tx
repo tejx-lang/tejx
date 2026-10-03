@@ -1,61 +1,61 @@
 import "./internal.tx";
 
-export function abs(x: float): float {
+export function abs(x: float64): float64 {
     return _math_abs(x);
 }
 
-export function min(a: float, b: float): float {
+export function min(a: float64, b: float64): float64 {
     return _math_min(a, b);
 }
 
-export function max(a: float, b: float): float {
+export function max(a: float64, b: float64): float64 {
     return _math_max(a, b);
 }
 
-export function clamp(value: float, lower: float, upper: float): float {
+export function clamp(value: float64, lower: float64, upper: float64): float64 {
     return _math_clamp(value, lower, upper);
 }
 
-export function sign(value: float): int {
+export function sign(value: float64): int {
     return _math_sign(value);
 }
 
-export function lerp(start: float, end: float, amount: float): float {
+export function lerp(start: float64, end: float64, amount: float64): float64 {
     return _math_lerp(start, end, amount);
 }
 
-export function trunc(x: float): float {
+export function trunc(x: float64): float64 {
     return _math_trunc(x);
 }
 
-export function floor(x: float): float {
+export function floor(x: float64): float64 {
     return _math_floor(x);
 }
 
-export function ceil(x: float): float {
+export function ceil(x: float64): float64 {
     return _math_ceil(x);
 }
 
-export function round(x: float): float {
+export function round(x: float64): float64 {
     return _math_round(x);
 }
 
-export function sqrt(x: float): float {
+export function sqrt(x: float64): float64 {
     return _math_sqrt(x);
 }
 
-export function exp(x: float): float {
+export function exp(x: float64): float64 {
     return _math_exp(x);
 }
 
-export function ln(x: float): float {
+export function ln(x: float64): float64 {
     return _math_ln(x);
 }
 
-export function pow(base: float, exponent: float): float {
+export function pow(base: float64, exponent: float64): float64 {
     return _math_pow(base, exponent);
 }
 
-export function powi(base: float, exponent: int): float {
+export function powi(base: float64, exponent: int): float64 {
     return _math_powi(base, exponent);
 }

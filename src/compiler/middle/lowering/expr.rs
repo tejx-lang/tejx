@@ -1795,12 +1795,13 @@ impl Lowering {
 
                 if chunks.is_empty() {
                     // Empty array []
-                    HIRExpression::ArrayLiteral {
+                    let empty_lit = HIRExpression::ArrayLiteral {
                         line,
                         elements: vec![],
                         sized_allocation,
                         ty: inferred_ty.clone(),
-                    }
+                    };
+                    self.pad_fixed_array_literal(line, empty_lit, &inferred_ty)
                 } else {
                     // If it's only a spread, force a copy so the source array isn't reused.
                     if has_spread && chunks.len() == 1 {
@@ -1816,6 +1817,9 @@ impl Lowering {
                             args: vec![empty, chunks[0].clone()],
                             ty: inferred_ty.clone(),
                         };
+                    }
+                    if !has_spread && chunks.len() == 1 {
+                        return self.pad_fixed_array_literal(line, chunks.remove(0), &inferred_ty);
                     }
                     // Reduce chunks with Array_concat
                     let mut expr = chunks[0].clone();

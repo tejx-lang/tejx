@@ -78,7 +78,35 @@ impl TypeChecker {
                             is_variadic = true;
                         }
                         let p = p.trim_end_matches("...").trim();
-                        if let Some(colon) = p.find(':') {
+                        // Find a top-level colon (not inside braces, brackets, angles, or parens)
+                        // to separate param name from type. This avoids matching colons
+                        // inside object types like { x: int; y: int }.
+                        let top_level_colon = {
+                            let mut result = None;
+                            let mut d_brace = 0i32;
+                            let mut d_angle = 0i32;
+                            let mut d_bracket = 0i32;
+                            let mut d_paren = 0i32;
+                            for (i, ch) in p.char_indices() {
+                                match ch {
+                                    '{' => d_brace += 1,
+                                    '}' => d_brace -= 1,
+                                    '<' => d_angle += 1,
+                                    '>' if d_angle > 0 => d_angle -= 1,
+                                    '[' => d_bracket += 1,
+                                    ']' if d_bracket > 0 => d_bracket -= 1,
+                                    '(' => d_paren += 1,
+                                    ')' if d_paren > 0 => d_paren -= 1,
+                                    ':' if d_brace == 0 && d_angle == 0 && d_bracket == 0 && d_paren == 0 => {
+                                        result = Some(i);
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            result
+                        };
+                        if let Some(colon) = top_level_colon {
                             final_params.push(p[colon + 1..].trim().to_string());
                         } else if !p.is_empty() {
                             // If there's no colon, assume the string itself is the type (e.g. from to_name())

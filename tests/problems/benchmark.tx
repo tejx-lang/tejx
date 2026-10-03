@@ -19,29 +19,27 @@ type Vec3 = {
 // 1. Sieve of Eratosthenes (Memory Write)
 function bench_sieve(): float64 {
     let limit = 50000000;
-    let primes: int[limit + 1] = [];
-    for (let i = 0; i <= limit; i++) primes[i] = 1;
+    let primes: bool[limit + 1] = [];
+    for (let i = 0; i <= limit; i++) primes[i] = true;
     for (let p = 2; p * p <= limit; p++) {
-        if (primes[p] == 1) {
-            for (let i = p * p; i <= limit; i += p) primes[i] = 0;
+        if (primes[p]) {
+            for (let i = p * p; i <= limit; i += p) primes[i] = false;
         }
     }
-    let count: float64 = 0.0;
-    for (let p = 2; p <= limit; p++) if (primes[p] == 1) count += 1.0;
-    return count;
+    let count = 0;
+    for (let p = 2; p <= limit; p++) if (primes[p]) count++;
+    return count * 1.0;
 }
 
 // 2. Pointer Chasing (DRAM Latency)
 function bench_pointers(): float64 {
     let size = 10000000;
-    let nodes: Node[size] = [];
-    for (let i = 0; i < size; i++) nodes[i] = { value: i, next: None };
-    for (let j = 0; j < size - 1; j++) {
-        let n = nodes[j];
-        n.next = nodes[j + 1];
+    let head: Optional<Node> = None;
+    for (let i = size - 1; i >= 0; i--) {
+        head = { value: i, next: head };
     }
     
-    let curr: Optional<Node> = nodes[0];
+    let curr: Optional<Node> = head;
     let sum:int64 = 0;
     while (curr != None) {
         sum += curr.value;
@@ -65,8 +63,10 @@ function bench_math(): float64 {
 function bench_matrix(): float64 {
     let N = 4096;
 
-    let A: float64[N * N] = []; A.fill(1.0);
-    let B: float64[N * N] = []; B.fill(0.0);
+    let A: float64[16777216] = [];
+    A.fill(1.0);
+    let B: float64[16777216] = [];
+    B.fill(0.0);
     for (let i = 0; i < N; i++) {
         for (let j = 0; j < N; j++) {
             B[j * N + i] = A[i * N + j];

@@ -344,19 +344,54 @@ pub unsafe extern "C" fn rt_array_sort(arr: i64) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_array_fill(arr: i64, val: i64) -> i64 {
-    if arr < HEAP_OFFSET {
+    let body = if arr >= HEAP_OFFSET {
+        (arr - HEAP_OFFSET) as *mut u8
+    } else if arr >= STACK_OFFSET {
+        (arr - STACK_OFFSET) as *mut u8
+    } else {
         return arr;
-    }
-    let body = (arr - HEAP_OFFSET) as *mut u8;
+    };
     let header = rt_get_header(body);
     let flags = (*header).flags;
     if (flags & (ARRAY_FLAG_CONSTANT as u16)) != 0 {
         rt_throw_runtime_error("RuntimeError: Cannot fill a constant array.");
     }
 
-    let len = (*header).length as i64;
-    for i in 0..len {
-        rt_array_store_scalar(arr, body, i, flags, val);
+    let len = (*header).length as usize;
+    let elem_size = (flags & 0xFF) as usize;
+    let is_ptr = (flags & (ARRAY_FLAG_PTR as u16)) != 0;
+
+    if val == 0 {
+        std::ptr::write_bytes(body, 0, len * elem_size);
+    } else if !is_ptr {
+        match elem_size {
+            1 => {
+                std::ptr::write_bytes(body, val as u8, len);
+            }
+            2 => {
+                let slice = std::slice::from_raw_parts_mut(body as *mut u16, len);
+                slice.fill(val as u16);
+            }
+            4 => {
+                let slice = std::slice::from_raw_parts_mut(body as *mut u32, len);
+                slice.fill(val as u32);
+            }
+            8 => {
+                let slice = std::slice::from_raw_parts_mut(body as *mut u64, len);
+                slice.fill(val as u64);
+            }
+            _ => {
+                for i in 0..len as i64 {
+                    rt_array_store_scalar(arr, body, i, flags, val);
+                }
+            }
+        }
+    } else {
+        let slice = std::slice::from_raw_parts_mut(body as *mut i64, len);
+        slice.fill(val);
+        if val >= (1i64 << 50) {
+            crate::gc::rt_write_barrier(arr, val);
+        }
     }
     arr
 }
@@ -974,10 +1009,13 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     elem_size: i64,
     flags: i64,
 ) -> i64 {
+    let is_source_arr = size_or_arr >= STACK_OFFSET;
     let mut source = size_or_arr;
-    rt_push_root(&mut source);
+    if is_source_arr {
+        rt_push_root(&mut source);
+    }
 
-    let size = if source >= STACK_OFFSET {
+    let size = if is_source_arr {
         rt_len(source)
     } else {
         source
@@ -991,8 +1029,11 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
 
     let total_size = (cap * actual_elem_size) as usize;
     let body_ptr = gc_allocate(total_size);
+    if total_size > 0 {
+        std::ptr::write_bytes(body_ptr, 0, total_size);
+    }
     let header = rt_get_header(body_ptr);
-    let inherited_type_flags = if source >= STACK_OFFSET {
+    let inherited_type_flags = if is_source_arr {
         let src_body = if source >= HEAP_OFFSET {
             (source - HEAP_OFFSET) as *mut u8
         } else {
@@ -1011,7 +1052,7 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
     (*header).flags =
         ((flags | inherited_type_flags) as u16 & 0xFF00) | (actual_elem_size as u16 & 0x00FF);
 
-    if source >= STACK_OFFSET {
+    if is_source_arr {
         let src_body = if source >= HEAP_OFFSET {
             (source - HEAP_OFFSET) as *mut u8
         } else {
@@ -1027,19 +1068,22 @@ pub unsafe extern "C" fn rt_Array_constructor_v2(
             // Slower element-by-element copy if sizes don't match (todo if needed)
             std::ptr::write_bytes(body_ptr, 0, total_size);
         }
-    } else {
-        std::ptr::write_bytes(body_ptr, 0, total_size);
     }
 
     let id = (body_ptr as i64) + HEAP_OFFSET;
     rt_update_array_cache(id, body_ptr, size, actual_elem_size);
-    rt_pop_roots(1);
+    if is_source_arr {
+        rt_pop_roots(1);
+    }
     id
 }
 #[no_mangle]
 pub unsafe extern "C" fn rt_Array_new(len: i64, elem_size: i64) -> i64 {
     let data_size = len as usize * elem_size as usize;
     let body_ptr = gc_allocate(data_size); // No internal tag, just data
+    if data_size > 0 {
+        std::ptr::write_bytes(body_ptr, 0, data_size);
+    }
     let header = rt_get_header(body_ptr);
     (*header).type_id = TAG_ARRAY as u16;
     (*header).length = len as u32;

@@ -23,6 +23,7 @@ extern function rt_Thread_join(t: any): void;
 extern function rt_Thread_sleep(ms: int): void;
 
 extern function rt_to_string<T>(val: T): string;
+extern function rt_to_boolean<T>(val: T): bool;
 extern function rt_exception_report_for_print<T>(val: T): Optional<string>;
 extern function rt_str_equals(a: string, b: string): bool;
 extern function rt_str_concat_v2(a: string, b: string): string;
@@ -35,6 +36,7 @@ extern function rt_String_trimEnd(s: string): string;
 extern function rt_String_substring(s: string, start: int, end: int): string;
 extern function rt_String_split(s: string, sep: string): string[];
 extern function rt_String_indexOf(s: string, search: string): int;
+extern function rt_String_indexOfFrom(s: string, search: string, fromIndex: int): int;
 extern function rt_String_startsWith(s: string, prefix: string): bool;
 extern function rt_String_endsWith(s: string, suffix: string): bool;
 extern function rt_String_padStart(s: string, len: int, pad: string): string;
@@ -396,13 +398,17 @@ class __PromiseImpl {
     }
 }
 
-function String(v: any): string {
+export function String(v: any): string {
     return rt_to_string(v);
 }
 
-export function Boolean(v: any): bool {
+export function Boolean(v: string): bool {
     if (v == None) return false;
-    return v as bool;
+    let s: string = rt_String_trim(v);
+    if (s.toLowerCase() == "true") {
+        return true;
+    }
+    return false;
 }
 
 function _error_name_for_print(v: any): string {

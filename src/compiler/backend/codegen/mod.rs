@@ -46,6 +46,11 @@ pub struct CodeGen {
     pub function_display_names: HashMap<String, String>,
     pub class_display_names: HashMap<String, String>,
     current_arena: Option<String>,
+    current_arena_base: Option<String>,
+    current_arena_off_ptr: Option<String>,
+    current_arena_off_alloca: Option<String>,
+    current_arena_cap: Option<String>,
+    pub arena_allocated_vars: HashSet<String>,
     current_function_needs_loop_safepoints: bool,
     pub source_file: String,
     pub function_source_files: HashMap<String, String>,
@@ -125,8 +130,8 @@ impl CodeGen {
         }
     }
 
-    pub(crate) fn needs_gc_root(name: &str, ty: &TejxType) -> bool {
-        if name.starts_with("g_") {
+    pub(crate) fn needs_gc_root(&self, name: &str, ty: &TejxType) -> bool {
+        if name.starts_with("g_") || self.arena_allocated_vars.contains(name) {
             return false;
         }
         Self::is_gc_managed(ty) || name.starts_with("promise_id_local") || name.starts_with("__p_")
@@ -193,6 +198,11 @@ impl CodeGen {
             function_display_names: HashMap::new(),
             class_display_names: HashMap::new(),
             current_arena: None,
+            current_arena_base: None,
+            current_arena_off_ptr: None,
+            current_arena_off_alloca: None,
+            current_arena_cap: None,
+            arena_allocated_vars: HashSet::new(),
             current_function_needs_loop_safepoints: false,
             source_file: String::new(),
             function_source_files: HashMap::new(),

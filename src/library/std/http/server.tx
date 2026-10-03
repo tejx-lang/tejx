@@ -48,17 +48,15 @@ export class PathParams {
 ///   - Params:      "/user/:id"  matches "/user/42" → {id: "42"}
 ///   - Wildcard:    "*"          matches everything
 ///   - Suffix wild: "/files/*"   matches "/files/any/path/here"
-let _EMPTY_PATH_PARAMS: PathParams = new PathParams();
-
 function _matchRoute(pattern: string, requestPath: string): Optional<PathParams> {
     // Universal wildcard
     if (pattern == "*") {
-        return _EMPTY_PATH_PARAMS;
+        return new PathParams();
     }
 
     // Fast exact match (bypasses substring and splits)
     if (pattern == requestPath) {
-        return _EMPTY_PATH_PARAMS;
+        return new PathParams();
     }
 
     // Strip query string from request path for matching
@@ -70,7 +68,7 @@ function _matchRoute(pattern: string, requestPath: string): Optional<PathParams>
 
     // Exact match
     if (pattern == path) {
-        return _EMPTY_PATH_PARAMS;
+        return new PathParams();
     }
 
     // Suffix wildcard: "/files/*" matches "/files/anything"
@@ -143,7 +141,7 @@ export class ServerRequest {
         this.rawPath = "/";
         this.headers = new Map<string, string>();
         this.body = "";
-        this.params = _EMPTY_PATH_PARAMS;
+        this.params = new PathParams();
         this.query = new Map<string, string>();
 
         let headerEnd = rawRequest.indexOf("\r\n\r\n");
@@ -174,11 +172,12 @@ export class ServerRequest {
             }
         }
 
-        // Parse headers directly by scanning "\r\n" without allocating an intermediate array
-        let remaining = firstLineEnd >= 0 ? headerText.substring(firstLineEnd + 2, headerText.length()) : "";
-        while (remaining.length() > 0) {
-            let nextLineEnd = remaining.indexOf("\r\n");
-            let line = nextLineEnd >= 0 ? remaining.substring(0, nextLineEnd) : remaining;
+        // Parse headers directly by scanning "\r\n" with indexOfFrom without re-slicing
+        let cur = firstLineEnd >= 0 ? firstLineEnd + 2 : headerText.length();
+        let hLen = headerText.length();
+        while (cur < hLen) {
+            let nextLineEnd = headerText.indexOfFrom("\r\n", cur);
+            let line = nextLineEnd >= 0 ? headerText.substring(cur, nextLineEnd) : headerText.substring(cur, hLen);
             let sep = line.indexOf(":");
             if (sep > 0) {
                 let key = line.substring(0, sep).trim().toLowerCase();
@@ -186,7 +185,7 @@ export class ServerRequest {
                 this.headers.set(key, value);
             }
             if (nextLineEnd < 0) break;
-            remaining = remaining.substring(nextLineEnd + 2, remaining.length());
+            cur = nextLineEnd + 2;
         }
     }
 
@@ -211,6 +210,8 @@ export class ServerResponse {
     stream: TcpStream;
     sent: bool;
     hasCustomHeaders: bool;
+    contentType: string;
+    corsOrigin: string;
 
     constructor(stream: TcpStream) {
         this.status = 200;
@@ -219,11 +220,8 @@ export class ServerResponse {
         this.stream = stream;
         this.sent = false;
         this.hasCustomHeaders = false;
-
-        // Default headers
-        this.headers.set("Content-Type", "text/plain; charset=utf-8");
-        this.headers.set("Connection", "keep-alive");
-        this.headers.set("X-Powered-By", "TejX");
+        this.contentType = "text/plain; charset=utf-8";
+        this.corsOrigin = "";
     }
 
     setStatus(code: int): ServerResponse {
@@ -239,10 +237,7 @@ export class ServerResponse {
 
     /// Configures CORS headers to allow cross-origin requests.
     cors(origin: string): ServerResponse {
-        this.headers.set("Access-Control-Allow-Origin", origin);
-        this.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-        this.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-        this.headers.set("Access-Control-Max-Age", "86400");
+        this.corsOrigin = origin;
         return this;
     }
 
@@ -255,34 +250,30 @@ export class ServerResponse {
     send(body: string): void {
         if (this.sent) return;
         this.body = body;
-        this.headers.set("Content-Length", String(this.body.length()));
         this.flush();
     }
 
     /// Sends a JSON-serialized response.
     json(data: any): void {
         if (this.sent) return;
-        this.headers.set("Content-Type", "application/json; charset=utf-8");
+        this.contentType = "application/json; charset=utf-8";
         this.body = json.stringify(data);
-        this.headers.set("Content-Length", String(this.body.length()));
         this.flush();
     }
 
     /// Sends a plain-text response.
     text(body: string): void {
         if (this.sent) return;
-        this.headers.set("Content-Type", "text/plain; charset=utf-8");
+        this.contentType = "text/plain; charset=utf-8";
         this.body = body;
-        this.headers.set("Content-Length", String(this.body.length()));
         this.flush();
     }
 
     /// Sends an HTML response.
     html(body: string): void {
         if (this.sent) return;
-        this.headers.set("Content-Type", "text/html; charset=utf-8");
+        this.contentType = "text/html; charset=utf-8";
         this.body = body;
-        this.headers.set("Content-Length", String(this.body.length()));
         this.flush();
     }
 
@@ -290,8 +281,8 @@ export class ServerResponse {
     redirect(location: string): void {
         if (this.sent) return;
         this.status = 302;
-        this.headers.set("Location", location);
-        this.headers.set("Content-Length", "0");
+        this.setHeader("Location", location);
+        this.setHeader("Content-Length", "0");
         this.flush();
     }
 
@@ -299,8 +290,8 @@ export class ServerResponse {
     redirectWithCode(location: string, code: int): void {
         if (this.sent) return;
         this.status = code;
-        this.headers.set("Location", location);
-        this.headers.set("Content-Length", "0");
+        this.setHeader("Location", location);
+        this.setHeader("Content-Length", "0");
         this.flush();
     }
 
@@ -326,12 +317,20 @@ export class ServerResponse {
     }
 
     private flush(): void {
-        let contentType = this.headers.get("Content-Type");
-        let ctStr = contentType != None ? (contentType as string) : "text/plain; charset=utf-8";
-        let conn = this.headers.get("Connection");
-        let keepAlive = conn == None || (conn as string).toLowerCase().indexOf("close") < 0;
-        let origin = this.headers.get("Access-Control-Allow-Origin");
-        let originStr = origin != None ? (origin as string) : "";
+        let ctStr = this.contentType;
+        let originStr = this.corsOrigin;
+        let keepAlive = true;
+
+        if (this.hasCustomHeaders) {
+            let contentType = this.headers.get("Content-Type");
+            if (contentType != None) ctStr = contentType as string;
+            let origin = this.headers.get("Access-Control-Allow-Origin");
+            if (origin != None) originStr = origin as string;
+            let conn = this.headers.get("Connection");
+            if (conn != None && (conn as string).toLowerCase().indexOf("close") >= 0) {
+                keepAlive = false;
+            }
+        }
 
         rt_http_send_fast_response(this.stream, this.status, ctStr, this.body, keepAlive, originStr);
         this.sent = true;
@@ -459,12 +458,17 @@ export class HttpServer {
             if (headerEndIndex >= 0) {
                 if (contentLength < 0) {
                     let headersString = rawRequest.substring(0, headerEndIndex);
-                    let clIndex = headersString.toLowerCase().indexOf("content-length:");
+                    let clIndex = headersString.indexOf("Content-Length:");
+                    if (clIndex < 0) {
+                        clIndex = headersString.indexOf("content-length:");
+                    }
+                    if (clIndex < 0) {
+                        clIndex = headersString.toLowerCase().indexOf("content-length:");
+                    }
                     if (clIndex >= 0) {
                         let clStart = clIndex + 15;
-                        let substringToSearch = headersString.substring(clStart, headersString.length());
-                        let clEndRelative = substringToSearch.indexOf("\r\n");
-                        let clEnd = clEndRelative < 0 ? headersString.length() : clStart + clEndRelative;
+                        let clEnd = headersString.indexOfFrom("\r\n", clStart);
+                        if (clEnd < 0) clEnd = headerEndIndex;
                         let clStr = headersString.substring(clStart, clEnd).trim();
                         contentLength = parseDecimalIntServer(clStr);
                     } else {
@@ -535,12 +539,6 @@ export class HttpServer {
             if ((connHeader as string).toLowerCase().indexOf("close") >= 0) {
                 keepAlive = false;
             }
-        }
-
-        if (keepAlive) {
-            res.headers.set("Connection", "keep-alive");
-        } else {
-            res.headers.set("Connection", "close");
         }
 
         let handled = this.matchAndRunRoute(req, res);

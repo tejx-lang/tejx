@@ -28,17 +28,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 
-const PRELUDE_TX: &str = include_str!("../../src/library/core/prelude.tx");
-const ARRAY_TX: &str = include_str!("../../src/library/core/array.tx");
-const STRING_TX: &str = include_str!("../../src/library/core/string.tx");
-const COLLECTIONS_TX: &str = include_str!("../../src/library/std/collections.tx");
-const FS_TX: &str = include_str!("../../src/library/std/fs.tx");
-const JSON_TX: &str = include_str!("../../src/library/std/json.tx");
-const MATH_TX: &str = include_str!("../../src/library/std/math.tx");
-const NET_TX: &str = include_str!("../../src/library/std/net.tx");
-const SYSTEM_TX: &str = include_str!("../../src/library/std/system.tx");
-const THREAD_TX: &str = include_str!("../../src/library/std/thread.tx");
-const TIME_TX: &str = include_str!("../../src/library/std/time.tx");
+include!(concat!(env!("OUT_DIR"), "/embedded_modules.rs"));
 
 const DEFAULT_FILENAME: &str = "main.tx";
 
@@ -68,22 +58,6 @@ pub extern "C" fn tejx_cstring_free(ptr: *mut c_char) {
     unsafe {
         let _ = CString::from_raw(ptr);
     }
-}
-
-fn builtin_modules() -> HashMap<String, String> {
-    HashMap::from([
-        ("core/prelude.tx".to_string(), PRELUDE_TX.to_string()),
-        ("core/array.tx".to_string(), ARRAY_TX.to_string()),
-        ("core/string.tx".to_string(), STRING_TX.to_string()),
-        ("std:collections".to_string(), COLLECTIONS_TX.to_string()),
-        ("std:fs".to_string(), FS_TX.to_string()),
-        ("std:json".to_string(), JSON_TX.to_string()),
-        ("std:math".to_string(), MATH_TX.to_string()),
-        ("std:net".to_string(), NET_TX.to_string()),
-        ("std:system".to_string(), SYSTEM_TX.to_string()),
-        ("std:thread".to_string(), THREAD_TX.to_string()),
-        ("std:time".to_string(), TIME_TX.to_string()),
-    ])
 }
 
 fn default_codegen_config() -> Value {
@@ -154,8 +128,15 @@ fn normalize_filename(filename: &str) -> String {
 
 fn normalize_virtual_import(source: &str, current_file: &str) -> String {
     let source = source.trim_matches('"').replace('\\', "/");
-    if source.starts_with("std:") || source.starts_with("core/") {
-        return source;
+    if let Some(std_name) = source.strip_prefix("std:") {
+        return format!("std/{}.tx", std_name);
+    }
+    if source.starts_with("core/") {
+        let mut path = PathBuf::from(&source);
+        if path.extension().is_none() {
+            path.set_extension("tx");
+        }
+        return path.to_string_lossy().replace('\\', "/");
     }
 
     let mut path = if source.starts_with("./") || source.starts_with("../") {
@@ -169,11 +150,23 @@ fn normalize_virtual_import(source: &str, current_file: &str) -> String {
         path.set_extension("tx");
     }
 
-    path.to_string_lossy().replace('\\', "/")
+    let mut normalized = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(comp),
+        }
+    }
+
+    normalized.to_string_lossy().replace('\\', "/")
 }
 
 fn is_core_module(module_id: &str) -> bool {
     module_id == "core/prelude.tx"
+        || module_id == "core/base.tx"
         || module_id == "core/array.tx"
         || module_id == "core/string.tx"
 }

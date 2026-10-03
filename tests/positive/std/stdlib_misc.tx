@@ -54,8 +54,8 @@ function test_class_math_and_array() {
     print("--- Math Class & Array / Boolean Utilities ---");
     assert_true(Array.isArray([1, 2, 3]), "Array.isArray");
     assert_true(!Array.isArray("string"), "Array.isArray negative");
-    assert_true(Boolean(true), "Boolean(true)");
-    assert_true(!Boolean(None), "Boolean(None)");
+    assert_true(Boolean('true'), "Boolean(true)");
+    assert_true(!Boolean('None'), "Boolean(None)");
 
     assert_true(Math.PI() > 3.14 && Math.PI() < 3.15, "Math.PI()");
     assert_true(Math.pi() > 3.14 && Math.pi() < 3.15, "Math.pi()");

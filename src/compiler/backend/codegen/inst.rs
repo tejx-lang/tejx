@@ -75,6 +75,9 @@ impl CodeGen {
                     if self.stack_arrays.contains(src_name.as_str()) {
                         self.stack_arrays.insert(dst.to_string());
                     }
+                    if self.arena_allocated_vars.contains(src_name.as_str()) {
+                        self.arena_allocated_vars.insert(dst.to_string());
+                    }
                 }
             }
             MIRInstruction::BinaryOp {
@@ -268,34 +271,7 @@ impl CodeGen {
 
         let mut temp_root_count = 0;
         let l = self.resolve_value(left);
-        if Self::is_gc_managed(l_ty)
-            && !(matches!(l_ty, TejxType::String) && l.starts_with("ptrtoint"))
-        {
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let tmp_root = format!("%bin_l_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", tmp_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", l, tmp_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-            temp_root_count += 1;
-        }
-
         let r = self.resolve_value(right);
-        if Self::is_gc_managed(r_ty)
-            && !(matches!(r_ty, TejxType::String) && r.starts_with("ptrtoint"))
-        {
-            self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
-            self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
-            self.temp_counter += 1;
-            let tmp_root = format!("%bin_r_root_{}", self.temp_counter);
-            self.alloca_buffer
-                .push_str(&format!("  {} = alloca i64\n", tmp_root));
-            self.emit_line(&format!("store i64 {}, i64* {}", r, tmp_root));
-            self.emit_line(&format!("call void @rt_push_root(i64* {})", tmp_root));
-            temp_root_count += 1;
-        }
 
         self.temp_counter += 1;
         let tmp = format!("%tmp{}", self.temp_counter);
@@ -697,9 +673,9 @@ impl CodeGen {
                 let r_cast = self.emit_abi_cast(&r, r_ty, op_ty);
 
                 let (is_cmp, llvm_op, pred) = match op {
-                    TokenType::Plus => (false, "fadd", ""),
-                    TokenType::Minus => (false, "fsub", ""),
-                    TokenType::Star => (false, "fmul", ""),
+                    TokenType::Plus => (false, "fadd contract", ""),
+                    TokenType::Minus => (false, "fsub contract", ""),
+                    TokenType::Star => (false, "fmul contract", ""),
                     TokenType::Slash => (false, "fdiv", ""),
                     TokenType::Less => (true, "", "olt"),
                     TokenType::Greater => (true, "", "ogt"),
@@ -901,24 +877,79 @@ impl CodeGen {
             )
         };
 
-        let _requires_heap = self.class_requires_heap_alloc(shape_name);
-        let can_stack_allocate = false;
+        let requires_heap = self.class_requires_heap_alloc(shape_name);
+        let can_stack_allocate = !requires_heap;
         if can_stack_allocate && !is_escaped && !dst.is_empty() && self.current_arena.is_some() {
+            let total_size = (24 + body_size + 7) & !7;
+            self.arena_allocated_vars.insert(dst.to_string());
+
+            self.temp_counter += 1;
+            let id = self.temp_counter;
+            let cur_off = format!("%cur_off_{}", id);
+            let new_off = format!("%new_off_{}", id);
+            let can_bump = format!("%can_bump_{}", id);
+
+            let fast_lbl = format!("arena_fast_{}", id);
+            let slow_lbl = format!("arena_slow_{}", id);
+            let merge_lbl = format!("arena_merge_{}", id);
+
+            let obj_raw = format!("%obj_raw_{}", id);
+            let tid_p = format!("%tid_p_{}", id);
+            let tid_p_16 = format!("%tid_p_16_{}", id);
+            let raw_int = format!("%raw_int_{}", id);
+            let fast_res = format!("%fast_res_{}", id);
+            let slow_res = format!("%slow_res_{}", id);
+            let final_res = format!("%arena_res_{}", id);
+
+            let off_alloca = self.current_arena_off_alloca.as_ref().unwrap().clone();
+            let base = self.current_arena_base.as_ref().unwrap().clone();
+            let cap = self.current_arena_cap.as_ref().unwrap().clone();
+
+            self.emit_line(&format!("{} = load i64, i64* {}", cur_off, off_alloca));
+            self.emit_line(&format!("{} = add i64 {}, {}", new_off, cur_off, total_size));
+            self.emit_line(&format!("{} = icmp ule i64 {}, {}", can_bump, new_off, cap));
+            self.emit_line(&format!("br i1 {}, label %{}, label %{}", can_bump, fast_lbl, slow_lbl));
+
+            // Fast path
+            self.emit(&format!("{}:\n", fast_lbl));
+            self.emit_line(&format!("store i64 {}, i64* {}", new_off, off_alloca));
+            self.emit_line(&format!("{} = getelementptr inbounds i8, i8* {}, i64 {}", obj_raw, base, cur_off));
+            self.emit_line(&format!("{} = getelementptr inbounds i8, i8* {}, i64 8", tid_p, obj_raw));
+            self.emit_line(&format!("{} = bitcast i8* {} to i16*", tid_p_16, tid_p));
+            self.emit_line(&format!("store i16 {}, i16* {}", type_id, tid_p_16));
+            const STACK_OFFSET_PLUS_24: i64 = (1i64 << 48) + 24;
+            self.emit_line(&format!("{} = ptrtoint i8* {} to i64", raw_int, obj_raw));
+            self.emit_line(&format!("{} = add i64 {}, {}", fast_res, raw_int, STACK_OFFSET_PLUS_24));
+            self.emit_line(&format!("br label %{}", merge_lbl));
+
+            // Slow path
+            self.emit(&format!("{}:\n", slow_lbl));
+            let off_p = self.current_arena_off_ptr.as_ref().unwrap().clone();
+            self.emit_line(&format!("store i64 {}, i64* {}", cur_off, off_p));
             let arena = self.current_arena.clone().unwrap();
             self.declare_runtime_fn(
                 RT_ARENA_ALLOC,
                 &format!("i64 @{}(i64, i32, i64) nounwind", RT_ARENA_ALLOC),
             );
-
-            self.temp_counter += 1;
-            let result_tmp = format!("%call{}", self.temp_counter);
             self.emit_line(&format!(
                 "{} = call i64 @{}(i64 {}, i32 {}, i64 {})",
-                result_tmp, RT_ARENA_ALLOC, arena, type_id, body_size as i64
+                slow_res, RT_ARENA_ALLOC, arena, type_id, body_size as i64
+            ));
+            self.temp_counter += 1;
+            let sync_off = format!("%arena_sync_off_{}", self.temp_counter);
+            self.emit_line(&format!("{} = load i64, i64* {}", sync_off, off_p));
+            self.emit_line(&format!("store i64 {}, i64* {}", sync_off, off_alloca));
+            self.emit_line(&format!("br label %{}", merge_lbl));
+
+            // Merge
+            self.emit(&format!("{}:\n", merge_lbl));
+            self.emit_line(&format!(
+                "{} = phi i64 [ {}, %{} ], [ {}, %{} ]",
+                final_res, fast_res, fast_lbl, slow_res, slow_lbl
             ));
 
             let dst_ty = func.variables.get(dst).unwrap_or(&TejxType::Void);
-            self.emit_store_variable(dst, &result_tmp, dst_ty);
+            self.emit_store_variable(dst, &final_res, dst_ty);
             return;
         }
 
@@ -1295,11 +1326,16 @@ impl CodeGen {
         }
 
         if callee == "rt_Array_constructor_v2" {
-            if let Some(TejxType::FixedArray(inner, len)) = func.variables.get(dst) {
+            let fixed_or_small = match func.variables.get(dst) {
+                Some(TejxType::FixedArray(inner, len)) => Some((inner.clone(), *len)),
+                _ => None,
+            };
+
+            if let Some((inner, len)) = fixed_or_small {
                 let elem_size = inner.size();
-                let body_size = elem_size.saturating_mul(*len);
+                let body_size = elem_size.saturating_mul(len);
                 let is_escaped = !dst.is_empty() && self.does_escape(func, dst);
-                let can_stack_allocate = false;
+                let can_stack_allocate = true;
                 if can_stack_allocate && func.name != "tejx_main" && !is_escaped && body_size <= 256
                 {
                     let stack_arr = format!("%stack_arr_{}", dst.replace('.', "_"));
@@ -1333,14 +1369,14 @@ impl CodeGen {
                     ));
                     self.emit_line(&format!("store i16 3, i16* {}", tid_ptr));
 
-                    let ptr_flag = if Self::is_gc_managed(inner) {
+                    let ptr_flag = if Self::is_gc_managed(&inner) {
                         0x0400
                     } else {
                         0
                     };
                     let flags = 0x0100
                         | ptr_flag
-                        | Self::array_kind_flags_for_element_type(inner)
+                        | Self::array_kind_flags_for_element_type(&inner)
                         | (elem_size as i64 & 0xFF);
 
                     self.temp_counter += 1;
@@ -1381,15 +1417,12 @@ impl CodeGen {
                         body_ptr, body_ptr_i8
                     ));
 
-                    self.temp_counter += 1;
-                    let stack_offset = format!("%stack_offset_{}", self.temp_counter);
-                    self.emit_line(&format!("{} = load i64, i64* @STACK_OFFSET", stack_offset));
-
+                    const STACK_OFFSET_CONST: i64 = 1i64 << 48;
                     self.temp_counter += 1;
                     let result_tmp = format!("%stack_arr_id_{}", self.temp_counter);
                     self.emit_line(&format!(
                         "{} = add i64 {}, {}",
-                        result_tmp, body_ptr, stack_offset
+                        result_tmp, body_ptr, STACK_OFFSET_CONST
                     ));
 
                     self.emit_store_variable(dst, &result_tmp, func.variables.get(dst).unwrap());
@@ -1529,10 +1562,40 @@ impl CodeGen {
             return;
         }
 
-        if callee.starts_with("std_math_") {
+        let is_math_call = callee.starts_with("std_math_")
+            || matches!(
+                callee.as_str(),
+                "f_sin"
+                    | "f_cos"
+                    | "f_tan"
+                    | "f_asin"
+                    | "f_acos"
+                    | "f_atan"
+                    | "f_sqrt"
+                    | "f_floor"
+                    | "f_ceil"
+                    | "f_round"
+                    | "f_abs"
+                    | "f_log"
+                    | "f_exp"
+                    | "f_pow"
+                    | "f_powi"
+                    | "f_min"
+                    | "f_max"
+                    | "sin"
+                    | "cos"
+                    | "tan"
+                    | "sqrt"
+                    | "floor"
+                    | "ceil"
+                    | "abs"
+                    | "log"
+                    | "exp"
+            );
+        if is_math_call {
             // Emit LLVM intrinsics or direct libm calls for sensitive math functions.
             // This avoids the runtime boxing path and keeps behavior close to native toolchains.
-            if callee == "std_math_powi" {
+            if callee == "std_math_powi" || callee == "f_powi" || callee == "powi" {
                 self.declare_runtime_fn(
                     "llvm.powi.f64.i32",
                     "double @llvm.powi.f64.i32(double, i32)",
@@ -1575,22 +1638,22 @@ impl CodeGen {
             }
 
             let direct_math = match callee.as_str() {
-                "std_math_sqrt" => Some(("llvm.sqrt.f64", 1, true)),
-                "std_math_sin" => Some(("llvm.sin.f64", 1, true)),
-                "std_math_cos" => Some(("llvm.cos.f64", 1, true)),
-                "std_math_exp" => Some(("llvm.exp.f64", 1, true)),
-                "std_math_log" => Some(("llvm.log.f64", 1, true)),
-                "std_math_pow" => Some(("llvm.pow.f64", 2, true)),
-                "std_math_floor" => Some(("llvm.floor.f64", 1, true)),
-                "std_math_ceil" => Some(("llvm.ceil.f64", 1, true)),
-                "std_math_abs" => Some(("llvm.fabs.f64", 1, true)),
-                "std_math_round" => Some(("llvm.round.f64", 1, true)),
-                "std_math_tan" => Some(("tan", 1, false)),
-                "std_math_asin" => Some(("asin", 1, false)),
-                "std_math_acos" => Some(("acos", 1, false)),
-                "std_math_atan" => Some(("atan", 1, false)),
-                "std_math_min" => Some(("fmin", 2, false)),
-                "std_math_max" => Some(("fmax", 2, false)),
+                "std_math_sqrt" | "f_sqrt" | "f__math_sqrt" | "sqrt" => Some(("llvm.sqrt.f64", 1, true)),
+                "std_math_sin" | "f_sin" | "f__math_sin" | "sin" => Some(("llvm.sin.f64", 1, true)),
+                "std_math_cos" | "f_cos" | "f__math_cos" | "cos" => Some(("llvm.cos.f64", 1, true)),
+                "std_math_exp" | "f_exp" | "f__math_exp" | "exp" => Some(("llvm.exp.f64", 1, true)),
+                "std_math_log" | "f_log" | "f__math_log" | "log" => Some(("llvm.log.f64", 1, true)),
+                "std_math_pow" | "f_pow" | "f__math_pow" | "pow" => Some(("llvm.pow.f64", 2, true)),
+                "std_math_floor" | "f_floor" | "f__math_floor" | "floor" => Some(("llvm.floor.f64", 1, true)),
+                "std_math_ceil" | "f_ceil" | "f__math_ceil" | "ceil" => Some(("llvm.ceil.f64", 1, true)),
+                "std_math_abs" | "f_abs" | "f__math_abs" | "abs" => Some(("llvm.fabs.f64", 1, true)),
+                "std_math_round" | "f_round" | "f__math_round" | "round" => Some(("llvm.round.f64", 1, true)),
+                "std_math_tan" | "f_tan" | "f__math_tan" | "tan" => Some(("tan", 1, false)),
+                "std_math_asin" | "f_asin" | "f__math_asin" | "asin" => Some(("asin", 1, false)),
+                "std_math_acos" | "f_acos" | "f__math_acos" | "acos" => Some(("acos", 1, false)),
+                "std_math_atan" | "f_atan" | "f__math_atan" | "atan" => Some(("atan", 1, false)),
+                "std_math_min" | "f_min" | "f__math_min" | "min" => Some(("fmin", 2, false)),
+                "std_math_max" | "f_max" | "f__math_max" | "max" => Some(("fmax", 2, false)),
                 _ => None,
             };
 

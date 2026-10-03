@@ -222,6 +222,33 @@ pub unsafe extern "C" fn rt_String_indexOf(s: i64, search: i64) -> i64 {
     -1
 }
 #[no_mangle]
+pub unsafe extern "C" fn rt_String_indexOfFrom(s: i64, search: i64, from_idx: i64) -> i64 {
+    if let (Some((s_data, s_len)), Some((search_data, search_len))) =
+        (get_str_parts(s), get_str_parts(search))
+    {
+        if search_len == 0 {
+            return from_idx.max(0).min(s_len);
+        }
+        let start = from_idx.max(0);
+        if start + search_len > s_len {
+            return -1;
+        }
+        for i in start..=(s_len - search_len) {
+            let mut matched = true;
+            for j in 0..search_len {
+                if *s_data.offset((i + j) as isize) != *search_data.offset(j as isize) {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return i;
+            }
+        }
+    }
+    -1
+}
+#[no_mangle]
 pub unsafe extern "C" fn rt_String_includes(s: i64, search: i64) -> i64 {
     if rt_String_indexOf(s, search) >= 0 {
         BOOL_TRUE
