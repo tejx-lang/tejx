@@ -1,0 +1,20 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Fixed array size and dimension boundary mismatches
+
+function main() {
+    // 1. Outer dimension length mismatch (expected 3, got 2)
+    let a: int[3][2] = [[1, 2], [3, 4]];
+
+    // 2. Inner dimension length mismatch (expected 3, got 2)
+    let b: int[2][3] = [[1, 2], [3, 4]];
+
+    // 3. 3D outer dimension length mismatch (expected 2, got 1)
+    let c: int[2][2][2] = [[[1, 2], [3, 4]]];
+
+    // 4. Fixed array constant index out of bounds
+    let grid: int[2][2];
+    let val = grid[0][5];
+
+    // 5. Fixed array negative index out of bounds
+    let val2 = grid[-1][0];
+}

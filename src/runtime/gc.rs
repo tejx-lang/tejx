@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{LazyLock, Mutex, Once};
 
 // =============================================================================
@@ -53,6 +54,16 @@ pub(crate) unsafe fn detect_old_gen_size() -> usize {
 
     // Priority 3: default initial old-gen size (512 MB)
     DEFAULT_OLD_GEN_SIZE
+}
+
+/// Detect young-gen heap size at startup.
+pub(crate) unsafe fn detect_young_gen_size() -> usize {
+    if let Ok(val) = std::env::var("TEJX_YOUNG_GEN").or_else(|_| std::env::var("TEJX_EDEN")) {
+        if let Some(bytes) = parse_size_str(&val) {
+            return bytes.clamp(MIN_YOUNG_GEN_SIZE, 16 * 1024 * 1024 * 1024);
+        }
+    }
+    crate::constants::DEFAULT_YOUNG_GEN_SIZE
 }
 
 /// Parse size strings: "16gb", "8192mb", "512kb", or raw bytes "1073741824".
@@ -189,16 +200,24 @@ pub static FINALIZER_CONDVAR: std::sync::LazyLock<std::sync::Condvar> =
 const FLAG_FINALIZED: u32 = 0x1;
 pub const FLAG_REMSET_DIRTY: u32 = 0x2;
 
-struct StaticRoots {
+const NUM_STATIC_ROOT_SHARDS: usize = 32;
+
+struct StaticRootsShard {
     slots: Vec<Option<i64>>,
     free: Vec<usize>,
 }
 
-static STATIC_ROOTS: LazyLock<crate::mutex::SpinMutex<StaticRoots>> = LazyLock::new(|| {
-    let free = Vec::with_capacity(65536);
-    let slots = Vec::with_capacity(65536);
-    crate::mutex::SpinMutex::new(StaticRoots { slots, free })
+static STATIC_ROOTS: LazyLock<Vec<crate::mutex::SpinMutex<StaticRootsShard>>> = LazyLock::new(|| {
+    (0..NUM_STATIC_ROOT_SHARDS)
+        .map(|_| {
+            let free = Vec::with_capacity(2048);
+            let slots = Vec::with_capacity(2048);
+            crate::mutex::SpinMutex::new(StaticRootsShard { slots, free })
+        })
+        .collect()
 });
+
+static NEXT_STATIC_ROOT_SHARD: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -383,18 +402,22 @@ pub unsafe extern "C" fn rt_register_type(
 }
 
 pub unsafe fn rt_add_static_root(val: i64) -> usize {
-    let mut roots = STATIC_ROOTS.lock();
-    if let Some(slot) = roots.free.pop() {
-        roots.slots[slot] = Some(val);
-        return slot;
+    let shard_id = NEXT_STATIC_ROOT_SHARD.fetch_add(1, Ordering::Relaxed) & (NUM_STATIC_ROOT_SHARDS - 1);
+    let mut shard = STATIC_ROOTS[shard_id].lock();
+    if let Some(local_slot) = shard.free.pop() {
+        shard.slots[local_slot] = Some(val);
+        return (local_slot << 5) | shard_id;
     }
-    roots.slots.push(Some(val));
-    roots.slots.len() - 1
+    shard.slots.push(Some(val));
+    let local_slot = shard.slots.len() - 1;
+    (local_slot << 5) | shard_id
 }
 
 pub unsafe fn rt_get_static_root(slot: usize) -> i64 {
-    let roots = STATIC_ROOTS.lock();
-    roots.slots.get(slot).and_then(|root| *root).unwrap_or(0)
+    let shard_id = slot & (NUM_STATIC_ROOT_SHARDS - 1);
+    let local_slot = slot >> 5;
+    let shard = STATIC_ROOTS[shard_id].lock();
+    shard.slots.get(local_slot).and_then(|root| *root).unwrap_or(0)
 }
 
 pub unsafe fn rt_pin_static_root(slot: usize, out: *mut i64) {
@@ -403,15 +426,19 @@ pub unsafe fn rt_pin_static_root(slot: usize, out: *mut i64) {
     }
 
     {
-        let roots = STATIC_ROOTS.lock();
-        *out = roots.slots.get(slot).and_then(|root| *root).unwrap_or(0);
+        let shard_id = slot & (NUM_STATIC_ROOT_SHARDS - 1);
+        let local_slot = slot >> 5;
+        let shard = STATIC_ROOTS[shard_id].lock();
+        *out = shard.slots.get(local_slot).and_then(|root| *root).unwrap_or(0);
     }
     rt_push_root(out);
 }
 
 pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
-    let mut roots = STATIC_ROOTS.lock();
-    if let Some(root) = roots.slots.get_mut(slot) {
+    let shard_id = slot & (NUM_STATIC_ROOT_SHARDS - 1);
+    let local_slot = slot >> 5;
+    let mut shard = STATIC_ROOTS[shard_id].lock();
+    if let Some(root) = shard.slots.get_mut(local_slot) {
         if root.is_some() {
             *root = Some(val);
         }
@@ -419,34 +446,42 @@ pub unsafe fn rt_set_static_root(slot: usize, val: i64) {
 }
 
 pub unsafe fn rt_release_static_root(slot: usize) {
-    let mut roots = STATIC_ROOTS.lock();
-    if let Some(root) = roots.slots.get_mut(slot) {
+    let shard_id = slot & (NUM_STATIC_ROOT_SHARDS - 1);
+    let local_slot = slot >> 5;
+    let mut shard = STATIC_ROOTS[shard_id].lock();
+    if let Some(root) = shard.slots.get_mut(local_slot) {
         if root.take().is_some() {
-            roots.free.push(slot);
+            shard.free.push(local_slot);
         }
     }
 }
 
 unsafe fn mark_static_roots() {
-    let roots = STATIC_ROOTS.lock();
-    for root in roots.slots.iter().flatten() {
-        let mut tmp = *root;
-        mark_object(&mut tmp);
+    for shard_mutex in STATIC_ROOTS.iter() {
+        let shard = shard_mutex.lock();
+        for root in shard.slots.iter().flatten() {
+            let mut tmp = *root;
+            mark_object(&mut tmp);
+        }
     }
 }
 
 #[allow(dead_code)]
 unsafe fn update_static_roots() {
-    let mut roots = STATIC_ROOTS.lock();
-    for root in roots.slots.iter_mut().flatten() {
-        rt_update_ptr(root as *mut i64);
+    for shard_mutex in STATIC_ROOTS.iter() {
+        let mut shard = shard_mutex.lock();
+        for root in shard.slots.iter_mut().flatten() {
+            rt_update_ptr(root as *mut i64);
+        }
     }
 }
 
 unsafe fn copy_static_roots() {
-    let mut roots = STATIC_ROOTS.lock();
-    for root in roots.slots.iter_mut().flatten() {
-        copy_object(root as *mut i64);
+    for shard_mutex in STATIC_ROOTS.iter() {
+        let mut shard = shard_mutex.lock();
+        for root in shard.slots.iter_mut().flatten() {
+            copy_object(root as *mut i64);
+        }
     }
 }
 
@@ -1336,7 +1371,7 @@ pub unsafe extern "C" fn rt_init_gc() {
 
         // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > default 512MB
         OLD_GEN_SIZE = (detect_old_gen_size() + 0xFFFF) & !0xFFFF;
-        YOUNG_GEN_SIZE = crate::constants::DEFAULT_YOUNG_GEN_SIZE;
+        YOUNG_GEN_SIZE = (detect_young_gen_size() + 0xFFFF) & !0xFFFF;
         SURVIVOR_SIZE = crate::constants::DEFAULT_SURVIVOR_SIZE;
 
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;

@@ -11,12 +11,14 @@ function main() {
     // Enable CORS for all routes
     app.enableCorsAll();
 
+    let welcomePayload = json.stringify({
+        "message": "Welcome to TejX API Server!",
+        "status": "success"
+    });
+
     // Basic route
     app.get("/", (req: ServerRequest, res: ServerResponse) => {
-        res.json({
-            "message": "Welcome to TejX API Server!",
-            "status": "success"
-        });
+        res.json(welcomePayload);
     });
 
     // Path parameter route — /user/:id
@@ -70,6 +72,10 @@ function main() {
     });
 
     let port = 9191;
+    let envPort:Optional<string> = system.getEnv("PORT");
+    if (envPort != None && envPort!= "") {
+        port = Number.Int(envPort);
+    }
     app.listen(port, () => {
         print(`🚀 TejX API Server running on http://127.0.0.1:${port}`);
         print("Press Ctrl+C to stop.");

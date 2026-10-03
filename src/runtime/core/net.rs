@@ -88,6 +88,7 @@ fn connect_host_port(host: &str, port: i64) -> Option<(TcpStream, usize)> {
                 crate::vthread::vt_deregister_io(&mut stream, token);
                 continue;
             }
+            crate::vthread::vt_reregister_io_read(&mut stream, token);
             return Some((stream, token));
         }
     }
@@ -235,7 +236,17 @@ fn stream_write_all(stream: &mut NetStream, data: &[u8]) -> std::io::Result<usiz
             }
             Ok(n) => written += n,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                match stream {
+                    NetStream::Tcp(s, token) => crate::vthread::vt_reregister_io_write(s, *token),
+                    NetStream::Tls(s, token) => crate::vthread::vt_reregister_io_write(s.get_mut(), *token),
+                    _ => {}
+                }
                 crate::vthread::vt_wait_io_write(token);
+                match stream {
+                    NetStream::Tcp(s, token) => crate::vthread::vt_reregister_io_read(s, *token),
+                    NetStream::Tls(s, token) => crate::vthread::vt_reregister_io_read(s.get_mut(), *token),
+                    _ => {}
+                }
             }
             Err(e) => return Err(e),
         }
@@ -359,6 +370,7 @@ pub unsafe extern "C" fn rt_net_connect(addr_ptr: i64) -> i64 {
                     crate::vthread::vt_deregister_io(&mut stream, token);
                     return -1;
                 }
+                crate::vthread::vt_reregister_io_read(&mut stream, token);
                 return register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
             }
         }
@@ -750,7 +762,7 @@ pub unsafe extern "C" fn rt_net_accept(listener_ptr: i64) -> i64 {
                         std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                     );
                 }
-                let token = crate::vthread::vt_register_io(&mut stream);
+                let token = crate::vthread::vt_register_io_read(&mut stream);
                 let id =
                     register_stream_ptr(Box::into_raw(Box::new(NetStream::Tcp(stream, token))));
                 return id;
@@ -928,6 +940,82 @@ pub unsafe extern "C" fn rt_http_send_fast_response(
     };
 
     let conn_str = if keep_alive { "keep-alive" } else { "close" };
+
+    let total_est = 256 + body_bytes.len() + ct_bytes.len() + 150;
+    if total_est <= 2048 {
+        let mut buf = [0u8; 2048];
+        let mut pos = 0;
+
+        let s1 = b"HTTP/1.1 ";
+        buf[pos..pos + s1.len()].copy_from_slice(s1);
+        pos += s1.len();
+        buf[pos..pos + status_str.len()].copy_from_slice(status_str.as_bytes());
+        pos += status_str.len();
+
+        let s2 = b"\r\nContent-Type: ";
+        buf[pos..pos + s2.len()].copy_from_slice(s2);
+        pos += s2.len();
+        buf[pos..pos + ct_bytes.len()].copy_from_slice(ct_bytes);
+        pos += ct_bytes.len();
+
+        let s3 = b"\r\nContent-Length: ";
+        buf[pos..pos + s3.len()].copy_from_slice(s3);
+        pos += s3.len();
+        let mut len_digits = [0u8; 20];
+        let mut len_val = body_bytes.len();
+        if len_val == 0 {
+            buf[pos] = b'0';
+            pos += 1;
+        } else {
+            let mut dpos = 20;
+            while len_val > 0 {
+                dpos -= 1;
+                len_digits[dpos] = b'0' + (len_val % 10) as u8;
+                len_val /= 10;
+            }
+            let dslice = &len_digits[dpos..];
+            buf[pos..pos + dslice.len()].copy_from_slice(dslice);
+            pos += dslice.len();
+        }
+
+        let s4 = b"\r\nConnection: ";
+        buf[pos..pos + s4.len()].copy_from_slice(s4);
+        pos += s4.len();
+        buf[pos..pos + conn_str.len()].copy_from_slice(conn_str.as_bytes());
+        pos += conn_str.len();
+
+        let s5 = b"\r\nX-Powered-By: TejX\r\n";
+        buf[pos..pos + s5.len()].copy_from_slice(s5);
+        pos += s5.len();
+
+        if cors_origin_ptr >= HEAP_OFFSET {
+            if let Some((bytes, len)) = get_str_parts(cors_origin_ptr) {
+                if !bytes.is_null() && len > 0 {
+                    let origin_bytes = std::slice::from_raw_parts(bytes, len as usize);
+                    let c1 = b"Access-Control-Allow-Origin: ";
+                    buf[pos..pos + c1.len()].copy_from_slice(c1);
+                    pos += c1.len();
+                    buf[pos..pos + origin_bytes.len()].copy_from_slice(origin_bytes);
+                    pos += origin_bytes.len();
+                    let c2 = b"\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n";
+                    buf[pos..pos + c2.len()].copy_from_slice(c2);
+                    pos += c2.len();
+                }
+            }
+        }
+
+        let crlf = b"\r\n";
+        buf[pos..pos + crlf.len()].copy_from_slice(crlf);
+        pos += crlf.len();
+
+        buf[pos..pos + body_bytes.len()].copy_from_slice(body_bytes);
+        pos += body_bytes.len();
+
+        return match stream_write_all(socket, &buf[..pos]) {
+            Ok(n) => n as i64,
+            Err(_) => -1,
+        };
+    }
 
     let mut buf = Vec::with_capacity(256 + body_bytes.len() + ct_bytes.len());
     buf.extend_from_slice(b"HTTP/1.1 ");

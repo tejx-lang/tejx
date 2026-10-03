@@ -1,0 +1,17 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Multi-dimensional array rank and dimension mismatches
+
+function main() {
+    // 1. Assigning 2D literal to 3D array variable
+    let a: int[2][][] = [[1, 2], [3, 4]];
+
+    // 2. Assigning 1D literal to 2D array variable
+    let b: int[][] = [1, 2, 3];
+
+    // 3. Assigning 3D literal to 2D array variable
+    let c: int[][] = [[[1, 2]]];
+
+    // 4. Assigning 1D array to 2D slot in 3D array
+    let d: int[2][][];
+    d[0] = [1, 2];
+}
