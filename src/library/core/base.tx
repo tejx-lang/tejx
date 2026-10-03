@@ -243,10 +243,15 @@ export function __tejx_promise_spawn(task: () => any): Promise<any> {
 //      so other coroutines can run — zero CPU waste.
 //   3. Each idx is captured by value per closure — no race conditions on
 //      the results array since each thread writes a unique index.
-function __tejx_promise_all_factory(idx: int, task: () => any, results: any[]): () => void {
+extern function rt_add_static_root_global(val: any): int64;
+extern function rt_get_static_root_global(slot: int64): any;
+extern function rt_release_static_root_global(slot: int64): void;
+
+function __tejx_promise_all_factory(idx: int, task: () => any, root_slot: int64): () => void {
     return () => {
         let res: any = task();
-        results[idx] = res;
+        let target_results: any[] = rt_get_static_root_global(root_slot) as any as any[];
+        target_results[idx] = res;
     };
 }
 
@@ -257,27 +262,31 @@ export function __tejx_promise_all(tasks: any[]): any[] {
         results.push(None);
     }
 
+    let root_slot: int64 = rt_add_static_root_global(results);
+
     let threads: Thread[] = [];
     for (let i = 0; i < n; i++) {
         let t: () => any = tasks[i];
-        threads.push(Thread.spawn(__tejx_promise_all_factory(i, t, results)));
+        threads.push(Thread.spawn(__tejx_promise_all_factory(i, t, root_slot)));
     }
     for (let i = 0; i < threads.length(); i++) {
         threads[i].join();
     }
 
-    // Check for unset entries — if a task threw, its slot stays None.
-    // Re-throw the first error found (matches Promise.all semantics).
-    return results;
+    let res: any[] = rt_get_static_root_global(root_slot) as any as any[];
+    rt_release_static_root_global(root_slot);
+    return res;
 }
 
-function __tejx_promise_settled_factory(idx: int, task: () => any, results: PromiseResult<any>[]): () => void {
+function __tejx_promise_settled_factory(idx: int, task: () => any, root_slot: int64): () => void {
     return () => {
         try {
             let res: any = task();
-            results[idx] = new PromiseResult<any>("fulfilled", res, None);
+            let target_results: PromiseResult<any>[] = rt_get_static_root_global(root_slot) as any as PromiseResult<any>[];
+            target_results[idx] = new PromiseResult<any>("fulfilled", res, None);
         } catch (e) {
-            results[idx] = new PromiseResult<any>("rejected", None, e);
+            let target_results: PromiseResult<any>[] = rt_get_static_root_global(root_slot) as any as PromiseResult<any>[];
+            target_results[idx] = new PromiseResult<any>("rejected", None, e);
         }
     };
 }
@@ -291,14 +300,19 @@ export function __tejx_promise_settled(tasks: any[]): PromiseResult<any>[] {
         results.push(new PromiseResult<any>("pending", None, None));
     }
 
+    let root_slot: int64 = rt_add_static_root_global(results);
+
     let threads: Thread[] = [];
     for (let i = 0; i < n; i++) {
-        threads.push(Thread.spawn(__tejx_promise_settled_factory(i, tasks[i], results)));
+        threads.push(Thread.spawn(__tejx_promise_settled_factory(i, tasks[i], root_slot)));
     }
     for (let i = 0; i < threads.length(); i++) {
         threads[i].join();
     }
-    return results;
+
+    let res: PromiseResult<any>[] = rt_get_static_root_global(root_slot) as any as PromiseResult<any>[];
+    rt_release_static_root_global(root_slot);
+    return res;
 }
 
 export function __tejx_promise_then(p: any, onResolve: (v: any) => any, onReject: Optional<(e: Error) => any>): Promise<any> {

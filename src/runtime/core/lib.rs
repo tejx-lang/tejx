@@ -3318,6 +3318,13 @@ pub unsafe extern "C" fn rt_set_static_root_global(slot: i64, val: i64) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_release_static_root_global(slot: i64) {
+    if slot >= 0 {
+        rt_release_static_root(slot as usize);
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rt_register_type_info(
     id: i32,
     type_name_ptr: i64,
@@ -3404,9 +3411,15 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
     // Parse GC/heap arguments FIRST — before rt_init_gc uses them.
     parse_gc_argv(argc, argv);
 
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
+    let workers = std::env::var("TEJX_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&w| w > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        });
 
     let run_result = panic::catch_unwind(|| unsafe {
         rt_init_gc();
