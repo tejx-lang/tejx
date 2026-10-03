@@ -16,16 +16,28 @@ jobs:
       matrix:
         platform:
           - os: ubuntu-latest
-            os-name: Linux
+            os-name: Linux-x86_64
             target: x86_64-unknown-linux-gnu
             bin: tejxc
             asset_name: tejxc-linux-x64
+            ext: .tar.gz
+          - os: ubuntu-24.04-arm
+            os-name: Linux-ARM64
+            target: aarch64-unknown-linux-gnu
+            bin: tejxc
+            asset_name: tejxc-linux-arm64
             ext: .tar.gz
           - os: macos-latest
             os-name: macOS-ARM64
             target: aarch64-apple-darwin
             bin: tejxc
             asset_name: tejxc-macos-arm64
+            ext: .tar.gz
+          - os: macos-latest
+            os-name: macOS-Intel
+            target: x86_64-apple-darwin
+            bin: tejxc
+            asset_name: tejxc-macos-x64
             ext: .tar.gz
 
     steps:
@@ -38,25 +50,32 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Install Dependencies (Linux)
-        if: matrix.platform.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y llvm clang pkg-config libssl-dev
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.platform.target }}
+        run: cargo build --release --workspace --target ${{ matrix.platform.target }}
 
       - name: Package Release
         run: |
           DIST_DIR="tejx"
           mkdir -p $DIST_DIR/bin $DIST_DIR/runtime $DIST_DIR/lib
           
-          # Copy binary
+          # Copy binary and ensure executable permission
           cp target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }} $DIST_DIR/bin/
+          chmod +x $DIST_DIR/bin/${{ matrix.platform.bin }}
           
           # Find and copy runtime static library
-          # It usually resides in deps/ with a hash suffix
-          RT_FILE=$(find target/${{ matrix.platform.target }}/release/deps -name "libtejx_rt*.a" | head -n 1)
+          # With --workspace it is placed in release/ directly, with fallback to deps/
+          RT_FILE=$(find target/${{ matrix.platform.target }}/release -maxdepth 1 -name "libtejx_rt.a" | head -n 1)
+          if [ -z "$RT_FILE" ]; then
+            RT_FILE=$(find target/${{ matrix.platform.target }}/release/deps -name "libtejx_rt*.a" | head -n 1)
+          fi
+          if [ -z "$RT_FILE" ]; then
+            RT_FILE=$(find target/${{ matrix.platform.target }}/release -name "libtejx_rt*.a" | head -n 1)
+          fi
           if [ -n "$RT_FILE" ]; then
             cp "$RT_FILE" $DIST_DIR/runtime/tejx_rt.a
             echo "✅ Included runtime: $RT_FILE"
