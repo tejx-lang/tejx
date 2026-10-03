@@ -224,8 +224,8 @@ function bench_copy(): float64 {
 
 // 16. Integer Division Stress
 function bench_div(): float64 {
-    let res = 5000000;
-    for (let i = 1; i < 200000000; i++) {
+    let res: int = 5000000;
+    for (let i: int = 1; i < 200000000; i++) {
         res /= (i % 10 + 1);
         if (res == 0) res = 5000000;
     }
@@ -243,9 +243,9 @@ function bench_fib(): float64 {
 
 // 18. Bubblesort Small Arrays (JIT/Inlining)
 function bench_bubble(): float64 {
-    let first = 0;
+    let first: int = 0;
     for (let k = 0; k < 1000000; k++) {
-        let arr = [9,8,7,6,5,4,3,2,1,0];
+        let arr: int[10] = [9,8,7,6,5,4,3,2,1,0];
         for (let i = 0; i < 10; i++) {
             for (let j = 0; j < 9; j++) {
                 if (arr[j] > arr[j+1]) {

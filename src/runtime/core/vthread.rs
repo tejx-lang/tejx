@@ -104,15 +104,24 @@ struct StackRegistryEntry {
     max_committed_low: usize, // = mmap_base (absolute bottom, can't grow past this)
 }
 
+const NUM_STACK_SHARDS: usize = 256;
+
+#[inline(always)]
+fn stack_shard_idx(addr: usize) -> usize {
+    (addr >> 20) % NUM_STACK_SHARDS
+}
+
 struct StackRegistry {
-    entries: SpinMutex<Vec<StackRegistryEntry>>,
+    shards: Vec<SpinMutex<std::collections::HashMap<usize, StackRegistryEntry>>>,
 }
 
 fn get_stack_registry() -> &'static StackRegistry {
     STACK_REGISTRY_INIT.call_once(|| {
-        let registry = Box::new(StackRegistry {
-            entries: SpinMutex::new(Vec::with_capacity(1024)),
-        });
+        let mut shards = Vec::with_capacity(NUM_STACK_SHARDS);
+        for _ in 0..NUM_STACK_SHARDS {
+            shards.push(SpinMutex::new(std::collections::HashMap::new()));
+        }
+        let registry = Box::new(StackRegistry { shards });
         STACK_REGISTRY_PTR.store(Box::into_raw(registry) as *mut (), Ordering::Release);
     });
     unsafe { &*(STACK_REGISTRY_PTR.load(Ordering::Acquire) as *const StackRegistry) }
@@ -132,26 +141,20 @@ pub unsafe fn try_grow_stack_at(fault_addr: usize) -> bool {
         }
     }
 
-    // 2. Fallback Path: Check the global stack registry with adaptive spinning.
+    // 2. Fallback Path: Check the specific shard for fault_addr in the global stack registry
     let ptr = STACK_REGISTRY_PTR.load(Ordering::Acquire);
     if ptr.is_null() {
         return false;
     }
     let registry = &*(ptr as *const StackRegistry);
-    let mut entries = None;
-    for _ in 0..10_000 {
-        if let Some(guard) = registry.entries.try_lock() {
-            entries = Some(guard);
-            break;
-        }
-        std::hint::spin_loop();
-    }
-    let entries = match entries {
-        Some(guard) => guard,
+    let shard_idx = stack_shard_idx(fault_addr);
+    let guard = registry.shards[shard_idx].try_lock();
+    let entries = match guard {
+        Some(g) => g,
         None => return false,
     };
 
-    for entry in entries.iter() {
+    for entry in entries.values() {
         if fault_addr >= entry.mmap_base && fault_addr < entry.mmap_end {
             // This fault is within this stack's reserved region.
             let current_low = entry.committed_low.load(Ordering::Acquire);
@@ -160,7 +163,6 @@ pub unsafe fn try_grow_stack_at(fault_addr: usize) -> bool {
                 return false;
             }
             // Fault is below committed_low → need to grow.
-            // Grow in chunks of at least 64 KB (or page_size if larger) to minimize page faults.
             let page_size = entry.page_size.max(4096);
             let chunk_size = page_align_up(page_size.max(64 * 1024), page_size);
             let mut new_low = current_low;
@@ -246,14 +248,15 @@ impl GrowableStack {
 
         // Step 3: Register in the global stack registry for signal handler lookup
         let registry = get_stack_registry();
+        let mmap_base_val = mmap_base as usize;
         let entry = StackRegistryEntry {
-            mmap_base: mmap_base as usize,
-            mmap_end: mmap_base as usize + total_reserved,
+            mmap_base: mmap_base_val,
+            mmap_end: mmap_base_val + total_reserved,
             committed_low: Arc::clone(&committed_low),
             page_size,
-            max_committed_low: mmap_base as usize, // can grow all the way down
+            max_committed_low: mmap_base_val, // can grow all the way down
         };
-        registry.entries.lock().push(entry);
+        registry.shards[stack_shard_idx(mmap_base_val)].lock().insert(mmap_base_val, entry);
 
         Ok(GrowableStack {
             mmap_base,
@@ -373,13 +376,8 @@ impl Drop for GrowableStack {
     fn drop(&mut self) {
         // Unregister from the stack registry
         let registry = get_stack_registry();
-        {
-            let mut entries = registry.entries.lock();
-            let mmap_base = self.mmap_base as usize;
-            if let Some(pos) = entries.iter().position(|e| e.mmap_base == mmap_base) {
-                entries.swap_remove(pos);
-            }
-        }
+        let mmap_base_val = self.mmap_base as usize;
+        registry.shards[stack_shard_idx(mmap_base_val)].lock().remove(&mmap_base_val);
         // Release all virtual address space back to the OS
         unsafe {
             libc::munmap(self.mmap_base as *mut libc::c_void, self.mmap_size);
@@ -507,7 +505,7 @@ impl Drop for PooledStack {
                     g.shrink_to(os_page_size());
                     let res = GROWABLE_POOL.try_with(|pool| {
                         let mut p = pool.borrow_mut();
-                        if p.len() < 2048 {
+                        if p.len() < 64 {
                             p.push(g);
                             None
                         } else {
@@ -516,7 +514,7 @@ impl Drop for PooledStack {
                     });
                     if let Ok(Some(g)) = res {
                         let mut global = GLOBAL_GROWABLE_POOL.lock();
-                        if global.len() < 32768 {
+                        if global.len() < 65536 {
                             global.push(g);
                         }
                         // If both pools are at capacity, `g` is dropped here,
@@ -911,11 +909,7 @@ impl Scheduler {
     pub fn notify_worker(&self) {
         let idle = self.idle_workers.load(Ordering::Relaxed);
         if idle > 0 {
-            if idle > 1 {
-                self.idle_condvar.notify_all();
-            } else {
-                self.idle_condvar.notify_one();
-            }
+            self.idle_condvar.notify_all();
         }
     }
 
@@ -1024,6 +1018,17 @@ pub fn vt_init(num_workers: usize) {
     let _ = PARK_SHARDS.len();
     let _ = VTHREAD_GC_SHARDS.len();
 
+    // Pre-warm global growable pool with stacks to eliminate mmap contention during connection bursts
+    let initial_stacks = 2048;
+    let stack_size = get_vt_stack_size();
+    let mut pool = GLOBAL_GROWABLE_POOL.lock();
+    for _ in 0..initial_stacks {
+        if let Ok(s) = GrowableStack::new(stack_size) {
+            pool.push(s);
+        }
+    }
+    drop(pool);
+
     let mut stealers = Vec::with_capacity(num_workers);
     let mut workers = Vec::with_capacity(num_workers);
     for _ in 0..num_workers {
@@ -1101,6 +1106,20 @@ pub fn vt_register_io_read<S: mio::event::Source>(source: &mut S) -> usize {
         .registry
         .register(source, token, Interest::READABLE);
     token_id
+}
+
+pub fn vt_reregister_io_write<S: mio::event::Source>(source: &mut S, token_id: usize) {
+    let token = Token(token_id);
+    let _ = SCHEDULER
+        .registry
+        .reregister(source, token, Interest::READABLE | Interest::WRITABLE);
+}
+
+pub fn vt_reregister_io_read<S: mio::event::Source>(source: &mut S, token_id: usize) {
+    let token = Token(token_id);
+    let _ = SCHEDULER
+        .registry
+        .reregister(source, token, Interest::READABLE);
 }
 
 pub fn vt_deregister_io<S: mio::event::Source>(source: &mut S, token_id: usize) {
@@ -1251,9 +1270,30 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
             .store(true, Ordering::SeqCst);
     }
 
+    let mut tick = 0u32;
     loop {
         SCHEDULER.drain_expired_timers();
-        let mut task = unsafe { (*local_ptr).pop() };
+        tick = tick.wrapping_add(1);
+
+        let mut task = None;
+
+        // Every 32 iterations, check global queue first for fairness to prevent local queue starvation
+        if tick % 32 == 0 {
+            loop {
+                match SCHEDULER.global_queue.steal_batch_and_pop(unsafe { &*local_ptr }) {
+                    Steal::Success(t) => {
+                        task = Some(t);
+                        break;
+                    }
+                    Steal::Empty => break,
+                    Steal::Retry => continue,
+                }
+            }
+        }
+
+        if task.is_none() {
+            task = unsafe { (*local_ptr).pop() };
+        }
 
         if task.is_none() {
             loop {
@@ -1365,7 +1405,7 @@ fn worker_loop(_worker_id: usize, local: Worker<Box<VThread>>) {
                     *lock_gc_state(&t.gc_state) = Some(unsafe { crate::gc::rt_save_gc_context() });
                     crate::save_vthread_local_state(&mut t.local_state);
                     if r.is_cooperative() {
-                        unsafe { (*local_ptr).push(t); }
+                        SCHEDULER.push_global(t);
                     } else if let Some(until) = r.as_sleep() {
                         SCHEDULER.add_timer(until, t);
                     } else if let Some(token_id) = r.as_io_park_read() {
@@ -1516,13 +1556,25 @@ pub fn vt_sleep(ms: u64) {
 
 pub fn vt_join(slot_live: &Arc<AtomicBool>) {
     if vt_is_vthread() {
+        let mut spins = 0usize;
         while slot_live.load(Ordering::Acquire) {
-            vt_yield();
+            spins += 1;
+            if spins < 32 {
+                vt_yield();
+            } else {
+                vt_sleep(1);
+            }
         }
     } else {
         let _guard = crate::ThreadIoGuard::new();
+        let mut spins = 0usize;
         while slot_live.load(Ordering::Acquire) {
-            std::thread::yield_now();
+            spins += 1;
+            if spins < 64 {
+                std::thread::yield_now();
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         }
     }
 }

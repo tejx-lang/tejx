@@ -1,0 +1,19 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Multi-dimensional array method push type and rank mismatches
+
+function main() {
+    let i3fdd: int[2][][];
+
+    // 1. Cannot push to fixed-size outer array
+    i3fdd.push([[1, 2]]);
+
+    // 2. Pushing scalar into 2D array (expected int[])
+    i3fdd[0].push(1);
+
+    // 3. Pushing 2D array into 2D array (expected int[])
+    i3fdd[0].push([[1, 2]]);
+
+    // 4. Pushing array into 1D array (expected int)
+    i3fdd[0].push([1, 2]);
+    i3fdd[0][0].push([1]);
+}

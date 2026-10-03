@@ -251,6 +251,10 @@ impl TejxType {
         )
     }
 
+    pub fn is_integer(&self) -> bool {
+        self.is_signed_integer() || self.is_unsigned_integer()
+    }
+
     pub fn is_array(&self) -> bool {
         matches!(
             self,
@@ -538,18 +542,50 @@ impl TejxType {
             }
         }
 
-        if name.ends_with("]") {
-            // Handle type[size]
-            if let Some(open) = name.rfind('[') {
-                let base = &name[..open];
-                let size_str = &name[open + 1..name.len() - 1];
-                if size_str.is_empty() {
-                    return TejxType::DynamicArray(Box::new(TejxType::from_name(base)));
+        if name.ends_with(']') {
+            let mut brackets = Vec::new();
+            let bytes = name.as_bytes();
+            let mut end = name.len();
+            while end > 0 && bytes[end - 1] == b']' {
+                let mut depth = 0;
+                let mut open_idx = None;
+                for i in (0..end).rev() {
+                    if bytes[i] == b']' {
+                        depth += 1;
+                    } else if bytes[i] == b'[' {
+                        depth -= 1;
+                        if depth == 0 {
+                            open_idx = Some(i);
+                            break;
+                        }
+                    }
                 }
-                if let Ok(size) = size_str.parse::<usize>() {
-                    return TejxType::FixedArray(Box::new(TejxType::from_name(base)), size);
+                if let Some(open) = open_idx {
+                    let content = &name[open + 1..end - 1];
+                    brackets.push(content);
+                    end = open;
+                } else {
+                    break;
                 }
-                // Fallback to dynamic array? or Class?
+            }
+            if !brackets.is_empty() && end > 0 {
+                let base = &name[..end];
+                brackets.reverse();
+                let mut ty = TejxType::from_name(base);
+                let mut valid = true;
+                for b in brackets.into_iter().rev() {
+                    if b.is_empty() {
+                        ty = TejxType::DynamicArray(Box::new(ty));
+                    } else if let Ok(size) = b.parse::<usize>() {
+                        ty = TejxType::FixedArray(Box::new(ty), size);
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                }
+                if valid {
+                    return ty;
+                }
                 return TejxType::Class(name.to_string(), vec![]);
             }
         }
@@ -633,8 +669,24 @@ impl TejxType {
             }
             TejxType::Optional(inner) => format!("Optional<{}>", inner.to_name()),
             TejxType::Any => "any".to_string(),
-            TejxType::FixedArray(inner, size) => format!("{}[{}]", inner.to_name(), size),
-            TejxType::DynamicArray(inner) => format!("{}[]", inner.to_name()),
+            TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) => {
+                let mut dims = Vec::new();
+                let mut curr = self;
+                loop {
+                    match curr {
+                        TejxType::FixedArray(inner, size) => {
+                            dims.push(format!("[{}]", size));
+                            curr = inner;
+                        }
+                        TejxType::DynamicArray(inner) => {
+                            dims.push("[]".to_string());
+                            curr = inner;
+                        }
+                        _ => break,
+                    }
+                }
+                format!("{}{}", curr.to_name(), dims.concat())
+            }
             TejxType::Slice(inner) => format!("slice<{}>", inner.to_name()),
             TejxType::Void => "void".to_string(),
             TejxType::Function(params, ret) => {

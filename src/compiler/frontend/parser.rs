@@ -1117,28 +1117,25 @@ impl Parser {
             self.consume(TokenType::CloseBrace, "Expected '}'");
             let mut node = TypeNode::Object(member_nodes);
 
+            let mut brackets = Vec::new();
             while self.match_token(TokenType::OpenBracket) {
                 if self.match_token(TokenType::CloseBracket) {
-                    node = TypeNode::Array(Box::new(node));
-                    continue;
+                    brackets.push(None);
+                } else {
+                    let size_expr = self.parse_expression();
+                    self.consume(TokenType::CloseBracket, "Expected ']'");
+                    brackets.push(Some(size_expr));
                 }
-
-                let size_expr = self.parse_expression();
-                self.consume(TokenType::CloseBracket, "Expected ']'");
-
-                if let Expression::NumberLiteral {
-                    value,
-                    _is_float: false,
-                    ..
-                } = size_expr
-                {
-                    if value.fract() == 0.0 && value >= 0.0 {
-                        node = TypeNode::Named(format!("{}[{:.0}]", node.to_string(), value));
-                        continue;
+            }
+            for bracket in brackets.into_iter().rev() {
+                match bracket {
+                    None => {
+                        node = TypeNode::Array(Box::new(node));
+                    }
+                    Some(size_expr) => {
+                        node = TypeNode::SizedArray(Box::new(node), Box::new(size_expr));
                     }
                 }
-
-                node = TypeNode::SizedArray(Box::new(node), Box::new(size_expr));
             }
             return node;
         }
@@ -1269,28 +1266,25 @@ impl Parser {
             base_node = TypeNode::Named(base_type_name.clone());
         }
 
+        let mut brackets = Vec::new();
         while self.match_token(TokenType::OpenBracket) {
             if self.match_token(TokenType::CloseBracket) {
-                base_node = TypeNode::Array(Box::new(base_node));
-                continue;
+                brackets.push(None);
+            } else {
+                let size_expr = self.parse_expression();
+                self.consume(TokenType::CloseBracket, "Expected ']'");
+                brackets.push(Some(size_expr));
             }
-
-            let size_expr = self.parse_expression();
-            self.consume(TokenType::CloseBracket, "Expected ']'");
-
-            if let Expression::NumberLiteral {
-                value,
-                _is_float: false,
-                ..
-            } = size_expr
-            {
-                if value.fract() == 0.0 && value >= 0.0 {
-                    base_node = TypeNode::Named(format!("{}[{:.0}]", base_node.to_string(), value));
-                    continue;
+        }
+        for bracket in brackets.into_iter().rev() {
+            match bracket {
+                None => {
+                    base_node = TypeNode::Array(Box::new(base_node));
+                }
+                Some(size_expr) => {
+                    base_node = TypeNode::SizedArray(Box::new(base_node), Box::new(size_expr));
                 }
             }
-
-            base_node = TypeNode::SizedArray(Box::new(base_node), Box::new(size_expr));
         }
 
         let mut intersection_types = Vec::new();
@@ -2050,17 +2044,14 @@ impl Parser {
                             "Remove the type arguments here or move them to a real generic function call.",
                         );
                     }
-                    let _start_token = self.tokens[self.current - 2].clone(); // ?. matched, then [ matched? No.
-                                                                              // match_token(QuestionDot) advanced. current is at next token.
-                                                                              // if next token is OpenParen -> call.
-                                                                              // else if next is OpenBracket -> index.
+                    let bracket_token = self.previous().clone();
                     let index = self.parse_assignment();
                     self.consume(TokenType::CloseBracket, "Expected ']'");
                     expr = Expression::OptionalArrayAccessExpr {
                         target: Box::new(expr),
                         index: Box::new(index),
-                        _line: 0,
-                        _col: 0,
+                        _line: bracket_token.line,
+                        _col: bracket_token.column,
                     };
                 } else {
                     if type_args.is_some() {
@@ -2071,15 +2062,15 @@ impl Parser {
                             "Remove the type arguments here or apply them on a generic call instead.",
                         );
                     }
-                    let member = self
+                    let member_tok = self
                         .consume_identifier("Expected property name after '?.'")
-                        .value
                         .clone();
+                    let member = member_tok.value.clone();
                     expr = Expression::OptionalMemberAccessExpr {
                         object: Box::new(expr),
                         member,
-                        _line: 0,
-                        _col: 0,
+                        _line: member_tok.line,
+                        _col: member_tok.column,
                     };
                 }
             } else if self.match_token(TokenType::Dot) || self.match_token(TokenType::DoubleColon) {
@@ -2107,6 +2098,7 @@ impl Parser {
                     _is_namespace: is_double_colon,
                 };
             } else if self.match_token(TokenType::OpenBracket) {
+                let bracket_token = self.previous().clone();
                 if type_args.is_some() {
                     self.push_parse_error_with_hint(
                         "Type arguments not allowed before array access",
@@ -2120,8 +2112,8 @@ impl Parser {
                 expr = Expression::ArrayAccessExpr {
                     target: Box::new(expr),
                     index: Box::new(index),
-                    _line: 0,
-                    _col: 0,
+                    _line: bracket_token.line,
+                    _col: bracket_token.column,
                 };
             } else if self.match_token(TokenType::As) {
                 let target_type = self.parse_type_annotation();

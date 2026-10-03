@@ -47,7 +47,7 @@ function test_int_arrays() {
 
     // ── 2D Fixed×Fixed ──
     print("-- int 2D F×F --");
-    let i2ff: int[2][3] = [[1,2],[3,4],[5,6]];
+    let i2ff: int[3][2] = [[1,2],[3,4],[5,6]];
     assert_eq_int(1, i2ff[0][0], "int 2D F×F [0][0]");
     assert_eq_int(4, i2ff[1][1], "int 2D F×F [1][1]");
     assert_eq_int(6, i2ff[2][1], "int 2D F×F [2][1]");
@@ -55,7 +55,7 @@ function test_int_arrays() {
     assert_eq_int(2, i2ff[0].length, "int 2D F×F inner length");
 
     // 2D Fixed×Fixed uninitialized
-    let i2ffu: int[2][3];
+    let i2ffu: int[3][2];
     assert_eq_int(0, i2ffu[0][0], "int 2D F×F uninit default");
     i2ffu[0][0] = 42; i2ffu[2][1] = 99;
     assert_eq_int(42, i2ffu[0][0], "int 2D F×F uninit assign [0][0]");
@@ -77,9 +77,9 @@ function test_int_arrays() {
     assert_eq_int(20, i2dd2[0][1], "int 2D D×D push [0][1]");
     assert_eq_int(30, i2dd2[1][0], "int 2D D×D push [1][0]");
 
-    // ── 2D Fixed outer, Dynamic inner (int[][N]) ──
+    // ── 2D Fixed outer, Dynamic inner (int[N][]) ──
     print("-- int 2D FO-DI --");
-    let i2fd: int[][2];
+    let i2fd: int[2][];
     assert_eq_int(2, i2fd.length, "int 2D FO-DI outer length");
     assert_eq_int(0, i2fd[0].length, "int 2D FO-DI inner starts empty");
     i2fd[0].push(100); i2fd[0].push(200);
@@ -89,28 +89,30 @@ function test_int_arrays() {
     assert_eq_int(300, i2fd[1][0], "int 2D FO-DI [1][0]");
     assert_eq_int(2, i2fd[0].length, "int 2D FO-DI inner[0] length after push");
 
-    // ── 2D Dynamic outer, Fixed inner (int[N][]) ──
+    // ── 2D Dynamic outer, Fixed inner (int[][N]) ──
     print("-- int 2D DO-FI --");
-    let i2df: int[2][] = [[10,20],[30,40]];
+    let i2df: int[][2] = [[10,20],[30,40]];
     assert_eq_int(10, i2df[0][0], "int 2D DO-FI [0][0]");
     assert_eq_int(40, i2df[1][1], "int 2D DO-FI [1][1]");
     assert_eq_int(2, i2df.length, "int 2D DO-FI outer length");
 
-    let i2df2: int[2][] = [];
+    let i2df2: int[][2] = [];
+    assert_eq_int(0, i2df2.length, "int 2D DO-FI empty outer length");
     i2df2.push([5,6]);
     i2df2.push([7,8]);
+    assert_eq_int(2, i2df2.length, "int 2D DO-FI outer length after push");
     assert_eq_int(5, i2df2[0][0], "int 2D DO-FI push [0][0]");
     assert_eq_int(8, i2df2[1][1], "int 2D DO-FI push [1][1]");
 
     // ── 3D: All Fixed ──
     print("-- int 3D FFF --");
     let i3fff: int[2][3][4];
-    assert_eq_int(4, i3fff.length, "int 3D FFF outer length");
+    assert_eq_int(2, i3fff.length, "int 3D FFF outer length");
     assert_eq_int(3, i3fff[0].length, "int 3D FFF mid length");
-    assert_eq_int(2, i3fff[0][0].length, "int 3D FFF inner length");
-    i3fff[0][0][0] = 1; i3fff[3][2][1] = 999;
+    assert_eq_int(4, i3fff[0][0].length, "int 3D FFF inner length");
+    i3fff[0][0][0] = 1; i3fff[1][2][3] = 999;
     assert_eq_int(1, i3fff[0][0][0], "int 3D FFF assign [0][0][0]");
-    assert_eq_int(999, i3fff[3][2][1], "int 3D FFF assign [3][2][1]");
+    assert_eq_int(999, i3fff[1][2][3], "int 3D FFF assign [1][2][3]");
 
     // 3D: All Dynamic
     print("-- int 3D DDD --");
@@ -119,17 +121,17 @@ function test_int_arrays() {
     assert_eq_int(3, i3ddd[0][1][0], "int 3D DDD [0][1][0]");
     assert_eq_int(6, i3ddd[1][0][2], "int 3D DDD [1][0][2]");
 
-    // 3D: Fixed outer, rest dynamic (int[][][N])
+    // 3D: Fixed outer, rest dynamic (int[N][][])
     print("-- int 3D FO --");
-    let i3fdd: int[][][2];
+    let i3fdd: int[2][][];
     i3fdd[0].push([1,2]);
     i3fdd[1].push([3,4]);
     assert_eq_int(1, i3fdd[0][0][0], "int 3D FO [0][0][0]");
     assert_eq_int(4, i3fdd[1][0][1], "int 3D FO [1][0][1]");
 
-    // 3D: Dynamic outer, fixed mid & inner (int[2][3][])
+    // 3D: Dynamic outer, fixed mid & inner (int[][3][2])
     print("-- int 3D DO-FMI --");
-    let i3dff: int[2][3][] = [[[1,2],[3,4],[5,6]]];
+    let i3dff: int[][3][2] = [[[1,2],[3,4],[5,6]]];
     assert_eq_int(1, i3dff[0][0][0], "int 3D DO-FMI [0][0][0]");
     assert_eq_int(6, i3dff[0][2][1], "int 3D DO-FMI [0][2][1]");
 
@@ -145,9 +147,9 @@ function test_int_arrays() {
     assert_eq_int(16, i4[1][1][1][1], "int 4D [1][1][1][1]");
     assert_eq_int(77, i4[0][1][0][1], "int 4D [0][1][0][1]");
 
-    // 4D: Mixed (int[][2][2][3]) — outer fixed(3), mid fixed(2×2), inner dynamic
+    // 4D: Mixed (int[3][2][2][]) — outer fixed(3), mid fixed(2×2), inner dynamic
     print("-- int 4D mixed --");
-    let i4m: int[][2][2][3];
+    let i4m: int[3][2][2][];
     i4m[0][0][0].push(111);
     i4m[2][1][1].push(999);
     assert_eq_int(111, i4m[0][0][0][0], "int 4D mixed [0][0][0][0]");
@@ -181,7 +183,9 @@ function test_float_arrays() {
 
     // 2D FO-DI
     print("-- float 2D FO-DI --");
-    let f2fd: float[][2];
+    let f2fd: float[2][];
+    assert_eq_int(2, f2fd.length, "float 2D FO-DI outer length");
+    assert_eq_int(0, f2fd[0].length, "float 2D FO-DI inner starts empty");
     f2fd[0].push(1.1); f2fd[0].push(2.2);
     f2fd[1].push(3.3);
     assert_eq_float(1.1, f2fd[0][0], "float 2D FO-DI [0][0]");
@@ -189,7 +193,7 @@ function test_float_arrays() {
     assert_eq_float(3.3, f2fd[1][0], "float 2D FO-DI [1][0]");
 
     // 2D DO-FI
-    let f2df: float[2][] = [[10.5, 20.5]];
+    let f2df: float[][2] = [[10.5, 20.5]];
     assert_eq_float(10.5, f2df[0][0], "float 2D DO-FI [0][0]");
     assert_eq_float(20.5, f2df[0][1], "float 2D DO-FI [0][1]");
 
@@ -237,7 +241,9 @@ function test_bool_arrays() {
 
     // 2D FO-DI
     print("-- bool 2D FO-DI --");
-    let b2fd: bool[][2];
+    let b2fd: bool[2][];
+    assert_eq_int(2, b2fd.length, "bool 2D FO-DI outer length");
+    assert_eq_int(0, b2fd[0].length, "bool 2D FO-DI inner starts empty");
     b2fd[0].push(true); b2fd[0].push(false);
     b2fd[1].push(true);
     assert_true(b2fd[0][0], "bool 2D FO-DI [0][0]");
@@ -245,7 +251,7 @@ function test_bool_arrays() {
     assert_true(b2fd[1][0], "bool 2D FO-DI [1][0]");
 
     // 2D DO-FI
-    let b2df: bool[2][] = [[true, false]];
+    let b2df: bool[][2] = [[true, false]];
     assert_true(b2df[0][0], "bool 2D DO-FI [0][0]");
     assert_false(b2df[0][1], "bool 2D DO-FI [0][1]");
 
@@ -293,7 +299,9 @@ function test_string_arrays() {
 
     // 2D FO-DI
     print("-- string 2D FO-DI --");
-    let s2fd: string[][2];
+    let s2fd: string[2][];
+    assert_eq_int(2, s2fd.length, "string 2D FO-DI outer length");
+    assert_eq_int(0, s2fd[0].length, "string 2D FO-DI inner starts empty");
     s2fd[0].push("alpha"); s2fd[0].push("beta");
     s2fd[1].push("gamma");
     assert_eq_string("alpha", s2fd[0][0], "string 2D FO-DI [0][0]");
@@ -301,7 +309,7 @@ function test_string_arrays() {
     assert_eq_string("gamma", s2fd[1][0], "string 2D FO-DI [1][0]");
 
     // 2D DO-FI
-    let s2df: string[2][] = [["one", "two"]];
+    let s2df: string[][2] = [["one", "two"]];
     assert_eq_string("one", s2df[0][0], "string 2D DO-FI [0][0]");
     assert_eq_string("two", s2df[0][1], "string 2D DO-FI [0][1]");
 
@@ -354,7 +362,9 @@ function test_struct_arrays() {
 
     // 2D FO-DI + push
     print("-- struct 2D FO-DI --");
-    let st2fd: { x: int, y: int }[][2];
+    let st2fd: { x: int, y: int }[2][];
+    assert_eq_int(2, st2fd.length, "struct 2D FO-DI outer length");
+    assert_eq_int(0, st2fd[0].length, "struct 2D FO-DI inner starts empty");
     st2fd[0].push({ x: 100, y: 200 });
     st2fd[1].push({ x: 300, y: 400 });
     assert_eq_int(100, st2fd[0][0].x, "struct 2D FO-DI push [0][0].x");
@@ -362,7 +372,7 @@ function test_struct_arrays() {
     assert_eq_int(300, st2fd[1][0].x, "struct 2D FO-DI push [1][0].x");
 
     // 2D DO-FI
-    let st2df: { x: int, y: int }[2][] = [[{ x: 1, y: 2 }, { x: 3, y: 4 }]];
+    let st2df: { x: int, y: int }[][2] = [[{ x: 1, y: 2 }, { x: 3, y: 4 }]];
     assert_eq_int(1, st2df[0][0].x, "struct 2D DO-FI [0][0].x");
     assert_eq_int(4, st2df[0][1].y, "struct 2D DO-FI [0][1].y");
 
@@ -384,7 +394,7 @@ function test_struct_arrays() {
 
     // 3D FO-DI
     print("-- struct 3D FO-DI --");
-    let st3fd: { x: int, y: int }[][2][2];
+    let st3fd: { x: int, y: int }[2][2][];
     st3fd[0][0].push({ x: 111, y: 222 });
     st3fd[1][1].push({ x: 333, y: 444 });
     assert_eq_int(111, st3fd[0][0][0].x, "struct 3D FO-DI push [0][0][0].x");
@@ -425,7 +435,9 @@ function test_class_arrays() {
 
     // 2D FO-DI + push
     print("-- class 2D FO-DI --");
-    let c2fd: Vec2[][2];
+    let c2fd: Vec2[2][];
+    assert_eq_int(2, c2fd.length, "class 2D FO-DI outer length");
+    assert_eq_int(0, c2fd[0].length, "class 2D FO-DI inner starts empty");
     c2fd[0].push(new Vec2(100, 200));
     c2fd[1].push(new Vec2(300, 400));
     assert_eq_int(100, c2fd[0][0].x, "class 2D FO-DI push [0][0].x");
@@ -433,7 +445,7 @@ function test_class_arrays() {
     assert_eq_int(300, c2fd[1][0].x, "class 2D FO-DI push [1][0].x");
 
     // 2D DO-FI
-    let c2df: Vec2[2][] = [[new Vec2(1, 2), new Vec2(3, 4)]];
+    let c2df: Vec2[][2] = [[new Vec2(1, 2), new Vec2(3, 4)]];
     assert_eq_int(1, c2df[0][0].x, "class 2D DO-FI [0][0].x");
     assert_eq_int(4, c2df[0][1].y, "class 2D DO-FI [0][1].y");
 
@@ -455,7 +467,7 @@ function test_class_arrays() {
 
     // 3D FO-DI + push
     print("-- class 3D FO-DI --");
-    let c3fd: Vec2[][2][2];
+    let c3fd: Vec2[2][2][];
     c3fd[0][0].push(new Vec2(11, 22));
     c3fd[1][1].push(new Vec2(33, 44));
     assert_eq_int(11, c3fd[0][0][0].x, "class 3D FO-DI push [0][0][0].x");
@@ -476,7 +488,8 @@ function test_mutations_and_edges() {
     assert_eq_int(100, m[0][0], "mutation overwrite [0][0]");
 
     // Push struct to dynamic inner of fixed outer
-    let ms: { v: int }[][3];
+    let ms: { v: int }[3][];
+    assert_eq_int(3, ms.length, "mutation ms length");
     ms[0].push({ v: 10 }); ms[0].push({ v: 20 });
     ms[1].push({ v: 30 });
     ms[2].push({ v: 40 });
@@ -524,7 +537,7 @@ function test_mutations_and_edges() {
 
     // 4D mixed: dynamic innermost
     print("-- 4D mixed dyn inner --");
-    let d4m: int[][2][2][3];
+    let d4m: int[3][2][2][];
     d4m[0][0][0].push(111);
     d4m[2][1][1].push(999);
     assert_eq_int(111, d4m[0][0][0][0], "4D mixed push [0][0][0][0]");

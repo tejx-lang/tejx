@@ -64,9 +64,23 @@ impl TypeNode {
                 format!("{}<{}>", n, args_str)
             }
             TypeNode::Optional(inner) => format!("Optional<{}>", inner),
-            TypeNode::Array(t) => format!("{}[]", t),
-            TypeNode::SizedArray(t, size) => {
-                format!("{}[{}]", t, Self::size_expr_to_string(size))
+            TypeNode::Array(_) | TypeNode::SizedArray(_, _) => {
+                let mut dims = Vec::new();
+                let mut curr = self;
+                loop {
+                    match curr {
+                        TypeNode::SizedArray(inner, size) => {
+                            dims.push(format!("[{}]", Self::size_expr_to_string(size)));
+                            curr = inner;
+                        }
+                        TypeNode::Array(inner) => {
+                            dims.push("[]".to_string());
+                            curr = inner;
+                        }
+                        _ => break,
+                    }
+                }
+                format!("{}{}", curr.to_string(), dims.concat())
             }
             TypeNode::Function(args, ret) => {
                 let args_str = args
@@ -534,7 +548,7 @@ impl Expression {
             Expression::MemberAccessExpr { object, member, .. } => {
                 let base = object.to_callee_name();
                 if base.is_empty() {
-                    "".to_string() // Return empty if base is not a simple name
+                    member.clone()
                 } else {
                     format!("{}.{}", base, member)
                 }
@@ -542,9 +556,17 @@ impl Expression {
             Expression::OptionalMemberAccessExpr { object, member, .. } => {
                 let base = object.to_callee_name();
                 if base.is_empty() {
-                    "".to_string()
+                    member.clone()
                 } else {
                     format!("{}.{}", base, member)
+                }
+            }
+            Expression::ArrayAccessExpr { target, .. } => {
+                let base = target.to_callee_name();
+                if base.is_empty() {
+                    "".to_string()
+                } else {
+                    format!("{}[...]", base)
                 }
             }
             Expression::StringLiteral { .. } => "String".to_string(),

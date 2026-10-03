@@ -1078,8 +1078,8 @@ impl TypeChecker {
                 _line,
                 _col,
             } => {
-                let target_ty = self.check_expression(target)?;
-                self.check_expression(index)?;
+                let target_ty = self.with_expected_type(None, |s| s.check_expression(target))?;
+                let index_ty = self.with_expected_type(Some(TejxType::Int32), |s| s.check_expression(index))?;
 
                 let mut unwrapped_type = target_ty.to_name();
                 if let Some(sym) = self.lookup(&unwrapped_type) {
@@ -1108,6 +1108,26 @@ impl TypeChecker {
                 }
 
                 let parsed = TejxType::from_name(&unwrapped_type);
+
+                // Enforce numeric indexing on arrays, slices, and strings
+                if parsed.is_array() || parsed.is_slice() || parsed == TejxType::String {
+                    if !index_ty.is_numeric()
+                        && index_ty != TejxType::Any
+                        && index_ty.to_name() != "<inferred>"
+                    {
+                        self.report_error_detailed(
+                            format!(
+                                "Array index must be numeric, got '{}'",
+                                index_ty.to_name()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0106",
+                            Some("Use an integer or numeric index expression (e.g. 0, 1, i)"),
+                        );
+                    }
+                }
+
                 if let TejxType::FixedArray(_, size) = &parsed {
                     let mut const_index: Option<i64> = None;
                     match index.as_ref() {
@@ -1160,6 +1180,18 @@ impl TypeChecker {
                 }
                 if parsed == TejxType::String {
                     return Ok(TejxType::String);
+                }
+                if parsed != TejxType::from_name("<inferred>") {
+                    self.report_error_detailed(
+                        format!(
+                            "Type '{}' cannot be indexed or is not an array",
+                            unwrapped_type
+                        ),
+                        *_line,
+                        *_col,
+                        "E0105",
+                        Some("Array access '[]' can only be used on arrays, slices, strings, or objects"),
+                    );
                 }
                 Ok(TejxType::from_name("<inferred>"))
             }
@@ -2649,12 +2681,15 @@ impl TypeChecker {
                         }
                     }
 
-                    let element_type = if expected_is_any {
-                        "any".to_string()
+                    let elem_tejx_ty = if expected_is_any {
+                        TejxType::Any
+                    } else if let Some(t_str) = &first_type_opt {
+                        TejxType::from_name(t_str)
                     } else {
-                        first_type_opt.unwrap_or_else(|| "<inferred>".to_string())
+                        TejxType::from_name("<inferred>")
                     };
-                    let inferred_ty = if let Some((_, expected_len, is_fixed)) = &expected_array {
+
+                    let res_ty = if let Some((_, expected_len, is_fixed)) = &expected_array {
                         if *is_fixed {
                             if !has_spread
                                 && !elements.is_empty()
@@ -2672,38 +2707,40 @@ impl TypeChecker {
                                     Some("Match the declared fixed-array length exactly"),
                                 );
                             }
-                            format!("{}[{}]", element_type, expected_len.unwrap())
+                            TejxType::FixedArray(Box::new(elem_tejx_ty), expected_len.unwrap())
                         } else {
-                            format!("{}[]", element_type)
+                            TejxType::DynamicArray(Box::new(elem_tejx_ty))
                         }
-                    } else if has_spread {
-                        format!("{}[]", element_type)
                     } else {
-                        // Default array literals to dynamic arrays unless a fixed size is expected.
-                        format!("{}[]", element_type)
+                        TejxType::DynamicArray(Box::new(elem_tejx_ty))
                     };
-                    *ty.borrow_mut() = Some(inferred_ty.clone());
-                    Ok(TejxType::from_name(&inferred_ty))
+                    *ty.borrow_mut() = Some(res_ty.to_name());
+                    Ok(res_ty)
                 } else {
-                    let inferred_ty = if let Some((inner, expected_len, is_fixed)) = &expected_array
+                    let res_ty = if let Some((inner, expected_len, is_fixed)) = &expected_array
                     {
                         if *is_fixed {
-                            format!("{}[{}]", inner.to_name(), expected_len.unwrap())
+                            TejxType::FixedArray(Box::new(inner.clone()), expected_len.unwrap())
                         } else {
-                            format!("{}[]", inner.to_name())
+                            TejxType::DynamicArray(Box::new(inner.clone()))
                         }
                     } else {
-                        "[]".to_string()
+                        TejxType::DynamicArray(Box::new(TejxType::Class("".to_string(), vec![])))
                     };
-                    *ty.borrow_mut() = Some(inferred_ty.clone());
-                    Ok(TejxType::from_name(&inferred_ty))
+                    *ty.borrow_mut() = Some(res_ty.to_name());
+                    Ok(res_ty)
                 }
             }
             Expression::SpreadExpr { _expr, .. } => self.check_expression(_expr),
 
-            Expression::OptionalArrayAccessExpr { target, index, .. } => {
-                let target_ty = self.check_expression(target)?;
-                self.check_expression(index)?;
+            Expression::OptionalArrayAccessExpr {
+                target,
+                index,
+                _line,
+                _col,
+            } => {
+                let target_ty = self.with_expected_type(None, |s| s.check_expression(target))?;
+                let index_ty = self.with_expected_type(Some(TejxType::Int32), |s| s.check_expression(index))?;
                 let is_optional_target = matches!(target_ty, TejxType::Optional(_));
                 let mut unwrapped_type = target_ty.to_name();
                 if let Some(sym) = self.lookup(&unwrapped_type) {
@@ -2720,12 +2757,64 @@ impl TypeChecker {
                     &parsed,
                     TejxType::DynamicArray(_) | TejxType::FixedArray(_, _) | TejxType::Slice(_)
                 ) {
+                    if !index_ty.is_numeric()
+                        && index_ty != TejxType::Any
+                        && index_ty.to_name() != "<inferred>"
+                    {
+                        self.report_error_detailed(
+                            format!(
+                                "Array index must be numeric, got '{}'",
+                                index_ty.to_name()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0106",
+                            Some("Use an integer or numeric index expression (e.g. 0, 1, i)"),
+                        );
+                    }
                     let elem_ty = parsed.get_array_element_type();
                     return Ok(if is_optional_target {
                         TejxType::Optional(Box::new(elem_ty))
                     } else {
                         elem_ty
                     });
+                }
+                if parsed == TejxType::String {
+                    if !index_ty.is_numeric()
+                        && index_ty != TejxType::Any
+                        && index_ty.to_name() != "<inferred>"
+                    {
+                        self.report_error_detailed(
+                            format!(
+                                "Array index must be numeric, got '{}'",
+                                index_ty.to_name()
+                            ),
+                            *_line,
+                            *_col,
+                            "E0106",
+                            Some("Use an integer or numeric index expression (e.g. 0, 1, i)"),
+                        );
+                    }
+                    return Ok(if is_optional_target {
+                        TejxType::Optional(Box::new(TejxType::String))
+                    } else {
+                        TejxType::String
+                    });
+                }
+                if parsed == TejxType::Any {
+                    return Ok(TejxType::Any);
+                }
+                if parsed != TejxType::from_name("<inferred>") {
+                    self.report_error_detailed(
+                        format!(
+                            "Type '{}' cannot be indexed or is not an array",
+                            unwrapped_type
+                        ),
+                        *_line,
+                        *_col,
+                        "E0105",
+                        Some("Array access '?.[...]' can only be used on arrays, slices, strings, or objects"),
+                    );
                 }
                 Ok(TejxType::from_name("<inferred>"))
             }

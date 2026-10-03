@@ -1127,11 +1127,23 @@ impl Lowering {
                                     TejxType::Char => "char".to_string(),
                                     TejxType::Function(_, _) => "function".to_string(),
                                     TejxType::Void => "void".to_string(),
-                                    TejxType::FixedArray(inner, len) => {
-                                        format!("{}[{}]", type_str_precise(inner, disp_map), len)
-                                    }
-                                    TejxType::DynamicArray(inner) => {
-                                        format!("{}[]", type_str_precise(inner, disp_map))
+                                    TejxType::FixedArray(_, _) | TejxType::DynamicArray(_) => {
+                                        let mut dims = Vec::new();
+                                        let mut curr = ty;
+                                        loop {
+                                            match curr {
+                                                TejxType::FixedArray(inner, size) => {
+                                                    dims.push(format!("[{}]", size));
+                                                    curr = inner;
+                                                }
+                                                TejxType::DynamicArray(inner) => {
+                                                    dims.push("[]".to_string());
+                                                    curr = inner;
+                                                }
+                                                _ => break,
+                                            }
+                                        }
+                                        format!("{}{}", type_str_precise(curr, disp_map), dims.concat())
                                     }
                                     TejxType::Slice(inner) => {
                                         format!("{}[]", type_str_precise(inner, disp_map))
