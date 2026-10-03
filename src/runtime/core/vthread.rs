@@ -968,12 +968,20 @@ unsafe fn vthread_terminate(vt_ptr: *mut VThread) -> ! {
 extern "C" fn vthread_entry_trampoline() -> ! {
     let vt_ptr = VTHREAD_CTX.with(|c| c.get().current);
     if vt_ptr.is_null() {
+        eprintln!("💥 [TejX Runtime Error] vthread_entry_trampoline called with NULL current vt");
         std::process::abort();
     }
     let entry = unsafe { (&mut *vt_ptr).entry.take() };
 
     if let Some(f) = entry {
-        f();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        if let Err(e) = result {
+            eprintln!("💥 [TejX Runtime Error] Unhandled panic in virtual thread: {:?}", e);
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            std::process::exit(1);
+        }
     }
 
     unsafe {

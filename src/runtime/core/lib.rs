@@ -1359,15 +1359,6 @@ extern "C" {
     pub fn atof(s: *const std::ffi::c_char) -> f64;
     pub fn exit(code: i32) -> !;
     pub fn write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
-    pub fn mmap(
-        addr: *mut std::ffi::c_void,
-        len: usize,
-        prot: i32,
-        flags: i32,
-        fd: i32,
-        offset: isize,
-    ) -> *mut std::ffi::c_void;
-    pub fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     pub fn memset(ptr: *mut std::ffi::c_void, value: i32, num: usize) -> *mut std::ffi::c_void;
     pub fn fflush(stream: *mut std::ffi::c_void) -> i32;
     pub fn memmove(
@@ -1377,10 +1368,7 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
 }
 
-pub const PROT_READ: i32 = 0x1;
-pub const PROT_WRITE: i32 = 0x2;
-pub const MAP_PRIVATE: i32 = 0x02;
-pub const MAP_ANON: i32 = 0x1000;
+pub use libc::{mmap, munmap, MAP_ANON, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE};
 
 #[repr(C)]
 pub struct Slice {
@@ -3344,20 +3332,12 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
         .map(|n| n.get())
         .unwrap_or(4);
 
-    // Initialise the TejX VThread scheduler.
-    // Spawns `workers` OS threads (each ~2 MB OS stack).
-    // Every spawn() call allocates a 4 KB VThread stack from the pool —
-    // identical to Go goroutines (2–4 KB initial, grows by copy-on-overflow).
-    // No may, no generator, no SIGSEGV from semaphore-on-coroutine-stack.
-    crate::vthread::vt_init(workers);
-    crate::vthread::start_netpoller();
-
-    // may is no longer used for user threads — remove config call.
-    // The GC finalizer runs on a plain OS thread (see rt_start_finalizer_thread).
-
     let run_result = panic::catch_unwind(|| unsafe {
         rt_init_gc();
         rt_init_types();
+
+        crate::vthread::vt_init(workers);
+        crate::vthread::start_netpoller();
 
         rt_register_thread();
         
@@ -3381,6 +3361,7 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
     let _ = std::io::stderr().flush();
 
     if run_result.is_err() {
+        eprintln!("💥 [TejX Runtime Error] Unhandled panic during runtime execution.");
         std::process::exit(1);
     }
 
@@ -3997,9 +3978,12 @@ pub unsafe extern "C" fn rt_print(val: i64) {
             use std::io::Write;
             let _ = handle.write_all(&s_owned);
             let _ = handle.write_all(b"\n");
+            let _ = handle.flush();
         } else {
             let _io_guard = ThreadIoGuard::new();
             println!();
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
         }
 
         rt_pop_roots(2);
@@ -4047,6 +4031,7 @@ pub unsafe extern "C" fn rt_print_string_array(args: i64) {
         }
     }
     let _ = handle.write_all(b"\n");
+    let _ = handle.flush();
 }
 
 #[no_mangle]

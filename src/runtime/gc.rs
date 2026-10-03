@@ -650,7 +650,8 @@ pub unsafe extern "C" fn rt_arena_create(size: usize) -> *mut Arena {
     ) as *mut u8;
 
     if base as isize == -1 {
-        //printf("FATAL: Failed to mmap Arena\n\0".as_ptr() as *const _);
+        let err = std::io::Error::last_os_error();
+        eprintln!("💥 [TejX Runtime Error] Failed to mmap Arena (size={}): {}", actual_size, err);
         exit(1);
     }
 
@@ -878,21 +879,10 @@ pub(crate) unsafe fn current_thread_context() -> *mut ThreadContext {
     if !cached.is_null() {
         return cached;
     }
+    ensure_thread_registered();
     let mut ctx_ptr = std::ptr::null_mut();
     MY_CONTEXT.with(|ctx| {
         ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-        THREAD_REGISTRATION.with(|registration| {
-            let mut registration = registration.borrow_mut();
-            if registration.is_some() {
-                return;
-            }
-
-            let mut registry = lock_registry();
-            if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
-                registry.push(ThreadContextPtr(ctx_ptr));
-            }
-            *registration = Some(ThreadRegistrationGuard { ctx_ptr });
-        });
     });
     CACHED_CTX.with(|c| c.set(ctx_ptr));
     ctx_ptr
@@ -1003,11 +993,6 @@ impl Drop for ThreadIoGuard {
         }
     }
 }
-
-const PROT_READ: i32 = 0x01;
-const PROT_WRITE: i32 = 0x02;
-const MAP_PRIVATE: i32 = 0x0002;
-const MAP_ANON: i32 = 0x1000;
 
 #[no_mangle]
 pub unsafe fn rt_push_root(ptr: *mut i64) {
@@ -1221,6 +1206,8 @@ pub unsafe extern "C" fn rt_init_gc() {
         ) as *mut u8;
 
         if EDEN_START as isize == -1 {
+            let err = std::io::Error::last_os_error();
+            eprintln!("💥 [TejX Runtime Error] Failed to mmap Eden heap (size={}): {}", total_young, err);
             exit(1);
         }
 
@@ -1240,6 +1227,9 @@ pub unsafe extern "C" fn rt_init_gc() {
         ) as *mut u8;
 
         if OLD_START as isize == -1 {
+            let err = std::io::Error::last_os_error();
+            let old_size = OLD_GEN_SIZE;
+            eprintln!("💥 [TejX Runtime Error] Failed to mmap Old Gen heap (size={}): {}", old_size, err);
             exit(1);
         }
 
