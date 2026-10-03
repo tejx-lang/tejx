@@ -7,7 +7,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TEJX_HOME="$HOME/.tejx"
+TEJX_HOME="${TEJX_HOME:-$HOME/.tejx}"
 
 echo ">>> Building TejX Toolchain..."
 ./build.sh

@@ -6,7 +6,7 @@
 
 set -e
 
-TEJX_HOME="$HOME/.tejx"
+TEJX_HOME="${TEJX_HOME:-$HOME/.tejx}"
 
 echo ">>> Uninstalling TejX Toolchain from $TEJX_HOME..."
 if [ -d "$TEJX_HOME" ]; then
