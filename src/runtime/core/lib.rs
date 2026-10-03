@@ -23,8 +23,8 @@ pub mod string;
 pub use string::*;
 pub mod context;
 pub use context::*;
-pub mod vthread;
 pub mod thread;
+pub mod vthread;
 pub use thread::*;
 #[path = "../gc.rs"]
 pub mod gc;
@@ -269,8 +269,6 @@ unsafe fn runtime_exception_trace_snapshot(exception: i64) -> Option<Vec<Runtime
     traces.get(pos).map(|entry| entry.stack.clone())
 }
 
-
-
 pub(crate) unsafe fn runtime_prepare_thrown_exception_value(exception: i64) -> i64 {
     let mut exception = exception;
     if let Some((_body, tag)) = rt_value_body_and_tag(exception) {
@@ -389,7 +387,10 @@ fn runtime_read_source_file_string(file: &str) -> Option<String> {
             }
         }
         if let Ok(home) = std::env::var("HOME") {
-            let p = std::path::PathBuf::from(home).join(".tejx").join("lib").join(&rel);
+            let p = std::path::PathBuf::from(home)
+                .join(".tejx")
+                .join("lib")
+                .join(&rel);
             if let Ok(c) = std::fs::read_to_string(&p) {
                 return Some(c);
             }
@@ -966,7 +967,9 @@ unsafe fn render_runtime_exception_report_with_stack(
     report.push('\n');
 
     if !stack.is_empty() {
-        let full_trace = std::env::var("TEJX_BACKTRACE").map(|v| v == "full" || v == "1").unwrap_or(false);
+        let full_trace = std::env::var("TEJX_BACKTRACE")
+            .map(|v| v == "full" || v == "1")
+            .unwrap_or(false);
         let mut frames_printed = 0;
         let mut trace_buf = String::new();
         for frame in stack.iter().rev() {
@@ -1050,7 +1053,9 @@ unsafe fn render_runtime_exception_report_with_stack(
             });
             if let Some(caller) = caller_frame {
                 let u_file = unsafe { runtime_frame_file(caller) };
-                if let Some(caller_source_frame) = runtime_render_source_frame(&u_file, caller.line, "called from here") {
+                if let Some(caller_source_frame) =
+                    runtime_render_source_frame(&u_file, caller.line, "called from here")
+                {
                     report.push_str("\nCaused by call at:\n");
                     report.push_str(&caller_source_frame);
                 }
@@ -1332,7 +1337,9 @@ pub unsafe fn rt_resolve_array_id(mut id: i64) -> i64 {
         let word = (*header).gc_word;
         if (word & 2) != 0 {
             let fwd_header = (word & !(3 | (0xFFu64 << 56))) as *mut ObjectHeader;
-            let fwd_body = (fwd_header as u64).wrapping_add(std::mem::size_of::<ObjectHeader>() as u64) as *mut u8;
+            let fwd_body = (fwd_header as u64)
+                .wrapping_add(std::mem::size_of::<ObjectHeader>() as u64)
+                as *mut u8;
             id = (fwd_body as i64) + HEAP_OFFSET;
             hops += 1;
         } else {
@@ -1359,15 +1366,6 @@ extern "C" {
     pub fn atof(s: *const std::ffi::c_char) -> f64;
     pub fn exit(code: i32) -> !;
     pub fn write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
-    pub fn mmap(
-        addr: *mut std::ffi::c_void,
-        len: usize,
-        prot: i32,
-        flags: i32,
-        fd: i32,
-        offset: isize,
-    ) -> *mut std::ffi::c_void;
-    pub fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     pub fn memset(ptr: *mut std::ffi::c_void, value: i32, num: usize) -> *mut std::ffi::c_void;
     pub fn fflush(stream: *mut std::ffi::c_void) -> i32;
     pub fn memmove(
@@ -1377,10 +1375,7 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
 }
 
-pub const PROT_READ: i32 = 0x1;
-pub const PROT_WRITE: i32 = 0x2;
-pub const MAP_PRIVATE: i32 = 0x02;
-pub const MAP_ANON: i32 = 0x1000;
+pub use libc::{mmap, munmap, MAP_ANON, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE};
 
 #[repr(C)]
 pub struct Slice {
@@ -2595,7 +2590,6 @@ pub unsafe extern "C" fn rt_get_hostname() -> i64 {
     rt_string_from_optional_string(runtime_hostname())
 }
 
-
 #[no_mangle]
 pub unsafe extern "C" fn rt_get_cpu_count() -> i64 {
     // Use POSIX sysconf directly — avoids Rust std::thread overhead.
@@ -2622,7 +2616,8 @@ pub unsafe extern "C" fn rt_get_total_memory() -> i64 {
             &mut len,
             std::ptr::null_mut(),
             0,
-        ) == 0 {
+        ) == 0
+        {
             return mem as i64;
         }
     }
@@ -2644,14 +2639,17 @@ pub unsafe extern "C" fn rt_get_free_memory() -> i64 {
     {
         use std::mem::MaybeUninit;
         let mut vm_stat = MaybeUninit::<libc::vm_statistics64>::uninit();
-        let mut count = (std::mem::size_of::<libc::vm_statistics64>() / std::mem::size_of::<libc::integer_t>()) as libc::mach_msg_type_number_t;
+        let mut count = (std::mem::size_of::<libc::vm_statistics64>()
+            / std::mem::size_of::<libc::integer_t>())
+            as libc::mach_msg_type_number_t;
         let host_port = libc::mach_host_self();
         if libc::host_statistics64(
             host_port,
             libc::HOST_VM_INFO64,
             vm_stat.as_mut_ptr() as *mut _,
             &mut count,
-        ) == 0 {
+        ) == 0
+        {
             let stat = vm_stat.assume_init();
             let page_size = libc::sysconf(libc::_SC_PAGESIZE) as u64;
             return ((stat.free_count as u64 + stat.inactive_count as u64) * page_size) as i64;
@@ -2683,17 +2681,23 @@ pub unsafe extern "C" fn rt_get_uptime() -> f64 {
     static START_NSEC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
         START_SECS.store(ts.tv_sec as u64, std::sync::atomic::Ordering::Relaxed);
         START_NSEC.store(ts.tv_nsec as u64, std::sync::atomic::Ordering::Relaxed);
     });
-    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now);
     let s0 = START_SECS.load(std::sync::atomic::Ordering::Relaxed);
     let n0 = START_NSEC.load(std::sync::atomic::Ordering::Relaxed);
-    let elapsed_ns = (now.tv_sec as i64 - s0 as i64) * 1_000_000_000
-        + (now.tv_nsec as i64 - n0 as i64);
+    let elapsed_ns =
+        (now.tv_sec as i64 - s0 as i64) * 1_000_000_000 + (now.tv_nsec as i64 - n0 as i64);
     elapsed_ns.max(0) as f64 / 1_000_000_000.0
 }
 
@@ -2755,9 +2759,11 @@ pub unsafe extern "C" fn rt_exec_command_full(cmd_ptr: i64) -> i64 {
             let exit_code = output.status.code().unwrap_or(-1) as i64;
             let mut arr = rt_Array_new_fixed(3, 8);
             rt_push_root(&mut arr);
-            let mut stdout_str = new_string_from_bytes(output.stdout.as_ptr(), output.stdout.len() as i64);
+            let mut stdout_str =
+                new_string_from_bytes(output.stdout.as_ptr(), output.stdout.len() as i64);
             rt_push_root(&mut stdout_str);
-            let mut stderr_str = new_string_from_bytes(output.stderr.as_ptr(), output.stderr.len() as i64);
+            let mut stderr_str =
+                new_string_from_bytes(output.stderr.as_ptr(), output.stderr.len() as i64);
             rt_push_root(&mut stderr_str);
             rt_array_set_fast(arr, 0, exit_code);
             rt_array_set_fast(arr, 1, stdout_str);
@@ -2787,7 +2793,9 @@ pub unsafe extern "C" fn rt_exec_command_full(cmd_ptr: i64) -> i64 {
 /// Returns the child PID (> 0) on success, -1 on failure.
 #[no_mangle]
 pub unsafe extern "C" fn rt_spawn_process(program_ptr: i64, args_ptr: i64) -> i64 {
-    let Some(program) = i64_to_rust_str(program_ptr) else { return -1; };
+    let Some(program) = i64_to_rust_str(program_ptr) else {
+        return -1;
+    };
     let _guard = crate::ThreadIoGuard::new();
     let mut cmd = std::process::Command::new(&program);
     // Parse string array of args
@@ -2810,12 +2818,22 @@ pub unsafe extern "C" fn rt_spawn_process(program_ptr: i64, args_ptr: i64) -> i6
 /// Returns 0 on success, -1 on failure.
 #[no_mangle]
 pub unsafe extern "C" fn rt_kill_pid(pid: i64, force: i64) -> i64 {
-    if pid <= 0 { return -1; }
+    if pid <= 0 {
+        return -1;
+    }
     #[cfg(unix)]
     {
-        let sig = if force != 0 { libc::SIGKILL } else { libc::SIGTERM };
+        let sig = if force != 0 {
+            libc::SIGKILL
+        } else {
+            libc::SIGTERM
+        };
         let ret = libc::kill(pid as libc::pid_t, sig);
-        if ret == 0 { 0 } else { -1 }
+        if ret == 0 {
+            0
+        } else {
+            -1
+        }
     }
     #[cfg(not(unix))]
     {
@@ -2830,13 +2848,17 @@ pub unsafe extern "C" fn rt_kill_pid(pid: i64, force: i64) -> i64 {
 /// Returns the exit code (0–255), -1 if the wait failed, or -2 if killed by signal.
 #[no_mangle]
 pub unsafe extern "C" fn rt_wait_pid(pid: i64) -> i64 {
-    if pid <= 0 { return -1; }
+    if pid <= 0 {
+        return -1;
+    }
     let _guard = crate::ThreadIoGuard::new();
     #[cfg(unix)]
     {
         let mut status: libc::c_int = 0;
         let ret = libc::waitpid(pid as libc::pid_t, &mut status, 0);
-        if ret < 0 { return -1; }
+        if ret < 0 {
+            return -1;
+        }
         if libc::WIFEXITED(status) {
             libc::WEXITSTATUS(status) as i64
         } else if libc::WIFSIGNALED(status) {
@@ -2971,7 +2993,6 @@ use std::time::Duration;
 
 static NEXT_TIMER_ID: AtomicI64 = AtomicI64::new(1);
 
-
 // Timer event loop messages
 enum TimerMsg {
     AddTimeout {
@@ -3041,16 +3062,22 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                             if let Some(ms) = interval_ms {
                                 // Interval: execute in VThread, then reschedule
                                 let slot_live = std::sync::Arc::new(AtomicBool::new(true));
-                                crate::vthread::vt_spawn_closure(move || {
-                                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                                        let mut closure = tejx_get_global_handle(handle);
-                                        if closure > 0 {
-                                            rt_push_root(&mut closure);
-                                            rt_call_closure_no_args(closure);
-                                            rt_pop_roots(1);
-                                        }
-                                    }));
-                                }, 0, slot_live);
+                                crate::vthread::vt_spawn_closure(
+                                    move || {
+                                        let _ = std::panic::catch_unwind(
+                                            std::panic::AssertUnwindSafe(|| unsafe {
+                                                let mut closure = tejx_get_global_handle(handle);
+                                                if closure > 0 {
+                                                    rt_push_root(&mut closure);
+                                                    rt_call_closure_no_args(closure);
+                                                    rt_pop_roots(1);
+                                                }
+                                            }),
+                                        );
+                                    },
+                                    0,
+                                    slot_live,
+                                );
 
                                 heap.push(std::cmp::Reverse(TimerEntry {
                                     id: entry_id,
@@ -3060,19 +3087,25 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
                                 // Timeout: execute in VThread and cleanup
                                 active.remove(&entry_id);
                                 let slot_live2 = std::sync::Arc::new(AtomicBool::new(true));
-                                crate::vthread::vt_spawn_closure(move || {
-                                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                                        let mut closure = tejx_get_global_handle(handle);
-                                        if closure > 0 {
-                                            rt_push_root(&mut closure);
-                                            tejx_drop_global_handle(handle);
-                                            rt_call_closure_no_args(closure);
-                                            rt_pop_roots(1);
-                                        } else {
-                                            tejx_drop_global_handle(handle);
-                                        }
-                                    }));
-                                }, 0, slot_live2);
+                                crate::vthread::vt_spawn_closure(
+                                    move || {
+                                        let _ = std::panic::catch_unwind(
+                                            std::panic::AssertUnwindSafe(|| unsafe {
+                                                let mut closure = tejx_get_global_handle(handle);
+                                                if closure > 0 {
+                                                    rt_push_root(&mut closure);
+                                                    tejx_drop_global_handle(handle);
+                                                    rt_call_closure_no_args(closure);
+                                                    rt_pop_roots(1);
+                                                } else {
+                                                    tejx_drop_global_handle(handle);
+                                                }
+                                            }),
+                                        );
+                                    },
+                                    0,
+                                    slot_live2,
+                                );
                             }
                         } else {
                             break;
@@ -3169,8 +3202,6 @@ fn init_timer_thread() -> std::sync::mpsc::Sender<TimerMsg> {
 fn timeout_duration_from_ms(ms: i64) -> Duration {
     Duration::from_millis(ms.max(0) as u64)
 }
-
-
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_setTimeout(callback: i64, ms: i64) -> i64 {
@@ -3327,7 +3358,10 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
     // concurrent connections — far too low for a 10 k-user load test.
     #[cfg(unix)]
     unsafe {
-        let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let mut rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 {
             let target = rl.rlim_max.min(65535);
             if rl.rlim_cur < target {
@@ -3344,23 +3378,15 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
         .map(|n| n.get())
         .unwrap_or(4);
 
-    // Initialise the TejX VThread scheduler.
-    // Spawns `workers` OS threads (each ~2 MB OS stack).
-    // Every spawn() call allocates a 4 KB VThread stack from the pool —
-    // identical to Go goroutines (2–4 KB initial, grows by copy-on-overflow).
-    // No may, no generator, no SIGSEGV from semaphore-on-coroutine-stack.
-    crate::vthread::vt_init(workers);
-    crate::vthread::start_netpoller();
-
-    // may is no longer used for user threads — remove config call.
-    // The GC finalizer runs on a plain OS thread (see rt_start_finalizer_thread).
-
     let run_result = panic::catch_unwind(|| unsafe {
         rt_init_gc();
         rt_init_types();
 
+        crate::vthread::vt_init(workers);
+        crate::vthread::start_netpoller();
+
         rt_register_thread();
-        
+
         let slot_live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let main_stack = crate::vthread::get_main_vt_stack_size();
         crate::vthread::vt_spawn_closure_with_stack(
@@ -3372,7 +3398,7 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
             main_stack,
         );
         crate::vthread::vt_join(&slot_live);
-        
+
         rt_unregister_thread();
     });
 
@@ -3381,6 +3407,7 @@ pub unsafe extern "C" fn tejx_runtime_main(argc: i32, argv: *mut *mut u8) -> i32
     let _ = std::io::stderr().flush();
 
     if run_result.is_err() {
+        eprintln!("💥 [TejX Runtime Error] Unhandled panic during runtime execution.");
         std::process::exit(1);
     }
 
@@ -3653,17 +3680,17 @@ pub unsafe extern "C" fn rt_call_closure_no_args(closure: i64) -> i64 {
 
     let result = if is_raw_ptr {
         // Raw function pointers explicitly have NO env argument.
-        let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(i64, i64, i64, i64) -> i64,
-        >(raw_func_ptr as *const ());
+        let func: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64) -> i64>(
+                raw_func_ptr as *const (),
+            );
         func(0, 0, 0, 0)
     } else {
         // Heap closures expect env as first argument followed by 4 padded user args.
-        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 = std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64,
-        >(raw_func_ptr as *const ());
+        let func: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
+            std::mem::transmute::<*const (), unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64>(
+                raw_func_ptr as *const (),
+            );
         func(env, 0, 0, 0, 0)
     };
 
@@ -3738,7 +3765,7 @@ pub unsafe extern "C" fn f_any_unlock(m: i64) {
 
 pub(crate) struct ThreadData {
     #[allow(dead_code)]
-    pub(crate) handle: Option<()>,   // VThreads are fire-and-forget; join uses slot_live
+    pub(crate) handle: Option<()>, // VThreads are fire-and-forget; join uses slot_live
     pub(crate) started: AtomicBool,
     pub(crate) cb_slot: usize,
     pub(crate) slot_live: std::sync::Arc<AtomicBool>,
@@ -3751,7 +3778,10 @@ struct ThreadRunGuard {
 }
 
 unsafe fn rt_release_thread_cb_slot(cb_slot: usize, cb_released: &AtomicBool) {
-    if cb_released.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+    if cb_released
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
         rt_release_static_root(cb_slot);
     }
 }
@@ -3997,9 +4027,12 @@ pub unsafe extern "C" fn rt_print(val: i64) {
             use std::io::Write;
             let _ = handle.write_all(&s_owned);
             let _ = handle.write_all(b"\n");
+            let _ = handle.flush();
         } else {
             let _io_guard = ThreadIoGuard::new();
             println!();
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
         }
 
         rt_pop_roots(2);
@@ -4047,6 +4080,7 @@ pub unsafe extern "C" fn rt_print_string_array(args: i64) {
         }
     }
     let _ = handle.write_all(b"\n");
+    let _ = handle.flush();
 }
 
 #[no_mangle]
@@ -4114,7 +4148,8 @@ pub unsafe extern "C" fn rt_typeof(val: i64) -> i64 {
             return rt_string_from_c_str("char\0".as_ptr() as *const _);
         } else if tag == TAG_PROMISE {
             return rt_string_from_c_str("Promise\0".as_ptr() as *const _);
-        } else if tag >= 0 && (tag as usize) < MAX_TYPES && !TYPE_NAME_PTRS[tag as usize].is_null() {
+        } else if tag >= 0 && (tag as usize) < MAX_TYPES && !TYPE_NAME_PTRS[tag as usize].is_null()
+        {
             // Named class/struct — return registered type name (e.g. "MyClass", "Map<K,V>")
             return rt_string_from_c_str(TYPE_NAME_PTRS[tag as usize]);
         } else {
@@ -4342,7 +4377,6 @@ global_asm!(
     "stp d14, d15, [x0, #160]",
     "mov w0, #0",
     "ret",
-
     ".globl _tejx_longjmp",
     ".balign 4",
     "_tejx_longjmp:",
@@ -4383,7 +4417,6 @@ global_asm!(
     "stp d14, d15, [x0, #160]",
     "mov w0, #0",
     "ret",
-
     ".globl tejx_longjmp",
     ".type tejx_longjmp, %function",
     ".balign 4",
@@ -4420,7 +4453,6 @@ global_asm!(
     "mov [rdi + 56], rdx",
     "xor eax, eax",
     "ret",
-
     ".globl _tejx_longjmp",
     "_tejx_longjmp:",
     "mov eax, esi",
@@ -4454,7 +4486,6 @@ global_asm!(
     "mov [rdi + 56], rdx",
     "xor eax, eax",
     "ret",
-
     ".globl tejx_longjmp",
     ".type tejx_longjmp, @function",
     "tejx_longjmp:",
@@ -4522,7 +4553,6 @@ pub unsafe extern "C" fn tejx_throw(exception: i64) {
 /// 2MB gives ample room for the full handleConnection call depth plus
 /// the GC safepoint stack frames without triggering a stack overflow.
 pub const VTHREAD_STACK_SIZE: usize = 2 * 1024 * 1024;
-
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_box_boolean(b: i64) -> i64 {
@@ -5466,39 +5496,39 @@ mod tests {
             gc::minor_gc();
             gc::minor_gc();
 
-/*
-            let obj_body = (obj - HEAP_OFFSET) as *mut u8;
-            assert!(obj_body >= gc::OLD_START && obj_body < gc::OLD_TOP);
+            /*
+                        let obj_body = (obj - HEAP_OFFSET) as *mut u8;
+                        assert!(obj_body >= gc::OLD_START && obj_body < gc::OLD_TOP);
 
-            let card_idx = (obj_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+                        let card_idx = (obj_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
 
-            let key0 = rt_string_from_c_str_const(b"k0\0".as_ptr() as *const _);
-            let key1 = rt_string_from_c_str_const(b"k1\0".as_ptr() as *const _);
-            let key2 = rt_string_from_c_str_const(b"k2\0".as_ptr() as *const _);
-            let key3 = rt_string_from_c_str_const(b"k3\0".as_ptr() as *const _);
-            let key4 = rt_string_from_c_str_const(b"k4\0".as_ptr() as *const _);
+                        let key0 = rt_string_from_c_str_const(b"k0\0".as_ptr() as *const _);
+                        let key1 = rt_string_from_c_str_const(b"k1\0".as_ptr() as *const _);
+                        let key2 = rt_string_from_c_str_const(b"k2\0".as_ptr() as *const _);
+                        let key3 = rt_string_from_c_str_const(b"k3\0".as_ptr() as *const _);
+                        let key4 = rt_string_from_c_str_const(b"k4\0".as_ptr() as *const _);
 
-            rt_set_property(obj, key0, rt_box_int(0));
-            rt_set_property(obj, key1, rt_box_int(1));
-            rt_set_property(obj, key2, rt_box_int(2));
-            rt_set_property(obj, key3, rt_box_int(3));
+                        rt_set_property(obj, key0, rt_box_int(0));
+                        rt_set_property(obj, key1, rt_box_int(1));
+                        rt_set_property(obj, key2, rt_box_int(2));
+                        rt_set_property(obj, key3, rt_box_int(3));
 
-            assert_eq!(
-                *gc::CARD_TABLE.add(card_idx),
-                0,
-                "filling old key/value arrays in place should not dirty the owning object card"
-            );
+                        assert_eq!(
+                            *gc::CARD_TABLE.add(card_idx),
+                            0,
+                            "filling old key/value arrays in place should not dirty the owning object card"
+                        );
 
-            rt_set_property(obj, key4, rt_box_int(4));
+                        rt_set_property(obj, key4, rt_box_int(4));
 
-            assert_eq!(
-                *gc::CARD_TABLE.add(card_idx),
-                1,
-                "old objects must dirty their card when property growth swaps in young arrays"
-            );
+                        assert_eq!(
+                            *gc::CARD_TABLE.add(card_idx),
+                            1,
+                            "old objects must dirty their card when property growth swaps in young arrays"
+                        );
 
-            rt_pop_roots(2);
-*/
+                        rt_pop_roots(2);
+            */
             rt_pop_roots(2);
         }
     }
@@ -5739,37 +5769,37 @@ mod tests {
             gc::minor_gc();
             gc::minor_gc();
 
-/*
-            let arr_body = (arr - HEAP_OFFSET) as *mut u8;
-            assert!(arr_body >= gc::OLD_START && arr_body < gc::OLD_TOP);
+            /*
+                        let arr_body = (arr - HEAP_OFFSET) as *mut u8;
+                        assert!(arr_body >= gc::OLD_START && arr_body < gc::OLD_TOP);
 
-            let card_idx = (arr_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
-            *gc::CARD_TABLE.add(card_idx) = 0;
+                        let card_idx = (arr_body as usize - gc::OLD_START as usize) >> gc::CARD_SHIFT;
+                        *gc::CARD_TABLE.add(card_idx) = 0;
 
-            let mut child = rt_box_int(7);
-            rt_push_root(&mut child);
-            assert!(gc::in_young_gen((child - HEAP_OFFSET) as *mut u8));
-            rt_array_set_fast(arr, 0, child);
-            assert_eq!(*gc::CARD_TABLE.add(card_idx), 1);
+                        let mut child = rt_box_int(7);
+                        rt_push_root(&mut child);
+                        assert!(gc::in_young_gen((child - HEAP_OFFSET) as *mut u8));
+                        rt_array_set_fast(arr, 0, child);
+                        assert_eq!(*gc::CARD_TABLE.add(card_idx), 1);
 
-            rt_pop_roots(1);
+                        rt_pop_roots(1);
 
-            gc::minor_gc();
-            let moved_child = rt_array_get_fast(arr, 0);
-            assert!(gc::in_young_gen((moved_child - HEAP_OFFSET) as *mut u8));
-            assert_eq!(
-                *gc::CARD_TABLE.add(card_idx),
-                1,
-                "old arrays must stay dirty across minor GC while they still reference a young survivor"
-            );
+                        gc::minor_gc();
+                        let moved_child = rt_array_get_fast(arr, 0);
+                        assert!(gc::in_young_gen((moved_child - HEAP_OFFSET) as *mut u8));
+                        assert_eq!(
+                            *gc::CARD_TABLE.add(card_idx),
+                            1,
+                            "old arrays must stay dirty across minor GC while they still reference a young survivor"
+                        );
 
-            gc::minor_gc();
-            assert_eq!(
-                *gc::CARD_TABLE.add(card_idx),
-                0,
-                "card should clear once the survivor ages out of young generation"
-            );
-*/
+                        gc::minor_gc();
+                        assert_eq!(
+                            *gc::CARD_TABLE.add(card_idx),
+                            0,
+                            "card should clear once the survivor ages out of young generation"
+                        );
+            */
             rt_pop_roots(1);
         }
     }
@@ -5888,8 +5918,9 @@ mod tests {
 
             let handle = std::thread::spawn(move || {
                 let _boxed = rt_box_int(123);
-                let ctx_ptr =
-                    crate::gc::with_my_context(|ctx| (*ctx.get()).as_mut() as *mut gc::ThreadContext);
+                let ctx_ptr = crate::gc::with_my_context(|ctx| {
+                    (*ctx.get()).as_mut() as *mut gc::ThreadContext
+                });
                 ready_tx.send(ctx_ptr as usize).unwrap();
                 release_rx.recv().unwrap();
             });

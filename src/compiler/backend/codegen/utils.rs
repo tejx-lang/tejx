@@ -91,7 +91,6 @@ impl CodeGen {
         casted
     }
 
-
     pub(crate) fn emit_strip_heap_offset(&mut self, val: &str) -> String {
         // Handle management offsets (HEAP_OFFSET or STACK_OFFSET)
         self.temp_counter += 1;
@@ -102,7 +101,10 @@ impl CodeGen {
         const HEAP_OFFSET_CONST: i64 = 1i64 << 50;
         const STACK_OFFSET_CONST: i64 = 1i64 << 48;
 
-        self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, val, HEAP_OFFSET_CONST));
+        self.emit_line(&format!(
+            "{} = icmp uge i64 {}, {}",
+            is_heap, val, HEAP_OFFSET_CONST
+        ));
         self.emit_line(&format!(
             "{} = icmp uge i64 {}, {}",
             is_stack, val, STACK_OFFSET_CONST
@@ -750,7 +752,10 @@ impl CodeGen {
                     // the parent's environment makes concurrently-running closures overwrite
                     // each other's captured values.
                     self.declare_runtime_fn("rt_array_new", "i64 @rt_array_new(i64, i64) nounwind");
-                    self.declare_runtime_fn("rt_array_get_fast", "i64 @rt_array_get_fast(i64, i64)");
+                    self.declare_runtime_fn(
+                        "rt_array_get_fast",
+                        "i64 @rt_array_get_fast(i64, i64)",
+                    );
                     self.declare_runtime_fn("rt_push_root", "void @rt_push_root(i64*) nounwind");
                     self.declare_runtime_fn("rt_pop_roots", "void @rt_pop_roots(i64) nounwind");
 
@@ -796,10 +801,7 @@ impl CodeGen {
                     // Reload fresh_env from env_root in case rt_closure_from_ptr triggered GC!
                     self.temp_counter += 1;
                     let env_to_pass = format!("%closure_env_reloaded{}", self.temp_counter);
-                    self.emit_line(&format!(
-                        "{} = load i64, i64* {}",
-                        env_to_pass, env_root
-                    ));
+                    self.emit_line(&format!("{} = load i64, i64* {}", env_to_pass, env_root));
 
                     self.emit_line(&format!(
                         "call i64 @rt_array_set_fast(i64 {}, i64 1, i64 {})",

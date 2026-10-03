@@ -411,9 +411,9 @@ impl TypeChecker {
 
         // 2. Global language builtins & keywords
         let builtins = [
-            "print", "println", "panic", "sizeof", "String", "Number", "Boolean",
-            "Array", "Map", "Set", "None", "true", "false", "Math", "spawn",
-            "Thread", "Object", "Promise", "Error",
+            "print", "println", "panic", "sizeof", "String", "Number", "Boolean", "Array", "Map",
+            "Set", "None", "true", "false", "Math", "spawn", "Thread", "Object", "Promise",
+            "Error",
         ];
         for b in builtins {
             candidates.insert(b.to_string());
@@ -442,11 +442,10 @@ impl TypeChecker {
 
         // Standard primitive types
         let primitives = [
-            "int", "int8", "int16", "int32", "int64", "int128",
-            "uint", "uint8", "uint16", "uint32", "uint64", "uint128",
-            "float", "float16", "float32", "float64",
-            "bool", "string", "char", "void", "any", "None",
-            "Map", "Set", "Array", "Optional", "Promise", "Error",
+            "int", "int8", "int16", "int32", "int64", "int128", "uint", "uint8", "uint16",
+            "uint32", "uint64", "uint128", "float", "float16", "float32", "float64", "bool",
+            "string", "char", "void", "any", "None", "Map", "Set", "Array", "Optional", "Promise",
+            "Error",
         ];
         for p in primitives {
             candidates.insert(p.to_string());
@@ -471,10 +470,10 @@ impl TypeChecker {
         if let Some(sugg) = self.suggest_similar_type(ty_str) {
             format!("Did you mean '{}'?", sugg)
         } else {
-            "Valid types include: int, int32, float, float64, string, bool, or user-defined classes".to_string()
+            "Valid types include: int, int32, float, float64, string, bool, or user-defined classes"
+                .to_string()
         }
     }
-
 
     pub(crate) fn report_error_detailed(
         &mut self,

@@ -36,7 +36,9 @@ impl CodeGen {
     }
 
     fn function_needs_loop_safepoints(func: &MIRFunction) -> bool {
-        func.variables.values().any(Self::type_needs_loop_safepoints)
+        func.variables
+            .values()
+            .any(Self::type_needs_loop_safepoints)
     }
 
     fn function_tracks_runtime_location(function_name: &str) -> bool {
@@ -291,7 +293,7 @@ impl CodeGen {
             if func.params.contains(&current_var) {
                 return true;
             }
-            
+
             for block in &func.blocks {
                 for instr in &block.instructions {
                     match instr {
@@ -1277,7 +1279,8 @@ update:\n\
             self.buffer.push('\n');
             self.buffer
                 .push_str(&format!("declare i32 @{}(i32, i8**)\n", TEJX_RUNTIME_MAIN));
-            self.buffer.push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
+            self.buffer
+                .push_str("define i32 @main(i32 %argc, i8** %argv) {\n");
             self.buffer.push_str("entry:\n");
             self.buffer.push_str(&format!(
                 "  %call = call i32 @{}(i32 %argc, i8** %argv)\n",
@@ -1315,8 +1318,8 @@ update:\n\
             .get(&func.name)
             .cloned()
             .unwrap_or_else(|| self.source_file.clone());
-        self.current_function_has_runtime_frame =
-            !self.current_function_source_file.is_empty() && self.tracked_runtime_functions.contains(&func.name);
+        self.current_function_has_runtime_frame = !self.current_function_source_file.is_empty()
+            && self.tracked_runtime_functions.contains(&func.name);
         self.current_function_tracks_location = self.current_function_has_runtime_frame
             && Self::function_tracks_runtime_location(&func.name);
 
@@ -1602,7 +1605,10 @@ update:\n\
 
         // Branch to first block
         if !func.blocks.is_empty() {
-            if self.num_roots > 0 || self.current_function_needs_loop_safepoints || self.current_function_has_runtime_frame {
+            if self.num_roots > 0
+                || self.current_function_needs_loop_safepoints
+                || self.current_function_has_runtime_frame
+            {
                 self.emit_line("call void @rt_safepoint_poll()");
             }
             self.emit_line(&format!("br label %{}", func.blocks[0].name));

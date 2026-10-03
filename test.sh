@@ -5,13 +5,20 @@
 # ============================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TEJXC_BIN="$SCRIPT_DIR/target/release/tejxc"
 BUILD_DIR="$SCRIPT_DIR/build/tests"
 
-# Common paths (resolved locally, but passed to compiler for clarity)
-STDLIB_PATH="$SCRIPT_DIR/src/library"
-RUNTIME_PATH="$SCRIPT_DIR/target/release/tejx_rt.a"
-[ ! -f "$RUNTIME_PATH" ] && RUNTIME_PATH="$SCRIPT_DIR/target/debug/tejx_rt.a"
+# Compiler mode configuration:
+# - "build" (default): runs ./build.sh and uses local target/release/tejxc
+# - "installed": uses installed tejxc from PATH or ~/.tejx/bin/tejxc
+# - "custom": uses path supplied via --compiler <path> or TEJXC env var
+COMPILER_MODE="build"
+TEJXC_BIN="${TEJXC:-}"
+DO_BUILD=true
+CUSTOM_STDLIB=""
+CUSTOM_RUNTIME=""
+STDLIB_PATH=""
+RUNTIME_PATH=""
+COMPILER_ARGS=()
 
 # Colors
 GREEN='\033[0;32m'
@@ -73,6 +80,7 @@ runtime_timeout_for() {
 print_header() {
     echo -e "${CYAN}============================================${NC}"
     echo -e "${CYAN}   TejX Test Runner: $1 (${MAX_JOBS} parallel workers)${NC}"
+    echo -e "${CYAN}   Compiler: ${TEJXC_BIN} (${COMPILER_MODE})${NC}"
     echo -e "${CYAN}============================================${NC}"
 }
 
@@ -113,7 +121,7 @@ run_test_file() {
             echo -e "  Description: $description"
             echo -e "  Expected:    ${CYAN}$expected_type${NC}"
             
-            run_with_timeout 20 "$TEJXC_BIN" --stdlib-path "$STDLIB_PATH" --runtime-path "$RUNTIME_PATH" "$file" > "$compile_out" 2>&1
+            run_with_timeout 20 "$TEJXC_BIN" "${COMPILER_ARGS[@]}" "$file" > "$compile_out" 2>&1
             local compile_exit=$?
             
             local actual=""
@@ -183,7 +191,7 @@ run_test_file() {
             # Positive / Problem test logic
             echo -e "${CYAN}Processing: $rel_path${NC}"
             
-            run_with_timeout "$compile_timeout" "$TEJXC_BIN" --stdlib-path "$STDLIB_PATH" --runtime-path "$RUNTIME_PATH" "$file" > "$compile_out" 2>&1
+            run_with_timeout "$compile_timeout" "$TEJXC_BIN" "${COMPILER_ARGS[@]}" "$file" > "$compile_out" 2>&1
             local compile_exit=$?
             
             if [ $compile_exit -eq 0 ]; then
@@ -270,6 +278,56 @@ while [[ "$#" -gt 0 ]]; do
         -j*) MAX_JOBS="${1#-j}" ;;
         --jobs=*) MAX_JOBS="${1#*=}" ;;
         -s|--serial) MAX_JOBS=1 ;;
+        --installed|--use-installed|-i)
+            COMPILER_MODE="installed"
+            DO_BUILD=false
+            ;;
+        --compiler)
+            shift
+            COMPILER_MODE="custom"
+            TEJXC_BIN="$1"
+            DO_BUILD=false
+            ;;
+        --compiler=*)
+            COMPILER_MODE="custom"
+            TEJXC_BIN="${1#*=}"
+            DO_BUILD=false
+            ;;
+        --build)
+            COMPILER_MODE="build"
+            DO_BUILD=true
+            ;;
+        --no-build|--skip-build)
+            DO_BUILD=false
+            ;;
+        --stdlib-path)
+            shift
+            CUSTOM_STDLIB="$1"
+            ;;
+        --runtime-path)
+            shift
+            CUSTOM_RUNTIME="$1"
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS] [TEST_PATHS...]"
+            echo ""
+            echo "Options:"
+            echo "  --positive             Run positive tests"
+            echo "  --negative             Run negative tests"
+            echo "  --problems             Run problem tests"
+            echo "  --all                  Run all tests (positive, negative, problems)"
+            echo "  --filter <regex>       Filter test files by regex pattern"
+            echo "  -j, --jobs <N>         Number of parallel test jobs (default: auto)"
+            echo "  -s, --serial           Run tests serially (-j 1)"
+            echo "  --build                Build compiler and runtime before testing (default)"
+            echo "  --no-build             Skip building before testing"
+            echo "  --installed, -i        Use installed tejxc compiler (~/.tejx/bin/tejxc or PATH)"
+            echo "  --compiler <path>      Use custom tejxc binary path"
+            echo "  --stdlib-path <path>   Override stdlib path"
+            echo "  --runtime-path <path>  Override runtime library path"
+            echo "  -h, --help             Show this help message"
+            exit 0
+            ;;
         *) SPECIFIC_PATHS+=("$1") ;;
     esac
     shift
@@ -281,8 +339,79 @@ if [ ${#SPECIFIC_PATHS[@]} -eq 0 ] && ! $RUN_POSITIVE && ! $RUN_NEGATIVE && ! $R
     RUN_PROBLEMS=true
 fi
 
-# --- Execution ---
-./build.sh || exit 1
+# If TEJXC environment variable was provided and no explicit mode flag was given
+if [ -n "$TEJXC_BIN" ] && [ "$COMPILER_MODE" = "build" ]; then
+    COMPILER_MODE="custom"
+    DO_BUILD=false
+fi
+
+# --- Compiler & Dependency Resolution ---
+if [ "$COMPILER_MODE" = "installed" ]; then
+    if command -v tejxc >/dev/null 2>&1; then
+        TEJXC_BIN="$(command -v tejxc)"
+    elif [ -x "$HOME/.tejx/bin/tejxc" ]; then
+        TEJXC_BIN="$HOME/.tejx/bin/tejxc"
+    elif [ -x "/usr/local/bin/tejxc" ]; then
+        TEJXC_BIN="/usr/local/bin/tejxc"
+    else
+        echo -e "${RED}Error: Installed tejxc not found in PATH or \$HOME/.tejx/bin/tejxc${NC}" >&2
+        exit 1
+    fi
+elif [ "$COMPILER_MODE" = "custom" ]; then
+    if command -v "$TEJXC_BIN" >/dev/null 2>&1; then
+        TEJXC_BIN="$(command -v "$TEJXC_BIN")"
+    elif [ ! -x "$TEJXC_BIN" ]; then
+        echo -e "${RED}Error: Specified compiler '$TEJXC_BIN' not found or not executable${NC}" >&2
+        exit 1
+    fi
+else
+    # Default: local build file
+    TEJXC_BIN="$SCRIPT_DIR/target/release/tejxc"
+fi
+
+# Run build if requested (default is true)
+if $DO_BUILD; then
+    (cd "$SCRIPT_DIR" && ./build.sh) || exit 1
+elif [ ! -x "$TEJXC_BIN" ]; then
+    echo -e "${RED}Error: Compiler binary not found at $TEJXC_BIN${NC}" >&2
+    echo -e "${YELLOW}Tip: Run without --no-build to compile it, or use --installed to test the installed compiler.${NC}" >&2
+    exit 1
+fi
+
+# Resolve stdlib and runtime paths
+if [ -n "$CUSTOM_STDLIB" ]; then
+    STDLIB_PATH="$CUSTOM_STDLIB"
+elif [ -d "$SCRIPT_DIR/src/library" ]; then
+    STDLIB_PATH="$SCRIPT_DIR/src/library"
+elif [ -d "$(dirname "$TEJXC_BIN")/../lib" ]; then
+    STDLIB_PATH="$(dirname "$TEJXC_BIN")/../lib"
+elif [ -d "$HOME/.tejx/lib" ]; then
+    STDLIB_PATH="$HOME/.tejx/lib"
+else
+    STDLIB_PATH=""
+fi
+
+if [ -n "$CUSTOM_RUNTIME" ]; then
+    RUNTIME_PATH="$CUSTOM_RUNTIME"
+elif [ -f "$SCRIPT_DIR/target/release/tejx_rt.a" ]; then
+    RUNTIME_PATH="$SCRIPT_DIR/target/release/tejx_rt.a"
+elif [ -f "$SCRIPT_DIR/target/release/libtejx_rt.a" ]; then
+    RUNTIME_PATH="$SCRIPT_DIR/target/release/libtejx_rt.a"
+elif [ -f "$SCRIPT_DIR/target/debug/tejx_rt.a" ]; then
+    RUNTIME_PATH="$SCRIPT_DIR/target/debug/tejx_rt.a"
+elif [ -f "$(dirname "$TEJXC_BIN")/../runtime/tejx_rt.a" ]; then
+    RUNTIME_PATH="$(dirname "$TEJXC_BIN")/../runtime/tejx_rt.a"
+elif [ -f "$(dirname "$TEJXC_BIN")/runtime/tejx_rt.a" ]; then
+    RUNTIME_PATH="$(dirname "$TEJXC_BIN")/runtime/tejx_rt.a"
+elif [ -f "$HOME/.tejx/runtime/tejx_rt.a" ]; then
+    RUNTIME_PATH="$HOME/.tejx/runtime/tejx_rt.a"
+else
+    RUNTIME_PATH=""
+fi
+
+COMPILER_ARGS=()
+[ -n "$STDLIB_PATH" ] && [ -d "$STDLIB_PATH" ] && COMPILER_ARGS+=(--stdlib-path "$STDLIB_PATH")
+[ -n "$RUNTIME_PATH" ] && [ -f "$RUNTIME_PATH" ] && COMPILER_ARGS+=(--runtime-path "$RUNTIME_PATH")
 
 mkdir -p "$BUILD_DIR"
 RESULTS_DIR=$(mktemp -d "$BUILD_DIR/results_XXXXXX" 2>/dev/null || mktemp -d)

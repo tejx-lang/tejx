@@ -198,7 +198,13 @@ impl TypeChecker {
                     && has_explicit_type
                     && !self.is_valid_type(declared_ty.as_ref().unwrap())
                 {
-                    self.report_error_detailed(format!("Unknown data type: '{}'", ty_str), *line, *_col, "E0101", Some(&self.type_suggestion_or_default_hint(&ty_str)));
+                    self.report_error_detailed(
+                        format!("Unknown data type: '{}'", ty_str),
+                        *line,
+                        *_col,
+                        "E0101",
+                        Some(&self.type_suggestion_or_default_hint(&ty_str)),
+                    );
                 }
                 if let Some(expr) = initializer {
                     let prev_expected = self.current_expected_type.take();
@@ -594,14 +600,8 @@ impl TypeChecker {
                 self.enter_scope();
                 self.loop_depth += 1;
 
-                let _ = self.define_pattern(
-                    variable,
-                    element_ty.to_name(),
-                    false,
-                    *_line,
-                    *_col,
-                    None,
-                );
+                let _ =
+                    self.define_pattern(variable, element_ty.to_name(), false, *_line, *_col, None);
 
                 let res = self.check_statement(body);
                 self.loop_depth -= 1;
@@ -847,7 +847,10 @@ impl TypeChecker {
                         && !self.is_valid_type(&TejxType::from_name(&param_ty))
                     {
                         self.report_error_detailed(
-                            format!("Unknown data type: '{}' for parameter '{}'", param_ty, param.name),
+                            format!(
+                                "Unknown data type: '{}' for parameter '{}'",
+                                param_ty, param.name
+                            ),
                             func._line,
                             func._col,
                             "E0101",
@@ -1336,7 +1339,13 @@ impl TypeChecker {
                             && !param_ty.is_empty()
                             && !self.is_valid_type(&TejxType::from_name(&param_ty))
                         {
-                            self.report_error_detailed(format!("Unknown data type: '{}'", param_ty), class_decl._line, class_decl._col, "E0101", Some(&self.type_suggestion_or_default_hint(&param_ty)));
+                            self.report_error_detailed(
+                                format!("Unknown data type: '{}'", param_ty),
+                                class_decl._line,
+                                class_decl._col,
+                                "E0101",
+                                Some(&self.type_suggestion_or_default_hint(&param_ty)),
+                            );
                         }
                         self.define(param.name.clone(), param_ty);
                     }
@@ -1359,7 +1368,17 @@ impl TypeChecker {
                         && declared_ret_ty != TejxType::Void
                         && !self.is_valid_type(&declared_ret_ty)
                     {
-                        self.report_error_detailed(format!("Unknown data type: '{}' for return type of method '{}'", declared_ret_ty.to_name(), method.func.name), class_decl._line, class_decl._col, "E0101", Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())));
+                        self.report_error_detailed(
+                            format!(
+                                "Unknown data type: '{}' for return type of method '{}'",
+                                declared_ret_ty.to_name(),
+                                method.func.name
+                            ),
+                            class_decl._line,
+                            class_decl._col,
+                            "E0101",
+                            Some(&self.type_suggestion_or_default_hint(&declared_ret_ty.to_name())),
+                        );
                     }
                     let effective_ret_ty = if has_explicit_return {
                         self.effective_async_return_type(declared_ret_ty.clone(), false)

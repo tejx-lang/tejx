@@ -163,7 +163,9 @@ pub unsafe fn parse_gc_argv(argc: i32, argv: *mut *mut u8) {
             if let Some(bytes) = parse_size_str(val) {
                 crate::vthread::ARGV_VT_STACK_SIZE = bytes;
             }
-        } else if (arg == "--vthread-stack" || arg == "--vt-stack" || arg == "-Xss") && i + 1 < args.len() {
+        } else if (arg == "--vthread-stack" || arg == "--vt-stack" || arg == "-Xss")
+            && i + 1 < args.len()
+        {
             if let Some(bytes) = parse_size_str(&args[i + 1]) {
                 crate::vthread::ARGV_VT_STACK_SIZE = bytes;
                 i += 1;
@@ -650,7 +652,11 @@ pub unsafe extern "C" fn rt_arena_create(size: usize) -> *mut Arena {
     ) as *mut u8;
 
     if base as isize == -1 {
-        //printf("FATAL: Failed to mmap Arena\n\0".as_ptr() as *const _);
+        let err = std::io::Error::last_os_error();
+        eprintln!(
+            "💥 [TejX Runtime Error] Failed to mmap Arena (size={}): {}",
+            actual_size, err
+        );
         exit(1);
     }
 
@@ -878,21 +884,10 @@ pub(crate) unsafe fn current_thread_context() -> *mut ThreadContext {
     if !cached.is_null() {
         return cached;
     }
+    ensure_thread_registered();
     let mut ctx_ptr = std::ptr::null_mut();
     MY_CONTEXT.with(|ctx| {
         ctx_ptr = (*ctx.get()).as_mut() as *mut ThreadContext;
-        THREAD_REGISTRATION.with(|registration| {
-            let mut registration = registration.borrow_mut();
-            if registration.is_some() {
-                return;
-            }
-
-            let mut registry = lock_registry();
-            if !registry.contains(&ThreadContextPtr(ctx_ptr)) {
-                registry.push(ThreadContextPtr(ctx_ptr));
-            }
-            *registration = Some(ThreadRegistrationGuard { ctx_ptr });
-        });
     });
     CACHED_CTX.with(|c| c.set(ctx_ptr));
     ctx_ptr
@@ -1004,11 +999,6 @@ impl Drop for ThreadIoGuard {
     }
 }
 
-const PROT_READ: i32 = 0x01;
-const PROT_WRITE: i32 = 0x02;
-const MAP_PRIVATE: i32 = 0x0002;
-const MAP_ANON: i32 = 0x1000;
-
 #[no_mangle]
 pub unsafe fn rt_push_root(ptr: *mut i64) {
     if ptr.is_null() {
@@ -1085,7 +1075,9 @@ extern "C" fn tejx_crash_handler(
 
     eprintln!(
         "\n💥 CRASH CAUGHT: signal {} on thread {:?} at fault_addr={:p}",
-        sig, std::thread::current().name().unwrap_or("unnamed"), fault_addr
+        sig,
+        std::thread::current().name().unwrap_or("unnamed"),
+        fault_addr
     );
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     unsafe {
@@ -1101,7 +1093,9 @@ extern "C" fn tejx_crash_handler(
                 let mut dlinfo: libc::Dl_info = std::mem::zeroed();
                 if libc::dladdr(regs.__pc as *const libc::c_void, &mut dlinfo) != 0 {
                     let sym = if !dlinfo.dli_sname.is_null() {
-                        std::ffi::CStr::from_ptr(dlinfo.dli_sname).to_string_lossy().into_owned()
+                        std::ffi::CStr::from_ptr(dlinfo.dli_sname)
+                            .to_string_lossy()
+                            .into_owned()
                     } else {
                         "<unknown>".to_string()
                     };
@@ -1111,11 +1105,14 @@ extern "C" fn tejx_crash_handler(
                 let mut dlinfo_lr: libc::Dl_info = std::mem::zeroed();
                 if libc::dladdr(regs.__lr as *const libc::c_void, &mut dlinfo_lr) != 0 {
                     let sym = if !dlinfo_lr.dli_sname.is_null() {
-                        std::ffi::CStr::from_ptr(dlinfo_lr.dli_sname).to_string_lossy().into_owned()
+                        std::ffi::CStr::from_ptr(dlinfo_lr.dli_sname)
+                            .to_string_lossy()
+                            .into_owned()
                     } else {
                         "<unknown>".to_string()
                     };
-                    let unslid = 0x100000000 + (regs.__lr.saturating_sub(dlinfo_lr.dli_fbase as u64));
+                    let unslid =
+                        0x100000000 + (regs.__lr.saturating_sub(dlinfo_lr.dli_fbase as u64));
                     eprintln!("  LR symbol: {} (unslid {:#x})", sym, unslid);
                 }
                 eprintln!(
@@ -1156,14 +1153,24 @@ extern "C" fn tejx_crash_handler(
                     for i in 0..32 {
                         let word = *sp_ptr.add(i);
                         let mut dl: libc::Dl_info = std::mem::zeroed();
-                        if libc::dladdr(word as *const libc::c_void, &mut dl) != 0 && !dl.dli_fbase.is_null() {
+                        if libc::dladdr(word as *const libc::c_void, &mut dl) != 0
+                            && !dl.dli_fbase.is_null()
+                        {
                             let sym = if !dl.dli_sname.is_null() {
-                                std::ffi::CStr::from_ptr(dl.dli_sname).to_string_lossy().into_owned()
+                                std::ffi::CStr::from_ptr(dl.dli_sname)
+                                    .to_string_lossy()
+                                    .into_owned()
                             } else {
                                 "<unknown>".to_string()
                             };
                             let unslid = 0x100000000 + (word.saturating_sub(dl.dli_fbase as u64));
-                            eprintln!("    [SP + {:3}] = {:#018x} -> {} (unslid {:#x})", i * 8, word, sym, unslid);
+                            eprintln!(
+                                "    [SP + {:3}] = {:#018x} -> {} (unslid {:#x})",
+                                i * 8,
+                                word,
+                                sym,
+                                unslid
+                            );
                         } else {
                             eprintln!("    [SP + {:3}] = {:#018x}", i * 8, word);
                         }
@@ -1221,6 +1228,11 @@ pub unsafe extern "C" fn rt_init_gc() {
         ) as *mut u8;
 
         if EDEN_START as isize == -1 {
+            let err = std::io::Error::last_os_error();
+            eprintln!(
+                "💥 [TejX Runtime Error] Failed to mmap Eden heap (size={}): {}",
+                total_young, err
+            );
             exit(1);
         }
 
@@ -1240,6 +1252,12 @@ pub unsafe extern "C" fn rt_init_gc() {
         ) as *mut u8;
 
         if OLD_START as isize == -1 {
+            let err = std::io::Error::last_os_error();
+            let old_size = OLD_GEN_SIZE;
+            eprintln!(
+                "💥 [TejX Runtime Error] Failed to mmap Old Gen heap (size={}): {}",
+                old_size, err
+            );
             exit(1);
         }
 
@@ -1250,7 +1268,10 @@ pub unsafe extern "C" fn rt_init_gc() {
         // It acts as the absolute floor so we never GC before the heap reaches that capacity.
         OLD_GEN_GC_THRESHOLD = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_FLOOR_PCT / 100;
 
-        if let Some(val) = std::env::var("TEJXGC").ok().and_then(|v| v.parse::<usize>().ok()) {
+        if let Some(val) = std::env::var("TEJXGC")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
             GC_PERCENTAGE.store(val, std::sync::atomic::Ordering::SeqCst);
         }
 
@@ -1270,36 +1291,34 @@ pub unsafe extern "C" fn rt_start_finalizer_thread() {
             unsafe {
                 rt_register_thread();
             }
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                loop {
-                    let task = {
-                        let mut queue = FINALIZER_QUEUE.lock().unwrap();
-                        while queue.is_empty() {
-                            unsafe {
-                                let ctx_ptr = current_thread_context();
-                                (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
-                            }
-                            queue = FINALIZER_CONDVAR.wait(queue).unwrap();
-                            unsafe {
-                                let ctx_ptr = current_thread_context();
-                                (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
-                            }
-                        }
-                        if queue.is_empty() {
-                            None
-                        } else {
-                            Some(queue.remove(0))
-                        }
-                    };
-                    if let Some((f, mut obj_val)) = task {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
+                let task = {
+                    let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                    while queue.is_empty() {
                         unsafe {
-                            if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
-                                crate::gc::rt_safepoint_poll_slow();
-                            }
-                            rt_push_root(&mut obj_val);
-                            f(obj_val);
-                            rt_pop_roots(1);
+                            let ctx_ptr = current_thread_context();
+                            (*ctx_ptr).in_blocking_io.store(true, Ordering::SeqCst);
                         }
+                        queue = FINALIZER_CONDVAR.wait(queue).unwrap();
+                        unsafe {
+                            let ctx_ptr = current_thread_context();
+                            (*ctx_ptr).in_blocking_io.store(false, Ordering::SeqCst);
+                        }
+                    }
+                    if queue.is_empty() {
+                        None
+                    } else {
+                        Some(queue.remove(0))
+                    }
+                };
+                if let Some((f, mut obj_val)) = task {
+                    unsafe {
+                        if SAFEPOINT_REQUEST.load(Ordering::SeqCst) {
+                            crate::gc::rt_safepoint_poll_slow();
+                        }
+                        rt_push_root(&mut obj_val);
+                        f(obj_val);
+                        rt_pop_roots(1);
                     }
                 }
             }));
@@ -1744,245 +1763,243 @@ unsafe fn major_gc_locked_internal(run_minor_first: bool, safepoint_already: boo
     LARGE_FREE_LIST.lock().unwrap().clear();
 
     // --- PHASE 1: Finalizer Resurrect ---
-        let mut resurrected = false;
-        let mut curr = OLD_START;
-        let limit_ptr = sweep_limit as *mut u8;
+    let mut resurrected = false;
+    let mut curr = OLD_START;
+    let limit_ptr = sweep_limit as *mut u8;
 
-        while curr < limit_ptr {
-            let header = curr as *mut ObjectHeader;
-            let type_id = (*header).type_id;
-            if !gc_is_marked((*header).gc_word) {
-                if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
-                    if (type_id as usize) < MAX_TYPES {
-                        if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                            let mut obj_val = (curr.add(std::mem::size_of::<ObjectHeader>())
-                                as i64)
-                                + HEAP_OFFSET;
-                            {
-                                let mut queue = FINALIZER_QUEUE.lock().unwrap();
-                                queue.push((f, obj_val));
-                            }
-                            (*header).gc_flags |= FLAG_FINALIZED;
-                            mark_object(&mut obj_val as *mut i64);
-                            resurrected = true;
+    while curr < limit_ptr {
+        let header = curr as *mut ObjectHeader;
+        let type_id = (*header).type_id;
+        if !gc_is_marked((*header).gc_word) {
+            if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
+                if (type_id as usize) < MAX_TYPES {
+                    if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                        let mut obj_val =
+                            (curr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                        {
+                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                            queue.push((f, obj_val));
                         }
-                    }
-                }
-            }
-            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-            curr = curr.add(size);
-        }
-
-        // Also LOS finalizers
-        for &(obj_usize, _) in &los_snapshot_for_finalizers {
-            let obj_ptr = obj_usize as *mut u8;
-            let header = obj_ptr as *mut ObjectHeader;
-            let type_id = (*header).type_id;
-            if !gc_is_marked((*header).gc_word) {
-                if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
-                    if (type_id as usize) < MAX_TYPES {
-                        if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
-                            let mut obj_val = (obj_ptr.add(std::mem::size_of::<ObjectHeader>())
-                                as i64)
-                                + HEAP_OFFSET;
-                            {
-                                let mut queue = FINALIZER_QUEUE.lock().unwrap();
-                                queue.push((f, obj_val));
-                            }
-                            (*header).gc_flags |= FLAG_FINALIZED;
-                            mark_object(&mut obj_val as *mut i64);
-                            resurrected = true;
-                        }
+                        (*header).gc_flags |= FLAG_FINALIZED;
+                        mark_object(&mut obj_val as *mut i64);
+                        resurrected = true;
                     }
                 }
             }
         }
+        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+        curr = curr.add(size);
+    }
 
-        if resurrected {
-            process_mark_queue();
-            FINALIZER_CONDVAR.notify_one();
+    // Also LOS finalizers
+    for &(obj_usize, _) in &los_snapshot_for_finalizers {
+        let obj_ptr = obj_usize as *mut u8;
+        let header = obj_ptr as *mut ObjectHeader;
+        let type_id = (*header).type_id;
+        if !gc_is_marked((*header).gc_word) {
+            if ((*header).gc_flags & FLAG_FINALIZED) == 0 {
+                if (type_id as usize) < MAX_TYPES {
+                    if let Some(f) = TYPE_TABLE[type_id as usize].finalizer {
+                        let mut obj_val =
+                            (obj_ptr.add(std::mem::size_of::<ObjectHeader>()) as i64) + HEAP_OFFSET;
+                        {
+                            let mut queue = FINALIZER_QUEUE.lock().unwrap();
+                            queue.push((f, obj_val));
+                        }
+                        (*header).gc_flags |= FLAG_FINALIZED;
+                        mark_object(&mut obj_val as *mut i64);
+                        resurrected = true;
+                    }
+                }
+            }
         }
+    }
 
-        // Clear any transient mark bits on young survivors before resuming mutators.
-        let mut y_scan = FROM_SURVIVOR;
-        while y_scan < FROM_SURVIVOR_TOP {
-            let header = y_scan as *mut ObjectHeader;
-            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+    if resurrected {
+        process_mark_queue();
+        FINALIZER_CONDVAR.notify_one();
+    }
+
+    // Clear any transient mark bits on young survivors before resuming mutators.
+    let mut y_scan = FROM_SURVIVOR;
+    while y_scan < FROM_SURVIVOR_TOP {
+        let header = y_scan as *mut ObjectHeader;
+        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+        (*header).gc_word &= !GC_MARK_BIT;
+        y_scan = y_scan.add(size);
+    }
+
+    if !safepoint_already {
+        // End of STW phase! Mutator threads resume immediately.
+        // Remark and finalizer resurrection are complete.
+        // Sweeping old gen and LOS now proceeds concurrently.
+        resume_safepoint();
+    }
+
+    // --- PHASE 2: Concurrent Sweep ---
+    let mut scan_ptr = OLD_START;
+    let mut local_free_list: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    let mut new_old_bytes = 0usize;
+
+    while scan_ptr < limit_ptr {
+        let header = scan_ptr as *mut ObjectHeader;
+        let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
+
+        if gc_is_marked((*header).gc_word) {
+            // Unmark it for next time
             (*header).gc_word &= !GC_MARK_BIT;
-            y_scan = y_scan.add(size);
+            new_old_bytes += size;
+        } else {
+            // Dead object, add to local free list!
+            local_free_list
+                .entry(size)
+                .or_default()
+                .push(scan_ptr as usize);
         }
+        scan_ptr = scan_ptr.add(size);
+    }
 
-        if !safepoint_already {
-            // End of STW phase! Mutator threads resume immediately.
-            // Remark and finalizer resurrection are complete.
-            // Sweeping old gen and LOS now proceeds concurrently.
-            resume_safepoint();
+    // Merge into global FREE_LIST
+    let mut global_large = LARGE_FREE_LIST.lock().unwrap();
+    for (size, mut vec) in local_free_list {
+        if size < NUM_FAST_BINS * 8 {
+            let bin_idx = size / 8;
+            FAST_FREE_LIST[bin_idx].lock().unwrap().append(&mut vec);
+        } else {
+            global_large.entry(size).or_default().append(&mut vec);
         }
+    }
+    // --- PHASE 3: Concurrent Sweep LOS ---
+    {
+        let _los_lock = LOS_LOCK.lock().unwrap();
+        let mut new_los_count = 0;
+        let mut new_los_bytes = 0usize;
+        let original_los_count = los_snapshot_for_finalizers.len();
 
-        // --- PHASE 2: Concurrent Sweep ---
-        let mut scan_ptr = OLD_START;
-        let mut local_free_list: std::collections::BTreeMap<usize, Vec<usize>> =
-            std::collections::BTreeMap::new();
-        let mut new_old_bytes = 0usize;
+        for i in 0..LOS_COUNT {
+            let header = LOS_OBJECTS[i] as *mut ObjectHeader;
 
-        while scan_ptr < limit_ptr {
-            let header = scan_ptr as *mut ObjectHeader;
-            let size = get_object_size(header) + std::mem::size_of::<ObjectHeader>();
-
-            if gc_is_marked((*header).gc_word) {
-                // Unmark it for next time
-                (*header).gc_word &= !GC_MARK_BIT;
-                new_old_bytes += size;
-            } else {
-                // Dead object, add to local free list!
-                local_free_list
-                    .entry(size)
-                    .or_default()
-                    .push(scan_ptr as usize);
-            }
-            scan_ptr = scan_ptr.add(size);
-        }
-
-        // Merge into global FREE_LIST
-        let mut global_large = LARGE_FREE_LIST.lock().unwrap();
-        for (size, mut vec) in local_free_list {
-            if size < NUM_FAST_BINS * 8 {
-                let bin_idx = size / 8;
-                FAST_FREE_LIST[bin_idx].lock().unwrap().append(&mut vec);
-            } else {
-                global_large.entry(size).or_default().append(&mut vec);
-            }
-        }
-        // --- PHASE 3: Concurrent Sweep LOS ---
-        {
-            let _los_lock = LOS_LOCK.lock().unwrap();
-            let mut new_los_count = 0;
-            let mut new_los_bytes = 0usize;
-            let original_los_count = los_snapshot_for_finalizers.len();
-
-            for i in 0..LOS_COUNT {
-                let header = LOS_OBJECTS[i] as *mut ObjectHeader;
-
-                let mut is_survivor = false;
-                if i < original_los_count {
-                    if gc_is_marked((*header).gc_word) {
-                        is_survivor = true;
-                        (*header).gc_word &= !GC_MARK_BIT;
-                    }
-                } else {
-                    // Object was allocated during concurrent GC. Implicitly alive!
+            let mut is_survivor = false;
+            if i < original_los_count {
+                if gc_is_marked((*header).gc_word) {
                     is_survivor = true;
+                    (*header).gc_word &= !GC_MARK_BIT;
                 }
-
-                if is_survivor {
-                    LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
-                    LOS_SIZES[new_los_count] = LOS_SIZES[i];
-                    new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
-                    new_los_count += 1;
-                } else {
-                    munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
-                }
+            } else {
+                // Object was allocated during concurrent GC. Implicitly alive!
+                is_survivor = true;
             }
-            LOS_COUNT = new_los_count;
-            LOS_BYTES = new_los_bytes;
-            LOS_NEXT_GC_THRESHOLD =
-                std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
+
+            if is_survivor {
+                LOS_OBJECTS[new_los_count] = LOS_OBJECTS[i];
+                LOS_SIZES[new_los_count] = LOS_SIZES[i];
+                new_los_bytes = new_los_bytes.saturating_add(LOS_SIZES[i]);
+                new_los_count += 1;
+            } else {
+                munmap(LOS_OBJECTS[i] as *mut _, LOS_SIZES[i]);
+            }
         }
+        LOS_COUNT = new_los_count;
+        LOS_BYTES = new_los_bytes;
+        LOS_NEXT_GC_THRESHOLD =
+            std::cmp::max(MIN_LOS_GC_TRIGGER_BYTES, LOS_BYTES.saturating_mul(2));
+    }
 
-        OLD_BYTES_ALLOCATED = new_old_bytes;
+    OLD_BYTES_ALLOCATED = new_old_bytes;
 
-        // =================================================================
-        // DEFINITIVE GC TRIGGER THRESHOLD
-        // =================================================================
-        //
-        // Formula:
-        //   scaled   = live × growth_factor          (proportional headroom)
-        //   next     = max(scaled, bytes_before_gc)  (← the key insight)
-        //   next     = max(next, live + 128MB)        (absolute headroom floor)
-        //   next     = max(next, 512MB)               (micro-thrash guard)
-        //   next     = min(next, heap × 95%)          (OOM safety ceiling)
-        //
-        // Why `max(scaled, bytes_before_gc)` handles BOTH cases perfectly:
-        //
-        //   CASE A — GC freed well (100GB → 60GB live, 40% freed):
-        //     scaled        = 60GB × 1.5 = 90GB
-        //     bytes_before  = 100GB (where GC triggered)
-        //     next          = max(90GB, 100GB) = 100GB  ✅ same high-water mark
-        //     → App grows freely from 60GB back to 100GB before GC fires again.
-        //     → No premature GC. No wasted cycles.
-        //
-        //   CASE B — GC barely freed (100GB → 99GB live, 1% freed):
-        //     scaled        = 99GB × 1.5 = 148.5GB
-        //     bytes_before  = 100GB
-        //     next          = max(148.5GB, 100GB) = 148.5GB → capped at 121GB
-        //     → Threshold rises. GC backs off. If live set keeps growing,
-        //       GC fires again at 121GB (the 95% ceiling), and warns user.
-        //
-        //   CASE C — Small app (live = 10MB after first GC):
-        //     scaled        = 10MB × 1.5 = 15MB
-        //     bytes_before  = 512MB (initial threshold)
-        //     next          = max(15MB, 512MB) = 512MB  ✅ no micro-thrashing
-        //
-        //   CASE D — Large cache (live = 90GB, threshold was 121GB ceiling):
-        //     scaled        = 90GB × 1.5 = 135GB → capped at 121GB
-        //     bytes_before  = 121GB
-        //     next          = max(121GB, 121GB) = 121GB → warns user ✅
-        //
-        // Growth factor is read ONCE at startup (LazyLock) — zero cost per GC cycle.
-        // Configurable: TEJXGC=50 (default, 50% headroom), TEJXGC=100 (Go's default).
-        // =================================================================
+    // =================================================================
+    // DEFINITIVE GC TRIGGER THRESHOLD
+    // =================================================================
+    //
+    // Formula:
+    //   scaled   = live × growth_factor          (proportional headroom)
+    //   next     = max(scaled, bytes_before_gc)  (← the key insight)
+    //   next     = max(next, live + 128MB)        (absolute headroom floor)
+    //   next     = max(next, 512MB)               (micro-thrash guard)
+    //   next     = min(next, heap × 95%)          (OOM safety ceiling)
+    //
+    // Why `max(scaled, bytes_before_gc)` handles BOTH cases perfectly:
+    //
+    //   CASE A — GC freed well (100GB → 60GB live, 40% freed):
+    //     scaled        = 60GB × 1.5 = 90GB
+    //     bytes_before  = 100GB (where GC triggered)
+    //     next          = max(90GB, 100GB) = 100GB  ✅ same high-water mark
+    //     → App grows freely from 60GB back to 100GB before GC fires again.
+    //     → No premature GC. No wasted cycles.
+    //
+    //   CASE B — GC barely freed (100GB → 99GB live, 1% freed):
+    //     scaled        = 99GB × 1.5 = 148.5GB
+    //     bytes_before  = 100GB
+    //     next          = max(148.5GB, 100GB) = 148.5GB → capped at 121GB
+    //     → Threshold rises. GC backs off. If live set keeps growing,
+    //       GC fires again at 121GB (the 95% ceiling), and warns user.
+    //
+    //   CASE C — Small app (live = 10MB after first GC):
+    //     scaled        = 10MB × 1.5 = 15MB
+    //     bytes_before  = 512MB (initial threshold)
+    //     next          = max(15MB, 512MB) = 512MB  ✅ no micro-thrashing
+    //
+    //   CASE D — Large cache (live = 90GB, threshold was 121GB ceiling):
+    //     scaled        = 90GB × 1.5 = 135GB → capped at 121GB
+    //     bytes_before  = 121GB
+    //     next          = max(121GB, 121GB) = 121GB → warns user ✅
+    //
+    // Growth factor is read ONCE at startup (LazyLock) — zero cost per GC cycle.
+    // Configurable: TEJXGC=50 (default, 50% headroom), TEJXGC=100 (Go's default).
+    // =================================================================
 
-        let growth_factor = get_gc_growth_factor();
+    let growth_factor = get_gc_growth_factor();
 
-        // Core: proportional headroom above live set
-        let scaled = (new_old_bytes as f64 * growth_factor) as usize;
+    // Core: proportional headroom above live set
+    let scaled = (new_old_bytes as f64 * growth_factor) as usize;
 
-        // Never lower the trigger below where it was before this GC cycle.
-        // This is what prevents premature re-triggering after a successful collection.
-        let high_water = bytes_before_gc;
+    // Never lower the trigger below where it was before this GC cycle.
+    // This is what prevents premature re-triggering after a successful collection.
+    let high_water = bytes_before_gc;
 
-        // Combine: whichever gives more room
-        let combined = scaled.max(high_water);
+    // Combine: whichever gives more room
+    let combined = scaled.max(high_water);
 
-        // Floor: always at least GC_MIN_HEADROOM_BYTES above live set (minimum breathing room)
-        let with_headroom = new_old_bytes.saturating_add(GC_MIN_HEADROOM_BYTES);
+    // Floor: always at least GC_MIN_HEADROOM_BYTES above live set (minimum breathing room)
+    let with_headroom = new_old_bytes.saturating_add(GC_MIN_HEADROOM_BYTES);
 
-        // Floor: absolute minimum DEFAULT_GC_TRIGGER_FLOOR_PCT% of max heap
-        let absolute_floor = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_FLOOR_PCT / 100;
-        let floored = combined.max(with_headroom).max(absolute_floor);
+    // Floor: absolute minimum DEFAULT_GC_TRIGGER_FLOOR_PCT% of max heap
+    let absolute_floor = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_FLOOR_PCT / 100;
+    let floored = combined.max(with_headroom).max(absolute_floor);
 
-        // Ceiling: never exceed DEFAULT_GC_TRIGGER_CEIL_PCT% of heap (OOM safety)
-        let ceiling = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_CEIL_PCT / 100;
-        OLD_GEN_GC_THRESHOLD = floored.min(ceiling);
+    // Ceiling: never exceed DEFAULT_GC_TRIGGER_CEIL_PCT% of heap (OOM safety)
+    let ceiling = OLD_GEN_SIZE * DEFAULT_GC_TRIGGER_CEIL_PCT / 100;
+    OLD_GEN_GC_THRESHOLD = floored.min(ceiling);
 
-        // Diagnostics: warn when live set is above 80% of heap (memory pressure)
-        let collection_ratio =
-            bytes_before_gc.saturating_sub(new_old_bytes) as f64 / bytes_before_gc.max(1) as f64;
+    // Diagnostics: warn when live set is above 80% of heap (memory pressure)
+    let collection_ratio =
+        bytes_before_gc.saturating_sub(new_old_bytes) as f64 / bytes_before_gc.max(1) as f64;
 
-        if new_old_bytes > OLD_GEN_SIZE * 98 / 100 {
-            eprintln!(
+    if new_old_bytes > OLD_GEN_SIZE * 98 / 100 {
+        eprintln!(
                 "FATAL: Out of Memory! Max heap limit of {} MB exceeded (Live set reached {} MB after GC). \
                  Please increase your heap limit using --max-old-space-size=... or -Xmx...",
                 OLD_GEN_SIZE / (1024 * 1024),
                 new_old_bytes / (1024 * 1024)
             );
-            exit(1);
-        } else if new_old_bytes > OLD_GEN_SIZE * 80 / 100 {
-            eprintln!(
-                "[GC] WARNING: Live set {:.1}% of heap ({} MB / {} MB total). \
+        exit(1);
+    } else if new_old_bytes > OLD_GEN_SIZE * 80 / 100 {
+        eprintln!(
+            "[GC] WARNING: Live set {:.1}% of heap ({} MB / {} MB total). \
                  Freed {:.1}% this cycle. Next GC at {} MB. \
                  Use --max-old-space-size=... or -Xmx... to increase heap. \
                  Tune GC headroom with TEJXGC (current: {:.1}x).",
-                new_old_bytes as f64 / OLD_GEN_SIZE as f64 * 100.0,
-                new_old_bytes / (1024 * 1024),
-                OLD_GEN_SIZE / (1024 * 1024),
-                collection_ratio * 100.0,
-                OLD_GEN_GC_THRESHOLD / (1024 * 1024),
-                growth_factor,
-            );
-        }
-        crate::rt_gc_cleanup_array_forward();
-        GC_BACKGROUND_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            new_old_bytes as f64 / OLD_GEN_SIZE as f64 * 100.0,
+            new_old_bytes / (1024 * 1024),
+            OLD_GEN_SIZE / (1024 * 1024),
+            collection_ratio * 100.0,
+            OLD_GEN_GC_THRESHOLD / (1024 * 1024),
+            growth_factor,
+        );
+    }
+    crate::rt_gc_cleanup_array_forward();
+    GC_BACKGROUND_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[no_mangle]
@@ -2697,7 +2714,8 @@ pub unsafe fn minor_gc_locked() {
                 let header = promoted_ptr as *mut ObjectHeader;
                 if scan_object_fields_minor(header) {
                     (*header).gc_flags |= FLAG_REMSET_DIRTY;
-                    let body_ptr = (promoted_ptr as *mut u8).add(std::mem::size_of::<ObjectHeader>());
+                    let body_ptr =
+                        (promoted_ptr as *mut u8).add(std::mem::size_of::<ObjectHeader>());
                     new_remset.push(body_ptr);
                 }
                 progressed = true;

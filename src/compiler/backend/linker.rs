@@ -159,9 +159,9 @@ impl Linker {
                         eprintln!("[linker] Executing: {:?}", asm_cmd);
                     }
 
-                    let output_asm = asm_cmd
-                        .output()
-                        .map_err(|e| format!("Failed to generate assembly {}: {}", obj.display(), e))?;
+                    let output_asm = asm_cmd.output().map_err(|e| {
+                        format!("Failed to generate assembly {}: {}", obj.display(), e)
+                    })?;
                     if !output_asm.status.success() {
                         let stderr = String::from_utf8_lossy(&output_asm.stderr);
                         cleanup_file(obj);
@@ -254,16 +254,6 @@ impl Linker {
             cmd.arg(format!("-L{}", dir.display()));
         }
 
-        // Add compiled object files and static archives
-        for obj in &final_objects {
-            cmd.arg(obj);
-        }
-
-        // Add user-specified libraries
-        for lib in &self.libs {
-            cmd.arg(format!("-l{}", lib));
-        }
-
         // Determine target platform for system libraries
         let is_linux = if let Some(ref target) = self.target {
             target.contains("linux")
@@ -278,25 +268,45 @@ impl Linker {
         };
 
         if is_linux {
+            // Use --start-group and --end-group to resolve any circular dependencies in static archives
+            cmd.arg("-Wl,--start-group");
+            for obj in &final_objects {
+                cmd.arg(obj);
+            }
+            for lib in &self.libs {
+                cmd.arg(format!("-l{}", lib));
+            }
             cmd.arg("-lm");
             cmd.arg("-lpthread");
             cmd.arg("-ldl");
-            cmd.arg("-lssl");
-            cmd.arg("-lcrypto");
-        } else if is_macos {
-            cmd.arg("-framework");
-            cmd.arg("Security");
-            cmd.arg("-framework");
-            cmd.arg("CoreFoundation");
-            cmd.arg("-framework");
-            cmd.arg("SystemConfiguration");
+            let (ssl_flag, crypto_flag) = self.find_linux_ssl_flags();
+            cmd.arg(ssl_flag);
+            cmd.arg(crypto_flag);
+            cmd.arg("-Wl,--end-group");
+        } else {
+            // Add compiled object files and static archives
+            for obj in &final_objects {
+                cmd.arg(obj);
+            }
+
+            // Add user-specified libraries
+            for lib in &self.libs {
+                cmd.arg(format!("-l{}", lib));
+            }
+
+            if is_macos {
+                cmd.arg("-framework");
+                cmd.arg("Security");
+                cmd.arg("-framework");
+                cmd.arg("CoreFoundation");
+                cmd.arg("-framework");
+                cmd.arg("SystemConfiguration");
+            }
         }
 
-        cmd.arg("-o");
-        cmd.arg(&self.output_path);
-
-        if self.verbose {
-            eprintln!("[linker] Executing: {:?}", cmd);
+        // Add user-specified libraries
+        for lib in &self.libs {
+            cmd.arg(format!("-l{}", lib));
         }
 
         let output = cmd
@@ -308,6 +318,24 @@ impl Linker {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             cleanup_file(&self.output_path);
+
+            if stderr.contains("cannot find -lssl")
+                || stderr.contains("cannot find -lcrypto")
+                || stderr.contains("cannot find -l:libssl")
+                || stderr.contains("cannot find -l:libcrypto")
+            {
+                return Err(format!(
+                    "Linker failed: OpenSSL libraries not found.\n\
+                     Please install the OpenSSL development package:\n  \
+                     Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y libssl-dev\n  \
+                     Fedora/RHEL:   sudo dnf install -y openssl-devel\n  \
+                     Arch Linux:    sudo pacman -S openssl\n  \
+                     Alpine:        sudo apk add openssl-dev\n\n\
+                     Details:\n{}",
+                    stderr
+                ));
+            }
+
             return Err(format!("Linker failed:\n{}", stderr));
         }
 
@@ -322,14 +350,7 @@ impl Linker {
 
         // Check for compilers in order of preference (clang is preferred for LLVM IR .ll support)
         let candidates = [
-            "clang",
-            "clang-19",
-            "clang-18",
-            "clang-17",
-            "clang-16",
-            "clang-15",
-            "cc",
-            "gcc",
+            "clang", "clang-19", "clang-18", "clang-17", "clang-16", "clang-15", "cc", "gcc",
         ];
         for bin in candidates {
             if self.check_command(bin) {
@@ -360,18 +381,8 @@ impl Linker {
 
     fn find_llvm_assembler(&self) -> Option<String> {
         let candidates = [
-            "clang",
-            "clang-19",
-            "clang-18",
-            "clang-17",
-            "clang-16",
-            "clang-15",
-            "llc",
-            "llc-19",
-            "llc-18",
-            "llc-17",
-            "llc-16",
-            "llc-15",
+            "clang", "clang-19", "clang-18", "clang-17", "clang-16", "clang-15", "llc", "llc-19",
+            "llc-18", "llc-17", "llc-16", "llc-15",
         ];
         for bin in candidates {
             if self.check_command(bin) {
@@ -379,5 +390,43 @@ impl Linker {
             }
         }
         None
+    }
+
+    fn find_linux_ssl_flags(&self) -> (&'static str, &'static str) {
+        let search_paths = [
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/aarch64-linux-gnu",
+            "/usr/lib64",
+            "/usr/lib",
+            "/usr/local/lib",
+            "/lib/x86_64-linux-gnu",
+            "/lib/aarch64-linux-gnu",
+            "/lib64",
+            "/lib",
+        ];
+
+        // 1. If standard unversioned libssl.so exists (libssl-dev installed)
+        for dir in &search_paths {
+            if Path::new(dir).join("libssl.so").exists() {
+                return ("-lssl", "-lcrypto");
+            }
+        }
+
+        // 2. If libssl.so.3 exists (standard on Ubuntu 22+, Debian 12+, Fedora 36+)
+        for dir in &search_paths {
+            if Path::new(dir).join("libssl.so.3").exists() {
+                return ("-l:libssl.so.3", "-l:libcrypto.so.3");
+            }
+        }
+
+        // 3. If libssl.so.1.1 exists (Ubuntu 20, Debian 11, etc.)
+        for dir in &search_paths {
+            if Path::new(dir).join("libssl.so.1.1").exists() {
+                return ("-l:libssl.so.1.1", "-l:libcrypto.so.1.1");
+            }
+        }
+
+        // Fallback default
+        ("-lssl", "-lcrypto")
     }
 }

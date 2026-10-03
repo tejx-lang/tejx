@@ -164,7 +164,7 @@ pub unsafe fn init_fiber_stack(stack_top: *mut u8, entry_fn: extern "C" fn() -> 
     std::ptr::write_bytes(sp, 0, 64);
 
     *slots.add(6) = entry_fn as usize; // popped by ret
-    *slots.add(7) = 0;                 // dummy caller return address
+    *slots.add(7) = 0; // dummy caller return address
 
     sp
 }

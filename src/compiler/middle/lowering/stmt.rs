@@ -89,7 +89,12 @@ impl Lowering {
                     if let Some(val_expr) = &member._value {
                         if let Expression::NumberLiteral { value, .. } = val_expr.as_ref() {
                             current_val = *value as i64;
-                        } else if let Expression::UnaryExpr { op: TokenType::Minus, right, .. } = val_expr.as_ref() {
+                        } else if let Expression::UnaryExpr {
+                            op: TokenType::Minus,
+                            right,
+                            ..
+                        } = val_expr.as_ref()
+                        {
                             if let Expression::NumberLiteral { value, .. } = right.as_ref() {
                                 current_val = -(*value as i64);
                             }

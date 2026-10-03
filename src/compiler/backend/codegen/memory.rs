@@ -504,7 +504,10 @@ impl CodeGen {
             return;
         }
 
-        if matches!(obj.get_type(), TejxType::DynamicArray(_) | TejxType::Slice(_)) {
+        if matches!(
+            obj.get_type(),
+            TejxType::DynamicArray(_) | TejxType::Slice(_)
+        ) {
             let effective_elem_ty = match obj.get_type() {
                 TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
                     if matches!(inner.as_ref(), TejxType::Void) {
@@ -530,20 +533,35 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let is_valid = format!("%is_valid_obj_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_valid, obj_val, STACK_OFFSET_CONST));
-            self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_valid, chk_label, slow_label));
+            self.emit_line(&format!(
+                "{} = icmp uge i64 {}, {}",
+                is_valid, obj_val, STACK_OFFSET_CONST
+            ));
+            self.emit_line(&format!(
+                "br i1 {}, label %{}, label %{}",
+                is_valid, chk_label, slow_label
+            ));
 
             // Check header
             self.emit(&format!("{}:\n", chk_label));
             self.temp_counter += 1;
             let is_heap = format!("%is_heap_load_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, obj_val, HEAP_OFFSET_CONST));
+            self.emit_line(&format!(
+                "{} = icmp uge i64 {}, {}",
+                is_heap, obj_val, HEAP_OFFSET_CONST
+            ));
             self.temp_counter += 1;
             let obj_offset = format!("%obj_offset_load_{}", self.temp_counter);
-            self.emit_line(&format!("{} = select i1 {}, i64 {}, i64 {}", obj_offset, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST));
+            self.emit_line(&format!(
+                "{} = select i1 {}, i64 {}, i64 {}",
+                obj_offset, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST
+            ));
             self.temp_counter += 1;
             let raw_obj = format!("%raw_obj_load_{}", self.temp_counter);
-            self.emit_line(&format!("{} = sub i64 {}, {}", raw_obj, obj_val, obj_offset));
+            self.emit_line(&format!(
+                "{} = sub i64 {}, {}",
+                raw_obj, obj_val, obj_offset
+            ));
 
             self.temp_counter += 1;
             let body_ptr = format!("%body_ptr_{}", self.temp_counter);
@@ -551,13 +569,22 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let gc_word_ptr = format!("%gc_word_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -24", gc_word_ptr, body_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i64 -24",
+                gc_word_ptr, body_ptr
+            ));
             self.temp_counter += 1;
             let gc_word_typed = format!("%gc_word_typed_{}", self.temp_counter);
-            self.emit_line(&format!("{} = bitcast i8* {} to i64*", gc_word_typed, gc_word_ptr));
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to i64*",
+                gc_word_typed, gc_word_ptr
+            ));
             self.temp_counter += 1;
             let gc_word = format!("%gc_word_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load i64, i64* {}, align 8, !alias.scope !3, !noalias !4", gc_word, gc_word_typed));
+            self.emit_line(&format!(
+                "{} = load i64, i64* {}, align 8, !alias.scope !3, !noalias !4",
+                gc_word, gc_word_typed
+            ));
             self.temp_counter += 1;
             let fwd_bit = format!("%fwd_bit_{}", self.temp_counter);
             self.emit_line(&format!("{} = and i64 {}, 2", fwd_bit, gc_word));
@@ -568,56 +595,95 @@ impl CodeGen {
             let elem_size = effective_elem_ty.size() as i64;
             self.temp_counter += 1;
             let flags_ptr = format!("%flags_load_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -14", flags_ptr, body_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i64 -14",
+                flags_ptr, body_ptr
+            ));
             self.temp_counter += 1;
             let flags_typed = format!("%flags_load_typed_{}", self.temp_counter);
-            self.emit_line(&format!("{} = bitcast i8* {} to i16*", flags_typed, flags_ptr));
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to i16*",
+                flags_typed, flags_ptr
+            ));
             self.temp_counter += 1;
             let flags_16 = format!("%flags_load_16_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load i16, i16* {}, align 2, !alias.scope !3, !noalias !4", flags_16, flags_typed));
+            self.emit_line(&format!(
+                "{} = load i16, i16* {}, align 2, !alias.scope !3, !noalias !4",
+                flags_16, flags_typed
+            ));
             self.temp_counter += 1;
             let elem_size_mask = format!("%elem_size_load_{}", self.temp_counter);
             self.emit_line(&format!("{} = and i16 {}, 255", elem_size_mask, flags_16));
             self.temp_counter += 1;
             let size_matches = format!("%size_matches_load_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp eq i16 {}, {}", size_matches, elem_size_mask, elem_size));
+            self.emit_line(&format!(
+                "{} = icmp eq i16 {}, {}",
+                size_matches, elem_size_mask, elem_size
+            ));
 
             self.temp_counter += 1;
             let len_ptr = format!("%len_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -12", len_ptr, body_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i64 -12",
+                len_ptr, body_ptr
+            ));
             self.temp_counter += 1;
             let len_typed = format!("%len_typed_{}", self.temp_counter);
             self.emit_line(&format!("{} = bitcast i8* {} to i32*", len_typed, len_ptr));
             self.temp_counter += 1;
             let len_32 = format!("%len_32_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load i32, i32* {}, align 4, !alias.scope !3, !noalias !4", len_32, len_typed));
+            self.emit_line(&format!(
+                "{} = load i32, i32* {}, align 4, !alias.scope !3, !noalias !4",
+                len_32, len_typed
+            ));
             self.temp_counter += 1;
             let len_64 = format!("%len_64_{}", self.temp_counter);
             self.emit_line(&format!("{} = zext i32 {} to i64", len_64, len_32));
 
             self.temp_counter += 1;
             let in_bounds = format!("%in_bounds_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp ult i64 {}, {}", in_bounds, idx_val, len_64));
+            self.emit_line(&format!(
+                "{} = icmp ult i64 {}, {}",
+                in_bounds, idx_val, len_64
+            ));
 
             self.temp_counter += 1;
             let can_fast_1 = format!("%can_fast_load_1_{}", self.temp_counter);
-            self.emit_line(&format!("{} = and i1 {}, {}", can_fast_1, not_fwd, size_matches));
+            self.emit_line(&format!(
+                "{} = and i1 {}, {}",
+                can_fast_1, not_fwd, size_matches
+            ));
             self.temp_counter += 1;
             let can_fast = format!("%can_fast_{}", self.temp_counter);
-            self.emit_line(&format!("{} = and i1 {}, {}", can_fast, can_fast_1, in_bounds));
-            self.emit_line(&format!("br i1 {}, label %{}, label %{}", can_fast, fast_label, slow_label));
+            self.emit_line(&format!(
+                "{} = and i1 {}, {}",
+                can_fast, can_fast_1, in_bounds
+            ));
+            self.emit_line(&format!(
+                "br i1 {}, label %{}, label %{}",
+                can_fast, fast_label, slow_label
+            ));
 
             // Fast path
             self.emit(&format!("{}:\n", fast_label));
             self.temp_counter += 1;
             let typed_body = format!("%typed_body_{}", self.temp_counter);
-            self.emit_line(&format!("{} = bitcast i8* {} to {}*", typed_body, body_ptr, llvm_ty));
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to {}*",
+                typed_body, body_ptr, llvm_ty
+            ));
             self.temp_counter += 1;
             let elem_ptr = format!("%fast_elem_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, llvm_ty, llvm_ty, typed_body, idx_val));
+            self.emit_line(&format!(
+                "{} = getelementptr inbounds {}, {}* {}, i64 {}",
+                elem_ptr, llvm_ty, llvm_ty, typed_body, idx_val
+            ));
             self.temp_counter += 1;
             let fast_loaded = format!("%fast_loaded_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load {}, {}* {}, !alias.scope !3, !noalias !4", fast_loaded, llvm_ty, llvm_ty, elem_ptr));
+            self.emit_line(&format!(
+                "{} = load {}, {}* {}, !alias.scope !3, !noalias !4",
+                fast_loaded, llvm_ty, llvm_ty, elem_ptr
+            ));
             let fast_value = if llvm_ty == "i8" && matches!(effective_elem_ty, TejxType::Bool) {
                 self.emit_storage_to_value(&fast_loaded, effective_elem_ty)
             } else {
@@ -831,7 +897,10 @@ impl CodeGen {
         let idx_val = self.emit_abi_cast(&idx_val, idx_ty, &TejxType::Int64);
         let src_ty = src.get_type();
 
-        if matches!(obj.get_type(), TejxType::DynamicArray(_) | TejxType::Slice(_)) {
+        if matches!(
+            obj.get_type(),
+            TejxType::DynamicArray(_) | TejxType::Slice(_)
+        ) {
             let effective_elem_ty = match obj.get_type() {
                 TejxType::DynamicArray(inner) | TejxType::Slice(inner) => {
                     if matches!(inner.as_ref(), TejxType::Void) {
@@ -856,20 +925,35 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let is_valid = format!("%is_valid_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_valid, obj_val, STACK_OFFSET_CONST));
-            self.emit_line(&format!("br i1 {}, label %{}, label %{}", is_valid, chk_label, slow_label));
+            self.emit_line(&format!(
+                "{} = icmp uge i64 {}, {}",
+                is_valid, obj_val, STACK_OFFSET_CONST
+            ));
+            self.emit_line(&format!(
+                "br i1 {}, label %{}, label %{}",
+                is_valid, chk_label, slow_label
+            ));
 
             // Check header
             self.emit(&format!("{}:\n", chk_label));
             self.temp_counter += 1;
             let is_heap = format!("%is_heap_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp uge i64 {}, {}", is_heap, obj_val, HEAP_OFFSET_CONST));
+            self.emit_line(&format!(
+                "{} = icmp uge i64 {}, {}",
+                is_heap, obj_val, HEAP_OFFSET_CONST
+            ));
             self.temp_counter += 1;
             let obj_offset = format!("%obj_offset_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = select i1 {}, i64 {}, i64 {}", obj_offset, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST));
+            self.emit_line(&format!(
+                "{} = select i1 {}, i64 {}, i64 {}",
+                obj_offset, is_heap, HEAP_OFFSET_CONST, STACK_OFFSET_CONST
+            ));
             self.temp_counter += 1;
             let raw_obj = format!("%raw_obj_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = sub i64 {}, {}", raw_obj, obj_val, obj_offset));
+            self.emit_line(&format!(
+                "{} = sub i64 {}, {}",
+                raw_obj, obj_val, obj_offset
+            ));
 
             self.temp_counter += 1;
             let body_ptr = format!("%body_store_ptr_{}", self.temp_counter);
@@ -877,13 +961,22 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let gc_word_ptr = format!("%gc_word_store_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -24", gc_word_ptr, body_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i64 -24",
+                gc_word_ptr, body_ptr
+            ));
             self.temp_counter += 1;
             let gc_word_typed = format!("%gc_word_store_typed_{}", self.temp_counter);
-            self.emit_line(&format!("{} = bitcast i8* {} to i64*", gc_word_typed, gc_word_ptr));
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to i64*",
+                gc_word_typed, gc_word_ptr
+            ));
             self.temp_counter += 1;
             let gc_word = format!("%gc_word_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load i64, i64* {}, align 8, !alias.scope !3, !noalias !4", gc_word, gc_word_typed));
+            self.emit_line(&format!(
+                "{} = load i64, i64* {}, align 8, !alias.scope !3, !noalias !4",
+                gc_word, gc_word_typed
+            ));
             self.temp_counter += 1;
             let fwd_bit = format!("%fwd_store_bit_{}", self.temp_counter);
             self.emit_line(&format!("{} = and i64 {}, 2", fwd_bit, gc_word));
@@ -893,13 +986,22 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let flags_ptr = format!("%flags_store_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -14", flags_ptr, body_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i64 -14",
+                flags_ptr, body_ptr
+            ));
             self.temp_counter += 1;
             let flags_typed = format!("%flags_store_typed_{}", self.temp_counter);
-            self.emit_line(&format!("{} = bitcast i8* {} to i16*", flags_typed, flags_ptr));
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to i16*",
+                flags_typed, flags_ptr
+            ));
             self.temp_counter += 1;
             let flags_16 = format!("%flags_store_16_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load i16, i16* {}, align 2, !alias.scope !3, !noalias !4", flags_16, flags_typed));
+            self.emit_line(&format!(
+                "{} = load i16, i16* {}, align 2, !alias.scope !3, !noalias !4",
+                flags_16, flags_typed
+            ));
             self.temp_counter += 1;
             let const_bit = format!("%const_store_bit_{}", self.temp_counter);
             self.emit_line(&format!("{} = and i16 {}, 4096", const_bit, flags_16));
@@ -909,20 +1011,29 @@ impl CodeGen {
 
             self.temp_counter += 1;
             let len_ptr = format!("%len_store_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr i8, i8* {}, i64 -12", len_ptr, body_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr i8, i8* {}, i64 -12",
+                len_ptr, body_ptr
+            ));
             self.temp_counter += 1;
             let len_typed = format!("%len_store_typed_{}", self.temp_counter);
             self.emit_line(&format!("{} = bitcast i8* {} to i32*", len_typed, len_ptr));
             self.temp_counter += 1;
             let len_32 = format!("%len_store_32_{}", self.temp_counter);
-            self.emit_line(&format!("{} = load i32, i32* {}, align 4, !alias.scope !3, !noalias !4", len_32, len_typed));
+            self.emit_line(&format!(
+                "{} = load i32, i32* {}, align 4, !alias.scope !3, !noalias !4",
+                len_32, len_typed
+            ));
             self.temp_counter += 1;
             let len_64 = format!("%len_store_64_{}", self.temp_counter);
             self.emit_line(&format!("{} = zext i32 {} to i64", len_64, len_32));
 
             self.temp_counter += 1;
             let in_bounds = format!("%in_bounds_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp ult i64 {}, {}", in_bounds, idx_val, len_64));
+            self.emit_line(&format!(
+                "{} = icmp ult i64 {}, {}",
+                in_bounds, idx_val, len_64
+            ));
 
             let elem_size = effective_elem_ty.size() as i64;
             self.temp_counter += 1;
@@ -930,18 +1041,33 @@ impl CodeGen {
             self.emit_line(&format!("{} = and i16 {}, 255", elem_size_mask, flags_16));
             self.temp_counter += 1;
             let size_matches = format!("%size_matches_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = icmp eq i16 {}, {}", size_matches, elem_size_mask, elem_size));
+            self.emit_line(&format!(
+                "{} = icmp eq i16 {}, {}",
+                size_matches, elem_size_mask, elem_size
+            ));
 
             self.temp_counter += 1;
             let can_fast_1 = format!("%can_fast_store_1_{}", self.temp_counter);
-            self.emit_line(&format!("{} = and i1 {}, {}", can_fast_1, not_fwd, not_const));
+            self.emit_line(&format!(
+                "{} = and i1 {}, {}",
+                can_fast_1, not_fwd, not_const
+            ));
             self.temp_counter += 1;
             let can_fast_2 = format!("%can_fast_store_2_{}", self.temp_counter);
-            self.emit_line(&format!("{} = and i1 {}, {}", can_fast_2, can_fast_1, size_matches));
+            self.emit_line(&format!(
+                "{} = and i1 {}, {}",
+                can_fast_2, can_fast_1, size_matches
+            ));
             self.temp_counter += 1;
             let can_fast = format!("%can_fast_store_{}", self.temp_counter);
-            self.emit_line(&format!("{} = and i1 {}, {}", can_fast, can_fast_2, in_bounds));
-            self.emit_line(&format!("br i1 {}, label %{}, label %{}", can_fast, fast_label, slow_label));
+            self.emit_line(&format!(
+                "{} = and i1 {}, {}",
+                can_fast, can_fast_2, in_bounds
+            ));
+            self.emit_line(&format!(
+                "br i1 {}, label %{}, label %{}",
+                can_fast, fast_label, slow_label
+            ));
 
             // Fast path
             self.emit(&format!("{}:\n", fast_label));
@@ -953,11 +1079,20 @@ impl CodeGen {
             };
             self.temp_counter += 1;
             let typed_body = format!("%typed_store_body_{}", self.temp_counter);
-            self.emit_line(&format!("{} = bitcast i8* {} to {}*", typed_body, body_ptr, llvm_ty));
+            self.emit_line(&format!(
+                "{} = bitcast i8* {} to {}*",
+                typed_body, body_ptr, llvm_ty
+            ));
             self.temp_counter += 1;
             let elem_ptr = format!("%fast_store_elem_ptr_{}", self.temp_counter);
-            self.emit_line(&format!("{} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, llvm_ty, llvm_ty, typed_body, idx_val));
-            self.emit_line(&format!("store {} {}, {}* {}, !alias.scope !3, !noalias !4", llvm_ty, store_val, llvm_ty, elem_ptr));
+            self.emit_line(&format!(
+                "{} = getelementptr inbounds {}, {}* {}, i64 {}",
+                elem_ptr, llvm_ty, llvm_ty, typed_body, idx_val
+            ));
+            self.emit_line(&format!(
+                "store {} {}, {}* {}, !alias.scope !3, !noalias !4",
+                llvm_ty, store_val, llvm_ty, elem_ptr
+            ));
             if Self::is_gc_managed(effective_elem_ty) {
                 let barrier_val = self.emit_abi_cast(&v_val, v_ty, &TejxType::Int64);
                 self.declare_runtime_fn("rt_write_barrier", "void @rt_write_barrier(i64, i64)");
