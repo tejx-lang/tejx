@@ -87,6 +87,7 @@ impl Linker {
 
     pub fn link(&self) -> Result<(), String> {
         let compiler = self.find_compiler()?;
+        let is_compiler_clang = self.is_clang_compatible(&compiler);
 
         let mut final_objects = Vec::new();
 
@@ -105,20 +106,50 @@ impl Linker {
 
         let mut generated_objects_guard = ObjectCleanupGuard(Vec::new());
 
-        // Step 1: Compile any .ll files to .s (assembly) to bypass Apple Clang object emitter bugs, then assemble to .o
+        // Step 1: Compile any .ll files to object (.o) or assembly (.s)
         for obj in &self.obj_paths {
             if obj.extension().and_then(|s| s.to_str()) == Some("ll") {
+                let asm_tool = if is_compiler_clang {
+                    compiler.clone()
+                } else if let Some(ll_tool) = self.find_llvm_assembler() {
+                    ll_tool
+                } else {
+                    return Err(format!(
+                        "Cannot assemble '{}': Clang or LLVM is required to compile LLVM IR (.ll) files.\n\
+                         The compiler found was '{}', which does not support LLVM IR.\n\
+                         Please install Clang:\n  \
+                         Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y clang\n  \
+                         Fedora:        sudo dnf install -y clang\n  \
+                         Arch Linux:    sudo pacman -S clang",
+                        obj.display(),
+                        compiler
+                    ));
+                };
+
+                let is_tool_llc = asm_tool.contains("llc");
+
                 if self.emit_asm {
                     let out_asm = if self.obj_paths.len() == 1 {
                         self.output_path.with_extension("s")
                     } else {
                         obj.with_extension("s")
                     };
-                    let mut asm_cmd = Command::new(&compiler);
-                    asm_cmd.arg("-S");
-                    asm_cmd.arg(&self.opt_level);
-                    if self.debug {
-                        asm_cmd.arg("-g");
+                    let mut asm_cmd = Command::new(&asm_tool);
+                    if is_tool_llc {
+                        asm_cmd.arg("-filetype=asm");
+                        asm_cmd.arg(&self.opt_level);
+                        if let Some(ref target) = self.target {
+                            asm_cmd.arg(format!("--mtriple={}", target));
+                        }
+                    } else {
+                        asm_cmd.arg("-S");
+                        asm_cmd.arg(&self.opt_level);
+                        if self.debug {
+                            asm_cmd.arg("-g");
+                        }
+                        if let Some(ref target) = self.target {
+                            asm_cmd.arg(format!("--target={}", target));
+                        }
                     }
                     asm_cmd.arg(obj);
                     asm_cmd.arg("-o");
@@ -149,12 +180,23 @@ impl Linker {
                     obj.with_extension("o")
                 };
 
-                // Directly assemble .ll to Object (.o)
-                let mut obj_cmd = Command::new(&compiler);
-                obj_cmd.arg("-c");
-                obj_cmd.arg(&self.opt_level);
-                if self.debug {
-                    obj_cmd.arg("-g");
+                // Assemble .ll to Object (.o)
+                let mut obj_cmd = Command::new(&asm_tool);
+                if is_tool_llc {
+                    obj_cmd.arg("-filetype=obj");
+                    obj_cmd.arg(&self.opt_level);
+                    if let Some(ref target) = self.target {
+                        obj_cmd.arg(format!("--mtriple={}", target));
+                    }
+                } else {
+                    obj_cmd.arg("-c");
+                    obj_cmd.arg(&self.opt_level);
+                    if self.debug {
+                        obj_cmd.arg("-g");
+                    }
+                    if let Some(ref target) = self.target {
+                        obj_cmd.arg(format!("--target={}", target));
+                    }
                 }
                 obj_cmd.arg(obj);
                 obj_cmd.arg("-o");
@@ -198,29 +240,50 @@ impl Linker {
 
         // Step 2: Link objects and libraries into final executable
         let mut cmd = Command::new(&compiler);
+        if let Some(ref target) = self.target {
+            cmd.arg(format!("--target={}", target));
+        }
+
         cmd.arg(&self.opt_level);
         if self.debug {
             cmd.arg("-g");
         }
 
+        // Add library search directories first so linkers can find all libraries
+        for dir in &self.lib_dirs {
+            cmd.arg(format!("-L{}", dir.display()));
+        }
+
+        // Add compiled object files and static archives
         for obj in &final_objects {
             cmd.arg(obj);
         }
 
-        cmd.arg("-o");
-        cmd.arg(&self.output_path);
-
-        if self.verbose {
-            eprintln!("[linker] Executing: {:?}", cmd);
+        // Add user-specified libraries
+        for lib in &self.libs {
+            cmd.arg(format!("-l{}", lib));
         }
 
-        if cfg!(target_os = "linux") {
+        // Determine target platform for system libraries
+        let is_linux = if let Some(ref target) = self.target {
+            target.contains("linux")
+        } else {
+            cfg!(target_os = "linux")
+        };
+
+        let is_macos = if let Some(ref target) = self.target {
+            target.contains("darwin") || target.contains("apple") || target.contains("macos")
+        } else {
+            cfg!(target_os = "macos")
+        };
+
+        if is_linux {
             cmd.arg("-lm");
             cmd.arg("-lpthread");
             cmd.arg("-ldl");
             cmd.arg("-lssl");
             cmd.arg("-lcrypto");
-        } else if cfg!(target_os = "macos") {
+        } else if is_macos {
             cmd.arg("-framework");
             cmd.arg("Security");
             cmd.arg("-framework");
@@ -229,16 +292,11 @@ impl Linker {
             cmd.arg("SystemConfiguration");
         }
 
-        if let Some(ref target) = self.target {
-            cmd.arg(format!("--target={}", target));
-        }
+        cmd.arg("-o");
+        cmd.arg(&self.output_path);
 
-        for dir in &self.lib_dirs {
-            cmd.arg(format!("-L{}", dir.display()));
-        }
-
-        for lib in &self.libs {
-            cmd.arg(format!("-l{}", lib));
+        if self.verbose {
+            eprintln!("[linker] Executing: {:?}", cmd);
         }
 
         let output = cmd
@@ -252,8 +310,6 @@ impl Linker {
             cleanup_file(&self.output_path);
             return Err(format!("Linker failed:\n{}", stderr));
         }
-
-
 
         Ok(())
     }
@@ -287,5 +343,41 @@ impl Linker {
 
     fn check_command(&self, cmd: &str) -> bool {
         Command::new(cmd).arg("-v").output().is_ok()
+    }
+
+    fn is_clang_compatible(&self, cmd: &str) -> bool {
+        if let Ok(output) = Command::new(cmd).arg("--version").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+            stdout.contains("clang")
+                || stdout.contains("llvm")
+                || stderr.contains("clang")
+                || stderr.contains("llvm")
+        } else {
+            false
+        }
+    }
+
+    fn find_llvm_assembler(&self) -> Option<String> {
+        let candidates = [
+            "clang",
+            "clang-19",
+            "clang-18",
+            "clang-17",
+            "clang-16",
+            "clang-15",
+            "llc",
+            "llc-19",
+            "llc-18",
+            "llc-17",
+            "llc-16",
+            "llc-15",
+        ];
+        for bin in candidates {
+            if self.check_command(bin) {
+                return Some(bin.to_string());
+            }
+        }
+        None
     }
 }
