@@ -37,33 +37,124 @@ pub static mut OLD_GEN_SIZE: usize = DEFAULT_OLD_GEN_SIZE;
 /// 0 = not set (fall through to env/autodetect).
 pub static mut ARGV_GC_HEAP_LIMIT: usize = 0;
 
-/// Detect the optimal old-gen heap size at startup.
-/// Called once from `rt_init_gc()` after argv/env parsing is complete.
-pub(crate) unsafe fn detect_old_gen_size() -> usize {
-    // Priority 1: -Xmx16g / --max-old-space-size / --tejx-heap runtime argument
-    if ARGV_GC_HEAP_LIMIT > 0 {
-        return ARGV_GC_HEAP_LIMIT.clamp(MIN_OLD_GEN_SIZE, GC_MAX_HEAP);
-    }
+/// Set by argv parsing (`-Xmn2g`, `--tejx-young-gen 2gb`) in `tejx_runtime_main`.
+/// 0 = not set (derived proportionally from total heap).
+pub static mut ARGV_GC_YOUNG_LIMIT: usize = 0;
 
-    // Priority 2: TEJX_HEAP environment variable
-    if let Ok(val) = std::env::var("TEJX_HEAP") {
-        if let Some(bytes) = parse_size_str(&val) {
-            return bytes.clamp(MIN_OLD_GEN_SIZE, GC_MAX_HEAP);
+/// Detect available system memory taking into account host physical RAM and container cgroup limits.
+pub fn detect_available_system_memory() -> usize {
+    let host_ram = unsafe {
+        let mem = rt_get_total_memory();
+        if mem > 0 {
+            mem as usize
+        } else {
+            2 * 1024 * 1024 * 1024
+        }
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        // Check cgroups v2: /sys/fs/cgroup/memory.max
+        if let Ok(content) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
+            let trimmed = content.trim();
+            if trimmed != "max" {
+                if let Ok(limit) = trimmed.parse::<usize>() {
+                    if limit > 0 && limit < host_ram {
+                        return limit;
+                    }
+                }
+            }
+        }
+        // Check cgroups v1: /sys/fs/cgroup/memory/memory.limit_in_bytes
+        if let Ok(content) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+            if let Ok(limit) = content.trim().parse::<usize>() {
+                if limit > 0 && limit < 0x7FFF_FFFF_FFFF_0000 && limit < host_ram {
+                    return limit;
+                }
+            }
         }
     }
 
-    // Priority 3: default initial old-gen size (512 MB)
-    DEFAULT_OLD_GEN_SIZE
+    host_ram
+}
+
+fn default_heap_from_memory(mem: usize) -> usize {
+    let heap = if mem <= 1024 * 1024 * 1024 {
+        // <= 1 GB (containers): 50% of available memory
+        mem / 2
+    } else if mem <= 4 * 1024 * 1024 * 1024 {
+        // 1 GB - 4 GB: 40% of available memory
+        (mem * 4) / 10
+    } else {
+        // > 4 GB: 25% of available memory, clamped to 8 GB max default
+        (mem / 4).clamp(1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024)
+    };
+    heap.clamp(MIN_OLD_GEN_SIZE + MIN_YOUNG_GEN_SIZE, GC_MAX_HEAP)
+}
+
+/// Compute optimal total heap and generational breakdown (old_gen, young_gen, survivor)
+/// adhering to modern runtime standards:
+/// - Old Gen is ~67% (2/3) of total heap.
+/// - Young Gen is ~33% (1/3) of total heap.
+/// - In Young Gen: Eden is ~80%, each Survivor space is ~10%.
+pub(crate) unsafe fn detect_heap_sizes() -> (usize, usize, usize) {
+    let available_mem = detect_available_system_memory();
+
+    // 1. Determine total heap limit
+    let total_heap: usize = if ARGV_GC_HEAP_LIMIT > 0 {
+        ARGV_GC_HEAP_LIMIT.clamp(MIN_OLD_GEN_SIZE + MIN_YOUNG_GEN_SIZE, GC_MAX_HEAP)
+    } else if let Ok(val) = std::env::var("TEJX_HEAP") {
+        if let Some(bytes) = parse_size_str(&val) {
+            bytes.clamp(MIN_OLD_GEN_SIZE + MIN_YOUNG_GEN_SIZE, GC_MAX_HEAP)
+        } else {
+            default_heap_from_memory(available_mem)
+        }
+    } else {
+        default_heap_from_memory(available_mem)
+    };
+
+    // 2. Determine Young Gen total (Eden + 2 Survivors)
+    let total_young: usize = if ARGV_GC_YOUNG_LIMIT > 0 {
+        ARGV_GC_YOUNG_LIMIT.clamp(
+            MIN_YOUNG_GEN_SIZE,
+            total_heap.saturating_sub(MIN_OLD_GEN_SIZE).max(MIN_YOUNG_GEN_SIZE),
+        )
+    } else if let Ok(val) = std::env::var("TEJX_YOUNG_GEN").or_else(|_| std::env::var("TEJX_EDEN")) {
+        if let Some(bytes) = parse_size_str(&val) {
+            bytes.clamp(
+                MIN_YOUNG_GEN_SIZE,
+                total_heap.saturating_sub(MIN_OLD_GEN_SIZE).max(MIN_YOUNG_GEN_SIZE),
+            )
+        } else {
+            (total_heap / 3).max(MIN_YOUNG_GEN_SIZE)
+        }
+    } else {
+        // Modern compiler standard: Young Gen is ~33% of total heap (NewRatio = 2:1)
+        (total_heap / 3).max(MIN_YOUNG_GEN_SIZE)
+    };
+
+    // 3. Survivor space is ~10% of Young Gen each, Eden is ~80%
+    let survivor_size = ((total_young / 10).clamp(2 * 1024 * 1024, 256 * 1024 * 1024) + 0xFFFF) & !0xFFFF;
+    let young_gen_size = (total_young.saturating_sub(2 * survivor_size).max(MIN_YOUNG_GEN_SIZE) + 0xFFFF) & !0xFFFF;
+
+    // 4. Old Gen receives the remaining heap (at least 67% of total_heap)
+    let old_gen_size = (total_heap.saturating_sub(young_gen_size + 2 * survivor_size).max(MIN_OLD_GEN_SIZE) + 0xFFFF) & !0xFFFF;
+
+    (old_gen_size, young_gen_size, survivor_size)
+}
+
+/// Detect the optimal old-gen heap size at startup.
+#[allow(dead_code)]
+pub(crate) unsafe fn detect_old_gen_size() -> usize {
+    let (old, _, _) = detect_heap_sizes();
+    old
 }
 
 /// Detect young-gen heap size at startup.
+#[allow(dead_code)]
 pub(crate) unsafe fn detect_young_gen_size() -> usize {
-    if let Ok(val) = std::env::var("TEJX_YOUNG_GEN").or_else(|_| std::env::var("TEJX_EDEN")) {
-        if let Some(bytes) = parse_size_str(&val) {
-            return bytes.clamp(MIN_YOUNG_GEN_SIZE, 16 * 1024 * 1024 * 1024);
-        }
-    }
-    crate::constants::DEFAULT_YOUNG_GEN_SIZE
+    let (_, young, _) = detect_heap_sizes();
+    young
 }
 
 /// Parse size strings: "16gb", "8192mb", "512kb", or raw bytes "1073741824".
@@ -126,6 +217,25 @@ pub unsafe fn parse_gc_argv(argc: i32, argv: *mut *mut u8) {
         else if let Some(val) = arg.strip_prefix("-Xmx") {
             if let Some(bytes) = parse_size_str(val) {
                 ARGV_GC_HEAP_LIMIT = bytes;
+            }
+        }
+        // -Xmn2g / -Xmn512m (Java-style Young Gen)
+        else if let Some(val) = arg.strip_prefix("-Xmn") {
+            if let Some(bytes) = parse_size_str(val) {
+                ARGV_GC_YOUNG_LIMIT = bytes;
+            }
+        }
+        // --tejx-young-gen=2gb
+        else if let Some(val) = arg.strip_prefix("--tejx-young-gen=") {
+            if let Some(bytes) = parse_size_str(val) {
+                ARGV_GC_YOUNG_LIMIT = bytes;
+            }
+        }
+        // --tejx-young-gen 2gb
+        else if arg == "--tejx-young-gen" && i + 1 < args.len() {
+            if let Some(bytes) = parse_size_str(&args[i + 1]) {
+                ARGV_GC_YOUNG_LIMIT = bytes;
+                i += 1;
             }
         }
         // --tejx-heap=16gb  (no space)
@@ -1369,10 +1479,11 @@ pub unsafe extern "C" fn rt_init_gc() {
         libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut());
         libc::sigaction(libc::SIGTRAP, &sa, std::ptr::null_mut());
 
-        // Determine old-gen size: #[gc(heap)] attribute > TEJX_HEAP env var > default 512MB
-        OLD_GEN_SIZE = (detect_old_gen_size() + 0xFFFF) & !0xFFFF;
-        YOUNG_GEN_SIZE = (detect_young_gen_size() + 0xFFFF) & !0xFFFF;
-        SURVIVOR_SIZE = crate::constants::DEFAULT_SURVIVOR_SIZE;
+        // Determine heap sizes dynamically based on system memory, cgroup limits, and modern ratios
+        let (old_size, young_size, surv_size) = detect_heap_sizes();
+        OLD_GEN_SIZE = old_size;
+        YOUNG_GEN_SIZE = young_size;
+        SURVIVOR_SIZE = surv_size;
 
         let total_young = YOUNG_GEN_SIZE + 2 * SURVIVOR_SIZE;
         EDEN_START = mmap(
