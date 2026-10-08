@@ -448,12 +448,13 @@ impl TejxType {
                     return;
                 }
                 if let Some(colon) = p.find(':') {
-                    let mut key = p[..colon].trim().to_string();
+                    let mut raw_key = p[..colon].trim();
                     let mut is_opt = false;
-                    if key.ends_with('?') {
-                        key.pop();
+                    if raw_key.ends_with('?') {
+                        raw_key = raw_key[..raw_key.len() - 1].trim();
                         is_opt = true;
                     }
+                    let key = raw_key.trim_matches('"').trim_matches('\'').to_string();
                     let ty_str = p[colon + 1..].trim();
                     let ty = TejxType::from_name(ty_str);
                     props.push((key, is_opt, ty));

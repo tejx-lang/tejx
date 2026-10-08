@@ -181,7 +181,10 @@ impl CodeGen {
                     self.emit_line("call void @rt_leave_frame()");
                 }
 
-                if let Some(final_val) = final_val {
+                if let Some(mut final_val) = final_val {
+                    if (ret_llvm_ty == "float" || ret_llvm_ty == "double") && (final_val == "0" || final_val == "null") {
+                        final_val = "0.0".to_string();
+                    }
                     self.emit_line(&format!("ret {} {}", ret_llvm_ty, final_val));
                 } else if ret_llvm_ty == "void" {
                     self.emit_line("ret void");

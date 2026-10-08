@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that unquoted @ characters are invalid identifiers in object properties.
+
+function main() {
+    let obj = {
+        @key: 123
+    };
+    print(obj);
+}
