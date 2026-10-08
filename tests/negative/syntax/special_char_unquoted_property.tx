@@ -1,0 +1,9 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that unquoted special characters like %, !, #, $ are invalid identifiers in object literal property keys.
+
+function main(): void {
+    let obj = {
+        %key: 100
+    };
+    print(obj);
+}

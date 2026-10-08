@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that % cannot be used as a variable identifier.
+
+function main(): void {
+    let % = 10;
+    print(%);
+}

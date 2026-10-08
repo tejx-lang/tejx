@@ -1078,7 +1078,7 @@ impl CodeGen {
         self.value_map
             .get(name)
             .cloned()
-            .unwrap_or_else(|| format!("%{}_ptr", name))
+            .unwrap_or_else(|| format!("%{}_ptr", name.replace('$', "_")))
     }
 
     pub(crate) fn emit_store_variable(&mut self, name: &str, val: &str, ty: &TejxType) {

@@ -441,13 +441,38 @@ impl TejxType {
             let mut depth_angle = 0usize;
             let mut depth_bracket = 0usize;
             let mut depth_paren = 0usize;
+            let mut in_quote: Option<char> = None;
+            let mut is_escaped = false;
 
             let flush_prop = |buf: &str, props: &mut Vec<(String, bool, TejxType)>| {
                 let p = buf.trim();
                 if p.is_empty() {
                     return;
                 }
-                if let Some(colon) = p.find(':') {
+                let colon_pos = if p.starts_with('"') || p.starts_with('\'') {
+                    let quote_char = p.chars().next().unwrap();
+                    let mut escaped = false;
+                    let mut close_quote = None;
+                    for (i, ch) in p.char_indices().skip(1) {
+                        if escaped {
+                            escaped = false;
+                        } else if ch == '\\' {
+                            escaped = true;
+                        } else if ch == quote_char {
+                            close_quote = Some(i);
+                            break;
+                        }
+                    }
+                    if let Some(close) = close_quote {
+                        p[close + 1..].find(':').map(|idx| close + 1 + idx)
+                    } else {
+                        p.find(':')
+                    }
+                } else {
+                    p.find(':')
+                };
+
+                if let Some(colon) = colon_pos {
                     let mut raw_key = p[..colon].trim();
                     let mut is_opt = false;
                     if raw_key.ends_with('?') {
@@ -462,7 +487,25 @@ impl TejxType {
             };
 
             for ch in inner.chars() {
+                if is_escaped {
+                    is_escaped = false;
+                    current.push(ch);
+                    continue;
+                }
+                if let Some(q) = in_quote {
+                    if ch == '\\' {
+                        is_escaped = true;
+                    } else if ch == q {
+                        in_quote = None;
+                    }
+                    current.push(ch);
+                    continue;
+                }
                 match ch {
+                    '"' | '\'' => {
+                        in_quote = Some(ch);
+                        current.push(ch);
+                    }
                     '{' => {
                         depth_brace += 1;
                         current.push(ch);
@@ -699,7 +742,12 @@ impl TejxType {
                     .iter()
                     .map(|(k, o, t)| {
                         let opt = if *o { "?" } else { "" };
-                        format!("{}{}: {}", k, opt, t.to_name())
+                        let safe_k = if k.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                            k.clone()
+                        } else {
+                            format!("\"{}\"", k.replace('\\', "\\\\").replace('"', "\\\""))
+                        };
+                        format!("{}{}: {}", safe_k, opt, t.to_name())
                     })
                     .collect();
                 format!("{{ {} }}", p_names.join("; "))
