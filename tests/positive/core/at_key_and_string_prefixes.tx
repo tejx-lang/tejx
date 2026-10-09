@@ -1,0 +1,171 @@
+// Positive test: @ key handling and string prefix edge cases
+// ===========================================================
+// Verifies that the compiler correctly handles:
+//   1. @ characters inside string literals (single, double, template)
+//   2. Object literals with quoted @ keys and bracket access
+//   3. Object destructuring with string @ keys
+//   4. Type annotations with @ keys
+//   5. String methods on strings containing @
+//   6. switch/case on @ strings
+//   7. Strings starting with "lambda_", "new ", "null", "true", "false", digits
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+// ----- Type with @ keys -----
+type SchemaItem = {
+    "@id": int,
+    "@type": string
+};
+
+// ----- 1. String basics -----
+function testStringBasics(): void {
+    let at: string = "@";
+    let atKey: string = "@key";
+    let email: string = "user@domain.com";
+    let uri: string = "mongodb://admin:secret@127.0.0.1:27017/db";
+    let multi: string = "@@@hello@@@";
+
+    assert_eq_string("@", at, "bare @ string");
+    assert_eq_string("@key", atKey, "@ prefixed string");
+    assert_eq_string("user@domain.com", email, "email string");
+    assert_eq_string("mongodb://admin:secret@127.0.0.1:27017/db", uri, "uri string");
+    assert_eq_string("@@@hello@@@", multi, "multiple @ string");
+
+    // Char literal
+    let c: char = '@';
+    // Just verify the char literal doesn't crash — @ should be valid in char context
+    print(c);
+}
+
+// ----- 2. Template strings -----
+function testTemplateStrings(): void {
+    let user = "admin";
+    let host = "server.io";
+    let t1 = `@${user}`;
+    let t2 = `${user}@${host}`;
+    let t3 = `prefix@${user}@suffix`;
+
+    assert_eq_string("@admin", t1, "template @ prefix");
+    assert_eq_string("admin@server.io", t2, "template @ middle");
+    assert_eq_string("prefix@admin@suffix", t3, "template multiple @");
+}
+
+// ----- 3. String methods on @ strings -----
+function testStringMethods(): void {
+    let s = "dev@tejx.org";
+    assert_eq_int(3, s.indexOf("@"), "indexOf @");
+    assert_true(s.includes("@"), "includes @");
+    assert_false(s.startsWith("@"), "startsWith @ (false)");
+    assert_true(s.endsWith(".org"), "endsWith .org");
+
+    let parts = s.split("@");
+    assert_eq_string("dev", parts[0], "split @ [0]");
+    assert_eq_string("tejx.org", parts[1], "split @ [1]");
+
+    let replaced = s.replace("@", "[at]");
+    assert_eq_string("dev[at]tejx.org", replaced, "replace @");
+
+    let atOnly = "@";
+    assert_eq_int(1, atOnly.length(), "@ length");
+    assert_true(atOnly == "@", "@ equality");
+    assert_true(atOnly != "#", "@ inequality");
+}
+
+// ----- 4. Object literal + destructuring with @ keys -----
+function testObjectAndDestructuring(): void {
+    let obj = {
+        "@id": 101,
+        "@type": "Account",
+        "@": "symbol"
+    };
+
+    // Bracket access
+    assert_eq_int(101, obj["@id"], "obj[@id]");
+    assert_eq_string("Account", obj["@type"], "obj[@type]");
+    assert_eq_string("symbol", obj["@"], "obj[@]");
+
+    // Mutate via bracket
+    obj["@id"] = 202;
+    assert_eq_int(202, obj["@id"], "obj[@id] after mutation");
+
+    // Destructuring with string keys
+    let { "@id": idVal, "@type": typeVal } = obj;
+    assert_eq_int(202, idVal, "destructured @id");
+    assert_eq_string("Account", typeVal, "destructured @type");
+}
+
+// ----- 5. Type annotation with @ keys -----
+function testTypeAnnotation(): void {
+    let item: SchemaItem = {
+        "@id": 999,
+        "@type": "Product"
+    };
+    assert_eq_int(999, item["@id"], "typed obj @id");
+    assert_eq_string("Product", item["@type"], "typed obj @type");
+}
+
+// ----- 6. Switch on @ strings -----
+function switchOnAt(key: string): string {
+    switch (key) {
+        case "@first":
+            return "MATCH_FIRST";
+        case "@second":
+            return "MATCH_SECOND";
+        case "@":
+            return "MATCH_AT";
+        default:
+            return "MATCH_DEFAULT";
+    }
+}
+
+function testSwitchCases(): void {
+    assert_eq_string("MATCH_FIRST", switchOnAt("@first"), "switch @first");
+    assert_eq_string("MATCH_SECOND", switchOnAt("@second"), "switch @second");
+    assert_eq_string("MATCH_AT", switchOnAt("@"), "switch @");
+    assert_eq_string("MATCH_DEFAULT", switchOnAt("hello"), "switch default");
+}
+
+// ----- 7. Prefix edge cases: lambda_, new, null, true, false, digits -----
+function testPrefixEdgeCases(): void {
+    // These strings begin with prefixes the compiler previously hijacked
+    let sLambda: string = "lambda_executor";
+    let sNew: string = "new transaction initialized";
+    let sNull: string = "null";
+    let sTrue: string = "true";
+    let sFalse: string = "false";
+    let sNum: string = "12345";
+    let sAt: string = "@any_key";
+
+    assert_eq_string("lambda_executor", sLambda, "lambda_ prefix string");
+    assert_eq_string("new transaction initialized", sNew, "new prefix string");
+    assert_eq_string("null", sNull, "null string");
+    assert_eq_string("true", sTrue, "true string");
+    assert_eq_string("false", sFalse, "false string");
+    assert_eq_string("12345", sNum, "digit string");
+    assert_eq_string("@any_key", sAt, "@ prefix string");
+
+    // Same with `any` type
+    let a: any = "@any_key";
+    let b: any = "lambda_in_any";
+    let c: any = "new user";
+    let d: any = "null";
+
+    // For any type, just verify they print correctly (no crash)
+    print("any @: " + a);
+    print("any lambda_: " + b);
+    print("any new: " + c);
+    print("any null: " + d);
+}
+
+// ----- main -----
+function main(): void {
+    print("--- @ Key and String Prefix Edge Case Tests ---");
+    testStringBasics();
+    testTemplateStrings();
+    testStringMethods();
+    testObjectAndDestructuring();
+    testTypeAnnotation();
+    testSwitchCases();
+    testPrefixEdgeCases();
+    print("All @ key and prefix tests passed!");
+}

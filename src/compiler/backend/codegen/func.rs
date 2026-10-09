@@ -490,6 +490,15 @@ impl CodeGen {
                                 ..
                             } if dst == &current_var => {
                                 found_definition = true;
+                                if !self.can_use_fixed_object_layout_with_key(
+                                    func,
+                                    name,
+                                    target_key,
+                                    cache,
+                                    visiting,
+                                ) {
+                                    break 'analysis false;
+                                }
                                 defs_to_check.push(name.clone());
                             }
                             MIRInstruction::LoadMember {

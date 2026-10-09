@@ -653,30 +653,55 @@ impl CodeGen {
     pub(crate) fn resolve_value(&mut self, val: &MIRValue) -> String {
         match val {
             MIRValue::Constant { value, ty } => {
-                // Handle "new Class" hack
-                if let Some(name) = value.strip_prefix("@") {
-                    if let TejxType::Function(params, ret) = ty {
+                // String constants should always be emitted as string constants.
+                // Never treat string constants as function pointers (@), lambdas (lambda_),
+                // or constructors (new ), even if the string starts with those prefixes or keywords.
+                if matches!(ty, TejxType::String)
+                    || (value.starts_with('"') && value.ends_with('"'))
+                    || (value.starts_with('\'') && value.ends_with('\''))
+                {
+                    let raw_ptr = self.emit_string_constant(value);
+                    return self.emit_box_string(&raw_ptr);
+                }
+
+                // Handle function references / "new Class" hack
+                if matches!(ty, TejxType::Function(..)) {
+                    if let Some(name) = value.strip_prefix("@") {
                         let adapter = self.ensure_closure_adapter(name, ty);
                         let mut llvm_params = vec!["i64".to_string()];
-                        for param in params {
-                            llvm_params.push(Self::get_llvm_type(param).to_string());
+                        if let TejxType::Function(params, _) = ty {
+                            for param in params {
+                                llvm_params.push(Self::get_llvm_type(param).to_string());
+                            }
                         }
                         while llvm_params.len() < 5 {
                             llvm_params.push("i64".to_string());
                         }
-                        return format!(
-                            "ptrtoint ({} ({})* @{} to i64)",
-                            Self::get_llvm_type(ret),
-                            llvm_params.join(", "),
-                            adapter
-                        );
+                        if let TejxType::Function(_, ret) = ty {
+                            return format!(
+                                "ptrtoint ({} ({})* @{} to i64)",
+                                Self::get_llvm_type(ret),
+                                llvm_params.join(", "),
+                                adapter
+                            );
+                        }
                     }
-
-                    let count = self.function_param_counts.get(name).cloned().unwrap_or(1);
-                    let args = vec!["i64"; count].join(", ");
-                    return format!("ptrtoint (i64 ({})* @{} to i64)", args, name);
+                } else if let Some(name) = value.strip_prefix("@") {
+                    if self.declared_functions.contains(name)
+                        || self.function_param_counts.contains_key(name)
+                    {
+                        let count = self.function_param_counts.get(name).cloned().unwrap_or(1);
+                        let args = vec!["i64"; count].join(", ");
+                        return format!("ptrtoint (i64 ({})* @{} to i64)", args, name);
+                    }
                 }
-                if value.starts_with("lambda_") {
+
+                let is_lambda = value.starts_with("lambda_")
+                    && (matches!(ty, TejxType::Function(..))
+                        || self.declared_functions.contains(value)
+                        || self.function_param_counts.contains_key(value));
+
+                if is_lambda {
                     let fn_ptr = if let TejxType::Function(params, ret) = ty {
                         let mut llvm_params = vec!["i64".to_string()];
                         for param in params {
@@ -771,7 +796,7 @@ impl CodeGen {
 
                     return closure_id;
                 }
-                if value.starts_with("new ") {
+                if value.starts_with("new ") && !matches!(ty, TejxType::String) {
                     return "0".to_string();
                 }
 
@@ -1053,7 +1078,7 @@ impl CodeGen {
         self.value_map
             .get(name)
             .cloned()
-            .unwrap_or_else(|| format!("%{}_ptr", name))
+            .unwrap_or_else(|| format!("%{}_ptr", name.replace('$', "_")))
     }
 
     pub(crate) fn emit_store_variable(&mut self, name: &str, val: &str, ty: &TejxType) {
@@ -1198,13 +1223,14 @@ impl CodeGen {
 
     pub(crate) fn emit_string_constant(&mut self, value: &str) -> String {
         let raw_content = value.to_string();
-        let content =
-            if raw_content.len() >= 2 && raw_content.starts_with('"') && raw_content.ends_with('"')
-            {
-                &raw_content[1..raw_content.len() - 1]
-            } else {
-                &raw_content
-            };
+        let content = if raw_content.len() >= 2
+            && ((raw_content.starts_with('"') && raw_content.ends_with('"'))
+                || (raw_content.starts_with('\'') && raw_content.ends_with('\'')))
+        {
+            &raw_content[1..raw_content.len() - 1]
+        } else {
+            &raw_content
+        };
 
         if let Some((str_lbl, byte_len)) = self.string_constant_cache.get(content) {
             return format!("ptrtoint ([{} x i8]* {} to i64)", byte_len, str_lbl);

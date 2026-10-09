@@ -1,0 +1,7 @@
+// EXPECTED: COMPILE_ERROR
+// Description: Verify that $ cannot be used as a standalone variable name or identifier.
+
+function main(): void {
+    let $ = 999;
+    print($);
+}

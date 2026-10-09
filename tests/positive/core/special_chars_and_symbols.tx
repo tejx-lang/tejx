@@ -1,0 +1,332 @@
+// Positive test: Verification of all special characters and LLVM reserved symbols
+// ==============================================================================
+// Verifies that:
+// 1. Strings containing %, !, #, $, ., :, /, \, \0, @, ^, &, *, +, -, ~, =, ?, |, <, >, (, ), [, ], {, }
+//    work in:
+//    - string literals (single, double, template strings)
+//    - string concatenation
+//    - string operations (indexOf, includes, split, replace)
+//    - object property keys and bracket access
+//    - object property mutation
+//    - object destructuring
+//    - typed anonymous record types
+//    - switch / case matching
+
+import { assert_eq_int, assert_eq_string, assert_true, assert_false } from "../utils.tx";
+
+function test_string_literals(): void {
+    print("--- 1. String Literals with Special Characters ---");
+
+    // LLVM Breakers: %, !, #
+    let s_pct: string = "%";
+    let s_pct_word: string = "%local_reg";
+    let s_pct_fmt: string = "100% completed";
+    assert_eq_string("%", s_pct, "pct bare");
+    assert_eq_string("%local_reg", s_pct_word, "pct word");
+    assert_eq_string("100% completed", s_pct_fmt, "pct fmt");
+
+    let s_bang: string = "!";
+    let s_bang_word: string = "!metadata";
+    let s_bang_stmt: string = "Warning! Danger ahead!";
+    assert_eq_string("!", s_bang, "bang bare");
+    assert_eq_string("!metadata", s_bang_word, "bang word");
+    assert_eq_string("Warning! Danger ahead!", s_bang_stmt, "bang stmt");
+
+    let s_hash: string = "#";
+    let s_hash_word: string = "#attr0";
+    let s_hash_tag: string = "#define DEBUG 1";
+    assert_eq_string("#", s_hash, "hash bare");
+    assert_eq_string("#attr0", s_hash_word, "hash word");
+    assert_eq_string("#define DEBUG 1", s_hash_tag, "hash tag");
+
+    // Linker & Assembler Landmines: ., $, \01
+    let s_dot: string = ".";
+    let s_dot_word: string = ".globl _main";
+    let s_dot_path: string = "config.local.json";
+    assert_eq_string(".", s_dot, "dot bare");
+    assert_eq_string(".globl _main", s_dot_word, "dot word");
+    assert_eq_string("config.local.json", s_dot_path, "dot path");
+
+    let s_dollar: string = "$";
+    let s_dollar_word: string = "$variable";
+    let s_dollar_amt: string = "$100.50";
+    assert_eq_string("$", s_dollar, "dollar bare");
+    assert_eq_string("$variable", s_dollar_word, "dollar word");
+    assert_eq_string("$100.50", s_dollar_amt, "dollar amt");
+
+    // OS & Runtime Blockers: :, /, \, \0
+    let s_colon: string = ":";
+    let s_colon_word: string = "urn:uuid:f81d4fae";
+    let s_colon_drive: string = "C:\\Windows\\System32";
+    assert_eq_string(":", s_colon, "colon bare");
+    assert_eq_string("urn:uuid:f81d4fae", s_colon_word, "colon word");
+    assert_eq_string("C:\\Windows\\System32", s_colon_drive, "colon drive");
+
+    let s_slash: string = "/";
+    let s_slash_path: string = "/usr/local/bin/tejxc";
+    let s_slash_url: string = "https://tejx.org/docs/api";
+    assert_eq_string("/", s_slash, "slash bare");
+    assert_eq_string("/usr/local/bin/tejxc", s_slash_path, "slash path");
+    assert_eq_string("https://tejx.org/docs/api", s_slash_url, "slash url");
+
+    let s_bslash: string = "\\";
+    let s_bslash_path: string = "\\\\server\\share\\path";
+    assert_eq_string("\\", s_bslash, "bslash bare");
+    assert_eq_string("\\\\server\\share\\path", s_bslash_path, "bslash path");
+
+    let s_null: string = "\0";
+    assert_true(s_null.length >= 0, "null char length valid");
+
+    // Other Operators: ^, &, *, +, -, ~, =, ?, |, <, >, (, ), [, ], {, }
+    let s_ops: string = "^&*+-~=?|<>()[]{}";
+    assert_eq_string("^&*+-~=?|<>()[]{}", s_ops, "operators string");
+
+    // Single quotes
+    let s_single_pct: string = '%';
+    let s_single_bang: string = '!';
+    let s_single_hash: string = '#';
+    let s_single_dollar: string = '$';
+    let s_single_colon: string = ':';
+    let s_single_slash: string = '/';
+    let s_single_bslash: string = '\\';
+    assert_eq_string("%", s_single_pct, "single pct");
+    assert_eq_string("!", s_single_bang, "single bang");
+    assert_eq_string("#", s_single_hash, "single hash");
+    assert_eq_string("$", s_single_dollar, "single dollar");
+    assert_eq_string(":", s_single_colon, "single colon");
+    assert_eq_string("/", s_single_slash, "single slash");
+    assert_eq_string("\\", s_single_bslash, "single bslash");
+
+    print("✅ String literals with all special characters passed");
+}
+
+function test_template_literals(): void {
+    print("--- 2. Template Literals with Special Characters ---");
+
+    let val: string = "TEST";
+    let num: int = 42;
+
+    let t1: string = `pct: % ${val} %`;
+    let t2: string = `bang: ! ${val} !`;
+    let t3: string = `hash: # ${val} #`;
+    let t4: string = `dollar: $ ${val} $`;
+    let t5: string = `colon: : ${val} :`;
+    let t6: string = `path: /api/${val}/${num}`;
+    let t7: string = `query: ?filter=${val}&sort=desc#section`;
+    let t8: string = `combined: %!#$.:/\\@^&*+-~=?|<>()[]{}`;
+
+    assert_eq_string("pct: % TEST %", t1, "t1 pct");
+    assert_eq_string("bang: ! TEST !", t2, "t2 bang");
+    assert_eq_string("hash: # TEST #", t3, "t3 hash");
+    assert_eq_string("dollar: $ TEST $", t4, "t4 dollar");
+    assert_eq_string("colon: : TEST :", t5, "t5 colon");
+    assert_eq_string("path: /api/TEST/42", t6, "t6 path");
+    assert_eq_string("query: ?filter=TEST&sort=desc#section", t7, "t7 query");
+    assert_eq_string("combined: %!#$.:/\\\\@^&*+-~=?|<>()[]{}", t8, "t8 combined");
+
+    print("✅ Template literals passed");
+}
+
+function test_string_methods(): void {
+    print("--- 3. String Methods with Special Characters ---");
+
+    let s: string = "key: %local = !meta #attr $val .dot /slash \\bslash @at";
+
+    assert_true(s.includes("%local"), "includes %");
+    assert_true(s.includes("!meta"), "includes !");
+    assert_true(s.includes("#attr"), "includes #");
+    assert_true(s.includes("$val"), "includes $");
+    assert_true(s.includes(".dot"), "includes .");
+    assert_true(s.includes("/slash"), "includes /");
+    assert_true(s.includes("\\bslash"), "includes \\");
+    assert_true(s.includes("@at"), "includes @");
+
+    assert_eq_int(5, s.indexOf("%"), "indexOf %");
+    assert_eq_int(14, s.indexOf("!"), "indexOf !");
+    assert_eq_int(20, s.indexOf("#"), "indexOf #");
+    assert_eq_int(26, s.indexOf("$"), "indexOf $");
+
+    let csv: string = "a%b!c#d$e:f/g\\h@i";
+    let replaced: string = csv.replace("%", "_PCT_");
+    assert_true(replaced.includes("_PCT_"), "replace %");
+
+    let parts: string[] = csv.split(":");
+    assert_eq_int(2, parts.length, "split colon length");
+    assert_eq_string("a%b!c#d$e", parts[0], "split colon part 0");
+    assert_eq_string("f/g\\h@i", parts[1], "split colon part 1");
+
+    print("✅ String methods passed");
+}
+
+function test_object_special_keys(): void {
+    print("--- 4. Object Properties and Keys with Special Characters ---");
+
+    // Dynamic map with special character keys
+    let obj = {
+        "%key": 101,
+        "!key": 102,
+        "#key": 103,
+        "$key": 104,
+        ".key": 105,
+        ":key": 106,
+        "/key": 107,
+        "\\key": 108,
+        "@key": 109,
+        "key:with:colons": 110,
+        "key/with/slashes": 111,
+        "key%with%percent": 112,
+        "key!with!bang": 113,
+        "key#with#hash": 114,
+        "key$with$dollar": 115
+    };
+
+    // Bracket access
+    assert_eq_int(101, obj["%key"], "read %key");
+    assert_eq_int(102, obj["!key"], "read !key");
+    assert_eq_int(103, obj["#key"], "read #key");
+    assert_eq_int(104, obj["$key"], "read $key");
+    assert_eq_int(105, obj[".key"], "read .key");
+    assert_eq_int(106, obj[":key"], "read :key");
+    assert_eq_int(107, obj["/key"], "read /key");
+    assert_eq_int(108, obj["\\key"], "read \\key");
+    assert_eq_int(109, obj["@key"], "read @key");
+    assert_eq_int(110, obj["key:with:colons"], "read key:with:colons");
+    assert_eq_int(111, obj["key/with/slashes"], "read key/with/slashes");
+    assert_eq_int(112, obj["key%with%percent"], "read key%with%percent");
+    assert_eq_int(113, obj["key!with!bang"], "read key!with!bang");
+    assert_eq_int(114, obj["key#with#hash"], "read key#with#hash");
+    assert_eq_int(115, obj["key$with$dollar"], "read key$with$dollar");
+
+    // Mutation via bracket
+    obj["%key"] = 201;
+    obj["!key"] = 202;
+    obj["#key"] = 203;
+    obj["$key"] = 204;
+    obj[":key"] = 206;
+    obj["/key"] = 207;
+
+    assert_eq_int(201, obj["%key"], "mutated %key");
+    assert_eq_int(202, obj["!key"], "mutated !key");
+    assert_eq_int(203, obj["#key"], "mutated #key");
+    assert_eq_int(204, obj["$key"], "mutated $key");
+    assert_eq_int(206, obj[":key"], "mutated :key");
+    assert_eq_int(207, obj["/key"], "mutated /key");
+
+    // Destructuring with quoted keys
+    let {
+        "%key": d_pct,
+        "!key": d_bang,
+        "#key": d_hash,
+        "$key": d_dollar,
+        ".key": d_dot,
+        ":key": d_colon,
+        "/key": d_slash,
+        "\\key": d_bslash,
+        "@key": d_at
+    } = obj;
+
+    assert_eq_int(201, d_pct, "destructured %key");
+    assert_eq_int(202, d_bang, "destructured !key");
+    assert_eq_int(203, d_hash, "destructured #key");
+    assert_eq_int(204, d_dollar, "destructured $key");
+    assert_eq_int(105, d_dot, "destructured .key");
+    assert_eq_int(206, d_colon, "destructured :key");
+    assert_eq_int(207, d_slash, "destructured /key");
+    assert_eq_int(108, d_bslash, "destructured \\key");
+    assert_eq_int(109, d_at, "destructured @key");
+
+    print("✅ Object properties with special keys passed");
+}
+
+function test_typed_records(): void {
+    print("--- 5. Typed Anonymous Records with Special Keys ---");
+
+    type SpecialRecord = {
+        "%id": int,
+        "!flag": bool,
+        "#tag": string,
+        ":port": int,
+        "/path": string
+    };
+
+    let record: SpecialRecord = {
+        "%id": 999,
+        "!flag": true,
+        "#tag": "v1.0.0",
+        ":port": 8080,
+        "/path": "/api/v1"
+    };
+
+    assert_eq_int(999, record["%id"], "typed %id");
+    assert_true(record["!flag"], "typed !flag");
+    assert_eq_string("v1.0.0", record["#tag"], "typed #tag");
+    assert_eq_int(8080, record[":port"], "typed :port");
+    assert_eq_string("/api/v1", record["/path"], "typed /path");
+
+    print("✅ Typed records with special keys passed");
+}
+
+function match_symbol(s: string): string {
+    switch (s) {
+        case "%":
+            return "MATCH_PERCENT";
+        case "!":
+            return "MATCH_EXCLAMATION";
+        case "#":
+            return "MATCH_HASH";
+        case "$":
+            return "MATCH_DOLLAR";
+        case ".":
+            return "MATCH_DOT";
+        case ":":
+            return "MATCH_COLON";
+        case "/":
+            return "MATCH_SLASH";
+        case "\\":
+            return "MATCH_BACKSLASH";
+        case "@":
+            return "MATCH_AT";
+        case "%local":
+            return "MATCH_PCT_LOCAL";
+        case "!meta":
+            return "MATCH_BANG_META";
+        case "#attr":
+            return "MATCH_HASH_ATTR";
+        case "$var":
+            return "MATCH_DOLLAR_VAR";
+        default:
+            return "MATCH_OTHER";
+    }
+}
+
+function test_switch_matching(): void {
+    print("--- 6. Switch Pattern Matching with Special Characters ---");
+
+    assert_eq_string("MATCH_PERCENT", match_symbol("%"), "switch %");
+    assert_eq_string("MATCH_EXCLAMATION", match_symbol("!"), "switch !");
+    assert_eq_string("MATCH_HASH", match_symbol("#"), "switch #");
+    assert_eq_string("MATCH_DOLLAR", match_symbol("$"), "switch $");
+    assert_eq_string("MATCH_DOT", match_symbol("."), "switch .");
+    assert_eq_string("MATCH_COLON", match_symbol(":"), "switch :");
+    assert_eq_string("MATCH_SLASH", match_symbol("/"), "switch /");
+    assert_eq_string("MATCH_BACKSLASH", match_symbol("\\"), "switch \\");
+    assert_eq_string("MATCH_AT", match_symbol("@"), "switch @");
+    assert_eq_string("MATCH_PCT_LOCAL", match_symbol("%local"), "switch %local");
+    assert_eq_string("MATCH_BANG_META", match_symbol("!meta"), "switch !meta");
+    assert_eq_string("MATCH_HASH_ATTR", match_symbol("#attr"), "switch #attr");
+    assert_eq_string("MATCH_DOLLAR_VAR", match_symbol("$var"), "switch $var");
+    assert_eq_string("MATCH_OTHER", match_symbol("unknown"), "switch default");
+
+    print("✅ Switch matching passed");
+}
+
+function main(): void {
+    test_string_literals();
+    test_template_literals();
+    test_string_methods();
+    test_object_special_keys();
+    test_typed_records();
+    test_switch_matching();
+
+    print("\n🎉 ALL SPECIAL CHARACTERS & SYMBOLS TESTS PASSED!");
+}
